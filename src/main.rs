@@ -289,7 +289,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start Vector manager
-    let vector_manager = VectorManager::new(config.extractors.vector.clone());
+    let vector_manager = VectorManager::new(
+        config.extractors.vector.clone(),
+        Arc::clone(&pipeline_state),
+        Arc::clone(&metrics),
+        shutdown_token.clone(),
+    );
     if vector_manager.is_enabled() {
         if let Err(e) = vector_manager.start().await {
             error!(error = %e, "Failed to start Vector manager");
