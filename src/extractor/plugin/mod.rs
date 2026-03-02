@@ -43,6 +43,7 @@ pub struct PluginRegistry {
 }
 
 /// A loaded plugin with its configuration.
+#[allow(dead_code)]
 struct LoadedPlugin {
     /// Plugin name.
     name: String,

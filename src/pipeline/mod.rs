@@ -30,9 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::buffer::{BufferManager, TieredSink};
 use crate::config::{Config, SharedConfig};

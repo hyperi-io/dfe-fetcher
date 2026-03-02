@@ -45,6 +45,7 @@ use tracing::{error, info, warn, Level};
 use dfe_fetcher::config::{reload_config, Config};
 use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
+use dfe_fetcher::extractor::Extractor;
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::Orchestrator;
 use dfe_fetcher::scheduler::Scheduler;
@@ -225,8 +226,6 @@ async fn main() -> anyhow::Result<()> {
 
         let interval = scheduler.effective_interval(None);
         let state = Arc::clone(&pipeline_state);
-        let source_metrics = Arc::clone(&metrics);
-
         info!(
             source = source.name(),
             interval_secs = interval.as_secs(),

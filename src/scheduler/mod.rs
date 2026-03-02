@@ -23,8 +23,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::config::{Config, SchedulerConfig};
-use crate::error::Result;
+use crate::config::SchedulerConfig;
 use crate::metrics::Metrics;
 use crate::source::{FetchResult, Source};
 

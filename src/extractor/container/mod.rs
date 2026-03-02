@@ -72,6 +72,7 @@ impl ContainerExtractor {
     }
 
     /// Build the container run command arguments.
+    #[allow(dead_code)]
     fn build_run_args(&self) -> Vec<String> {
         let mut args = vec![
             "run".to_string(),
