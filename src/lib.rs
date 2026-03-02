@@ -57,6 +57,7 @@ pub mod buffer;
 pub mod config;
 pub mod error;
 pub mod extractor;
+pub mod ingest;
 pub mod metrics;
 pub mod pipeline;
 pub mod scheduler;

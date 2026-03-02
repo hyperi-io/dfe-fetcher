@@ -91,6 +91,7 @@ tempfile = "3"
 tokio-test = "0.4"
 dotenvy = "0.15"
 wiremock = "0.6"
+tower = "0.5"
 
 [features]
 default = []

@@ -45,24 +45,41 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tracing::{error, info, warn};
+use bytes::Bytes;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::config::ContainerExtractorConfig;
 use crate::error::{Error, Result};
 use crate::extractor::Extractor;
+use crate::metrics::Metrics;
+use crate::pipeline::PipelineState;
 
 /// Container-based extractor.
 pub struct ContainerExtractor {
     config: ContainerExtractorConfig,
     running: Arc<AtomicBool>,
+    pipeline: Arc<PipelineState>,
+    metrics: Arc<Metrics>,
+    shutdown: CancellationToken,
 }
 
 impl ContainerExtractor {
     /// Create a new container extractor from configuration.
-    pub fn new(config: ContainerExtractorConfig) -> Self {
+    pub fn new(
+        config: ContainerExtractorConfig,
+        pipeline: Arc<PipelineState>,
+        metrics: Arc<Metrics>,
+        shutdown: CancellationToken,
+    ) -> Self {
         Self {
             config,
             running: Arc::new(AtomicBool::new(false)),
+            pipeline,
+            metrics,
+            shutdown,
         }
     }
 
@@ -72,7 +89,6 @@ impl ContainerExtractor {
     }
 
     /// Build the container run command arguments.
-    #[allow(dead_code)]
     fn build_run_args(&self) -> Vec<String> {
         let mut args = vec![
             "run".to_string(),
@@ -129,6 +145,235 @@ impl ContainerExtractor {
     fn container_name(&self) -> String {
         format!("dfe-fetcher-{}", self.config.name)
     }
+
+    /// Run a single scheduled extraction (one-shot container run).
+    async fn run_scheduled(&self) -> Result<()> {
+        let runtime = self.runtime_cmd().to_string();
+        let args = self.build_run_args();
+
+        debug!(
+            name = %self.config.name,
+            runtime = %runtime,
+            "Running scheduled container extraction"
+        );
+
+        let mut child = Command::new(&runtime)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Source(format!("failed to spawn container '{}': {e}", self.config.name)))?;
+
+        // Read stdout as JSON lines
+        if self.config.communication == "stdout" {
+            if let Some(stdout) = child.stdout.take() {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
+                let mut record_count: u64 = 0;
+
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let line = line.trim().to_string();
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let payload = Bytes::from(line);
+                    let topic = format!("{}{}", self.config.topic, self.pipeline.config().kafka.topic_suffix);
+
+                    if let Err(e) = self.pipeline.deliver_ingest(&topic, payload).await {
+                        error!(
+                            name = %self.config.name,
+                            error = %e,
+                            "Failed to deliver container output"
+                        );
+                    } else {
+                        record_count += 1;
+                    }
+                }
+
+                if record_count > 0 {
+                    self.metrics.add_extractor_records(record_count);
+                    info!(
+                        name = %self.config.name,
+                        records = record_count,
+                        "Scheduled extraction complete"
+                    );
+                }
+            }
+        }
+
+        // Wait for container to exit
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| Error::Source(format!("container '{}' wait failed: {e}", self.config.name)))?;
+
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
+            warn!(
+                name = %self.config.name,
+                exit_code = code,
+                "Container exited with non-zero status"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Run a continuous container (long-running with stdout streaming).
+    async fn run_continuous(&self) -> Result<()> {
+        let runtime = self.runtime_cmd().to_string();
+        let args = self.build_run_args();
+
+        info!(
+            name = %self.config.name,
+            runtime = %runtime,
+            "Starting continuous container extractor"
+        );
+
+        let mut child = Command::new(&runtime)
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::Source(format!("failed to spawn container '{}': {e}", self.config.name)))?;
+
+        // For stdout mode: stream lines continuously
+        if self.config.communication == "stdout" {
+            if let Some(stdout) = child.stdout.take() {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
+                let shutdown = self.shutdown.clone();
+                let pipeline = self.pipeline.clone();
+                let metrics = self.metrics.clone();
+                let config_name = self.config.name.clone();
+                let config_topic = self.config.topic.clone();
+
+                loop {
+                    tokio::select! {
+                        line_result = lines.next_line() => {
+                            match line_result {
+                                Ok(Some(line)) => {
+                                    let line = line.trim().to_string();
+                                    if line.is_empty() {
+                                        continue;
+                                    }
+                                    let payload = Bytes::from(line);
+                                    let topic = format!("{}{}", config_topic, pipeline.config().kafka.topic_suffix);
+
+                                    if let Err(e) = pipeline.deliver_ingest(&topic, payload).await {
+                                        error!(
+                                            name = %config_name,
+                                            error = %e,
+                                            "Failed to deliver container output"
+                                        );
+                                    } else {
+                                        metrics.add_extractor_records(1);
+                                    }
+                                }
+                                Ok(None) => {
+                                    info!(name = %config_name, "Container stdout closed");
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!(name = %config_name, error = %e, "Error reading container stdout");
+                                    break;
+                                }
+                            }
+                        }
+                        _ = shutdown.cancelled() => {
+                            info!(name = %config_name, "Shutdown signal, stopping container");
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            // HTTP mode: container posts to our ingest server, just wait
+            tokio::select! {
+                status = child.wait() => {
+                    match status {
+                        Ok(s) if !s.success() => {
+                            warn!(name = %self.config.name, exit_code = s.code().unwrap_or(-1), "Container exited with error");
+                        }
+                        Ok(_) => {
+                            info!(name = %self.config.name, "Container exited normally");
+                        }
+                        Err(e) => {
+                            error!(name = %self.config.name, error = %e, "Failed to wait for container");
+                        }
+                    }
+                }
+                _ = self.shutdown.cancelled() => {
+                    info!(name = %self.config.name, "Shutdown signal, stopping container");
+                }
+            }
+        }
+
+        // Clean up: try to stop the container
+        let container_name = self.container_name();
+        let _ = Command::new(&runtime)
+            .args(["stop", "--time", "10", &container_name])
+            .output()
+            .await;
+
+        Ok(())
+    }
+
+    /// Spawn the extractor as a background task with scheduling.
+    pub fn spawn(self: Arc<Self>) {
+        let is_scheduled = self.config.mode == "scheduled";
+        let interval_secs = self.config.interval_secs.unwrap_or(300);
+        let name = self.config.name.clone();
+
+        tokio::spawn(async move {
+            if is_scheduled {
+                // Scheduled mode: run on interval
+                let mut interval = tokio::time::interval(
+                    std::time::Duration::from_secs(interval_secs),
+                );
+                // Skip first tick (let startup complete)
+                interval.tick().await;
+
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            self.running.store(true, Ordering::Relaxed);
+                            self.metrics.inc_extractor_runs_total();
+
+                            match self.run_scheduled().await {
+                                Ok(()) => self.metrics.inc_extractor_runs_success(),
+                                Err(e) => {
+                                    self.metrics.inc_extractor_runs_error();
+                                    error!(name = %name, error = %e, "Scheduled extraction failed");
+                                }
+                            }
+
+                            self.running.store(false, Ordering::Relaxed);
+                        }
+                        _ = self.shutdown.cancelled() => {
+                            info!(name = %name, "Scheduled extractor shutting down");
+                            break;
+                        }
+                    }
+                }
+            } else {
+                // Continuous mode: run once, stream until shutdown/exit
+                self.running.store(true, Ordering::Relaxed);
+                self.metrics.inc_extractor_runs_total();
+
+                match self.run_continuous().await {
+                    Ok(()) => self.metrics.inc_extractor_runs_success(),
+                    Err(e) => {
+                        self.metrics.inc_extractor_runs_error();
+                        error!(name = %name, error = %e, "Continuous extractor failed");
+                    }
+                }
+
+                self.running.store(false, Ordering::Relaxed);
+            }
+        });
+    }
 }
 
 #[async_trait]
@@ -150,14 +395,14 @@ impl Extractor for ContainerExtractor {
         info!(
             name = %self.config.name,
             image = %self.config.image,
+            mode = %self.config.mode,
+            communication = %self.config.communication,
             runtime = self.runtime_cmd(),
             "Starting container extractor"
         );
 
-        // TODO: Spawn container process and set up stdout/HTTP communication
-        // For stdout mode: read lines from child process stdout
-        // For HTTP mode: container posts to our /ingest endpoint
-
+        // Note: actual spawning is done via `spawn()` which takes Arc<Self>.
+        // The Extractor trait start() is used for the initial start signal.
         self.running.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -172,8 +417,7 @@ impl Extractor for ContainerExtractor {
         let runtime = self.runtime_cmd().to_string();
         let container_name = self.container_name();
 
-        // Send stop signal to container
-        let output = tokio::process::Command::new(&runtime)
+        let output = Command::new(&runtime)
             .args(["stop", "--time", "10", &container_name])
             .output()
             .await
@@ -201,11 +445,10 @@ impl Extractor for ContainerExtractor {
             return Ok(false);
         }
 
-        // Check if container is still running via runtime inspect
         let runtime = self.runtime_cmd().to_string();
         let container_name = self.container_name();
 
-        let output = tokio::process::Command::new(&runtime)
+        let output = Command::new(&runtime)
             .args(["inspect", "--format", "{{.State.Running}}", &container_name])
             .output()
             .await
