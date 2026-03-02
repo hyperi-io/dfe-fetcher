@@ -32,6 +32,7 @@ sources:
       - name: cloudtrail
       - name: guardduty
       - name: securityhub
+      - name: config
     topic: "aws"
 
   azure:
@@ -89,6 +90,8 @@ extractors:
     #   communication: stdout        # stdout (JSON lines) or http (POST)
     #   topic: aws_cloudwatch_land
     #   interval_secs: 300
+    #   timeout_secs: 600            # Kill container after this many seconds (scheduled mode)
+    #   pull_policy: if-not-present  # always, if-not-present, or never
     #   env:
     #     AWS_REGION: us-east-1
     #     AWS_ACCESS_KEY_ID: "vault:secret/aws:access_key"

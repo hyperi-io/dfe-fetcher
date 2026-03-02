@@ -64,11 +64,17 @@ impl BufferManager {
         self.update_pressure(total);
     }
 
-    /// Remove bytes from tracking.
+    /// Remove bytes from tracking (saturating — never wraps below zero).
     #[inline]
     pub fn remove_bytes(&self, n: u64) {
-        let total = self.total_bytes.fetch_sub(n, Ordering::Relaxed) - n;
-        self.update_pressure(total);
+        let total = self
+            .total_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(n))
+            })
+            .unwrap_or(0);
+        // `total` is the *previous* value; compute the new value for pressure check
+        self.update_pressure(total.saturating_sub(n));
     }
 
     /// Get current total bytes.

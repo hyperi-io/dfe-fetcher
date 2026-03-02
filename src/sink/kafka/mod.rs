@@ -76,14 +76,9 @@ impl KafkaSink {
             }
         }
 
-        let producer: FutureProducer = client_config
-            .create()
-            .map_err(Error::Kafka)?;
+        let producer: FutureProducer = client_config.create().map_err(Error::Kafka)?;
 
-        debug!(
-            brokers = config.brokers.join(","),
-            "Kafka sink initialised"
-        );
+        debug!(brokers = config.brokers.join(","), "Kafka sink initialised");
 
         Ok(Self { producer })
     }
@@ -92,8 +87,7 @@ impl KafkaSink {
 #[async_trait]
 impl Sink for KafkaSink {
     async fn send(&self, topic: &str, payload: Bytes) -> Result<()> {
-        let record: FutureRecord<'_, str, [u8]> =
-            FutureRecord::to(topic).payload(payload.as_ref());
+        let record: FutureRecord<'_, str, [u8]> = FutureRecord::to(topic).payload(payload.as_ref());
 
         match self.producer.send(record, Duration::from_secs(5)).await {
             Ok(_) => Ok(()),

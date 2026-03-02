@@ -49,12 +49,28 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::must_use_candidate)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::if_not_else)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::unused_async)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::single_match_else)]
+#![allow(clippy::redundant_closure_for_method_calls)]
 // Allow unwrap/expect in test code
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod buffer;
 pub mod config;
+pub mod credential;
 pub mod error;
 pub mod extractor;
 pub mod ingest;

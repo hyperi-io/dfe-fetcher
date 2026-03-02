@@ -180,8 +180,7 @@ impl Metrics {
     /// Increment successful extractor runs.
     #[inline]
     pub fn inc_extractor_runs_success(&self) {
-        self.extractor_runs_success
-            .fetch_add(1, Ordering::Relaxed);
+        self.extractor_runs_success.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increment failed extractor runs.
@@ -207,10 +206,14 @@ impl Metrics {
         self.active_fetches.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Decrement active fetches.
+    /// Decrement active fetches (saturating — never wraps below zero).
     #[inline]
     pub fn dec_active_fetches(&self) {
-        self.active_fetches.fetch_sub(1, Ordering::Relaxed);
+        let _ = self
+            .active_fetches
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
     }
 
     /// Increment active extractors.
@@ -219,10 +222,14 @@ impl Metrics {
         self.active_extractors.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Decrement active extractors.
+    /// Decrement active extractors (saturating — never wraps below zero).
     #[inline]
     pub fn dec_active_extractors(&self) {
-        self.active_extractors.fetch_sub(1, Ordering::Relaxed);
+        let _ = self
+            .active_extractors
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
     }
 
     /// Set memory usage.
@@ -278,8 +285,7 @@ impl Metrics {
         ));
 
         // Delivery counters
-        output
-            .push_str("# HELP fetcher_messages_sent_kafka_total Messages delivered to Kafka\n");
+        output.push_str("# HELP fetcher_messages_sent_kafka_total Messages delivered to Kafka\n");
         output.push_str("# TYPE fetcher_messages_sent_kafka_total counter\n");
         output.push_str(&format!(
             "fetcher_messages_sent_kafka_total {}\n",
@@ -315,9 +321,7 @@ impl Metrics {
             self.extractor_runs_error.load(Ordering::Relaxed)
         ));
 
-        output.push_str(
-            "# HELP fetcher_extractor_records_total Total records from extractors\n",
-        );
+        output.push_str("# HELP fetcher_extractor_records_total Total records from extractors\n");
         output.push_str("# TYPE fetcher_extractor_records_total counter\n");
         output.push_str(&format!(
             "fetcher_extractor_records_total {}\n",

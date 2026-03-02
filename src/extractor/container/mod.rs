@@ -9,37 +9,7 @@
 //! Container-based extractor management.
 //!
 //! Manages isolated containers running third-party extraction tools.
-//! Each container is a self-contained process that extracts data from
-//! an external service and outputs JSON for the fetcher to consume.
-//!
-//! ## Container Lifecycle
-//!
-//! 1. Fetcher starts container with environment variables for config
-//! 2. Container runs extraction (one-shot or continuous)
-//! 3. Container outputs JSON lines to stdout OR posts to fetcher HTTP endpoint
-//! 4. Fetcher reads output, wraps as `FetchResult`, delivers to Kafka
-//! 5. For one-shot: fetcher re-runs on schedule. For continuous: monitors health.
-//!
-//! ## Communication Modes
-//!
-//! - `stdout` — Fetcher reads container stdout as newline-delimited JSON
-//! - `http` — Container posts to fetcher's `/ingest/{source}` endpoint
-//!
-//! ## Example: CloudWatch Exporter
-//!
-//! ```yaml
-//! extractors:
-//!   containers:
-//!     - name: cloudwatch-metrics
-//!       image: ghcr.io/prometheus-community/yet-another-cloudwatch-exporter:latest
-//!       mode: scheduled       # one-shot per schedule tick
-//!       communication: stdout # read JSON from stdout
-//!       topic: aws_cloudwatch_land
-//!       env:
-//!         AWS_REGION: us-east-1
-//!         AWS_ACCESS_KEY_ID: "vault:secret/aws:access_key"
-//!       interval_secs: 300
-//! ```
+//! Supports image pulling, stderr capture, timeouts, and health monitoring.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -67,7 +37,6 @@ pub struct ContainerExtractor {
 }
 
 impl ContainerExtractor {
-    /// Create a new container extractor from configuration.
     pub fn new(
         config: ContainerExtractorConfig,
         pipeline: Arc<PipelineState>,
@@ -83,12 +52,10 @@ impl ContainerExtractor {
         }
     }
 
-    /// Get the container runtime command (docker or podman).
     fn runtime_cmd(&self) -> &str {
         self.config.runtime.as_deref().unwrap_or("docker")
     }
 
-    /// Build the container run command arguments.
     fn build_run_args(&self) -> Vec<String> {
         let mut args = vec![
             "run".to_string(),
@@ -97,74 +64,119 @@ impl ContainerExtractor {
             self.container_name(),
         ];
 
-        // Add environment variables
         for (key, value) in &self.config.env {
             args.push("--env".to_string());
             args.push(format!("{key}={value}"));
         }
-
-        // Add volume mounts
         for mount in &self.config.volumes {
             args.push("-v".to_string());
             args.push(mount.clone());
         }
-
-        // Add network configuration
         if let Some(ref network) = self.config.network {
             args.push("--network".to_string());
             args.push(network.clone());
         }
-
-        // Add resource limits
         if let Some(ref memory) = self.config.memory_limit {
             args.push("--memory".to_string());
             args.push(memory.clone());
         }
-
         if let Some(cpus) = self.config.cpu_limit {
             args.push("--cpus".to_string());
             args.push(cpus.to_string());
         }
 
-        // Add labels for management
         args.push("--label".to_string());
         args.push("managed-by=dfe-fetcher".to_string());
         args.push("--label".to_string());
         args.push(format!("dfe-fetcher.source={}", self.config.name));
 
-        // Image and optional command
         args.push(self.config.image.clone());
         if let Some(ref cmd) = self.config.command {
             args.extend(cmd.iter().cloned());
         }
-
         args
     }
 
-    /// Generate a deterministic container name.
     fn container_name(&self) -> String {
         format!("dfe-fetcher-{}", self.config.name)
     }
 
-    /// Run a single scheduled extraction (one-shot container run).
+    /// Pull the container image per the configured pull policy.
+    async fn pull_image(&self) -> Result<()> {
+        match self.config.pull_policy.as_str() {
+            "never" => return Ok(()),
+            "if-not-present" => {
+                let status = Command::new(self.runtime_cmd())
+                    .args(["image", "inspect", &self.config.image])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+                if let Ok(s) = status {
+                    if s.success() {
+                        debug!(image = %self.config.image, "Image exists locally, skipping pull");
+                        return Ok(());
+                    }
+                }
+            }
+            _ => {} // "always" or unknown -> pull
+        }
+
+        info!(image = %self.config.image, "Pulling container image");
+        let output = Command::new(self.runtime_cmd())
+            .args(["pull", &self.config.image])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| Error::Source(format!("image pull failed: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Source(format!(
+                "failed to pull '{}': {stderr}",
+                self.config.image
+            )));
+        }
+        Ok(())
+    }
+
+    /// Spawn a task that logs container stderr.
+    fn spawn_stderr_logger(child: &mut tokio::process::Child, name: String) {
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if !line.trim().is_empty() {
+                        warn!(container = %name, stderr = %line, "Container stderr");
+                    }
+                }
+            });
+        }
+    }
+
     async fn run_scheduled(&self) -> Result<()> {
+        self.pull_image().await?;
         let runtime = self.runtime_cmd().to_string();
         let args = self.build_run_args();
 
-        debug!(
-            name = %self.config.name,
-            runtime = %runtime,
-            "Running scheduled container extraction"
-        );
+        debug!(name = %self.config.name, "Running scheduled container extraction");
 
         let mut child = Command::new(&runtime)
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| Error::Source(format!("failed to spawn container '{}': {e}", self.config.name)))?;
+            .map_err(|e| {
+                Error::Source(format!(
+                    "failed to spawn container '{}': {e}",
+                    self.config.name
+                ))
+            })?;
 
-        // Read stdout as JSON lines
+        Self::spawn_stderr_logger(&mut child, self.config.name.clone());
+
         if self.config.communication == "stdout" {
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
@@ -176,16 +188,14 @@ impl ContainerExtractor {
                     if line.is_empty() {
                         continue;
                     }
-
                     let payload = Bytes::from(line);
-                    let topic = format!("{}{}", self.config.topic, self.pipeline.config().kafka.topic_suffix);
-
+                    let topic = format!(
+                        "{}{}",
+                        self.config.topic,
+                        self.pipeline.config().kafka.topic_suffix
+                    );
                     if let Err(e) = self.pipeline.deliver_ingest(&topic, payload).await {
-                        error!(
-                            name = %self.config.name,
-                            error = %e,
-                            "Failed to deliver container output"
-                        );
+                        error!(name = %self.config.name, error = %e, "Failed to deliver container output");
                     } else {
                         record_count += 1;
                     }
@@ -193,52 +203,68 @@ impl ContainerExtractor {
 
                 if record_count > 0 {
                     self.metrics.add_extractor_records(record_count);
-                    info!(
-                        name = %self.config.name,
-                        records = record_count,
-                        "Scheduled extraction complete"
-                    );
+                    info!(name = %self.config.name, records = record_count, "Scheduled extraction complete");
                 }
             }
         }
 
-        // Wait for container to exit
-        let status = child
-            .wait()
-            .await
-            .map_err(|e| Error::Source(format!("container '{}' wait failed: {e}", self.config.name)))?;
+        // Wait with optional timeout
+        let timeout = self
+            .config
+            .timeout_secs
+            .filter(|&t| t > 0)
+            .map(std::time::Duration::from_secs);
+
+        let status = if let Some(dur) = timeout {
+            match tokio::time::timeout(dur, child.wait()).await {
+                Ok(result) => {
+                    result.map_err(|e| Error::Source(format!("container wait failed: {e}")))?
+                }
+                Err(_) => {
+                    warn!(name = %self.config.name, timeout_secs = dur.as_secs(), "Container timed out, killing");
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return Err(Error::Source(format!(
+                        "container '{}' timed out after {}s",
+                        self.config.name,
+                        dur.as_secs()
+                    )));
+                }
+            }
+        } else {
+            child
+                .wait()
+                .await
+                .map_err(|e| Error::Source(format!("container wait failed: {e}")))?
+        };
 
         if !status.success() {
-            let code = status.code().unwrap_or(-1);
-            warn!(
-                name = %self.config.name,
-                exit_code = code,
-                "Container exited with non-zero status"
-            );
+            warn!(name = %self.config.name, exit_code = status.code().unwrap_or(-1), "Container exited with non-zero status");
         }
-
         Ok(())
     }
 
-    /// Run a continuous container (long-running with stdout streaming).
     async fn run_continuous(&self) -> Result<()> {
+        self.pull_image().await?;
         let runtime = self.runtime_cmd().to_string();
         let args = self.build_run_args();
 
-        info!(
-            name = %self.config.name,
-            runtime = %runtime,
-            "Starting continuous container extractor"
-        );
+        info!(name = %self.config.name, "Starting continuous container extractor");
 
         let mut child = Command::new(&runtime)
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| Error::Source(format!("failed to spawn container '{}': {e}", self.config.name)))?;
+            .map_err(|e| {
+                Error::Source(format!(
+                    "failed to spawn container '{}': {e}",
+                    self.config.name
+                ))
+            })?;
 
-        // For stdout mode: stream lines continuously
+        Self::spawn_stderr_logger(&mut child, self.config.name.clone());
+
         if self.config.communication == "stdout" {
             if let Some(stdout) = child.stdout.take() {
                 let reader = BufReader::new(stdout);
@@ -255,30 +281,17 @@ impl ContainerExtractor {
                             match line_result {
                                 Ok(Some(line)) => {
                                     let line = line.trim().to_string();
-                                    if line.is_empty() {
-                                        continue;
-                                    }
+                                    if line.is_empty() { continue; }
                                     let payload = Bytes::from(line);
                                     let topic = format!("{}{}", config_topic, pipeline.config().kafka.topic_suffix);
-
                                     if let Err(e) = pipeline.deliver_ingest(&topic, payload).await {
-                                        error!(
-                                            name = %config_name,
-                                            error = %e,
-                                            "Failed to deliver container output"
-                                        );
+                                        error!(name = %config_name, error = %e, "Failed to deliver container output");
                                     } else {
                                         metrics.add_extractor_records(1);
                                     }
                                 }
-                                Ok(None) => {
-                                    info!(name = %config_name, "Container stdout closed");
-                                    break;
-                                }
-                                Err(e) => {
-                                    error!(name = %config_name, error = %e, "Error reading container stdout");
-                                    break;
-                                }
+                                Ok(None) => { info!(name = %config_name, "Container stdout closed"); break; }
+                                Err(e) => { error!(name = %config_name, error = %e, "Error reading container stdout"); break; }
                             }
                         }
                         _ = shutdown.cancelled() => {
@@ -289,19 +302,12 @@ impl ContainerExtractor {
                 }
             }
         } else {
-            // HTTP mode: container posts to our ingest server, just wait
             tokio::select! {
                 status = child.wait() => {
                     match status {
-                        Ok(s) if !s.success() => {
-                            warn!(name = %self.config.name, exit_code = s.code().unwrap_or(-1), "Container exited with error");
-                        }
-                        Ok(_) => {
-                            info!(name = %self.config.name, "Container exited normally");
-                        }
-                        Err(e) => {
-                            error!(name = %self.config.name, error = %e, "Failed to wait for container");
-                        }
+                        Ok(s) if !s.success() => { warn!(name = %self.config.name, exit_code = s.code().unwrap_or(-1), "Container exited with error"); }
+                        Ok(_) => { info!(name = %self.config.name, "Container exited normally"); }
+                        Err(e) => { error!(name = %self.config.name, error = %e, "Failed to wait for container"); }
                     }
                 }
                 _ = self.shutdown.cancelled() => {
@@ -310,17 +316,14 @@ impl ContainerExtractor {
             }
         }
 
-        // Clean up: try to stop the container
         let container_name = self.container_name();
         let _ = Command::new(&runtime)
             .args(["stop", "--time", "10", &container_name])
             .output()
             .await;
-
         Ok(())
     }
 
-    /// Spawn the extractor as a background task with scheduling.
     pub fn spawn(self: Arc<Self>) {
         let is_scheduled = self.config.mode == "scheduled";
         let interval_secs = self.config.interval_secs.unwrap_or(300);
@@ -328,19 +331,14 @@ impl ContainerExtractor {
 
         tokio::spawn(async move {
             if is_scheduled {
-                // Scheduled mode: run on interval
-                let mut interval = tokio::time::interval(
-                    std::time::Duration::from_secs(interval_secs),
-                );
-                // Skip first tick (let startup complete)
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(interval_secs));
                 interval.tick().await;
-
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
                             self.running.store(true, Ordering::Relaxed);
                             self.metrics.inc_extractor_runs_total();
-
                             match self.run_scheduled().await {
                                 Ok(()) => self.metrics.inc_extractor_runs_success(),
                                 Err(e) => {
@@ -348,7 +346,6 @@ impl ContainerExtractor {
                                     error!(name = %name, error = %e, "Scheduled extraction failed");
                                 }
                             }
-
                             self.running.store(false, Ordering::Relaxed);
                         }
                         _ = self.shutdown.cancelled() => {
@@ -358,10 +355,8 @@ impl ContainerExtractor {
                     }
                 }
             } else {
-                // Continuous mode: run once, stream until shutdown/exit
                 self.running.store(true, Ordering::Relaxed);
                 self.metrics.inc_extractor_runs_total();
-
                 match self.run_continuous().await {
                     Ok(()) => self.metrics.inc_extractor_runs_success(),
                     Err(e) => {
@@ -369,7 +364,6 @@ impl ContainerExtractor {
                         error!(name = %name, error = %e, "Continuous extractor failed");
                     }
                 }
-
                 self.running.store(false, Ordering::Relaxed);
             }
         });
@@ -381,7 +375,6 @@ impl Extractor for ContainerExtractor {
     fn name(&self) -> &str {
         &self.config.name
     }
-
     fn instance_id(&self) -> &str {
         &self.config.name
     }
@@ -391,18 +384,7 @@ impl Extractor for ContainerExtractor {
             warn!(name = %self.config.name, "Container extractor already running");
             return Ok(());
         }
-
-        info!(
-            name = %self.config.name,
-            image = %self.config.image,
-            mode = %self.config.mode,
-            communication = %self.config.communication,
-            runtime = self.runtime_cmd(),
-            "Starting container extractor"
-        );
-
-        // Note: actual spawning is done via `spawn()` which takes Arc<Self>.
-        // The Extractor trait start() is used for the initial start signal.
+        info!(name = %self.config.name, image = %self.config.image, mode = %self.config.mode, "Starting container extractor");
         self.running.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -411,27 +393,18 @@ impl Extractor for ContainerExtractor {
         if !self.running.load(Ordering::Relaxed) {
             return Ok(());
         }
-
         info!(name = %self.config.name, "Stopping container extractor");
-
         let runtime = self.runtime_cmd().to_string();
         let container_name = self.container_name();
-
         let output = Command::new(&runtime)
             .args(["stop", "--time", "10", &container_name])
             .output()
             .await
             .map_err(|e| Error::Source(format!("failed to stop container: {e}")))?;
-
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            error!(
-                name = %self.config.name,
-                stderr = %stderr,
-                "Failed to stop container cleanly"
-            );
+            error!(name = %self.config.name, stderr = %stderr, "Failed to stop container cleanly");
         }
-
         self.running.store(false, Ordering::Relaxed);
         Ok(())
     }
@@ -444,17 +417,16 @@ impl Extractor for ContainerExtractor {
         if !self.running.load(Ordering::Relaxed) {
             return Ok(false);
         }
-
-        let runtime = self.runtime_cmd().to_string();
-        let container_name = self.container_name();
-
-        let output = Command::new(&runtime)
-            .args(["inspect", "--format", "{{.State.Running}}", &container_name])
+        let output = Command::new(self.runtime_cmd())
+            .args([
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                &self.container_name(),
+            ])
             .output()
             .await
             .map_err(|e| Error::Source(format!("failed to inspect container: {e}")))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.trim() == "true")
+        Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
     }
 }

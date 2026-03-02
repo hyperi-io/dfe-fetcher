@@ -158,6 +158,54 @@ impl Config {
             ));
         }
 
+        // Validate container extractor names are unique
+        {
+            let mut seen = std::collections::HashSet::new();
+            for container in &self.extractors.containers {
+                if !seen.insert(&container.name) {
+                    return Err(Error::Config(format!(
+                        "duplicate container extractor name: '{}'",
+                        container.name
+                    )));
+                }
+                if container.topic.is_empty() {
+                    return Err(Error::Config(format!(
+                        "container extractor '{}' has empty topic",
+                        container.name
+                    )));
+                }
+            }
+        }
+
+        // Validate ingest bind address
+        if self.ingest.enabled
+            && self
+                .ingest
+                .bind_address
+                .parse::<std::net::SocketAddr>()
+                .is_err()
+        {
+            return Err(Error::Config(format!(
+                "invalid ingest bind address: '{}'",
+                self.ingest.bind_address
+            )));
+        }
+
+        // Validate Vector gRPC address
+        if self.extractors.vector.enabled
+            && self
+                .extractors
+                .vector
+                .grpc_bind_address
+                .parse::<std::net::SocketAddr>()
+                .is_err()
+        {
+            return Err(Error::Config(format!(
+                "invalid vector gRPC bind address: '{}'",
+                self.extractors.vector.grpc_bind_address
+            )));
+        }
+
         Ok(())
     }
 }
@@ -623,6 +671,18 @@ pub struct ContainerExtractorConfig {
 
     /// Override container command.
     pub command: Option<Vec<String>>,
+
+    /// Timeout in seconds for scheduled (one-shot) containers (0 = no timeout).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+
+    /// Image pull policy: "always", "if-not-present", "never". Default: "if-not-present".
+    #[serde(default = "default_pull_policy")]
+    pub pull_policy: String,
+}
+
+fn default_pull_policy() -> String {
+    "if-not-present".to_string()
 }
 
 fn default_scheduled() -> String {

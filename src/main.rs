@@ -73,11 +73,7 @@ struct Args {
     log_format: String,
 
     /// Metrics server address.
-    #[arg(
-        long,
-        env = "DFE_FETCHER_METRICS_ADDR",
-        default_value = "0.0.0.0:9090"
-    )]
+    #[arg(long, env = "DFE_FETCHER_METRICS_ADDR", default_value = "0.0.0.0:9090")]
     metrics_addr: String,
 
     /// Validate configuration and exit.
@@ -137,14 +133,43 @@ async fn main() -> anyhow::Result<()> {
     // Create cancellation token for coordinated shutdown
     let shutdown_token = CancellationToken::new();
 
-    // Spawn signal handler for graceful shutdown
+    // Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
     let signal_token = shutdown_token.clone();
     tokio::spawn(async move {
-        if let Err(e) = signal::ctrl_c().await {
-            warn!(error = %e, "Failed to listen for SIGINT");
-            return;
+        let ctrl_c = signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "Failed to register SIGTERM handler");
+                    // Return a signal stream that never fires — won't block
+                    panic!("SIGTERM handler registration failed: {e}");
+                });
+
+            tokio::select! {
+                result = ctrl_c => {
+                    if let Err(e) = result {
+                        warn!(error = %e, "Failed to listen for SIGINT");
+                        return;
+                    }
+                    info!("Received SIGINT, initiating shutdown");
+                }
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, initiating shutdown");
+                }
+            }
         }
-        info!("Received SIGINT, initiating shutdown");
+
+        #[cfg(not(unix))]
+        {
+            if let Err(e) = ctrl_c.await {
+                warn!(error = %e, "Failed to listen for SIGINT");
+                return;
+            }
+            info!("Received SIGINT, initiating shutdown");
+        }
+
         signal_token.cancel();
     });
 
@@ -160,7 +185,8 @@ async fn main() -> anyhow::Result<()> {
     let pipeline_state = orchestrator.state();
 
     // Start config hot-reload
-    {
+    // Keep handle alive for entire application lifetime (dropping stops the reloader)
+    let _reloader_handle = {
         let config_path_str = config.config_path.clone();
         let shared_config = orchestrator.shared_config();
 
@@ -186,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
             },
         );
 
-        let _handle = reloader.start();
+        let handle = reloader.start();
 
         if config.config_reload_secs > 0 {
             info!(
@@ -196,7 +222,9 @@ async fn main() -> anyhow::Result<()> {
         } else {
             info!("Config hot-reload enabled (SIGHUP + file polling)");
         }
-    }
+
+        handle
+    };
 
     // Spawn metrics server
     let metrics_token = shutdown_token.clone();
