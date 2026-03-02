@@ -98,8 +98,7 @@ impl VectorManager {
         );
 
         // Start gRPC server using rustlib's Vector protocol support
-        let grpc_config = GrpcConfig::server(&self.config.grpc_bind_address)
-            .with_vector_compat();
+        let grpc_config = GrpcConfig::server(&self.config.grpc_bind_address).with_vector_compat();
 
         let transport = GrpcTransport::new(&grpc_config)
             .await
@@ -125,7 +124,15 @@ impl VectorManager {
         let topic_map = self.build_topic_map();
 
         tokio::spawn(async move {
-            Self::receive_loop(transport, pipeline, metrics, shutdown, default_topic, topic_map).await;
+            Self::receive_loop(
+                transport,
+                pipeline,
+                metrics,
+                shutdown,
+                default_topic,
+                topic_map,
+            )
+            .await;
         });
 
         Ok(())
@@ -146,10 +153,7 @@ impl VectorManager {
             tokio::select! {
                 result = transport.recv(100) => {
                     match result {
-                        Ok(messages) if messages.is_empty() => {
-                            // No messages, continue polling
-                            continue;
-                        }
+                        Ok(messages) if messages.is_empty() => {}
                         Ok(messages) => {
                             batch_count += 1;
                             let msg_count = messages.len() as u64;

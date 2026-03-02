@@ -62,13 +62,7 @@ impl Scheduler {
             return 0;
         }
 
-        // Simple deterministic jitter based on current time
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
-        now % max_jitter
+        fastrand::u64(0..max_jitter)
     }
 
     /// Spawn a recurring fetch task for a source.

@@ -56,6 +56,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli"
 rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "sasl"] }
 
 # Performance
+fastrand = "2"
 rustc-hash = "2"
 compact_str = "0.8"
 parking_lot = "0.12"
@@ -82,6 +83,7 @@ async-trait = "0.1"
 sysinfo = "0.32"
 base64 = "0.22"
 url = "2"
+libloading = "0.8"
 
 # Optional allocators
 tikv-jemallocator = { version = "0.6", optional = true }

@@ -123,7 +123,7 @@ impl PipelineState {
     }
 
     /// Enrich a record with fetcher metadata.
-    fn enrich_record(&self, payload: Bytes, source: &str) -> Bytes {
+    pub fn enrich_record(&self, payload: Bytes, source: &str) -> Bytes {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

@@ -237,6 +237,7 @@ graph TD
     main --> scheduler
     main --> source
     main --> extractor
+    main --> ingest
 
     pipeline --> config
     pipeline --> metrics
@@ -250,11 +251,16 @@ graph TD
     scheduler --> source
 
     source --> config
+    source --> credential
     source --> error
 
     extractor --> config
     extractor --> error
-    extractor --> source
+    extractor --> pipeline
+
+    ingest[ingest<br>HTTP server] --> pipeline
+
+    credential[credential.rs<br>vault/env/literal<br>OAuth2 TokenManager] --> error
 
     sink --> config
     sink --> error
@@ -269,13 +275,15 @@ graph TD
         rustlib_metrics[metrics]
         rustlib_tiered[tiered-sink]
         rustlib_secrets[secrets]
+        rustlib_transport[gRPC transport]
     end
 
     config --> rustlib_config
     main --> rustlib_logger
     metrics --> rustlib_metrics
     buffer --> rustlib_tiered
-    config --> rustlib_secrets
+    credential --> rustlib_secrets
+    extractor --> rustlib_transport
 ```
 
 ## Decision Framework: Native vs Container
