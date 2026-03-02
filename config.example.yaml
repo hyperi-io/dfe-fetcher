@@ -1,0 +1,189 @@
+# dfe-fetcher configuration example
+# Copy to config.yaml and customise for your environment
+#
+# Environment variables: DFE_FETCHER_* prefix
+# Nesting: DFE_FETCHER_SCHEDULER__DEFAULT_INTERVAL_SECS=300
+# Config reload: send SIGHUP to reload
+
+# =============================================================================
+# Scheduler
+# =============================================================================
+scheduler:
+  default_interval_secs: 300    # 5 minutes
+  max_concurrent_fetches: 10
+  jitter_percent: 10            # Avoid thundering herd
+
+# =============================================================================
+# Native Sources (Rust-native, maintained in this repo)
+# =============================================================================
+# Decision: use native source when a good Rust crate exists.
+# Otherwise, use a container extractor.
+
+sources:
+  aws:
+    enabled: false
+    region: "us-east-1"
+    # access_key_id: ""         # Prefer credential_secret in production
+    # secret_access_key: ""
+    # assume_role_arn: ""
+    # credential_secret: "vault:secret/aws:credentials"
+    # interval_secs: 300        # Override default
+    services:
+      - name: cloudtrail
+      - name: guardduty
+      - name: securityhub
+    topic: "aws"
+
+  azure:
+    enabled: false
+    # tenant_id: ""
+    # client_id: ""
+    # client_secret: ""
+    # credential_secret: "vault:secret/azure:credentials"
+    # subscription_id: ""
+    services:
+      - name: activity_log
+      - name: defender
+      - name: sentinel
+      - name: entra_id
+    topic: "azure"
+
+  m365:
+    enabled: false
+    # tenant_id: ""
+    # client_id: ""
+    # client_secret: ""
+    # credential_secret: "vault:secret/m365:credentials"
+    services:
+      - name: audit_log
+      - name: message_trace
+      - name: dlp
+      - name: alerts
+    topic: "m365"
+
+  gcp:
+    enabled: false
+    # project_id: ""
+    # service_account_key: "/etc/gcp/sa-key.json"
+    # credential_secret: "vault:secret/gcp:credentials"
+    services:
+      - name: audit_logs
+      - name: scc
+      - name: cloud_logging
+    topic: "gcp"
+
+# =============================================================================
+# External Extractors
+# =============================================================================
+# For tools that don't have good Rust crates — wrap in containers.
+# One container per source + config. Can run N instances with different configs.
+
+extractors:
+  # Container-based extractors (Docker/podman)
+  containers: []
+    # Example: CloudWatch metrics via YACE
+    # - name: cloudwatch-metrics-prod
+    #   image: ghcr.io/nerdswords/yet-another-cloudwatch-exporter:v0.62.0
+    #   runtime: docker              # docker or podman
+    #   mode: scheduled              # scheduled (one-shot) or continuous
+    #   communication: stdout        # stdout (JSON lines) or http (POST)
+    #   topic: aws_cloudwatch_land
+    #   interval_secs: 300
+    #   env:
+    #     AWS_REGION: us-east-1
+    #     AWS_ACCESS_KEY_ID: "vault:secret/aws:access_key"
+    #     AWS_SECRET_ACCESS_KEY: "vault:secret/aws:secret_key"
+    #   memory_limit: "512m"
+    #   cpu_limit: 0.5
+
+    # Example: Multiple M365 orgs (same tool, different config)
+    # - name: m365-org-alpha
+    #   image: internal/m365-extractor:latest
+    #   mode: continuous
+    #   communication: http
+    #   topic: m365_land
+    #   env:
+    #     M365_TENANT_ID: "tenant-alpha-uuid"
+    #     M365_CLIENT_ID: "client-alpha-uuid"
+    #     M365_CLIENT_SECRET: "vault:secret/m365/alpha:client_secret"
+
+    # - name: m365-org-beta
+    #   image: internal/m365-extractor:latest
+    #   mode: continuous
+    #   communication: http
+    #   topic: m365_land
+    #   env:
+    #     M365_TENANT_ID: "tenant-beta-uuid"
+    #     M365_CLIENT_ID: "client-beta-uuid"
+    #     M365_CLIENT_SECRET: "vault:secret/m365/beta:client_secret"
+
+  # Plugin extractors (.so dynamic libraries)
+  plugins:
+    directory: null
+    # my_custom_source:
+    #   path: "/opt/dfe/plugins/libdfe_fetcher_plugin_custom.so"
+    #   topic: "custom_land"
+    #   interval_secs: 60
+
+  # Vector.dev extractor integration
+  vector:
+    enabled: false
+    grpc_bind_address: "0.0.0.0:6000"
+    instances: []
+    # - name: syslog-collector
+    #   mode: container
+    #   image: timberio/vector:latest-alpine
+    #   vector_config: |
+    #     [sources.syslog]
+    #     type = "syslog"
+    #     address = "0.0.0.0:514"
+    #     [sinks.dfe]
+    #     type = "vector"
+    #     address = "dfe-fetcher:6000"
+    #   topic: syslog_land
+
+# =============================================================================
+# Ingest server (for container extractors using HTTP communication)
+# =============================================================================
+ingest:
+  enabled: true
+  bind_address: "0.0.0.0:8080"
+  max_body_size: 10485760     # 10MB
+
+# =============================================================================
+# Kafka output
+# =============================================================================
+kafka:
+  brokers:
+    - "localhost:9092"
+  client_id: "dfe-fetcher"
+  topic_suffix: "_land"
+  sasl:
+    enabled: false
+    mechanism: "SCRAM-SHA-512"
+    username: ""
+    password: ""
+  tls:
+    enabled: false
+    ca_file: "/etc/ssl/kafka-ca.crt"
+  producer:
+    batch_size: 8388608       # 8MiB
+    batch_messages: 10000
+    linger_ms: 20
+    compression: "zstd"
+    acks: "all"
+    retries: 5
+
+# =============================================================================
+# Buffer / Memory
+# =============================================================================
+buffer:
+  memory_limit: 0             # 0 = auto-detect (67% available)
+  pressure_threshold: 0.8
+
+# =============================================================================
+# Metrics
+# =============================================================================
+metrics:
+  enabled: true
+  address: "0.0.0.0:9090"
