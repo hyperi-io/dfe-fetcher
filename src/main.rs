@@ -45,7 +45,7 @@ use tracing::{error, info, warn, Level};
 use dfe_fetcher::config::{reload_config, Config};
 use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
-use dfe_fetcher::extractor::Extractor;
+use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::Orchestrator;
 use dfe_fetcher::scheduler::Scheduler;
@@ -248,22 +248,44 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Start ingest HTTP server (for container extractors using HTTP communication)
+    {
+        let ingest_config = config.ingest.clone();
+        let ingest_pipeline = Arc::clone(&pipeline_state);
+        let ingest_metrics = Arc::clone(&metrics);
+        let ingest_shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ingest::run_ingest_server(
+                &ingest_config,
+                ingest_pipeline,
+                ingest_metrics,
+                ingest_shutdown,
+            )
+            .await
+            {
+                error!(error = %e, "Ingest server error");
+            }
+        });
+    }
+
     // Start container extractors
     for container_config in &config.extractors.containers {
-        let extractor = ContainerExtractor::new(container_config.clone());
+        let extractor = Arc::new(ContainerExtractor::new(
+            container_config.clone(),
+            Arc::clone(&pipeline_state),
+            Arc::clone(&metrics),
+            shutdown_token.clone(),
+        ));
+
         info!(
             name = %container_config.name,
             image = %container_config.image,
+            mode = %container_config.mode,
+            communication = %container_config.communication,
             "Starting container extractor"
         );
 
-        if let Err(e) = extractor.start().await {
-            error!(
-                name = %container_config.name,
-                error = %e,
-                "Failed to start container extractor"
-            );
-        }
+        extractor.spawn();
     }
 
     // Start Vector manager
