@@ -1,0 +1,1040 @@
+// Project:   dfe-fetcher
+// File:      src/config/mod.rs
+// Purpose:   Configuration loading and validation
+// Language:  Rust
+//
+// License:   FSL-1.1-ALv2
+// Copyright: (c) 2026 HYPERI PTY LIMITED
+
+//! Configuration management using hyperi-rustlib's 7-layer cascade.
+//!
+//! Priority (highest to lowest):
+//! 1. CLI arguments
+//! 2. Environment variables (DFE_FETCHER_*)
+//! 3. .env file
+//! 4. settings.{env}.yaml
+//! 5. settings.yaml
+//! 6. defaults.yaml
+//! 7. Hard-coded defaults
+
+mod shared;
+
+pub use shared::SharedConfig;
+
+use std::collections::HashMap;
+
+use hyperi_rustlib::config::{self, ConfigOptions};
+use serde::{Deserialize, Serialize};
+use tracing::debug;
+
+use crate::error::{Error, Result};
+
+/// Environment variable prefix for configuration.
+pub const ENV_PREFIX: &str = "DFE_FETCHER";
+
+/// Main configuration struct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    /// Scheduler configuration.
+    pub scheduler: SchedulerConfig,
+
+    /// Native source modules configuration.
+    pub sources: SourcesConfig,
+
+    /// External extractors configuration (containers, plugins, vector).
+    pub extractors: ExtractorsConfig,
+
+    /// HTTP ingest server configuration (for container extractors to post data).
+    pub ingest: IngestConfig,
+
+    /// Kafka producer configuration (output).
+    pub kafka: KafkaConfig,
+
+    /// Buffer and memory configuration.
+    pub buffer: BufferConfig,
+
+    /// Metrics configuration.
+    pub metrics: MetricsConfig,
+
+    /// Periodic config reload interval in seconds (0 = disabled, SIGHUP only).
+    #[serde(default)]
+    pub config_reload_secs: u64,
+
+    /// Path to the config file (set by loader, not deserialized).
+    #[serde(skip)]
+    pub config_path: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            scheduler: SchedulerConfig::default(),
+            sources: SourcesConfig::default(),
+            extractors: ExtractorsConfig::default(),
+            ingest: IngestConfig::default(),
+            kafka: KafkaConfig::default(),
+            buffer: BufferConfig::default(),
+            metrics: MetricsConfig::default(),
+            config_reload_secs: 0,
+            config_path: None,
+        }
+    }
+}
+
+impl Config {
+    /// Load configuration with cascade: CLI -> ENV -> .env -> file -> defaults
+    pub fn load(config_path: Option<&str>) -> Result<Self> {
+        // If an explicit config file is provided, load it directly
+        if let Some(path) = config_path {
+            return Self::load_from_file(path);
+        }
+
+        // Otherwise, use hyperi-rustlib's 7-layer cascade
+        config::setup(ConfigOptions {
+            env_prefix: ENV_PREFIX.to_string(),
+            config_paths: Vec::new(),
+            load_dotenv: true,
+            ..Default::default()
+        })
+        .map_err(|e| Error::Config(format!("failed to setup config: {e}")))?;
+
+        // Get the global config and unmarshal to our struct
+        let cfg = config::get();
+
+        // Try to unmarshal the full config, falling back to defaults
+        let mut config: Config = cfg.unmarshal().unwrap_or_default();
+
+        // Store config path for reload support
+        config.config_path = config_path.map(String::from);
+
+        // Apply flat env var overrides (DFE_FETCHER_*)
+        apply_env_overrides(&mut config);
+
+        Ok(config)
+    }
+
+    /// Load configuration from a YAML file directly.
+    pub fn load_from_file(path: &str) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
+
+        let mut config: Config = serde_yaml_ng::from_str(&content)?;
+        config.config_path = Some(path.to_string());
+        apply_env_overrides(&mut config);
+        Ok(config)
+    }
+
+    /// Validate the configuration.
+    pub fn validate(&self) -> Result<()> {
+        // At least one source must be enabled
+        if !self.sources.aws.enabled
+            && !self.sources.azure.enabled
+            && !self.sources.m365.enabled
+            && !self.sources.gcp.enabled
+        {
+            // Not an error — just a warning scenario (no sources to fetch)
+            // Allow startup with no sources for config validation
+        }
+
+        // Validate Kafka config if output is kafka
+        if self.kafka.brokers.is_empty() {
+            return Err(Error::Config(
+                "kafka.brokers is required for output delivery".into(),
+            ));
+        }
+
+        // Validate buffer config
+        if self.buffer.pressure_threshold < 0.0 || self.buffer.pressure_threshold > 1.0 {
+            return Err(Error::Config(
+                "buffer.pressure_threshold must be between 0.0 and 1.0".into(),
+            ));
+        }
+
+        // Validate scheduler config
+        if self.scheduler.default_interval_secs == 0 {
+            return Err(Error::Config(
+                "scheduler.default_interval_secs must be > 0".into(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+/// Reload configuration from the same source.
+pub fn reload_config(current: &Config) -> Result<Config> {
+    Config::load(current.config_path.as_deref())
+}
+
+/// Read an env var with the DFE_FETCHER_ prefix.
+fn env_var(name: &str) -> std::result::Result<String, std::env::VarError> {
+    std::env::var(format!("DFE_FETCHER_{name}"))
+}
+
+/// Apply flat environment variable overrides (DFE_FETCHER_* prefix).
+fn apply_env_overrides(config: &mut Config) {
+    // Kafka
+    if let Ok(v) = env_var("KAFKA_BROKERS") {
+        config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
+        debug!("Override: kafka.brokers from env");
+    }
+    if let Ok(v) = env_var("KAFKA_CLIENT_ID") {
+        config.kafka.client_id = v;
+        debug!("Override: kafka.client_id from env");
+    }
+    if let Ok(v) = env_var("KAFKA_SASL_MECHANISM") {
+        let sasl = config.kafka.sasl.get_or_insert_with(|| SaslConfig {
+            enabled: true,
+            mechanism: String::new(),
+            username: String::new(),
+            password: String::new(),
+        });
+        sasl.mechanism = v;
+        sasl.enabled = true;
+        debug!("Override: kafka.sasl.mechanism from env");
+    }
+    if let Ok(v) = env_var("KAFKA_SECURITY_PROTOCOL") {
+        config.kafka.tls.enabled = v.to_uppercase().contains("SSL");
+        debug!("Override: kafka.tls from env (protocol={v})");
+    }
+    if let Ok(v) = env_var("KAFKA_SASL_USER") {
+        let sasl = config.kafka.sasl.get_or_insert_with(|| SaslConfig {
+            enabled: true,
+            mechanism: String::new(),
+            username: String::new(),
+            password: String::new(),
+        });
+        sasl.username = v;
+        debug!("Override: kafka.sasl.username from env");
+    }
+    if let Ok(v) = env_var("KAFKA_SASL_PASSWORD") {
+        let sasl = config.kafka.sasl.get_or_insert_with(|| SaslConfig {
+            enabled: true,
+            mechanism: String::new(),
+            username: String::new(),
+            password: String::new(),
+        });
+        sasl.password = v;
+        debug!("Override: kafka.sasl.password from env (redacted)");
+    }
+
+    // Scheduler
+    if let Ok(v) = env_var("DEFAULT_INTERVAL_SECS") {
+        if let Ok(n) = v.parse() {
+            config.scheduler.default_interval_secs = n;
+            debug!("Override: scheduler.default_interval_secs from env");
+        }
+    }
+
+    // Topic suffix
+    if let Ok(v) = env_var("TOPIC_SUFFIX") {
+        config.kafka.topic_suffix = v;
+        debug!("Override: kafka.topic_suffix from env");
+    }
+
+    // Buffer / memory
+    if let Ok(v) = env_var("MEMORY_LIMIT") {
+        if let Ok(n) = v.parse() {
+            config.buffer.memory_limit = n;
+            debug!("Override: buffer.memory_limit from env");
+        }
+    }
+    if let Ok(v) = env_var("PRESSURE_THRESHOLD") {
+        if let Ok(n) = v.parse() {
+            config.buffer.pressure_threshold = n;
+            debug!("Override: buffer.pressure_threshold from env");
+        }
+    }
+
+    // Metrics
+    if let Ok(v) = env_var("METRICS_ADDRESS") {
+        config.metrics.address = v;
+        debug!("Override: metrics.address from env");
+    }
+
+    // Config reload
+    if let Ok(v) = env_var("CONFIG_RELOAD_SECS") {
+        if let Ok(n) = v.parse() {
+            config.config_reload_secs = n;
+            debug!("Override: config_reload_secs from env");
+        }
+    }
+}
+
+// =============================================================================
+// Scheduler configuration
+// =============================================================================
+
+/// Scheduler configuration for fetch timing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SchedulerConfig {
+    /// Default fetch interval in seconds (used when source doesn't specify its own).
+    pub default_interval_secs: u64,
+
+    /// Maximum concurrent fetch tasks across all sources.
+    pub max_concurrent_fetches: usize,
+
+    /// Jitter percentage (0-100) added to intervals to avoid thundering herd.
+    pub jitter_percent: u8,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            default_interval_secs: 300, // 5 minutes
+            max_concurrent_fetches: 10,
+            jitter_percent: 10,
+        }
+    }
+}
+
+// =============================================================================
+// Sources configuration
+// =============================================================================
+
+/// Top-level sources configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SourcesConfig {
+    /// AWS source configuration.
+    pub aws: AwsSourceConfig,
+
+    /// Azure source configuration.
+    pub azure: AzureSourceConfig,
+
+    /// Microsoft 365 source configuration.
+    pub m365: M365SourceConfig,
+
+    /// Google Cloud Platform source configuration.
+    pub gcp: GcpSourceConfig,
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        Self {
+            aws: AwsSourceConfig::default(),
+            azure: AzureSourceConfig::default(),
+            m365: M365SourceConfig::default(),
+            gcp: GcpSourceConfig::default(),
+        }
+    }
+}
+
+/// AWS source configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AwsSourceConfig {
+    /// Enable AWS source.
+    pub enabled: bool,
+
+    /// AWS region.
+    pub region: String,
+
+    /// Access key ID (prefer secrets manager in production).
+    pub access_key_id: Option<String>,
+
+    /// Secret access key (prefer secrets manager in production).
+    pub secret_access_key: Option<String>,
+
+    /// Assume role ARN for cross-account access.
+    pub assume_role_arn: Option<String>,
+
+    /// Secret source for credentials.
+    /// Format: "provider:path:key" (e.g., "vault:secret/aws:credentials")
+    pub credential_secret: Option<String>,
+
+    /// Fetch interval override in seconds.
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<AwsService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+}
+
+impl Default for AwsSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            region: "us-east-1".to_string(),
+            access_key_id: None,
+            secret_access_key: None,
+            assume_role_arn: None,
+            credential_secret: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "aws".to_string(),
+        }
+    }
+}
+
+/// AWS service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwsService {
+    /// Service name (e.g., "cloudtrail", "guardduty", "securityhub", "config").
+    pub name: String,
+
+    /// Service-specific configuration.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Azure source configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AzureSourceConfig {
+    /// Enable Azure source.
+    pub enabled: bool,
+
+    /// Azure tenant ID.
+    pub tenant_id: Option<String>,
+
+    /// Client (application) ID.
+    pub client_id: Option<String>,
+
+    /// Client secret (prefer secrets manager in production).
+    pub client_secret: Option<String>,
+
+    /// Secret source for credentials.
+    pub credential_secret: Option<String>,
+
+    /// Subscription ID.
+    pub subscription_id: Option<String>,
+
+    /// Fetch interval override in seconds.
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<AzureService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+}
+
+impl Default for AzureSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tenant_id: None,
+            client_id: None,
+            client_secret: None,
+            credential_secret: None,
+            subscription_id: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "azure".to_string(),
+        }
+    }
+}
+
+/// Azure service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AzureService {
+    /// Service name (e.g., "activity_log", "defender", "sentinel", "entra_id").
+    pub name: String,
+
+    /// Service-specific configuration.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Microsoft 365 source configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct M365SourceConfig {
+    /// Enable M365 source.
+    pub enabled: bool,
+
+    /// Azure AD tenant ID.
+    pub tenant_id: Option<String>,
+
+    /// Client (application) ID.
+    pub client_id: Option<String>,
+
+    /// Client secret (prefer secrets manager in production).
+    pub client_secret: Option<String>,
+
+    /// Secret source for credentials.
+    pub credential_secret: Option<String>,
+
+    /// Fetch interval override in seconds.
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<M365Service>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+}
+
+impl Default for M365SourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tenant_id: None,
+            client_id: None,
+            client_secret: None,
+            credential_secret: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "m365".to_string(),
+        }
+    }
+}
+
+/// M365 service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct M365Service {
+    /// Service name (e.g., "audit_log", "message_trace", "dlp", "alerts").
+    pub name: String,
+
+    /// Service-specific configuration.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Google Cloud Platform source configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GcpSourceConfig {
+    /// Enable GCP source.
+    pub enabled: bool,
+
+    /// GCP project ID.
+    pub project_id: Option<String>,
+
+    /// Path to service account key file.
+    pub service_account_key: Option<String>,
+
+    /// Secret source for credentials.
+    pub credential_secret: Option<String>,
+
+    /// Fetch interval override in seconds.
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<GcpService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+}
+
+impl Default for GcpSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            project_id: None,
+            service_account_key: None,
+            credential_secret: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "gcp".to_string(),
+        }
+    }
+}
+
+/// GCP service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcpService {
+    /// Service name (e.g., "audit_logs", "scc", "cloud_logging").
+    pub name: String,
+
+    /// Service-specific configuration.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+// =============================================================================
+// Extractors configuration (containers, plugins, vector)
+// =============================================================================
+
+/// External extractors configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtractorsConfig {
+    /// Container-based extractors.
+    pub containers: Vec<ContainerExtractorConfig>,
+
+    /// Plugin extractors (.so dynamic libraries).
+    pub plugins: PluginsConfig,
+
+    /// Vector.dev extractor integration.
+    pub vector: VectorExtractorConfig,
+}
+
+impl Default for ExtractorsConfig {
+    fn default() -> Self {
+        Self {
+            containers: vec![],
+            plugins: PluginsConfig::default(),
+            vector: VectorExtractorConfig::default(),
+        }
+    }
+}
+
+/// Container-based extractor configuration.
+///
+/// Each container runs an isolated extraction tool (any language/runtime).
+/// One container per source + config — no horizontal scaling needed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerExtractorConfig {
+    /// Unique name for this extractor instance.
+    pub name: String,
+
+    /// Container image (e.g., "ghcr.io/org/tool:latest").
+    pub image: String,
+
+    /// Container runtime (docker, podman). Default: "docker".
+    pub runtime: Option<String>,
+
+    /// Run mode: "scheduled" (one-shot per tick) or "continuous" (long-running).
+    #[serde(default = "default_scheduled")]
+    pub mode: String,
+
+    /// Communication mode: "stdout" (JSON lines) or "http" (POST to /ingest).
+    #[serde(default = "default_stdout")]
+    pub communication: String,
+
+    /// Output Kafka topic for this extractor's data.
+    pub topic: String,
+
+    /// Fetch interval for scheduled mode (seconds).
+    pub interval_secs: Option<u64>,
+
+    /// Environment variables passed to the container.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+
+    /// Volume mounts (host:container format).
+    #[serde(default)]
+    pub volumes: Vec<String>,
+
+    /// Docker network to attach to.
+    pub network: Option<String>,
+
+    /// Container memory limit (e.g., "512m", "1g").
+    pub memory_limit: Option<String>,
+
+    /// Container CPU limit (e.g., 0.5, 1.0, 2.0).
+    pub cpu_limit: Option<f64>,
+
+    /// Override container command.
+    pub command: Option<Vec<String>>,
+}
+
+fn default_scheduled() -> String {
+    "scheduled".to_string()
+}
+
+fn default_stdout() -> String {
+    "stdout".to_string()
+}
+
+/// Plugin configuration for dynamically loaded .so extractors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginsConfig {
+    /// Directory to scan for plugin .so files.
+    pub directory: Option<String>,
+
+    /// Named plugin entries.
+    #[serde(flatten)]
+    pub plugins: HashMap<String, PluginEntry>,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            directory: None,
+            plugins: HashMap::new(),
+        }
+    }
+}
+
+/// A single plugin entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginEntry {
+    /// Path to the .so file.
+    pub path: String,
+
+    /// Plugin-specific configuration passed as JSON.
+    #[serde(flatten)]
+    pub config: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Vector.dev extractor configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VectorExtractorConfig {
+    /// Enable Vector extractor integration.
+    pub enabled: bool,
+
+    /// gRPC bind address for receiving Vector sink data.
+    pub grpc_bind_address: String,
+
+    /// Managed Vector instances.
+    pub instances: Vec<VectorInstance>,
+}
+
+impl Default for VectorExtractorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grpc_bind_address: "0.0.0.0:6000".to_string(),
+            instances: vec![],
+        }
+    }
+}
+
+/// A managed Vector instance configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorInstance {
+    /// Instance name.
+    pub name: String,
+
+    /// Run mode: "container" or "sidecar".
+    #[serde(default = "default_container_mode")]
+    pub mode: String,
+
+    /// Container image for container mode.
+    pub image: Option<String>,
+
+    /// Vector configuration (inline TOML/YAML).
+    pub vector_config: Option<String>,
+
+    /// Path to Vector configuration file.
+    pub vector_config_path: Option<String>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+}
+
+fn default_container_mode() -> String {
+    "container".to_string()
+}
+
+// =============================================================================
+// Ingest server configuration (for container extractors)
+// =============================================================================
+
+/// HTTP ingest server for container extractors to post data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IngestConfig {
+    /// Enable ingest HTTP endpoint.
+    pub enabled: bool,
+
+    /// Bind address.
+    pub bind_address: String,
+
+    /// Maximum request body size in bytes.
+    pub max_body_size: usize,
+}
+
+impl Default for IngestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bind_address: "0.0.0.0:8080".to_string(),
+            max_body_size: 10 * 1024 * 1024, // 10MB
+        }
+    }
+}
+
+// =============================================================================
+// Kafka configuration (output)
+// =============================================================================
+
+/// Kafka producer configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KafkaConfig {
+    /// Broker addresses.
+    pub brokers: Vec<String>,
+
+    /// Client ID.
+    pub client_id: String,
+
+    /// Suffix appended to source topic names.
+    pub topic_suffix: String,
+
+    /// SASL configuration.
+    pub sasl: Option<SaslConfig>,
+
+    /// TLS configuration.
+    pub tls: KafkaTlsConfig,
+
+    /// Producer-specific settings.
+    pub producer: ProducerConfig,
+}
+
+impl Default for KafkaConfig {
+    fn default() -> Self {
+        Self {
+            brokers: vec![],
+            client_id: "dfe-fetcher".to_string(),
+            topic_suffix: "_land".to_string(),
+            sasl: None,
+            tls: KafkaTlsConfig::default(),
+            producer: ProducerConfig::default(),
+        }
+    }
+}
+
+/// SASL authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaslConfig {
+    /// Enable SASL.
+    pub enabled: bool,
+
+    /// SASL mechanism (plain, scram_sha_256, scram_sha_512).
+    pub mechanism: String,
+
+    /// Username.
+    pub username: String,
+
+    /// Password.
+    pub password: String,
+}
+
+/// Kafka TLS configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KafkaTlsConfig {
+    /// Enable TLS for Kafka.
+    pub enabled: bool,
+
+    /// CA certificate file.
+    pub ca_file: Option<String>,
+
+    /// Client certificate file.
+    pub cert_file: Option<String>,
+
+    /// Client key file.
+    pub key_file: Option<String>,
+}
+
+impl Default for KafkaTlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ca_file: None,
+            cert_file: None,
+            key_file: None,
+        }
+    }
+}
+
+/// Kafka producer settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProducerConfig {
+    /// Maximum batch size in bytes.
+    pub batch_size: usize,
+
+    /// Maximum messages per batch.
+    pub batch_messages: usize,
+
+    /// Linger time in milliseconds.
+    pub linger_ms: u32,
+
+    /// Compression type (none, gzip, snappy, lz4, zstd).
+    pub compression: String,
+
+    /// Acknowledgment level (0, 1, all).
+    pub acks: String,
+
+    /// Number of retries.
+    pub retries: u32,
+}
+
+impl Default for ProducerConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: 8 * 1024 * 1024, // 8MiB
+            batch_messages: 10_000,
+            linger_ms: 20,
+            compression: "lz4".to_string(),
+            acks: "all".to_string(),
+            retries: 5,
+        }
+    }
+}
+
+// =============================================================================
+// Buffer configuration
+// =============================================================================
+
+/// Buffer and memory configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BufferConfig {
+    /// Maximum memory for buffers in bytes (0 = auto-detect 67% of available).
+    pub memory_limit: usize,
+
+    /// Memory pressure threshold (0.0-1.0).
+    pub pressure_threshold: f64,
+}
+
+impl Default for BufferConfig {
+    fn default() -> Self {
+        Self {
+            memory_limit: 0,
+            pressure_threshold: 0.8,
+        }
+    }
+}
+
+// =============================================================================
+// Metrics configuration
+// =============================================================================
+
+/// Metrics configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsConfig {
+    /// Enable metrics.
+    pub enabled: bool,
+
+    /// Metrics server address.
+    pub address: String,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            address: "0.0.0.0:9090".to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.scheduler.default_interval_secs, 300);
+        assert_eq!(config.kafka.producer.batch_messages, 10_000);
+        assert_eq!(config.kafka.topic_suffix, "_land");
+    }
+
+    #[test]
+    fn test_config_validation() {
+        let mut config = Config::default();
+        config.kafka.brokers = vec!["localhost:9092".to_string()];
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_no_brokers() {
+        let config = Config::default();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_invalid_pressure_threshold() {
+        let mut config = Config::default();
+        config.kafka.brokers = vec!["localhost:9092".to_string()];
+        config.buffer.pressure_threshold = 1.5;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_invalid_scheduler_interval() {
+        let mut config = Config::default();
+        config.kafka.brokers = vec!["localhost:9092".to_string()];
+        config.scheduler.default_interval_secs = 0;
+        assert!(config.validate().is_err());
+    }
+
+    // -- env override tests --
+
+    fn with_env<F: FnOnce()>(vars: &[(&str, &str)], f: F) {
+        for (k, v) in vars {
+            std::env::set_var(k, v);
+        }
+        f();
+        for (k, _) in vars {
+            std::env::remove_var(k);
+        }
+    }
+
+    #[test]
+    fn test_env_override_kafka_brokers() {
+        with_env(
+            &[("DFE_FETCHER_KAFKA_BROKERS", "broker1:9092, broker2:9092")],
+            || {
+                let mut config = Config::default();
+                apply_env_overrides(&mut config);
+                assert_eq!(
+                    config.kafka.brokers,
+                    vec!["broker1:9092".to_string(), "broker2:9092".to_string()]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_env_override_kafka_client_id() {
+        with_env(&[("DFE_FETCHER_KAFKA_CLIENT_ID", "my-fetcher")], || {
+            let mut config = Config::default();
+            apply_env_overrides(&mut config);
+            assert_eq!(config.kafka.client_id, "my-fetcher");
+        });
+    }
+
+    #[test]
+    fn test_env_override_default_interval() {
+        with_env(&[("DFE_FETCHER_DEFAULT_INTERVAL_SECS", "60")], || {
+            let mut config = Config::default();
+            apply_env_overrides(&mut config);
+            assert_eq!(config.scheduler.default_interval_secs, 60);
+        });
+    }
+
+    #[test]
+    fn test_env_override_topic_suffix() {
+        with_env(&[("DFE_FETCHER_TOPIC_SUFFIX", "_raw")], || {
+            let mut config = Config::default();
+            apply_env_overrides(&mut config);
+            assert_eq!(config.kafka.topic_suffix, "_raw");
+        });
+    }
+
+    #[test]
+    fn test_env_override_memory_limit() {
+        with_env(&[("DFE_FETCHER_MEMORY_LIMIT", "1073741824")], || {
+            let mut config = Config::default();
+            apply_env_overrides(&mut config);
+            assert_eq!(config.buffer.memory_limit, 1_073_741_824);
+        });
+    }
+
+    #[test]
+    fn test_env_override_metrics_address() {
+        with_env(&[("DFE_FETCHER_METRICS_ADDRESS", "0.0.0.0:8888")], || {
+            let mut config = Config::default();
+            apply_env_overrides(&mut config);
+            assert_eq!(config.metrics.address, "0.0.0.0:8888");
+        });
+    }
+
+    #[test]
+    fn test_env_override_no_vars_set() {
+        let mut config = Config::default();
+        let original = config.clone();
+        apply_env_overrides(&mut config);
+        assert_eq!(config.kafka.brokers, original.kafka.brokers);
+        assert_eq!(
+            config.scheduler.default_interval_secs,
+            original.scheduler.default_interval_secs
+        );
+        assert_eq!(config.config_reload_secs, original.config_reload_secs);
+    }
+}
