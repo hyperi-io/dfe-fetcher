@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -78,7 +78,7 @@ impl KafkaSink {
 
         let producer: FutureProducer = client_config
             .create()
-            .map_err(|e| Error::Kafka(e.into()))?;
+            .map_err(Error::Kafka)?;
 
         debug!(
             brokers = config.brokers.join(","),
@@ -92,7 +92,8 @@ impl KafkaSink {
 #[async_trait]
 impl Sink for KafkaSink {
     async fn send(&self, topic: &str, payload: Bytes) -> Result<()> {
-        let record = FutureRecord::to(topic).payload(payload.as_ref());
+        let record: FutureRecord<'_, str, [u8]> =
+            FutureRecord::to(topic).payload(payload.as_ref());
 
         match self.producer.send(record, Duration::from_secs(5)).await {
             Ok(_) => Ok(()),

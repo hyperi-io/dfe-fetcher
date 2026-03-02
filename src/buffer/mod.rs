@@ -8,12 +8,14 @@
 
 //! Buffer management and memory pressure detection.
 //!
-//! Re-exports `TieredSink` and `CircuitState` from hyperi-rustlib.
-//! Provides `BufferManager` for tracking in-flight bytes.
+//! Provides `TieredSink` (local implementation using hyperi-rustlib's
+//! `CircuitBreaker`) and `BufferManager` for tracking in-flight bytes.
+
+mod tiered;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-pub use hyperi_rustlib::tiered_sink::{CircuitState, TieredSink};
+pub use tiered::{TieredSink, TieredSinkStats};
 
 use crate::config::BufferConfig;
 

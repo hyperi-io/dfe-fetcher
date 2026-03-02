@@ -23,7 +23,7 @@ doctest = false
 
 [dependencies]
 # HyperI shared library (from JFrog Cargo registry)
-hyperi-rustlib = { version = ">=1.5", registry = "hyperi", features = [
+hyperi-rustlib = { version = ">=1.9.2", registry = "hyperi", features = [
     "config",
     "config-reload",
     "logger",
@@ -51,7 +51,7 @@ serde_yaml_ng = "0.10"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "stream"] }
 
 # Kafka producer (for output to pipeline)
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl"] }
+rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "sasl"] }
 
 # Performance
 rustc-hash = "2"
@@ -80,9 +80,6 @@ async-trait = "0.1"
 sysinfo = "0.32"
 base64 = "0.22"
 url = "2"
-
-# Scheduling
-cron = "0.13"
 
 # Optional allocators
 tikv-jemallocator = { version = "0.6", optional = true }
