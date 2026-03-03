@@ -48,9 +48,12 @@ impl AzureSource {
         let client_id = self.resolve_client_id().await?;
         let client_secret = self.resolve_client_secret().await?;
 
-        Ok(TokenManager::microsoft(
+        let token_url = self.config.token_url_override.clone().unwrap_or_else(|| {
+            format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token")
+        });
+        Ok(TokenManager::new(
             self.client.clone(),
-            tenant_id,
+            token_url,
             client_id,
             client_secret,
             "https://management.azure.com/.default".to_string(),
@@ -67,9 +70,12 @@ impl AzureSource {
         let client_id = self.resolve_client_id().await?;
         let client_secret = self.resolve_client_secret().await?;
 
-        Ok(TokenManager::microsoft(
+        let token_url = self.config.token_url_override.clone().unwrap_or_else(|| {
+            format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token")
+        });
+        Ok(TokenManager::new(
             self.client.clone(),
-            tenant_id,
+            token_url,
             client_id,
             client_secret,
             "https://graph.microsoft.com/.default".to_string(),
@@ -223,8 +229,13 @@ impl AzureSource {
             now.format(fmt)
         );
 
+        let mgmt_base = self
+            .config
+            .management_url_override
+            .as_deref()
+            .unwrap_or("https://management.azure.com");
         let url = format!(
-            "https://management.azure.com/subscriptions/{subscription_id}/providers/microsoft.insights/eventtypes/management/values?api-version=2015-04-01&$filter={filter}"
+            "{mgmt_base}/subscriptions/{subscription_id}/providers/microsoft.insights/eventtypes/management/values?api-version=2015-04-01&$filter={filter}"
         );
 
         let items = self.fetch_paginated(&token, &url, 10).await?;
@@ -256,8 +267,13 @@ impl AzureSource {
             Error::Config("azure.subscription_id is required for defender".into())
         })?;
 
+        let mgmt_base = self
+            .config
+            .management_url_override
+            .as_deref()
+            .unwrap_or("https://management.azure.com");
         let url = format!(
-            "https://management.azure.com/subscriptions/{subscription_id}/providers/Microsoft.Security/alerts?api-version=2022-01-01"
+            "{mgmt_base}/subscriptions/{subscription_id}/providers/Microsoft.Security/alerts?api-version=2022-01-01"
         );
 
         let items = self.fetch_paginated(&token, &url, 10).await?;
@@ -308,8 +324,13 @@ impl AzureSource {
             .and_then(|v| v.as_str())
             .unwrap_or("default");
 
+        let mgmt_base = self
+            .config
+            .management_url_override
+            .as_deref()
+            .unwrap_or("https://management.azure.com");
         let url = format!(
-            "https://management.azure.com/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.OperationalInsights/workspaces/{workspace}/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01"
+            "{mgmt_base}/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.OperationalInsights/workspaces/{workspace}/providers/Microsoft.SecurityInsights/incidents?api-version=2023-11-01"
         );
 
         let items = self.fetch_paginated(&token, &url, 10).await?;
@@ -339,9 +360,16 @@ impl AzureSource {
 
         let mut all_records = Vec::new();
 
+        let graph_base = self
+            .config
+            .graph_url_override
+            .as_deref()
+            .unwrap_or("https://graph.microsoft.com");
+
         // Fetch sign-in logs
-        let signin_url = "https://graph.microsoft.com/v1.0/auditLogs/signIns?$top=100&$orderby=createdDateTime desc";
-        let signins = self.fetch_paginated(&token, signin_url, 5).await?;
+        let signin_url =
+            format!("{graph_base}/v1.0/auditLogs/signIns?$top=100&$orderby=createdDateTime desc");
+        let signins = self.fetch_paginated(&token, &signin_url, 5).await?;
         for item in signins {
             if let Ok(json) = serde_json::to_vec(&item) {
                 all_records.push(Bytes::from(json));
@@ -349,8 +377,10 @@ impl AzureSource {
         }
 
         // Fetch directory audit logs
-        let audit_url = "https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?$top=100&$orderby=activityDateTime desc";
-        let audits = self.fetch_paginated(&token, audit_url, 5).await?;
+        let audit_url = format!(
+            "{graph_base}/v1.0/auditLogs/directoryAudits?$top=100&$orderby=activityDateTime desc"
+        );
+        let audits = self.fetch_paginated(&token, &audit_url, 5).await?;
         for item in audits {
             if let Ok(json) = serde_json::to_vec(&item) {
                 all_records.push(Bytes::from(json));

@@ -16,7 +16,7 @@ _None currently — MVP complete. See Remaining Work for next steps._
 
 1. [x] **AWS SigV4 signing** — Implemented via `reqsign` 0.16 crate with explicit body SHA256 hashing (`sha2`+`hex`). Verified against live CloudTrail API.
 
-2. [x] **GCP JWT signing** — Implemented via `jsonwebtoken` 10 crate with RS256 signing. Pending live verification (GCP auth needs refresh).
+2. [x] **GCP JWT signing** — Implemented via `jsonwebtoken` 10 crate (with `aws_lc_rs` feature) with RS256 signing. Verified against live Cloud Logging API.
 
 3. [x] **DLQ support** — Implemented using `hyperi-rustlib` 1.10.0 `Dlq::file_only()`. Failed Kafka sends route to DLQ with metric tracking.
 
@@ -142,7 +142,7 @@ _None currently — MVP complete. See Remaining Work for next steps._
 cargo fmt --check    ✅ Clean
 cargo clippy -D warn ✅ Clean
 cargo test           ✅ 71/71 passing (43 unit + 19 integration + 9 source)
-cargo test --test smoke_cloud -- --ignored  ✅ 6/6 (AWS + Azure live, GCP pending auth)
+cargo test --test smoke_cloud -- --ignored  ✅ 6/6 (AWS + Azure + GCP all verified live)
 ```
 
 ---
