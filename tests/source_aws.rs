@@ -268,3 +268,222 @@ async fn test_aws_health_check_with_credentials() {
 
     assert!(healthy);
 }
+
+// =============================================================================
+// CloudWatch Logs wiremock tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_aws_fetch_cloudwatch_logs_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(header("X-Amz-Target", "Logs_20140328.FilterLogEvents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "events": [
+                {"eventId": "ev-1", "logStreamName": "stream-1", "message": "INFO hello"},
+                {"eventId": "ev-2", "logStreamName": "stream-1", "message": "ERROR fail"},
+                {"eventId": "ev-3", "logStreamName": "stream-2", "message": "WARN something"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert(
+        "log_group_name".to_string(),
+        serde_json::Value::String("/aws/lambda/test".to_string()),
+    );
+
+    let config = make_wiremock_config(
+        &server.uri(),
+        vec![AwsService {
+            name: "cloudwatch_logs".to_string(),
+            config: svc_config,
+        }],
+    );
+    let source = AwsSource::new(config);
+    let results = source.fetch().await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].source, "aws.cloudwatch_logs");
+    assert_eq!(results[0].records.len(), 3);
+}
+
+#[tokio::test]
+async fn test_aws_fetch_cloudwatch_logs_empty() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(header("X-Amz-Target", "Logs_20140328.FilterLogEvents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "events": [] })))
+        .mount(&server)
+        .await;
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert(
+        "log_group_name".to_string(),
+        serde_json::Value::String("/aws/lambda/test".to_string()),
+    );
+
+    let config = make_wiremock_config(
+        &server.uri(),
+        vec![AwsService {
+            name: "cloudwatch_logs".to_string(),
+            config: svc_config,
+        }],
+    );
+    let source = AwsSource::new(config);
+    let results = source.fetch().await.unwrap();
+
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn test_aws_fetch_cloudwatch_logs_pagination() {
+    let server = MockServer::start().await;
+
+    // Page 1 — returns events + nextToken
+    Mock::given(method("POST"))
+        .and(header("X-Amz-Target", "Logs_20140328.FilterLogEvents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "events": [
+                {"eventId": "ev-1", "message": "first page"}
+            ],
+            "nextToken": "page2token"
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Page 2 — returns events without nextToken (last page)
+    Mock::given(method("POST"))
+        .and(header("X-Amz-Target", "Logs_20140328.FilterLogEvents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "events": [
+                {"eventId": "ev-2", "message": "second page"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert(
+        "log_group_name".to_string(),
+        serde_json::Value::String("/aws/lambda/paginated".to_string()),
+    );
+
+    let config = make_wiremock_config(
+        &server.uri(),
+        vec![AwsService {
+            name: "cloudwatch_logs".to_string(),
+            config: svc_config,
+        }],
+    );
+    let source = AwsSource::new(config);
+    let results = source.fetch().await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].source, "aws.cloudwatch_logs");
+    assert_eq!(results[0].records.len(), 2);
+}
+
+// =============================================================================
+// CloudWatch Metrics wiremock tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_aws_fetch_cloudwatch_metrics_success() {
+    let server = MockServer::start().await;
+
+    // ListMetrics — returns discovered metrics
+    Mock::given(method("POST"))
+        .and(header(
+            "X-Amz-Target",
+            "GraniteServiceVersion20100801.ListMetrics",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Metrics": [
+                {
+                    "Namespace": "AWS/EC2",
+                    "MetricName": "CPUUtilization",
+                    "Dimensions": [{"Name": "InstanceId", "Value": "i-1234"}]
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    // GetMetricData — returns data points
+    Mock::given(method("POST"))
+        .and(header(
+            "X-Amz-Target",
+            "GraniteServiceVersion20100801.GetMetricData",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "MetricDataResults": [
+                {
+                    "Id": "q0",
+                    "Timestamps": [1709424000.0, 1709424300.0],
+                    "Values": [45.2, 62.1]
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert("namespaces".to_string(), serde_json::json!(["AWS/EC2"]));
+
+    let config = make_wiremock_config(
+        &server.uri(),
+        vec![AwsService {
+            name: "cloudwatch_metrics".to_string(),
+            config: svc_config,
+        }],
+    );
+    let source = AwsSource::new(config);
+    let results = source.fetch().await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].source, "aws.cloudwatch_metrics");
+    assert_eq!(results[0].records.len(), 2);
+
+    // Verify record structure
+    let record: serde_json::Value = serde_json::from_slice(&results[0].records[0]).unwrap();
+    assert_eq!(record["namespace"], "AWS/EC2");
+    assert_eq!(record["metric_name"], "CPUUtilization");
+    assert_eq!(record["stat"], "Average");
+}
+
+#[tokio::test]
+async fn test_aws_fetch_cloudwatch_metrics_empty() {
+    let server = MockServer::start().await;
+
+    // ListMetrics — no metrics found
+    Mock::given(method("POST"))
+        .and(header(
+            "X-Amz-Target",
+            "GraniteServiceVersion20100801.ListMetrics",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "Metrics": [] })),
+        )
+        .mount(&server)
+        .await;
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert("namespaces".to_string(), serde_json::json!(["AWS/EC2"]));
+
+    let config = make_wiremock_config(
+        &server.uri(),
+        vec![AwsService {
+            name: "cloudwatch_metrics".to_string(),
+            config: svc_config,
+        }],
+    );
+    let source = AwsSource::new(config);
+    let results = source.fetch().await.unwrap();
+
+    assert!(results.is_empty());
+}

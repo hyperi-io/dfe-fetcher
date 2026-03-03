@@ -32,6 +32,8 @@ _None currently — MVP complete. See Remaining Work for next steps._
 
 7. [ ] **Plugin .so loading** — Plugin registry exists as a stub. Actual `libloading` calls require `unsafe` code. Either move plugin loader to a separate crate without `#![forbid(unsafe_code)]` or change to `#![deny(unsafe_code)]` with targeted `#[allow]`.
 
+8. [ ] **Per-message filtering** — All sources emit every record fetched. Add configurable post-fetch filtering using DFE expression language (from rustlib) to drop/keep records before Kafka delivery. Applies to all sources, not just CloudWatch. Separate from source-level API query filters.
+
 ### Testing
 
 8. [x] **Wiremock source tests** — 31 wiremock tests across all 4 sources (AWS 6, Azure 8, GCP 7, M365 10) covering fetch success, pagination, empty responses, error handling, and health checks. URL override fields added to config structs.
@@ -91,6 +93,8 @@ _None currently — MVP complete. See Remaining Work for next steps._
 - [x] `fetch_guardduty` — ListDetectors -> ListFindings -> GetFindings chain
 - [x] `fetch_securityhub` — GetFindings with WorkflowStatus filter
 - [x] `fetch_config` — SelectAggregateResourceConfig
+- [x] `fetch_cloudwatch_logs` — FilterLogEvents with log group filtering and pagination
+- [x] `fetch_cloudwatch_metrics` — ListMetrics discovery + GetMetricData with namespace/metric filters
 
 #### 3d. GCP Source
 
@@ -141,8 +145,8 @@ _None currently — MVP complete. See Remaining Work for next steps._
 ```
 cargo fmt --check    ✅ Clean
 cargo clippy -D warn ✅ Clean
-cargo test           ✅ 105/105 passing (43 unit + 19 integration + 43 source)
-cargo test --test smoke_cloud -- --ignored  ✅ 6/6 (AWS + Azure + GCP all verified live)
+cargo test           ✅ 110/110 passing (43 unit + 19 integration + 48 source)
+cargo test --test smoke_cloud -- --ignored  ✅ 8 smoke tests (AWS CloudTrail/CW Logs/CW Metrics + Azure + GCP)
 ```
 
 ---
