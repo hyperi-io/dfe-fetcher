@@ -417,6 +417,10 @@ pub struct AwsSourceConfig {
 
     /// Output Kafka topic.
     pub topic: String,
+
+    /// Endpoint URL override for testing (e.g., wiremock server URI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_override: Option<String>,
 }
 
 impl Default for AwsSourceConfig {
@@ -431,6 +435,7 @@ impl Default for AwsSourceConfig {
             interval_secs: None,
             services: vec![],
             topic: "aws".to_string(),
+            endpoint_override: None,
         }
     }
 }
@@ -476,6 +481,18 @@ pub struct AzureSourceConfig {
 
     /// Output Kafka topic.
     pub topic: String,
+
+    /// Management API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url_override: Option<String>,
+
+    /// Graph API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_url_override: Option<String>,
+
+    /// Token endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
 }
 
 impl Default for AzureSourceConfig {
@@ -490,6 +507,9 @@ impl Default for AzureSourceConfig {
             interval_secs: None,
             services: vec![],
             topic: "azure".to_string(),
+            management_url_override: None,
+            graph_url_override: None,
+            token_url_override: None,
         }
     }
 }
@@ -532,6 +552,18 @@ pub struct M365SourceConfig {
 
     /// Output Kafka topic.
     pub topic: String,
+
+    /// Management API (manage.office.com) base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url_override: Option<String>,
+
+    /// Graph API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_url_override: Option<String>,
+
+    /// Token endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
 }
 
 impl Default for M365SourceConfig {
@@ -545,6 +577,9 @@ impl Default for M365SourceConfig {
             interval_secs: None,
             services: vec![],
             topic: "m365".to_string(),
+            management_url_override: None,
+            graph_url_override: None,
+            token_url_override: None,
         }
     }
 }
@@ -584,6 +619,14 @@ pub struct GcpSourceConfig {
 
     /// Output Kafka topic.
     pub topic: String,
+
+    /// API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Token endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
 }
 
 impl Default for GcpSourceConfig {
@@ -596,6 +639,8 @@ impl Default for GcpSourceConfig {
             interval_secs: None,
             services: vec![],
             topic: "gcp".to_string(),
+            api_url_override: None,
+            token_url_override: None,
         }
     }
 }

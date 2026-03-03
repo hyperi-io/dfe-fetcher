@@ -48,9 +48,12 @@ impl M365Source {
         let client_id = self.resolve_client_id().await?;
         let client_secret = self.resolve_client_secret().await?;
 
-        Ok(TokenManager::microsoft(
+        let token_url = self.config.token_url_override.clone().unwrap_or_else(|| {
+            format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token")
+        });
+        Ok(TokenManager::new(
             self.client.clone(),
-            tenant_id,
+            token_url,
             client_id,
             client_secret,
             "https://manage.office.com/.default".to_string(),
@@ -67,9 +70,12 @@ impl M365Source {
         let client_id = self.resolve_client_id().await?;
         let client_secret = self.resolve_client_secret().await?;
 
-        Ok(TokenManager::microsoft(
+        let token_url = self.config.token_url_override.clone().unwrap_or_else(|| {
+            format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token")
+        });
+        Ok(TokenManager::new(
             self.client.clone(),
-            tenant_id,
+            token_url,
             client_id,
             client_secret,
             "https://graph.microsoft.com/.default".to_string(),
@@ -157,8 +163,13 @@ impl M365Source {
         tenant_id: &str,
         content_type: &str,
     ) -> Result<()> {
+        let mgmt_base = self
+            .config
+            .management_url_override
+            .as_deref()
+            .unwrap_or("https://manage.office.com");
         let url = format!(
-            "https://manage.office.com/api/v1.0/{tenant_id}/activity/feed/subscriptions/start?contentType={content_type}"
+            "{mgmt_base}/api/v1.0/{tenant_id}/activity/feed/subscriptions/start?contentType={content_type}"
         );
         let resp = self.client.post(&url).bearer_auth(token).send().await;
         match resp {
@@ -233,8 +244,13 @@ impl M365Source {
         let token = tm.get_token().await?;
         let tenant_id = self.config.tenant_id.as_deref().unwrap_or_default();
 
+        let mgmt_base = self
+            .config
+            .management_url_override
+            .as_deref()
+            .unwrap_or("https://manage.office.com");
         let list_url = format!(
-            "https://manage.office.com/api/v1.0/{tenant_id}/activity/feed/subscriptions/content?contentType=Audit.General"
+            "{mgmt_base}/api/v1.0/{tenant_id}/activity/feed/subscriptions/content?contentType=Audit.General"
         );
 
         let resp = self
@@ -305,10 +321,15 @@ impl M365Source {
         let tm = self.graph_token_manager().await?;
         let token = tm.get_token().await?;
 
-        let url = "https://graph.microsoft.com/v1.0/reports/getEmailActivityCounts(period='D1')";
+        let graph_base = self
+            .config
+            .graph_url_override
+            .as_deref()
+            .unwrap_or("https://graph.microsoft.com");
+        let url = format!("{graph_base}/v1.0/reports/getEmailActivityCounts(period='D1')");
         let resp = self
             .client
-            .get(url)
+            .get(&url)
             .bearer_auth(&token)
             .send()
             .await
@@ -342,8 +363,13 @@ impl M365Source {
         let tm = self.graph_token_manager().await?;
         let token = tm.get_token().await?;
 
-        let url = "https://graph.microsoft.com/v1.0/security/alerts_v2?$filter=category eq 'DataLossPrevention'&$top=100";
-        let items = self.fetch_paginated(&token, url, 10).await?;
+        let graph_base = self
+            .config
+            .graph_url_override
+            .as_deref()
+            .unwrap_or("https://graph.microsoft.com");
+        let url = format!("{graph_base}/v1.0/security/alerts_v2?$filter=category eq 'DataLossPrevention'&$top=100");
+        let items = self.fetch_paginated(&token, &url, 10).await?;
         if items.is_empty() {
             return Ok(None);
         }
@@ -368,8 +394,14 @@ impl M365Source {
         let tm = self.graph_token_manager().await?;
         let token = tm.get_token().await?;
 
-        let url = "https://graph.microsoft.com/v1.0/security/alerts_v2?$top=100&$orderby=createdDateTime desc";
-        let items = self.fetch_paginated(&token, url, 10).await?;
+        let graph_base = self
+            .config
+            .graph_url_override
+            .as_deref()
+            .unwrap_or("https://graph.microsoft.com");
+        let url =
+            format!("{graph_base}/v1.0/security/alerts_v2?$top=100&$orderby=createdDateTime desc");
+        let items = self.fetch_paginated(&token, &url, 10).await?;
         if items.is_empty() {
             return Ok(None);
         }

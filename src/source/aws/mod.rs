@@ -95,7 +95,10 @@ impl AwsSource {
     ) -> Result<serde_json::Value> {
         let (access_key, secret_key) = self.resolve_credentials().await?;
         let region = &self.config.region;
-        let endpoint = format!("https://{service}.{region}.amazonaws.com");
+        let endpoint = match &self.config.endpoint_override {
+            Some(url) => url.clone(),
+            None => format!("https://{service}.{region}.amazonaws.com"),
+        };
 
         let body = serde_json::to_string(payload)
             .map_err(|e| Error::Source(format!("JSON serialise error: {e}")))?;

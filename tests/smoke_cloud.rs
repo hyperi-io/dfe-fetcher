@@ -53,6 +53,7 @@ fn make_aws_config() -> Option<AwsSourceConfig> {
         secret_access_key: Some(secret_access_key),
         assume_role_arn: None,
         credential_secret: None,
+        endpoint_override: None,
         interval_secs: None,
         services: vec![AwsService {
             name: "cloudtrail".to_string(),
@@ -109,6 +110,9 @@ fn make_azure_config() -> Option<AzureSourceConfig> {
         client_secret: Some(client_secret),
         credential_secret: None,
         subscription_id: Some(subscription_id),
+        management_url_override: None,
+        graph_url_override: None,
+        token_url_override: None,
         interval_secs: None,
         services: vec![AzureService {
             name: "activity_log".to_string(),
@@ -166,6 +170,8 @@ fn make_gcp_config() -> Option<GcpSourceConfig> {
         project_id: Some(project_id),
         service_account_key: Some(key_path),
         credential_secret: None,
+        api_url_override: None,
+        token_url_override: None,
         interval_secs: None,
         services: vec![GcpService {
             name: "cloud_logging".to_string(),

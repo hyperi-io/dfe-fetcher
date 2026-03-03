@@ -70,8 +70,11 @@ impl GcpSource {
         let client_email = key["client_email"]
             .as_str()
             .ok_or_else(|| Error::Credential("missing client_email in GCP key".into()))?;
-        let token_uri = key["token_uri"]
-            .as_str()
+        let token_uri = self
+            .config
+            .token_url_override
+            .as_deref()
+            .or_else(|| key["token_uri"].as_str())
             .unwrap_or("https://oauth2.googleapis.com/token");
         let private_key = key["private_key"]
             .as_str()
@@ -349,8 +352,13 @@ impl GcpSource {
             "orderBy": "timestamp desc"
         });
 
-        let url = "https://logging.googleapis.com/v2/entries:list";
-        let items = self.post_paginated_gcp(&token, url, body, 10).await?;
+        let api_base = self
+            .config
+            .api_url_override
+            .as_deref()
+            .unwrap_or("https://logging.googleapis.com");
+        let url = format!("{api_base}/v2/entries:list");
+        let items = self.post_paginated_gcp(&token, &url, body, 10).await?;
 
         if items.is_empty() {
             return Ok(None);
@@ -387,9 +395,12 @@ impl GcpSource {
             return Ok(None);
         }
 
-        let url = format!(
-            "https://securitycenter.googleapis.com/v1/organizations/{org_id}/sources/-/findings?pageSize=100"
-        );
+        let api_base = self
+            .config
+            .api_url_override
+            .as_deref()
+            .unwrap_or("https://securitycenter.googleapis.com");
+        let url = format!("{api_base}/v1/organizations/{org_id}/sources/-/findings?pageSize=100");
 
         let items = self.fetch_paginated_gcp(&token, &url, 10).await?;
         if items.is_empty() {
@@ -439,8 +450,13 @@ impl GcpSource {
             "orderBy": "timestamp desc"
         });
 
-        let url = "https://logging.googleapis.com/v2/entries:list";
-        let items = self.post_paginated_gcp(&token, url, body, 10).await?;
+        let api_base = self
+            .config
+            .api_url_override
+            .as_deref()
+            .unwrap_or("https://logging.googleapis.com");
+        let url = format!("{api_base}/v2/entries:list");
+        let items = self.post_paginated_gcp(&token, &url, body, 10).await?;
 
         if items.is_empty() {
             return Ok(None);
