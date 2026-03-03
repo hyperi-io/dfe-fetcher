@@ -91,6 +91,10 @@ reqsign = { version = "0.16", default-features = false, features = ["services-aw
 sha2 = "0.10"
 hex = "0.4"
 
+# OpenTelemetry proto types (for OTLP metric output)
+opentelemetry-proto = { version = "0.28", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.13"
+
 # Optional allocators
 tikv-jemallocator = { version = "0.6", optional = true }
 mimalloc = { version = "0.1", optional = true }
@@ -102,6 +106,8 @@ tokio-test = "0.4"
 dotenvy = "0.15"
 wiremock = "0.6"
 tower = "0.5"
+opentelemetry-proto = { version = "0.28", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.13"
 
 [features]
 default = []

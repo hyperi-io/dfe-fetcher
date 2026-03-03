@@ -22,6 +22,13 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
+use opentelemetry_proto::tonic::{
+    collector::metrics::v1::ExportMetricsServiceRequest,
+    common::v1::{any_value, AnyValue, InstrumentationScope, KeyValue},
+    metrics::v1::{metric, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics},
+    resource::v1::Resource,
+};
+use prost::Message;
 use reqsign::{AwsCredential, AwsV4Signer};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
@@ -30,6 +37,50 @@ use crate::config::AwsSourceConfig;
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::source::{FetchResult, Source};
+
+/// Map CloudWatch unit strings to UCUM (Unified Code for Units of Measure) codes
+/// for OpenTelemetry compatibility.
+fn cloudwatch_unit_to_ucum(unit: &str) -> &str {
+    match unit {
+        "Seconds" => "s",
+        "Microseconds" => "us",
+        "Milliseconds" => "ms",
+        "Bytes" => "By",
+        "Kilobytes" => "kBy",
+        "Megabytes" => "MBy",
+        "Gigabytes" => "GBy",
+        "Terabytes" => "TBy",
+        "Bits" => "bit",
+        "Kilobits" => "kbit",
+        "Megabits" => "Mbit",
+        "Gigabits" => "Gbit",
+        "Terabits" => "Tbit",
+        "Percent" => "%",
+        "Count" => "{Count}",
+        "Bytes/Second" => "By/s",
+        "Kilobytes/Second" => "kBy/s",
+        "Megabytes/Second" => "MBy/s",
+        "Gigabytes/Second" => "GBy/s",
+        "Terabytes/Second" => "TBy/s",
+        "Bits/Second" => "bit/s",
+        "Kilobits/Second" => "kbit/s",
+        "Megabits/Second" => "Mbit/s",
+        "Gigabits/Second" => "Gbit/s",
+        "Terabits/Second" => "Tbit/s",
+        "Count/Second" => "{Count}/s",
+        _ => "1",
+    }
+}
+
+/// Build an OTel `KeyValue` attribute with a string value.
+fn otel_kv(key: &str, value: &str) -> KeyValue {
+    KeyValue {
+        key: key.to_string(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::StringValue(value.to_string())),
+        }),
+    }
+}
 
 /// AWS data source implementation.
 pub struct AwsSource {
@@ -543,12 +594,20 @@ impl AwsSource {
             .and_then(|v| v.as_str())
             .unwrap_or("Average");
 
+        // Output format: "json" (default) or "otlp" (protobuf)
+        let output_format = service
+            .config
+            .get("output_format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("json");
+
         let now = Utc::now();
         let start_time = now - chrono::Duration::hours(1);
 
         // Discover metrics per namespace via ListMetrics
+        // Tuple: (namespace, metric_name, dimensions, unit)
         let mut queries = Vec::new();
-        let mut query_meta: Vec<(String, String, serde_json::Value)> = Vec::new();
+        let mut query_meta: Vec<(String, String, serde_json::Value, String)> = Vec::new();
 
         for namespace in &namespaces {
             let mut next_token: Option<String> = None;
@@ -584,6 +643,7 @@ impl AwsSource {
                         }
 
                         let dimensions = metric["Dimensions"].clone();
+                        let unit = metric["Unit"].as_str().unwrap_or("None").to_string();
                         let query_id = format!("q{}", queries.len());
 
                         queries.push(serde_json::json!({
@@ -598,7 +658,7 @@ impl AwsSource {
                                 "Stat": stat
                             }
                         }));
-                        query_meta.push((namespace.clone(), metric_name, dimensions));
+                        query_meta.push((namespace.clone(), metric_name, dimensions, unit));
                     }
                 }
 
@@ -613,9 +673,11 @@ impl AwsSource {
             return Ok(None);
         }
 
-        // GetMetricData in batches of 500 (API limit)
-        let mut all_records = Vec::new();
+        // Intermediate data: (namespace, metric_name, dimensions_json, unit, timestamp_f64, value_f64)
+        let mut data_points: Vec<(String, String, serde_json::Value, String, f64, f64)> =
+            Vec::new();
 
+        // GetMetricData in batches of 500 (API limit)
         for (batch_idx, chunk) in queries.chunks(500).enumerate() {
             let mut payload = serde_json::json!({
                 "StartTime": start_time.timestamp(),
@@ -650,26 +712,24 @@ impl AwsSource {
                             .unwrap_or(0);
                         let global_idx = batch_idx * 500 + id_num;
 
-                        let (ns, mn, dims) =
+                        let (ns, mn, dims, unit) =
                             query_meta.get(global_idx).cloned().unwrap_or_default();
 
                         let timestamps =
                             result["Timestamps"].as_array().cloned().unwrap_or_default();
                         let values = result["Values"].as_array().cloned().unwrap_or_default();
 
-                        // Each timestamp+value pair becomes a record
                         for (ts, val) in timestamps.iter().zip(values.iter()) {
-                            let record = serde_json::json!({
-                                "namespace": ns,
-                                "metric_name": mn,
-                                "dimensions": dims,
-                                "timestamp": ts,
-                                "value": val,
-                                "stat": stat
-                            });
-                            if let Ok(json) = serde_json::to_vec(&record) {
-                                all_records.push(Bytes::from(json));
-                            }
+                            let ts_f64 = ts.as_f64().unwrap_or_default();
+                            let val_f64 = val.as_f64().unwrap_or_default();
+                            data_points.push((
+                                ns.clone(),
+                                mn.clone(),
+                                dims.clone(),
+                                unit.clone(),
+                                ts_f64,
+                                val_f64,
+                            ));
                         }
                     }
                 }
@@ -681,13 +741,21 @@ impl AwsSource {
             }
         }
 
-        if all_records.is_empty() {
+        if data_points.is_empty() {
             return Ok(None);
         }
+
+        // Build output records based on format
+        let all_records = if output_format == "otlp" {
+            self.build_otlp_metrics(&data_points, stat)
+        } else {
+            self.build_json_metrics(&data_points, stat)
+        };
 
         info!(
             records = all_records.len(),
             namespaces = ?namespaces,
+            output_format,
             "AWS CloudWatch Metrics fetched"
         );
         Ok(Some(FetchResult {
@@ -695,5 +763,134 @@ impl AwsSource {
             source: "aws.cloudwatch_metrics".to_string(),
             topic: self.config.topic.clone(),
         }))
+    }
+
+    /// Build JSON records from CloudWatch metric data points.
+    fn build_json_metrics(
+        &self,
+        data_points: &[(String, String, serde_json::Value, String, f64, f64)],
+        stat: &str,
+    ) -> Vec<Bytes> {
+        data_points
+            .iter()
+            .filter_map(|(ns, mn, dims, unit, ts, val)| {
+                let record = serde_json::json!({
+                    "namespace": ns,
+                    "metric_name": mn,
+                    "dimensions": dims,
+                    "unit": unit,
+                    "timestamp": ts,
+                    "value": val,
+                    "stat": stat
+                });
+                serde_json::to_vec(&record).ok().map(Bytes::from)
+            })
+            .collect()
+    }
+
+    /// Build OTLP protobuf from CloudWatch metric data points.
+    ///
+    /// Groups data points by (namespace, metric_name, unit, dimensions) into
+    /// OTel Gauge metrics within a single `ExportMetricsServiceRequest`.
+    fn build_otlp_metrics(
+        &self,
+        data_points: &[(String, String, serde_json::Value, String, f64, f64)],
+        stat: &str,
+    ) -> Vec<Bytes> {
+        use std::collections::BTreeMap;
+
+        // Group by (namespace, metric_name, unit, dimensions_json) for proper OTel structure
+        // Each unique combination becomes one Metric with multiple data points
+        let mut grouped: BTreeMap<(String, String, String, String), Vec<NumberDataPoint>> =
+            BTreeMap::new();
+
+        for (ns, mn, dims, unit, ts, val) in data_points {
+            let dims_key = dims.to_string();
+
+            // Build data point attributes: Namespace + individual dimensions
+            let mut attributes = vec![otel_kv("Namespace", ns)];
+            if let Some(dim_array) = dims.as_array() {
+                for dim in dim_array {
+                    let name = dim["Name"].as_str().unwrap_or_default();
+                    let value = dim["Value"].as_str().unwrap_or_default();
+                    if !name.is_empty() {
+                        attributes.push(otel_kv(name, value));
+                    }
+                }
+            }
+
+            // Timestamp: CloudWatch returns seconds, OTel wants nanoseconds
+            #[allow(clippy::cast_sign_loss)]
+            let time_unix_nano = (*ts * 1_000_000_000.0) as u64;
+
+            let data_point = NumberDataPoint {
+                attributes,
+                start_time_unix_nano: 0,
+                time_unix_nano,
+                exemplars: Vec::new(),
+                flags: 0,
+                value: Some(
+                    opentelemetry_proto::tonic::metrics::v1::number_data_point::Value::AsDouble(
+                        *val,
+                    ),
+                ),
+            };
+
+            let key = (ns.clone(), mn.clone(), unit.clone(), dims_key);
+            grouped.entry(key).or_default().push(data_point);
+        }
+
+        // Build OTel Metric objects
+        let metrics: Vec<Metric> = grouped
+            .into_iter()
+            .map(|((_, mn, unit, _), points)| {
+                let ucum_unit = cloudwatch_unit_to_ucum(&unit);
+                Metric {
+                    name: mn,
+                    description: String::new(),
+                    unit: ucum_unit.to_string(),
+                    metadata: vec![otel_kv("stat", stat)],
+                    data: Some(metric::Data::Gauge(Gauge {
+                        data_points: points,
+                    })),
+                }
+            })
+            .collect();
+
+        // Build resource with cloud metadata
+        let resource = Resource {
+            attributes: vec![
+                otel_kv("cloud.provider", "aws"),
+                otel_kv("cloud.region", &self.config.region),
+                otel_kv("service.name", "dfe-fetcher"),
+            ],
+            dropped_attributes_count: 0,
+        };
+
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(resource),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(InstrumentationScope {
+                        name: "dfe-fetcher".to_string(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        attributes: Vec::new(),
+                        dropped_attributes_count: 0,
+                    }),
+                    metrics,
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        // Serialise to protobuf bytes
+        let mut buf = Vec::with_capacity(request.encoded_len());
+        if request.encode(&mut buf).is_ok() {
+            vec![Bytes::from(buf)]
+        } else {
+            warn!("Failed to encode OTLP metrics protobuf");
+            Vec::new()
+        }
     }
 }
