@@ -8,3 +8,6 @@
 	url = https://github.com/hyperi-io/ai.git
 	fetchRecurseSubmodules = true
 	update = rebase
+[submodule "schemas"]
+	path = schemas
+	url = https://github.com/hyperi-io/dfe-schemas.git
