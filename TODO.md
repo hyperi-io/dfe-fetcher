@@ -34,6 +34,8 @@ _None currently — MVP complete. See Remaining Work for next steps._
 
 8. [ ] **Per-message filtering** — All sources emit every record fetched. Add configurable post-fetch filtering using DFE expression language (from rustlib) to drop/keep records before Kafka delivery. Applies to all sources, not just CloudWatch. Separate from source-level API query filters.
 
+9. [ ] **`_timestamp_received` enrichment** — All fetched data should set `_timestamp_received` to the time it was fetched (aligns with `common-header/timeseries.yaml` schema).
+
 ### Testing
 
 8. [x] **Wiremock source tests** — 31 wiremock tests across all 4 sources (AWS 6, Azure 8, GCP 7, M365 10) covering fetch success, pagination, empty responses, error handling, and health checks. URL override fields added to config structs.
@@ -95,6 +97,7 @@ _None currently — MVP complete. See Remaining Work for next steps._
 - [x] `fetch_config` — SelectAggregateResourceConfig
 - [x] `fetch_cloudwatch_logs` — FilterLogEvents with log group filtering and pagination
 - [x] `fetch_cloudwatch_metrics` — ListMetrics discovery + GetMetricData with namespace/metric filters
+- [x] CloudWatch Metrics OTLP output — optional `output_format: "otlp"` produces `ExportMetricsServiceRequest` protobuf (HyperDX compatible). UCUM unit mapping, Gauge data points with cloud resource attributes.
 
 #### 3d. GCP Source
 
@@ -145,7 +148,7 @@ _None currently — MVP complete. See Remaining Work for next steps._
 ```
 cargo fmt --check    ✅ Clean
 cargo clippy -D warn ✅ Clean
-cargo test           ✅ 110/110 passing (43 unit + 19 integration + 48 source)
+cargo test           ✅ 111/111 passing (43 unit + 19 integration + 49 source)
 cargo test --test smoke_cloud -- --ignored  ✅ 8 smoke tests (AWS CloudTrail/CW Logs/CW Metrics + Azure + GCP)
 ```
 
