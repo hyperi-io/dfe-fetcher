@@ -268,5 +268,6 @@ fn make_pipeline_state(
     shared: dfe_fetcher::config::SharedConfig,
 ) -> dfe_fetcher::pipeline::PipelineState {
     // PipelineState::new creates state without kafka sink when no brokers are configured
-    dfe_fetcher::pipeline::PipelineState::new(shared).expect("pipeline state creation")
+    let metrics = std::sync::Arc::new(Metrics::new());
+    dfe_fetcher::pipeline::PipelineState::new(shared, metrics).expect("pipeline state creation")
 }

@@ -24,6 +24,7 @@ pub use shared::SharedConfig;
 use std::collections::HashMap;
 
 use hyperi_rustlib::config::{self, ConfigOptions};
+use hyperi_rustlib::dlq::DlqConfig;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -57,6 +58,10 @@ pub struct Config {
     /// Metrics configuration.
     pub metrics: MetricsConfig,
 
+    /// Dead letter queue configuration.
+    #[serde(default)]
+    pub dlq: DlqConfig,
+
     /// Periodic config reload interval in seconds (0 = disabled, SIGHUP only).
     #[serde(default)]
     pub config_reload_secs: u64,
@@ -76,6 +81,7 @@ impl Default for Config {
             kafka: KafkaConfig::default(),
             buffer: BufferConfig::default(),
             metrics: MetricsConfig::default(),
+            dlq: DlqConfig::default(),
             config_reload_secs: 0,
             config_path: None,
         }
@@ -307,6 +313,16 @@ fn apply_env_overrides(config: &mut Config) {
             config.config_reload_secs = n;
             debug!("Override: config_reload_secs from env");
         }
+    }
+
+    // DLQ
+    if let Ok(v) = env_var("DLQ_ENABLED") {
+        config.dlq.enabled = v == "true" || v == "1";
+        debug!("Override: dlq.enabled from env");
+    }
+    if let Ok(v) = env_var("DLQ_PATH") {
+        config.dlq.file.path = v.into();
+        debug!("Override: dlq.file.path from env");
     }
 }
 

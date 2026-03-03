@@ -30,8 +30,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use hyperi_rustlib::dlq::{Dlq, DlqEntry};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::buffer::{BufferManager, TieredSink};
 use crate::config::{Config, SharedConfig};
@@ -46,12 +47,14 @@ pub struct PipelineState {
     shared_config: SharedConfig,
     kafka_sink: Option<Arc<TieredSink<KafkaSink>>>,
     buffer_manager: Arc<BufferManager>,
+    dlq: Option<Dlq>,
+    metrics: Arc<Metrics>,
     ready: AtomicBool,
 }
 
 impl PipelineState {
     /// Create new pipeline state.
-    pub fn new(shared_config: SharedConfig) -> Result<Self> {
+    pub fn new(shared_config: SharedConfig, metrics: Arc<Metrics>) -> Result<Self> {
         let config = shared_config.get();
         let buffer_manager = Arc::new(BufferManager::new(&config.buffer));
 
@@ -63,10 +66,25 @@ impl PipelineState {
             None
         };
 
+        // Initialise DLQ if enabled
+        let dlq = if config.dlq.enabled {
+            match Dlq::file_only(&config.dlq, "dfe-fetcher") {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialise DLQ, continuing without it");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             shared_config,
             kafka_sink,
             buffer_manager,
+            dlq,
+            metrics,
             ready: AtomicBool::new(true),
         })
     }
@@ -153,7 +171,7 @@ impl PipelineState {
         Bytes::from(buf)
     }
 
-    /// Send a message to Kafka.
+    /// Send a message to Kafka. On failure, routes to DLQ if available.
     async fn send_to_kafka(&self, topic: &str, payload: Bytes) -> Result<()> {
         let Some(ref sink) = self.kafka_sink else {
             return Err(Error::Config("Kafka sink not configured".into()));
@@ -162,9 +180,34 @@ impl PipelineState {
         let payload_size = payload.len() as u64;
         self.buffer_manager.add_bytes(payload_size);
 
-        let result = sink.send(topic, payload).await;
+        let result = sink.send(topic, payload.clone()).await;
 
         self.buffer_manager.remove_bytes(payload_size);
+
+        if let Err(ref kafka_err) = result {
+            if let Some(ref dlq) = self.dlq {
+                let entry = DlqEntry::new(
+                    "dfe-fetcher",
+                    format!("kafka send failed: {kafka_err}"),
+                    payload.to_vec(),
+                )
+                .with_destination(topic);
+
+                if let Err(dlq_err) = dlq.send(entry).await {
+                    error!(
+                        error = %dlq_err,
+                        topic,
+                        "Failed to send to DLQ after Kafka failure"
+                    );
+                    return result;
+                }
+
+                self.metrics.inc_messages_dlq();
+                warn!(topic, error = %kafka_err, "Message routed to DLQ after Kafka failure");
+                return Ok(());
+            }
+        }
+
         result
     }
 
@@ -202,7 +245,7 @@ impl Orchestrator {
     /// Create a new orchestrator.
     pub fn new(config: Config, metrics: Arc<Metrics>, shutdown: CancellationToken) -> Result<Self> {
         let shared_config = SharedConfig::new(config);
-        let state = PipelineState::new(shared_config.clone())?;
+        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics))?;
 
         Ok(Self {
             state: Arc::new(state),
@@ -272,7 +315,8 @@ mod tests {
     fn test_enrich_record_injects_metadata() {
         let config = Config::default();
         let shared = SharedConfig::new(config);
-        let state = PipelineState::new(shared).unwrap_or_else(|_| {
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::new(shared, metrics).unwrap_or_else(|_| {
             // Kafka not configured, create minimal state
             let config = Config::default();
             let shared = SharedConfig::new(config);
@@ -282,6 +326,8 @@ mod tests {
                 buffer_manager: Arc::new(BufferManager::new(
                     &crate::config::BufferConfig::default(),
                 )),
+                dlq: None,
+                metrics: Arc::new(Metrics::new()),
                 ready: AtomicBool::new(true),
             }
         });

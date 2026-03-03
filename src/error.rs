@@ -57,6 +57,10 @@ pub enum Error {
     /// Secrets management error.
     #[error("secrets error: {0}")]
     Secrets(#[from] hyperi_rustlib::SecretsError),
+
+    /// Dead letter queue error.
+    #[error("DLQ error: {0}")]
+    Dlq(#[from] hyperi_rustlib::dlq::DlqError),
 }
 
 /// Result type alias for dfe-fetcher operations.

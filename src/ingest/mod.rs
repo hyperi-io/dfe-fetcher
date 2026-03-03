@@ -155,13 +155,16 @@ mod tests {
     fn test_app() -> (Router, Arc<PipelineState>) {
         let config = Config::default();
         let shared = SharedConfig::new(config);
-        let pipeline = Arc::new(PipelineState::new(shared).unwrap_or_else(|_| {
-            let config = Config::default();
-            let shared = SharedConfig::new(config);
-            // Kafka not configured — pipeline won't deliver but won't panic
-            PipelineState::new(shared).expect("default config should work")
-        }));
         let metrics = Arc::new(Metrics::new());
+        let pipeline = Arc::new(
+            PipelineState::new(shared, Arc::clone(&metrics)).unwrap_or_else(|_| {
+                let config = Config::default();
+                let shared = SharedConfig::new(config);
+                // Kafka not configured — pipeline won't deliver but won't panic
+                PipelineState::new(shared, Arc::new(Metrics::new()))
+                    .expect("default config should work")
+            }),
+        );
         let state = Arc::new(IngestState {
             pipeline: pipeline.clone(),
             metrics,

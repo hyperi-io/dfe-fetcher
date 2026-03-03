@@ -17,7 +17,6 @@
 //! Uses Google Cloud REST APIs with OAuth2 bearer tokens.
 
 use async_trait::async_trait;
-use base64::Engine;
 use bytes::Bytes;
 use tracing::{debug, info, warn};
 
@@ -74,11 +73,11 @@ impl GcpSource {
         let token_uri = key["token_uri"]
             .as_str()
             .unwrap_or("https://oauth2.googleapis.com/token");
-        let _private_key = key["private_key"]
+        let private_key = key["private_key"]
             .as_str()
             .ok_or_else(|| Error::Credential("missing private_key in GCP key".into()))?;
 
-        // Build JWT claim
+        // Build JWT claims for service account token exchange
         let now = chrono::Utc::now().timestamp();
         let claims = serde_json::json!({
             "iss": client_email,
@@ -88,17 +87,14 @@ impl GcpSource {
             "exp": now + 3600,
         });
 
-        // For MVP, encode JWT header + claims and sign with RS256
-        // In production, use a proper JWT library (jsonwebtoken crate)
-        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-        let payload =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
+        // Sign JWT with RS256 using the service account's private key
+        let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes())
+            .map_err(|e| Error::Credential(format!("invalid GCP private key: {e}")))?;
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        let jwt = jsonwebtoken::encode(&header, &claims, &encoding_key)
+            .map_err(|e| Error::Credential(format!("JWT signing failed: {e}")))?;
 
-        // Placeholder: proper RSA signing would use the private_key PEM
-        // For now, we'll attempt the token exchange and let the server reject if unsigned
-        let jwt = format!("{header}.{payload}.PLACEHOLDER_SIGNATURE");
-
+        // Exchange signed JWT for an access token
         let resp = self
             .client
             .post(token_uri)

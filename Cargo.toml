@@ -23,7 +23,7 @@ doctest = false
 
 [dependencies]
 # HyperI shared library (from JFrog Cargo registry)
-hyperi-rustlib = { version = ">=1.9.2", registry = "hyperi", features = [
+hyperi-rustlib = { version = ">=1.10.0", registry = "hyperi", features = [
     "config",
     "config-reload",
     "logger",
@@ -36,6 +36,7 @@ hyperi-rustlib = { version = ">=1.9.2", registry = "hyperi", features = [
     "tiered-sink",
     "runtime",
     "secrets",
+    "dlq",
 ] }
 
 # Async runtime
@@ -81,9 +82,14 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 sysinfo = "0.32"
-base64 = "0.22"
 url = "2"
 libloading = "0.8"
+jsonwebtoken = "10"
+
+# AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
+reqsign = { version = "0.16", default-features = false, features = ["services-aws"] }
+sha2 = "0.10"
+hex = "0.4"
 
 # Optional allocators
 tikv-jemallocator = { version = "0.6", optional = true }
