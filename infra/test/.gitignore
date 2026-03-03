@@ -1,0 +1,8 @@
+# Terraform state (contains secrets)
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Actual variable values (contains account IDs)
+terraform.tfvars
