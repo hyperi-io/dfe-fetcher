@@ -84,14 +84,14 @@ provider "google" {
 }
 
 # =============================================================================
-# AWS — IAM user with CloudTrail read-only access
+# AWS — IAM user with read-only access to fetched services
 # =============================================================================
-# Cost: Free (IAM users and CloudTrail management events are free)
+# Cost: Free (IAM users, CloudTrail management events, CloudWatch reads are free)
 
 resource "aws_iam_user" "fetcher_test" {
   name = "dfe-fetcher-test"
   tags = {
-    Purpose = "dfe-fetcher smoke test"
+    Purpose   = "dfe-fetcher smoke test"
     ManagedBy = "terraform"
   }
 }
@@ -99,6 +99,39 @@ resource "aws_iam_user" "fetcher_test" {
 resource "aws_iam_user_policy_attachment" "cloudtrail_readonly" {
   user       = aws_iam_user.fetcher_test.name
   policy_arn = "arn:aws:iam::aws:policy/AWSCloudTrail_ReadOnlyAccess"
+}
+
+resource "aws_iam_user_policy" "cloudwatch_readonly" {
+  name = "dfe-fetcher-cloudwatch-readonly"
+  user = aws_iam_user.fetcher_test.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "CloudWatchLogsRead"
+        Effect = "Allow"
+        Action = [
+          "logs:FilterLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams",
+          "logs:GetLogEvents",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "CloudWatchMetricsRead"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:ListMetrics",
+          "cloudwatch:GetMetricData",
+          "cloudwatch:GetMetricStatistics",
+          "cloudwatch:DescribeAlarms",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
 }
 
 resource "aws_iam_access_key" "fetcher_test" {

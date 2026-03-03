@@ -93,6 +93,92 @@ async fn aws_fetch_cloudtrail() {
     );
 }
 
+fn make_aws_cloudwatch_logs_config() -> Option<AwsSourceConfig> {
+    let access_key_id = env("AWS_ACCESS_KEY_ID")?;
+    let secret_access_key = env("AWS_SECRET_ACCESS_KEY")?;
+    let region = env("AWS_REGION").unwrap_or_else(|| "ap-southeast-2".to_string());
+
+    // Use a log group from env, or discover the first available one
+    let log_group = env("AWS_CLOUDWATCH_LOG_GROUP").unwrap_or_else(|| "vpc_flow_logs".to_string());
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert(
+        "log_group_name".to_string(),
+        serde_json::Value::String(log_group),
+    );
+
+    Some(AwsSourceConfig {
+        enabled: true,
+        region,
+        access_key_id: Some(access_key_id),
+        secret_access_key: Some(secret_access_key),
+        assume_role_arn: None,
+        credential_secret: None,
+        endpoint_override: None,
+        interval_secs: None,
+        services: vec![AwsService {
+            name: "cloudwatch_logs".to_string(),
+            config: svc_config,
+        }],
+        topic: "test-aws".to_string(),
+    })
+}
+
+#[tokio::test]
+#[ignore]
+async fn aws_fetch_cloudwatch_logs() {
+    load_env();
+    let config = make_aws_cloudwatch_logs_config().expect("AWS credentials not found in .env");
+    let source = AwsSource::new(config);
+
+    let results = source.fetch().await.expect("fetch failed");
+    eprintln!(
+        "AWS CloudWatch Logs: {} result(s), {} total records",
+        results.len(),
+        results.iter().map(|r| r.records.len()).sum::<usize>()
+    );
+}
+
+fn make_aws_cloudwatch_metrics_config() -> Option<AwsSourceConfig> {
+    let access_key_id = env("AWS_ACCESS_KEY_ID")?;
+    let secret_access_key = env("AWS_SECRET_ACCESS_KEY")?;
+    let region = env("AWS_REGION").unwrap_or_else(|| "ap-southeast-2".to_string());
+
+    let mut svc_config = HashMap::new();
+    svc_config.insert("namespaces".to_string(), serde_json::json!(["AWS/EC2"]));
+
+    Some(AwsSourceConfig {
+        enabled: true,
+        region,
+        access_key_id: Some(access_key_id),
+        secret_access_key: Some(secret_access_key),
+        assume_role_arn: None,
+        credential_secret: None,
+        endpoint_override: None,
+        interval_secs: None,
+        services: vec![AwsService {
+            name: "cloudwatch_metrics".to_string(),
+            config: svc_config,
+        }],
+        topic: "test-aws".to_string(),
+    })
+}
+
+#[tokio::test]
+#[ignore]
+async fn aws_fetch_cloudwatch_metrics() {
+    load_env();
+    let config = make_aws_cloudwatch_metrics_config().expect("AWS credentials not found in .env");
+    let source = AwsSource::new(config);
+
+    let results = source.fetch().await.expect("fetch failed");
+    eprintln!(
+        "AWS CloudWatch Metrics: {} result(s), {} total records",
+        results.len(),
+        results.iter().map(|r| r.records.len()).sum::<usize>()
+    );
+}
+
 // =============================================================================
 // Azure — OAuth2 client_credentials against real Activity Log
 // =============================================================================

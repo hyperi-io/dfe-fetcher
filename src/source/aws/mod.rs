@@ -1,6 +1,6 @@
 // Project:   dfe-fetcher
 // File:      src/source/aws/mod.rs
-// Purpose:   AWS data source (CloudTrail, GuardDuty, SecurityHub, Config)
+// Purpose:   AWS data source (CloudTrail, GuardDuty, SecurityHub, Config, CloudWatch)
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2
@@ -13,6 +13,8 @@
 //! - GuardDuty (threat detection)
 //! - SecurityHub (security findings)
 //! - Config (resource configuration)
+//! - CloudWatch Logs (log groups)
+//! - CloudWatch Metrics (monitoring data)
 //!
 //! Authentication: Static credentials, assume role, or secrets manager.
 //! Uses AWS REST APIs with SigV4 signing via the `reqsign` crate.
@@ -87,11 +89,15 @@ impl AwsSource {
     }
 
     /// Make a signed AWS API request using JSON target API style.
+    ///
+    /// `json_version` is the AWS JSON protocol version: "1.1" for most services,
+    /// "1.0" for CloudWatch Monitoring.
     async fn aws_json_request(
         &self,
         service: &str,
         target: &str,
         payload: &serde_json::Value,
+        json_version: &str,
     ) -> Result<serde_json::Value> {
         let (access_key, secret_key) = self.resolve_credentials().await?;
         let region = &self.config.region;
@@ -110,7 +116,10 @@ impl AwsSource {
         let mut req = self
             .client
             .post(&endpoint)
-            .header("Content-Type", "application/x-amz-json-1.1")
+            .header(
+                "Content-Type",
+                format!("application/x-amz-json-{json_version}"),
+            )
             .header("X-Amz-Target", target)
             .header("x-amz-content-sha256", &body_hash)
             .body(body)
@@ -177,6 +186,8 @@ impl Source for AwsSource {
                 "guardduty" => self.fetch_guardduty(service).await?,
                 "securityhub" => self.fetch_securityhub(service).await?,
                 "config" => self.fetch_config(service).await?,
+                "cloudwatch_logs" => self.fetch_cloudwatch_logs(service).await?,
+                "cloudwatch_metrics" => self.fetch_cloudwatch_metrics(service).await?,
                 other => {
                     warn!(service = other, "Unknown AWS service, skipping");
                     continue;
@@ -223,6 +234,7 @@ impl AwsSource {
                 "cloudtrail",
                 "com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101.LookupEvents",
                 &payload,
+                "1.1",
             )
             .await?;
 
@@ -255,6 +267,7 @@ impl AwsSource {
                 "guardduty",
                 "com.amazonaws.guardduty.v20170811.GuardDuty_20170811.ListDetectors",
                 &serde_json::json!({}),
+                "1.1",
             )
             .await?;
 
@@ -279,6 +292,7 @@ impl AwsSource {
                         "DetectorId": detector_id,
                         "MaxResults": 50
                     }),
+                    "1.1",
                 )
                 .await?;
 
@@ -299,6 +313,7 @@ impl AwsSource {
                         "DetectorId": detector_id,
                         "FindingIds": finding_ids
                     }),
+                    "1.1",
                 )
                 .await?;
 
@@ -342,6 +357,7 @@ impl AwsSource {
                 "securityhub",
                 "com.amazonaws.securityhub.v20180710.SecurityHub_20180710.GetFindings",
                 &payload,
+                "1.1",
             )
             .await?;
 
@@ -377,6 +393,7 @@ impl AwsSource {
                 "config",
                 "com.amazonaws.config.v20141112.StarlingDoveService.SelectAggregateResourceConfig",
                 &payload,
+                "1.1",
             )
             .await?;
 
@@ -402,6 +419,280 @@ impl AwsSource {
         Ok(Some(FetchResult {
             records,
             source: "aws.config".to_string(),
+            topic: self.config.topic.clone(),
+        }))
+    }
+
+    async fn fetch_cloudwatch_logs(
+        &self,
+        service: &crate::config::AwsService,
+    ) -> Result<Option<FetchResult>> {
+        let log_group = service
+            .config
+            .get("log_group_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                Error::Config("cloudwatch_logs requires log_group_name in service config".into())
+            })?;
+
+        let filter_pattern = service
+            .config
+            .get("filter_pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let now = Utc::now();
+        let start = now - chrono::Duration::hours(1);
+
+        let mut all_records = Vec::new();
+        let mut next_token: Option<String> = None;
+
+        for _page in 0..20 {
+            let mut payload = serde_json::json!({
+                "logGroupName": log_group,
+                "startTime": start.timestamp_millis(),
+                "endTime": now.timestamp_millis(),
+                "limit": 10000
+            });
+
+            if !filter_pattern.is_empty() {
+                payload["filterPattern"] = serde_json::Value::String(filter_pattern.to_string());
+            }
+
+            if let Some(ref token) = next_token {
+                payload["nextToken"] = serde_json::Value::String(token.clone());
+            }
+
+            let response = self
+                .aws_json_request("logs", "Logs_20140328.FilterLogEvents", &payload, "1.1")
+                .await?;
+
+            if let Some(events) = response["events"].as_array() {
+                for event in events {
+                    if let Ok(json) = serde_json::to_vec(event) {
+                        all_records.push(Bytes::from(json));
+                    }
+                }
+            }
+
+            match response["nextToken"].as_str() {
+                Some(token) => next_token = Some(token.to_string()),
+                None => break,
+            }
+        }
+
+        if all_records.is_empty() {
+            return Ok(None);
+        }
+
+        info!(
+            records = all_records.len(),
+            log_group = log_group,
+            "AWS CloudWatch Logs fetched"
+        );
+        Ok(Some(FetchResult {
+            records: all_records,
+            source: "aws.cloudwatch_logs".to_string(),
+            topic: self.config.topic.clone(),
+        }))
+    }
+
+    async fn fetch_cloudwatch_metrics(
+        &self,
+        service: &crate::config::AwsService,
+    ) -> Result<Option<FetchResult>> {
+        // Namespaces to query (required — prevents firehose)
+        let namespaces: Vec<String> = service
+            .config
+            .get("namespaces")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if namespaces.is_empty() {
+            return Err(Error::Config(
+                "cloudwatch_metrics requires namespaces in service config".into(),
+            ));
+        }
+
+        // Optional metric name whitelist
+        let metric_names: Vec<String> = service
+            .config
+            .get("metric_names")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let period_secs: i64 = service
+            .config
+            .get("period_secs")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(300);
+
+        let stat = service
+            .config
+            .get("stat")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Average");
+
+        let now = Utc::now();
+        let start_time = now - chrono::Duration::hours(1);
+
+        // Discover metrics per namespace via ListMetrics
+        let mut queries = Vec::new();
+        let mut query_meta: Vec<(String, String, serde_json::Value)> = Vec::new();
+
+        for namespace in &namespaces {
+            let mut next_token: Option<String> = None;
+
+            for _page in 0..10 {
+                let mut payload = serde_json::json!({
+                    "Namespace": namespace
+                });
+
+                if let Some(ref token) = next_token {
+                    payload["NextToken"] = serde_json::Value::String(token.clone());
+                }
+
+                let response = self
+                    .aws_json_request(
+                        "monitoring",
+                        "GraniteServiceVersion20100801.ListMetrics",
+                        &payload,
+                        "1.0",
+                    )
+                    .await?;
+
+                if let Some(metrics) = response["Metrics"].as_array() {
+                    for metric in metrics {
+                        let metric_name = metric["MetricName"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
+
+                        // Apply metric_names whitelist if set
+                        if !metric_names.is_empty() && !metric_names.contains(&metric_name) {
+                            continue;
+                        }
+
+                        let dimensions = metric["Dimensions"].clone();
+                        let query_id = format!("q{}", queries.len());
+
+                        queries.push(serde_json::json!({
+                            "Id": query_id,
+                            "MetricStat": {
+                                "Metric": {
+                                    "Namespace": namespace,
+                                    "MetricName": metric_name,
+                                    "Dimensions": dimensions
+                                },
+                                "Period": period_secs,
+                                "Stat": stat
+                            }
+                        }));
+                        query_meta.push((namespace.clone(), metric_name, dimensions));
+                    }
+                }
+
+                match response["NextToken"].as_str() {
+                    Some(token) => next_token = Some(token.to_string()),
+                    None => break,
+                }
+            }
+        }
+
+        if queries.is_empty() {
+            return Ok(None);
+        }
+
+        // GetMetricData in batches of 500 (API limit)
+        let mut all_records = Vec::new();
+
+        for (batch_idx, chunk) in queries.chunks(500).enumerate() {
+            let mut payload = serde_json::json!({
+                "StartTime": start_time.timestamp(),
+                "EndTime": now.timestamp(),
+                "MetricDataQueries": chunk
+            });
+
+            let mut next_token: Option<String> = None;
+
+            for _page in 0..10 {
+                if let Some(ref token) = next_token {
+                    payload["NextToken"] = serde_json::Value::String(token.clone());
+                }
+
+                let response = self
+                    .aws_json_request(
+                        "monitoring",
+                        "GraniteServiceVersion20100801.GetMetricData",
+                        &payload,
+                        "1.0",
+                    )
+                    .await?;
+
+                if let Some(results) = response["MetricDataResults"].as_array() {
+                    for result in results {
+                        let id = result["Id"].as_str().unwrap_or_default();
+
+                        // Map query ID back to metadata
+                        let id_num: usize = id
+                            .strip_prefix('q')
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(0);
+                        let global_idx = batch_idx * 500 + id_num;
+
+                        let (ns, mn, dims) =
+                            query_meta.get(global_idx).cloned().unwrap_or_default();
+
+                        let timestamps =
+                            result["Timestamps"].as_array().cloned().unwrap_or_default();
+                        let values = result["Values"].as_array().cloned().unwrap_or_default();
+
+                        // Each timestamp+value pair becomes a record
+                        for (ts, val) in timestamps.iter().zip(values.iter()) {
+                            let record = serde_json::json!({
+                                "namespace": ns,
+                                "metric_name": mn,
+                                "dimensions": dims,
+                                "timestamp": ts,
+                                "value": val,
+                                "stat": stat
+                            });
+                            if let Ok(json) = serde_json::to_vec(&record) {
+                                all_records.push(Bytes::from(json));
+                            }
+                        }
+                    }
+                }
+
+                match response["NextToken"].as_str() {
+                    Some(token) => next_token = Some(token.to_string()),
+                    None => break,
+                }
+            }
+        }
+
+        if all_records.is_empty() {
+            return Ok(None);
+        }
+
+        info!(
+            records = all_records.len(),
+            namespaces = ?namespaces,
+            "AWS CloudWatch Metrics fetched"
+        );
+        Ok(Some(FetchResult {
+            records: all_records,
+            source: "aws.cloudwatch_metrics".to_string(),
             topic: self.config.topic.clone(),
         }))
     }
