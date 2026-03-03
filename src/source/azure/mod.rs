@@ -215,10 +215,12 @@ impl AzureSource {
         // Fetch last 24 hours of activity logs
         let now = chrono::Utc::now();
         let start = now - chrono::Duration::hours(24);
+        // Azure Activity Log requires ISO 8601 without sub-second precision
+        let fmt = "%Y-%m-%dT%H:%M:%SZ";
         let filter = format!(
             "eventTimestamp ge '{}' and eventTimestamp le '{}'",
-            start.to_rfc3339(),
-            now.to_rfc3339()
+            start.format(fmt),
+            now.format(fmt)
         );
 
         let url = format!(

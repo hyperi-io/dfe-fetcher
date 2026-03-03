@@ -185,6 +185,20 @@ buffer:
   pressure_threshold: 0.8
 
 # =============================================================================
+# Dead Letter Queue
+# =============================================================================
+# Messages that fail Kafka delivery are routed to the DLQ for later replay.
+# File-only mode writes DLQ entries to local disk as JSON lines.
+dlq:
+  enabled: false
+  # mode: file_only               # file_only (default), cascade, fan_out, kafka_only
+  # file:
+  #   path: "/var/lib/dfe-fetcher/dlq"
+  #   rotation: daily              # daily, hourly, size_mb
+  #   max_age_days: 7
+  #   compress_rotated: true
+
+# =============================================================================
 # Metrics
 # =============================================================================
 metrics:

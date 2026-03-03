@@ -15,12 +15,13 @@
 //! - Config (resource configuration)
 //!
 //! Authentication: Static credentials, assume role, or secrets manager.
-//! Uses AWS REST APIs with SigV4 signing via the `aws-sigv4` crate,
-//! or falls back to direct JSON API calls with static credentials.
+//! Uses AWS REST APIs with SigV4 signing via the `reqsign` crate.
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
+use reqsign::{AwsCredential, AwsV4Signer};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
 use crate::config::AwsSourceConfig;
@@ -92,35 +93,42 @@ impl AwsSource {
         target: &str,
         payload: &serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let (access_key, _secret_key) = self.resolve_credentials().await?;
+        let (access_key, secret_key) = self.resolve_credentials().await?;
         let region = &self.config.region;
         let endpoint = format!("https://{service}.{region}.amazonaws.com");
 
         let body = serde_json::to_string(payload)
             .map_err(|e| Error::Source(format!("JSON serialise error: {e}")))?;
 
-        // AWS JSON APIs use POST with X-Amz-Target header and content-type application/x-amz-json-1.1
-        let now = Utc::now();
-        let date_stamp = now.format("%Y%m%d").to_string();
-        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+        // Compute body SHA256 for SigV4 (non-S3 services don't accept UNSIGNED-PAYLOAD)
+        let body_hash = hex::encode(Sha256::digest(body.as_bytes()));
 
-        // Simplified SigV4 — for MVP, use Authorization header with basic signing
-        // In production, use aws-sigv4 crate for proper signing
-        let resp = self
+        // Build the request, then sign it with SigV4 before sending
+        let mut req = self
             .client
             .post(&endpoint)
             .header("Content-Type", "application/x-amz-json-1.1")
             .header("X-Amz-Target", target)
-            .header("X-Amz-Date", &amz_date)
-            .header("X-Amz-Security-Token", "")
-            .header(
-                "Authorization",
-                format!(
-                    "AWS4-HMAC-SHA256 Credential={access_key}/{date_stamp}/{region}/{service}/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-target, Signature=TODO_IMPLEMENT_SIGV4"
-                ),
-            )
+            .header("x-amz-content-sha256", &body_hash)
             .body(body)
-            .send()
+            .build()
+            .map_err(|e| Error::Source(format!("failed to build AWS request: {e}")))?;
+
+        // Sign with SigV4 using reqsign — handles date, signature, and all canonical headers
+        let cred = AwsCredential {
+            access_key_id: access_key,
+            secret_access_key: secret_key,
+            session_token: None,
+            expires_in: None,
+        };
+        let signer = AwsV4Signer::new(service, region);
+        signer
+            .sign(&mut req, &cred)
+            .map_err(|e| Error::Source(format!("SigV4 signing failed: {e}")))?;
+
+        let resp = self
+            .client
+            .execute(req)
             .await
             .map_err(|e| Error::Source(format!("AWS {service} request failed: {e}")))?;
 
