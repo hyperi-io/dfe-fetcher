@@ -34,7 +34,7 @@ _None currently — MVP complete. See Remaining Work for next steps._
 
 ### Testing
 
-8. [ ] **Wiremock source tests** — Current source tests only cover disabled/missing-credential paths. Add wiremock-based tests that mock actual API responses, pagination, error handling, and token refresh.
+8. [x] **Wiremock source tests** — 31 wiremock tests across all 4 sources (AWS 6, Azure 8, GCP 7, M365 10) covering fetch success, pagination, empty responses, error handling, and health checks. URL override fields added to config structs.
 
 9. [ ] **Container extractor integration test** — Test with a simple `echo` container that outputs JSON to stdout.
 
@@ -141,7 +141,7 @@ _None currently — MVP complete. See Remaining Work for next steps._
 ```
 cargo fmt --check    ✅ Clean
 cargo clippy -D warn ✅ Clean
-cargo test           ✅ 71/71 passing (43 unit + 19 integration + 9 source)
+cargo test           ✅ 105/105 passing (43 unit + 19 integration + 43 source)
 cargo test --test smoke_cloud -- --ignored  ✅ 6/6 (AWS + Azure + GCP all verified live)
 ```
 
