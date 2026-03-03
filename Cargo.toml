@@ -84,7 +84,7 @@ async-trait = "0.1"
 sysinfo = "0.32"
 url = "2"
 libloading = "0.8"
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
 # AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
 reqsign = { version = "0.16", default-features = false, features = ["services-aws"] }
