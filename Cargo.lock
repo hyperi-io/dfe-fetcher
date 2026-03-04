@@ -1396,14 +1396,15 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "1.10.0"
+version = "1.13.1"
 source = "sparse+https://hypersec.jfrog.io/artifactory/api/cargo/hyperi-cargo-virtual/index/"
-checksum = "8e0105f6dfe690a5bb792447d03fb2d63e78c0b5793bf8df7649236e721dfe1c"
+checksum = "60916bcfc008ed50c714dc2998609bd62e11d641fd2f42e7242b924e56f0a986"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
  "base64",
  "chrono",
+ "clap",
  "dirs",
  "dotenvy",
  "figment",

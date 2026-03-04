@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dfe-fetcher.fullname" . }}
+  labels:
+    {{- include "dfe-fetcher.labels" . | nindent 4 }}
+spec:
+  {{- if not (or .Values.keda.enabled .Values.autoscaling.enabled) }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "dfe-fetcher.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "dfe-fetcher.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "dfe-fetcher.serviceAccountName" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--config"
+            - "/etc/dfe-fetcher/config.yaml"
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+            - name: ingest
+              containerPort: 8080
+              protocol: TCP
+            - name: vector-grpc
+              containerPort: 6000
+              protocol: TCP
+          env:
+            # kafka credentials via Secret (figment env cascade overrides file config)
+            - name: DFE_FETCHER__KAFKA__SASL__USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.kafkaSecretName" . }}
+                  key: {{ .Values.kafka.secretKeys.username }}
+            - name: DFE_FETCHER__KAFKA__SASL__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.kafkaSecretName" . }}
+                  key: {{ .Values.kafka.secretKeys.password }}
+            # aws credentials via Secret (figment env cascade overrides file config)
+            - name: DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.awsSecretName" . }}
+                  key: {{ .Values.aws.secretKeys.access-key-id }}
+            - name: DFE_FETCHER__SOURCES__AWS__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.awsSecretName" . }}
+                  key: {{ .Values.aws.secretKeys.secret-access-key }}
+            # azure credentials via Secret (figment env cascade overrides file config)
+            - name: DFE_FETCHER__SOURCES__AZURE__CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.azureSecretName" . }}
+                  key: {{ .Values.azure.secretKeys.client-id }}
+            - name: DFE_FETCHER__SOURCES__AZURE__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.azureSecretName" . }}
+                  key: {{ .Values.azure.secretKeys.client-secret }}
+            # m365 credentials via Secret (figment env cascade overrides file config)
+            - name: DFE_FETCHER__SOURCES__M365__CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.m365SecretName" . }}
+                  key: {{ .Values.m365.secretKeys.client-id }}
+            - name: DFE_FETCHER__SOURCES__M365__CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.m365SecretName" . }}
+                  key: {{ .Values.m365.secretKeys.client-secret }}
+            # gcp credentials via Secret (figment env cascade overrides file config)
+            - name: DFE_FETCHER__SOURCES__GCP__SERVICE_ACCOUNT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dfe-fetcher.gcpSecretName" . }}
+                  key: {{ .Values.gcp.secretKeys.service-account-key }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: metrics
+            failureThreshold: 30
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dfe-fetcher
+              readOnly: true
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "dfe-fetcher.fullname" . }}-config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

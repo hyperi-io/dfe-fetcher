@@ -1,0 +1,24 @@
+{{- if and .Values.autoscaling.enabled (not .Values.keda.enabled) }}
+# Standard HPA fallback — use when KEDA operator is not installed.
+# Mutually exclusive with keda.enabled (KEDA creates its own HPA).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "dfe-fetcher.fullname" . }}
+  labels:
+    {{- include "dfe-fetcher.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "dfe-fetcher.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
