@@ -14,7 +14,7 @@ rust-version = "1.75"
 description = "Data fetcher for external services (AWS, Azure, M365, GCP)"
 license = "FSL-1.1-ALv2"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
-exclude = [".claude/", ".github/", "ai/", "ci/", "docs/", "reference/", "benches/"]
+exclude = [".claude/", ".github/", "ai/", "ci/", "chart/", "docs/", "infra/", "reference/", "schemas/", "benches/"]
 
 [lib]
 name = "dfe_fetcher"
