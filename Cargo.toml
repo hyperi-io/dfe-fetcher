@@ -23,7 +23,7 @@ doctest = false
 
 [dependencies]
 # HyperI shared library (from JFrog Cargo registry)
-hyperi-rustlib = { version = ">=1.10.0", registry = "hyperi", features = [
+hyperi-rustlib = { version = ">=1.13.1", registry = "hyperi", features = [
     "config",
     "config-reload",
     "logger",
@@ -37,6 +37,8 @@ hyperi-rustlib = { version = ">=1.10.0", registry = "hyperi", features = [
     "runtime",
     "secrets",
     "dlq",
+    "deployment",
+    "cli",
 ] }
 
 # Async runtime

@@ -8,13 +8,8 @@
 
 //! dfe-fetcher CLI entry point.
 //!
-//! Handles argument parsing, configuration loading, logging initialisation,
-//! and orchestrates the main fetch pipeline with graceful shutdown.
-//!
-//! Uses hyperi-rustlib for:
-//! - Configuration (7-layer cascade)
-//! - Logging (structured JSON/text with masking)
-//! - Metrics (Prometheus with process/container metrics)
+//! Uses hyperi-rustlib CLI module for standard arguments and subcommands.
+//! Implements the [`DfeApp`] trait for the standard DFE service lifecycle.
 
 #![forbid(unsafe_code)]
 
@@ -33,16 +28,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, VersionInfo};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
-use hyperi_rustlib::env::Environment;
-use hyperi_rustlib::logger::{self, LogFormat, LoggerOptions};
+use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn, Level};
+use tracing::{error, info, warn};
 
 use dfe_fetcher::config::{reload_config, Config};
+use dfe_fetcher::deployment;
 use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
 use dfe_fetcher::ingest;
@@ -59,74 +54,153 @@ use dfe_fetcher::source::Source;
 #[derive(Parser, Debug)]
 #[command(name = "dfe-fetcher")]
 #[command(version, about, long_about = None)]
-struct Args {
-    /// Path to configuration file.
-    #[arg(short, long, env = "DFE_FETCHER_CONFIG")]
-    config: Option<String>,
+struct App {
+    /// Standard CLI arguments (config, log-level, log-format, metrics-addr, verbose, quiet).
+    #[command(flatten)]
+    common: CommonArgs,
 
-    /// Log level (trace, debug, info, warn, error).
-    #[arg(long, env = "DFE_FETCHER_LOG_LEVEL", default_value = "info")]
-    log_level: String,
+    /// Subcommand (defaults to `run` if omitted).
+    #[command(subcommand)]
+    command: Option<AppCommand>,
+}
 
-    /// Log format (json, text, auto).
-    #[arg(long, env = "DFE_FETCHER_LOG_FORMAT", default_value = "auto")]
-    log_format: String,
+/// Application subcommands.
+///
+/// Standard commands (`run`, `version`, `config-check`) delegate to the
+/// rustlib CLI lifecycle. Deployment commands generate artifacts from the
+/// [`DeploymentContract`](dfe_fetcher::deployment::contract).
+#[derive(Subcommand, Clone, Debug)]
+enum AppCommand {
+    /// Start the service (default if no subcommand given).
+    Run,
 
-    /// Metrics server address.
-    #[arg(long, env = "DFE_FETCHER_METRICS_ADDR", default_value = "0.0.0.0:9090")]
-    metrics_addr: String,
+    /// Print version information and exit.
+    Version,
 
     /// Validate configuration and exit.
-    #[arg(long)]
-    validate: bool,
+    #[command(name = "config-check")]
+    ConfigCheck,
 
-    /// Print loaded configuration and exit.
-    #[arg(long)]
-    print_config: bool,
+    /// Generate Dockerfile to stdout.
+    #[command(name = "emit-dockerfile")]
+    EmitDockerfile,
+
+    /// Generate Helm chart to the given directory.
+    #[command(name = "emit-chart")]
+    EmitChart {
+        /// Output directory for the chart.
+        dir: String,
+    },
+
+    /// Generate Docker Compose fragment to stdout.
+    #[command(name = "emit-compose")]
+    EmitCompose,
+
+    /// Print deployment contract as JSON to stdout.
+    #[command(name = "emit-contract")]
+    EmitContract,
+}
+
+impl DfeApp for App {
+    type Config = Config;
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "dfe-fetcher"
+    }
+
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn env_prefix(&self) -> &str {
+        "DFE_FETCHER"
+    }
+
+    fn version_info(&self) -> VersionInfo {
+        VersionInfo::new("dfe-fetcher", env!("CARGO_PKG_VERSION"))
+    }
+
+    fn common_args(&self) -> &CommonArgs {
+        &self.common
+    }
+
+    fn command(&self) -> Option<&StandardCommand> {
+        // Map app commands to standard commands.
+        // Deployment commands are handled before run_app is called.
+        match &self.command {
+            Some(AppCommand::Version) => {
+                // Store a local static to return a reference
+                static VERSION: StandardCommand = StandardCommand::Version;
+                Some(&VERSION)
+            }
+            Some(AppCommand::ConfigCheck) => {
+                static CONFIG_CHECK: StandardCommand = StandardCommand::ConfigCheck;
+                Some(&CONFIG_CHECK)
+            }
+            // Run (explicit or default) and deployment commands
+            _ => None,
+        }
+    }
+
+    fn load_config(&self, path: Option<&str>) -> Result<Config, CliError> {
+        let config =
+            Config::load(path).map_err(|e| CliError::Config(format!("failed to load: {e}")))?;
+        config
+            .validate()
+            .map_err(|e| CliError::Config(format!("validation failed: {e}")))?;
+        Ok(config)
+    }
+
+    async fn run_service(&self, config: Config) -> Result<(), CliError> {
+        run_fetcher_service(&self.common, config)
+            .await
+            .map_err(|e| CliError::Service(e.to_string()))
+    }
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Detect environment early
-    let env = Environment::detect();
+async fn main() {
+    let app = App::parse();
 
-    // Parse CLI arguments
-    let args = Args::parse();
+    // Handle deployment artifact commands before entering the DfeApp lifecycle
+    // (these don't need config or logging)
+    if let Some(ref cmd) = app.command {
+        match cmd {
+            AppCommand::EmitDockerfile => {
+                let contract = deployment::contract();
+                println!("{}", generate_dockerfile(&contract));
+                return;
+            }
+            AppCommand::EmitChart { dir } => {
+                let contract = deployment::contract();
+                if let Err(e) = generate_chart(&contract, dir) {
+                    eprintln!("error: failed to generate Helm chart: {e}");
+                    std::process::exit(1);
+                }
+                eprintln!("Helm chart generated in {dir}/");
+                return;
+            }
+            AppCommand::EmitCompose => {
+                let contract = deployment::contract();
+                println!("{}", generate_compose_fragment(&contract));
+                return;
+            }
+            AppCommand::EmitContract => {
+                let contract = deployment::contract();
+                println!("{}", contract.to_json());
+                return;
+            }
+            _ => {}
+        }
+    }
 
-    // Initialise logging
-    init_logging(&args.log_format, &args.log_level).context("failed to initialise logging")?;
-
-    info!(
-        environment = ?env,
-        "Runtime environment detected"
-    );
-
-    // Load and validate configuration
-    let config = Config::load(args.config.as_deref()).context("failed to load configuration")?;
-
-    if let Err(e) = config.validate() {
-        error!(error = %e, "configuration validation failed");
+    // Delegate to standard DfeApp lifecycle (logging → config → run_service)
+    if let Err(e) = hyperi_rustlib::cli::run_app(app).await {
+        eprintln!("fatal: {e}");
         std::process::exit(1);
     }
+}
 
-    // Early exit for special modes
-    if args.print_config {
-        println!("{config:#?}");
-        return Ok(());
-    }
-
-    if args.validate {
-        info!("Configuration is valid");
-        return Ok(());
-    }
-
-    // Log startup info
-    info!(
-        version = env!("CARGO_PKG_VERSION"),
-        config_path = ?args.config,
-        "Starting dfe-fetcher"
-    );
-
+/// Main service loop — called by the DfeApp lifecycle after logging and config.
+async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Result<()> {
     // Initialise metrics
     let metrics = Arc::new(Metrics::new());
 
@@ -143,7 +217,6 @@ async fn main() -> anyhow::Result<()> {
             let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
                 .unwrap_or_else(|e| {
                     warn!(error = %e, "Failed to register SIGTERM handler");
-                    // Return a signal stream that never fires — won't block
                     panic!("SIGTERM handler registration failed: {e}");
                 });
 
@@ -175,8 +248,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Parse metrics server address
     let default_metrics_addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 9090));
-    let metrics_addr: SocketAddr = args.metrics_addr.parse().unwrap_or_else(|_| {
-        warn!(addr = %args.metrics_addr, "Invalid metrics address, using default");
+    let metrics_addr: SocketAddr = common.metrics_addr.parse().unwrap_or_else(|_| {
+        warn!(addr = %common.metrics_addr, "Invalid metrics address, using default");
         default_metrics_addr
     });
 
@@ -341,44 +414,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!("Shutdown complete");
-    Ok(())
-}
-
-/// Initialise logging using hyperi-rustlib's logger module.
-fn init_logging(format: &str, level: &str) -> anyhow::Result<()> {
-    let log_format = match format {
-        "json" => LogFormat::Json,
-        "text" => LogFormat::Text,
-        _ => LogFormat::Auto,
-    };
-
-    let log_level = match level.to_lowercase().as_str() {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "info" => Level::INFO,
-        "warn" | "warning" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO,
-    };
-
-    logger::setup(LoggerOptions {
-        level: log_level,
-        format: log_format,
-        add_source: true,
-        enable_masking: true,
-        sensitive_fields: vec![
-            "password".to_string(),
-            "secret".to_string(),
-            "token".to_string(),
-            "api_key".to_string(),
-            "access_key".to_string(),
-            "secret_key".to_string(),
-            "client_secret".to_string(),
-        ],
-        span_events: false,
-    })
-    .map_err(|e| anyhow::anyhow!("logger setup failed: {e}"))?;
-
     Ok(())
 }
 

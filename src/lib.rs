@@ -71,6 +71,7 @@
 pub mod buffer;
 pub mod config;
 pub mod credential;
+pub mod deployment;
 pub mod error;
 pub mod extractor;
 pub mod ingest;

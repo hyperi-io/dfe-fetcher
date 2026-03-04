@@ -1,0 +1,35 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "dfe-fetcher.fullname" . }}
+  labels:
+    {{- include "dfe-fetcher.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "dfe-fetcher.fullname" . }}
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  triggers:
+    # Kafka consumer group lag (primary scaler)
+    - type: kafka
+      authenticationRef:
+        name: {{ include "dfe-fetcher.fullname" . }}-kafka-auth
+      metadata:
+        bootstrapServers: {{ .Values.config.kafka.brokers | quote }}
+        consumerGroup: {{ .Values.keda.kafka.consumerGroup | default .Values.config.kafka.group_id | quote }}
+        topic: {{ .Values.keda.kafka.topic | default (index .Values.config.kafka.topics 0) | quote }}
+        lagThreshold: {{ .Values.keda.kafka.lagThreshold | quote }}
+        activationLagThreshold: {{ .Values.keda.kafka.activationLagThreshold | quote }}
+        saslType: scram_sha512
+        tls: disable
+    {{- if .Values.keda.cpu.enabled }}
+    # CPU utilisation (secondary scaler)
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ .Values.keda.cpu.threshold | quote }}
+    {{- end }}
+{{- end }}

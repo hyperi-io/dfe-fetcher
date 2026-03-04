@@ -1,0 +1,16 @@
+dfe-fetcher has been deployed.
+
+1. Get the metrics/health endpoint:
+   kubectl port-forward svc/{{ include "dfe-fetcher.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+   curl http://localhost:{{ .Values.service.port }}/health/live
+   curl http://localhost:{{ .Values.service.port }}/metrics
+
+{{- if .Values.keda.enabled }}
+
+2. Check KEDA autoscaling status:
+   kubectl get scaledobject {{ include "dfe-fetcher.fullname" . }}
+   kubectl get hpa
+{{- end }}
+
+3. View logs:
+   kubectl logs -l app.kubernetes.io/name={{ include "dfe-fetcher.name" . }} -f
