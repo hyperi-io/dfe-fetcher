@@ -6,7 +6,10 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
-_None currently — MVP complete. See Remaining Work for next steps._
+- [ ] **Commit Phase 6 changes to dfe-fetcher** `[IN PROGRESS]`
+  - Current state: All Phase 6 work done (CLI module, DeploymentContract, Dockerfile/Helm/Compose artifacts, base image ubuntu:24.04). Cargo.toml bumped to `>=1.13.1`. Uncommitted files: `Cargo.toml`, `Cargo.lock`, `Dockerfile`, `src/lib.rs`, `src/main.rs`, `src/deployment.rs`, `chart/`, `docker-compose.yaml`, `TODO.md`.
+  - Next: Run `cargo fmt --check && cargo clippy -- -D warnings && cargo test`, then commit all.
+  - Blockers: None
 
 ---
 
@@ -48,8 +51,9 @@ _None currently — MVP complete. See Remaining Work for next steps._
 
 ### Nice-to-Have
 
-12. [ ] **Helm chart** — K8s deployment template for dfe-fetcher.
-13. [ ] **Config --validate flag** — Parse and validate config without starting the service.
+12. [x] **Helm chart** — Generated from `DeploymentContract` via `dfe-fetcher emit-chart <dir>`. Includes Deployment, Service, ConfigMap, Secret, HPA, KEDA, ServiceAccount.
+13. [x] **Config --validate flag** — Available as `dfe-fetcher config-check` subcommand (rustlib CLI module).
+14. [ ] **Adopt rustlib `top` feature** — Live TUI metrics dashboard. Requires enabling `top` feature + ratatui dep.
 
 ---
 
@@ -125,6 +129,9 @@ _None currently — MVP complete. See Remaining Work for next steps._
 - [x] Add LICENSE, CONTRIBUTING.md, SECURITY.md, COMMERCIAL.md
 - [x] Create VERSION file (0.1.0)
 - [x] Review `.github/workflows/` — ci.yml, publish.yml, semantic-release.yml present and correct
+- [x] Add `DeploymentContract` (`src/deployment.rs`) — drives Helm chart, Dockerfile, Docker Compose generation via rustlib
+- [x] Adopt rustlib CLI module — `DfeApp` trait, `CommonArgs`, `StandardCommand`, `VersionInfo`
+- [x] CLI subcommands: `run` (default), `version`, `config-check`, `emit-dockerfile`, `emit-chart`, `emit-compose`, `emit-contract`
 
 ### Phase 7: Testing Infrastructure
 
@@ -146,10 +153,12 @@ _None currently — MVP complete. See Remaining Work for next steps._
 ## Build Status
 
 ```
-cargo fmt --check    ✅ Clean
-cargo clippy -D warn ✅ Clean
+cargo fmt --check    ✅ Clean (last verified before Phase 6 CLI/deployment work)
+cargo clippy -D warn ✅ Clean (last verified before Phase 6 CLI/deployment work)
 cargo test           ✅ 111/111 passing (43 unit + 19 integration + 49 source)
 cargo test --test smoke_cloud -- --ignored  ✅ 8 smoke tests (AWS CloudTrail/CW Logs/CW Metrics + Azure + GCP)
+
+Phase 6 changes (CLI module, DeploymentContract, artifacts) uncommitted — verify before committing.
 ```
 
 ---
