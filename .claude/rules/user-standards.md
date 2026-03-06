@@ -1,0 +1,1 @@
+../../../../home/derek/.config/ai/USER-CODING-STANDARDS.md
