@@ -43,6 +43,7 @@ test:
 # Building
 build:
   enabled: true
+  type: app
   strategies:
     - native               # Release build
   rust:
