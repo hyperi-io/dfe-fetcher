@@ -22,8 +22,8 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-# HyperI shared library (from JFrog Cargo registry)
-hyperi-rustlib = { version = ">=1.13.1", registry = "hyperi", features = [
+# HyperI shared library
+hyperi-rustlib = { version = ">=1.13.1", features = [
     "config",
     "config-reload",
     "logger",
