@@ -12,8 +12,8 @@
 //! Helm chart, and Docker Compose fragments via `hyperi-rustlib`.
 
 use hyperi_rustlib::deployment::{
-    DeploymentContract, HealthContract, KedaContract, PortContract, SecretEnvContract,
-    SecretGroupContract,
+    DeploymentContract, HealthContract, ImageProfile, KedaContract, NativeDepsContract,
+    PortContract, SecretEnvContract, SecretGroupContract,
 };
 
 /// Build the deployment contract for dfe-fetcher.
@@ -26,6 +26,28 @@ pub fn contract() -> DeploymentContract {
     DeploymentContract {
         app_name: "dfe-fetcher".into(),
         binary_name: "dfe-fetcher".into(),
+        base_image: "ubuntu:24.04".into(),
+        native_deps: NativeDepsContract::for_rustlib_features(
+            &[
+                "config",
+                "config-reload",
+                "logger",
+                "metrics",
+                "http-server",
+                "transport-kafka",
+                "transport-grpc",
+                "transport-grpc-vector-compat",
+                "spool",
+                "tiered-sink",
+                "runtime",
+                "secrets",
+                "dlq",
+                "deployment",
+                "cli",
+            ],
+            "ubuntu:24.04",
+        ),
+        image_profile: ImageProfile::Production,
         description: "Data fetcher for external services (AWS, Azure, M365, GCP)".into(),
         metrics_port: 9090,
         health: HealthContract {
@@ -151,7 +173,6 @@ pub fn contract() -> DeploymentContract {
             }
         })),
         depends_on: vec!["kafka".into()],
-        base_image: "ubuntu:24.04".into(),
         keda: Some(KedaContract {
             min_replicas: 1,
             max_replicas: 5,
