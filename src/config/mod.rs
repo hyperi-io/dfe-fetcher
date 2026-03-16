@@ -274,11 +274,11 @@ fn apply_env_overrides(config: &mut Config) {
     }
 
     // Scheduler
-    if let Ok(v) = env_var("DEFAULT_INTERVAL_SECS") {
-        if let Ok(n) = v.parse() {
-            config.scheduler.default_interval_secs = n;
-            debug!("Override: scheduler.default_interval_secs from env");
-        }
+    if let Ok(v) = env_var("DEFAULT_INTERVAL_SECS")
+        && let Ok(n) = v.parse()
+    {
+        config.scheduler.default_interval_secs = n;
+        debug!("Override: scheduler.default_interval_secs from env");
     }
 
     // Topic suffix
@@ -288,17 +288,17 @@ fn apply_env_overrides(config: &mut Config) {
     }
 
     // Buffer / memory
-    if let Ok(v) = env_var("MEMORY_LIMIT") {
-        if let Ok(n) = v.parse() {
-            config.buffer.memory_limit = n;
-            debug!("Override: buffer.memory_limit from env");
-        }
+    if let Ok(v) = env_var("MEMORY_LIMIT")
+        && let Ok(n) = v.parse()
+    {
+        config.buffer.memory_limit = n;
+        debug!("Override: buffer.memory_limit from env");
     }
-    if let Ok(v) = env_var("PRESSURE_THRESHOLD") {
-        if let Ok(n) = v.parse() {
-            config.buffer.pressure_threshold = n;
-            debug!("Override: buffer.pressure_threshold from env");
-        }
+    if let Ok(v) = env_var("PRESSURE_THRESHOLD")
+        && let Ok(n) = v.parse()
+    {
+        config.buffer.pressure_threshold = n;
+        debug!("Override: buffer.pressure_threshold from env");
     }
 
     // Metrics
@@ -308,11 +308,11 @@ fn apply_env_overrides(config: &mut Config) {
     }
 
     // Config reload
-    if let Ok(v) = env_var("CONFIG_RELOAD_SECS") {
-        if let Ok(n) = v.parse() {
-            config.config_reload_secs = n;
-            debug!("Override: config_reload_secs from env");
-        }
+    if let Ok(v) = env_var("CONFIG_RELOAD_SECS")
+        && let Ok(n) = v.parse()
+    {
+        config.config_reload_secs = n;
+        debug!("Override: config_reload_secs from env");
     }
 
     // DLQ
@@ -1034,6 +1034,7 @@ impl Default for MetricsConfig {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -1078,11 +1079,13 @@ mod tests {
 
     fn with_env<F: FnOnce()>(vars: &[(&str, &str)], f: F) {
         for (k, v) in vars {
-            std::env::set_var(k, v);
+            // SAFETY: test-only, single-threaded test runner
+            unsafe { std::env::set_var(k, v) };
         }
         f();
         for (k, _) in vars {
-            std::env::remove_var(k);
+            // SAFETY: test-only, single-threaded test runner
+            unsafe { std::env::remove_var(k) };
         }
     }
 

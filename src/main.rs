@@ -11,8 +11,6 @@
 //! Uses hyperi-rustlib CLI module for standard arguments and subcommands.
 //! Implements the [`DfeApp`] trait for the standard DFE service lifecycle.
 
-#![forbid(unsafe_code)]
-
 // Jemalloc takes priority when enabled
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
@@ -36,7 +34,7 @@ use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use dfe_fetcher::config::{reload_config, Config};
+use dfe_fetcher::config::{Config, reload_config};
 use dfe_fetcher::deployment;
 use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
@@ -44,11 +42,11 @@ use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::Orchestrator;
 use dfe_fetcher::scheduler::Scheduler;
+use dfe_fetcher::source::Source;
 use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::azure::AzureSource;
 use dfe_fetcher::source::gcp::GcpSource;
 use dfe_fetcher::source::m365::M365Source;
-use dfe_fetcher::source::Source;
 
 /// dfe-fetcher: Data fetcher for external services (AWS, Azure, M365, GCP).
 #[derive(Parser, Debug)]
@@ -396,10 +394,10 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         Arc::clone(&metrics),
         shutdown_token.clone(),
     );
-    if vector_manager.is_enabled() {
-        if let Err(e) = vector_manager.start().await {
-            error!(error = %e, "Failed to start Vector manager");
-        }
+    if vector_manager.is_enabled()
+        && let Err(e) = vector_manager.start().await
+    {
+        error!(error = %e, "Failed to start Vector manager");
     }
 
     // Run pipeline orchestrator (blocks until shutdown)
@@ -434,8 +432,8 @@ async fn run_metrics_server(
     metrics: Arc<Metrics>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
 
     let app = Router::new()
         .route("/metrics", get(move || async move { metrics.render() }))

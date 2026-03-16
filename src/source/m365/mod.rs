@@ -289,13 +289,13 @@ impl M365Source {
                     .bearer_auth(&token)
                     .send()
                     .await;
-                if let Ok(r) = content_resp {
-                    if r.status().is_success() {
-                        let events: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
-                        for event in events {
-                            if let Ok(json) = serde_json::to_vec(&event) {
-                                records.push(Bytes::from(json));
-                            }
+                if let Ok(r) = content_resp
+                    && r.status().is_success()
+                {
+                    let events: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
+                    for event in events {
+                        if let Ok(json) = serde_json::to_vec(&event) {
+                            records.push(Bytes::from(json));
                         }
                     }
                 }
@@ -368,7 +368,9 @@ impl M365Source {
             .graph_url_override
             .as_deref()
             .unwrap_or("https://graph.microsoft.com");
-        let url = format!("{graph_base}/v1.0/security/alerts_v2?$filter=category eq 'DataLossPrevention'&$top=100");
+        let url = format!(
+            "{graph_base}/v1.0/security/alerts_v2?$filter=category eq 'DataLossPrevention'&$top=100"
+        );
         let items = self.fetch_paginated(&token, &url, 10).await?;
         if items.is_empty() {
             return Ok(None);

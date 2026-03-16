@@ -11,8 +11,8 @@
 //! Manages isolated containers running third-party extraction tools.
 //! Supports image pulling, stderr capture, timeouts, and health monitoring.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -112,11 +112,11 @@ impl ContainerExtractor {
                     .stderr(std::process::Stdio::null())
                     .status()
                     .await;
-                if let Ok(s) = status {
-                    if s.success() {
-                        debug!(image = %self.config.image, "Image exists locally, skipping pull");
-                        return Ok(());
-                    }
+                if let Ok(s) = status
+                    && s.success()
+                {
+                    debug!(image = %self.config.image, "Image exists locally, skipping pull");
+                    return Ok(());
                 }
             }
             _ => {} // "always" or unknown -> pull
@@ -177,34 +177,34 @@ impl ContainerExtractor {
 
         Self::spawn_stderr_logger(&mut child, self.config.name.clone());
 
-        if self.config.communication == "stdout" {
-            if let Some(stdout) = child.stdout.take() {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-                let mut record_count: u64 = 0;
+        if self.config.communication == "stdout"
+            && let Some(stdout) = child.stdout.take()
+        {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            let mut record_count: u64 = 0;
 
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let line = line.trim().to_string();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let payload = Bytes::from(line);
-                    let topic = format!(
-                        "{}{}",
-                        self.config.topic,
-                        self.pipeline.config().kafka.topic_suffix
-                    );
-                    if let Err(e) = self.pipeline.deliver_ingest(&topic, payload).await {
-                        error!(name = %self.config.name, error = %e, "Failed to deliver container output");
-                    } else {
-                        record_count += 1;
-                    }
+            while let Ok(Some(line)) = lines.next_line().await {
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    continue;
                 }
+                let payload = Bytes::from(line);
+                let topic = format!(
+                    "{}{}",
+                    self.config.topic,
+                    self.pipeline.config().kafka.topic_suffix
+                );
+                if let Err(e) = self.pipeline.deliver_ingest(&topic, payload).await {
+                    error!(name = %self.config.name, error = %e, "Failed to deliver container output");
+                } else {
+                    record_count += 1;
+                }
+            }
 
-                if record_count > 0 {
-                    self.metrics.add_extractor_records(record_count);
-                    info!(name = %self.config.name, records = record_count, "Scheduled extraction complete");
-                }
+            if record_count > 0 {
+                self.metrics.add_extractor_records(record_count);
+                info!(name = %self.config.name, records = record_count, "Scheduled extraction complete");
             }
         }
 

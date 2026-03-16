@@ -20,12 +20,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::Router;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
