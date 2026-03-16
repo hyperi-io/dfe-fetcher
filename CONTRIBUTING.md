@@ -92,14 +92,12 @@ that covers the project.
 1. **Fork the repository** and create your branch from `main`
 2. **Make your changes** following the commit message format above
 3. **Sign off your commits** with the DCO
-4. **Test your changes**: `cargo fmt --check && cargo clippy -- -D warnings && cargo test`
+4. **Test your changes**: `hyperi-ci check` (or `make check`)
 5. **Submit a pull request** with a clear description of what you've done
 
 ### Pull Request Checklist
 
 - [ ] Commits follow the conventional commit format
 - [ ] All commits are signed off (DCO)
-- [ ] `cargo test` passes
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] `cargo fmt --check` passes
+- [ ] `hyperi-ci check` passes (quality + tests)
 - [ ] Documentation is updated (if applicable)
