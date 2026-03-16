@@ -6,11 +6,13 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 
 use dfe_fetcher::config::{AzureService, AzureSourceConfig};
-use dfe_fetcher::source::azure::AzureSource;
 use dfe_fetcher::source::Source;
+use dfe_fetcher::source::azure::AzureSource;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

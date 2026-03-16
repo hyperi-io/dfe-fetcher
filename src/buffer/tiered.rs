@@ -12,8 +12,8 @@
 //! Messages are buffered in memory during outages and drained when the downstream
 //! sink recovers.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;

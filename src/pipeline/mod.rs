@@ -25,8 +25,8 @@
 //!     └─── Pipeline ──→ Enrich ──→ Kafka Sink ──→ DFE Pipeline
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -38,8 +38,8 @@ use crate::buffer::{BufferManager, TieredSink};
 use crate::config::{Config, SharedConfig};
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
-use crate::sink::kafka::KafkaSink;
 use crate::sink::Sink;
+use crate::sink::kafka::KafkaSink;
 use crate::source::FetchResult;
 
 /// Shared pipeline state accessible from handlers and schedulers.
@@ -109,10 +109,10 @@ impl PipelineState {
             return false;
         }
 
-        if let Some(ref kafka) = self.kafka_sink {
-            if !kafka.is_healthy() {
-                return false;
-            }
+        if let Some(ref kafka) = self.kafka_sink
+            && !kafka.is_healthy()
+        {
+            return false;
         }
 
         true
@@ -159,10 +159,9 @@ impl PipelineState {
         if let Some(pos) = raw[..insert_pos]
             .iter()
             .rposition(|b| !b.is_ascii_whitespace())
+            && raw[pos] != b'{'
         {
-            if raw[pos] != b'{' {
-                buf.push(b',');
-            }
+            buf.push(b',');
         }
         buf.extend_from_slice(
             format!("\"_timestamp_fetcher\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
@@ -184,28 +183,28 @@ impl PipelineState {
 
         self.buffer_manager.remove_bytes(payload_size);
 
-        if let Err(ref kafka_err) = result {
-            if let Some(ref dlq) = self.dlq {
-                let entry = DlqEntry::new(
-                    "dfe-fetcher",
-                    format!("kafka send failed: {kafka_err}"),
-                    payload.to_vec(),
-                )
-                .with_destination(topic);
+        if let Err(ref kafka_err) = result
+            && let Some(ref dlq) = self.dlq
+        {
+            let entry = DlqEntry::new(
+                "dfe-fetcher",
+                format!("kafka send failed: {kafka_err}"),
+                payload.to_vec(),
+            )
+            .with_destination(topic);
 
-                if let Err(dlq_err) = dlq.send(entry).await {
-                    error!(
-                        error = %dlq_err,
-                        topic,
-                        "Failed to send to DLQ after Kafka failure"
-                    );
-                    return result;
-                }
-
-                self.metrics.inc_messages_dlq();
-                warn!(topic, error = %kafka_err, "Message routed to DLQ after Kafka failure");
-                return Ok(());
+            if let Err(dlq_err) = dlq.send(entry).await {
+                error!(
+                    error = %dlq_err,
+                    topic,
+                    "Failed to send to DLQ after Kafka failure"
+                );
+                return result;
             }
+
+            self.metrics.inc_messages_dlq();
+            warn!(topic, error = %kafka_err, "Message routed to DLQ after Kafka failure");
+            return Ok(());
         }
 
         result
@@ -296,10 +295,10 @@ impl Orchestrator {
         info!("Pipeline orchestrator shutting down");
 
         // Flush all sinks
-        if let Some(ref kafka) = self.state.kafka_sink {
-            if let Err(e) = kafka.flush().await {
-                error!(error = %e, "Failed to flush Kafka sink");
-            }
+        if let Some(ref kafka) = self.state.kafka_sink
+            && let Err(e) = kafka.flush().await
+        {
+            error!(error = %e, "Failed to flush Kafka sink");
         }
 
         info!("Pipeline orchestrator stopped");

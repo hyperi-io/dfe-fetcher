@@ -6,11 +6,13 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 
 use dfe_fetcher::config::{AwsService, AwsSourceConfig};
-use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::Source;
+use dfe_fetcher::source::aws::AwsSource;
 use wiremock::matchers::{header, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

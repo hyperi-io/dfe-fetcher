@@ -179,7 +179,7 @@ impl VectorManager {
 
                             metrics.add_extractor_records(msg_count);
 
-                            if batch_count % 100 == 0 {
+                            if batch_count.is_multiple_of(100) {
                                 debug!(
                                     batches = batch_count,
                                     "Vector receiver processing"

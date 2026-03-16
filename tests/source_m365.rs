@@ -6,11 +6,13 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 
 use dfe_fetcher::config::{M365Service, M365SourceConfig};
-use dfe_fetcher::source::m365::M365Source;
 use dfe_fetcher::source::Source;
+use dfe_fetcher::source::m365::M365Source;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

@@ -6,6 +6,8 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used, unsafe_code)]
+
 use bytes::Bytes;
 use dfe_fetcher::config::Config;
 use dfe_fetcher::metrics::Metrics;
@@ -167,10 +169,12 @@ async fn test_credential_resolve_literal() {
 
 #[tokio::test]
 async fn test_credential_resolve_env() {
-    std::env::set_var("DFE_TEST_INTEGRATION_CRED", "secret-from-env");
+    // SAFETY: test-only, single-threaded test runner
+    unsafe { std::env::set_var("DFE_TEST_INTEGRATION_CRED", "secret-from-env") };
     let result = dfe_fetcher::credential::resolve("env:DFE_TEST_INTEGRATION_CRED").await;
     assert_eq!(result.unwrap(), "secret-from-env");
-    std::env::remove_var("DFE_TEST_INTEGRATION_CRED");
+    // SAFETY: test-only, single-threaded test runner
+    unsafe { std::env::remove_var("DFE_TEST_INTEGRATION_CRED") };
 }
 
 #[tokio::test]
@@ -191,14 +195,18 @@ async fn test_credential_resolve_vault_invalid_format() {
 
 #[tokio::test]
 async fn test_credential_resolve_optional() {
-    assert!(dfe_fetcher::credential::resolve_optional(None)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(dfe_fetcher::credential::resolve_optional(Some(""))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        dfe_fetcher::credential::resolve_optional(None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        dfe_fetcher::credential::resolve_optional(Some(""))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         dfe_fetcher::credential::resolve_optional(Some("literal-value"))
             .await

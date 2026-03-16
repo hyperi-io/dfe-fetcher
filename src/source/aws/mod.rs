@@ -24,8 +24,8 @@ use bytes::Bytes;
 use chrono::Utc;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
-    common::v1::{any_value, AnyValue, InstrumentationScope, KeyValue},
-    metrics::v1::{metric, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics},
+    common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
+    metrics::v1::{Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric},
     resource::v1::Resource,
 };
 use prost::Message;
