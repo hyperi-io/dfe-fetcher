@@ -1,1 +1,1 @@
-../../../ai/standards/infrastructure/DOCKER.md
+../../../hyperi-ai/standards/infrastructure/DOCKER.md
