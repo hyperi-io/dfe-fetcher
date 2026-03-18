@@ -205,7 +205,9 @@ fn build_rustlib_kafka_config(legacy: &LegacyKafkaConfig) -> RustlibKafkaConfig 
     // Map TLS settings
     if legacy.tls.enabled {
         config.ssl_ca_location.clone_from(&legacy.tls.ca_file);
-        config.ssl_certificate_location.clone_from(&legacy.tls.cert_file);
+        config
+            .ssl_certificate_location
+            .clone_from(&legacy.tls.cert_file);
         config.ssl_key_location.clone_from(&legacy.tls.key_file);
     }
 
