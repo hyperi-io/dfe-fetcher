@@ -43,7 +43,7 @@ pub struct Config {
     /// Native source modules configuration.
     pub sources: SourcesConfig,
 
-    /// External extractors configuration (containers, plugins, vector).
+    /// External extractors configuration (containers, vector).
     pub extractors: ExtractorsConfig,
 
     /// HTTP ingest server configuration (for container extractors to post data).
@@ -657,7 +657,7 @@ pub struct GcpService {
 }
 
 // =============================================================================
-// Extractors configuration (containers, plugins, vector)
+// Extractors configuration (containers, vector)
 // =============================================================================
 
 /// External extractors configuration.
@@ -667,7 +667,7 @@ pub struct ExtractorsConfig {
     /// Container-based extractors.
     pub containers: Vec<ContainerExtractorConfig>,
 
-    /// Plugin extractors (.so dynamic libraries).
+    /// Deprecated plugin config (kept for backwards-compatible deserialisation).
     pub plugins: PluginsConfig,
 
     /// Vector.dev extractor integration.
@@ -754,36 +754,21 @@ fn default_stdout() -> String {
     "stdout".to_string()
 }
 
-/// Plugin configuration for dynamically loaded .so extractors.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+/// Deprecated plugin configuration — logs warning if non-empty values present.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginsConfig {
-    /// Directory to scan for plugin .so files.
+    #[serde(default)]
     pub directory: Option<String>,
-
-    /// Named plugin entries.
-    #[serde(flatten)]
-    pub plugins: HashMap<String, PluginEntry>,
+    #[serde(flatten, default)]
+    pub _rest: serde_json::Map<String, serde_json::Value>,
 }
 
-impl Default for PluginsConfig {
-    fn default() -> Self {
-        Self {
-            directory: None,
-            plugins: HashMap::new(),
+impl PluginsConfig {
+    pub fn warn_if_configured(&self) {
+        if self.directory.is_some() || !self._rest.is_empty() {
+            tracing::warn!("extractors.plugins is deprecated — use container extractors instead");
         }
     }
-}
-
-/// A single plugin entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginEntry {
-    /// Path to the .so file.
-    pub path: String,
-
-    /// Plugin-specific configuration passed as JSON.
-    #[serde(flatten)]
-    pub config: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Vector.dev extractor configuration.
