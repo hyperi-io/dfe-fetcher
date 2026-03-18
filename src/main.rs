@@ -326,6 +326,7 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
 
         let interval = scheduler.effective_interval(None);
         let state = Arc::clone(&pipeline_state);
+        let ready_state = Arc::clone(&pipeline_state);
         info!(
             source = source.name(),
             interval_secs = interval.as_secs(),
@@ -345,6 +346,7 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
                     }
                 });
             }),
+            Arc::new(move || ready_state.is_ready()),
         );
     }
 

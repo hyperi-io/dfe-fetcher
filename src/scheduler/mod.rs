@@ -66,6 +66,11 @@ impl Scheduler {
     }
 
     /// Spawn a recurring fetch task for a source.
+    ///
+    /// The `is_ready` callback is polled before each fetch. When it returns
+    /// `false` (e.g. output transports are backpressured or unhealthy), the
+    /// task stalls with a 5-second poll interval instead of fetching and
+    /// routing everything to DLQ.
     pub fn spawn_source_task(
         &self,
         source: Arc<dyn Source>,
@@ -73,6 +78,7 @@ impl Scheduler {
         metrics: Arc<Metrics>,
         shutdown: CancellationToken,
         callback: Arc<dyn Fn(Vec<FetchResult>) + Send + Sync>,
+        is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
     ) {
         let semaphore = Arc::clone(&self.concurrency_semaphore);
 
@@ -85,6 +91,22 @@ impl Scheduler {
             loop {
                 tokio::select! {
                     _ = interval_timer.tick() => {
+                        // Wait for pipeline readiness (backpressure stall)
+                        while !is_ready() {
+                            warn!(
+                                source = source.name(),
+                                "Pipeline not ready (backpressure), waiting 5s"
+                            );
+                            metrics.inc_transport_backpressured();
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                                _ = shutdown.cancelled() => {
+                                    info!(source = source.name(), "Scheduler shutting down during backpressure wait");
+                                    return;
+                                }
+                            }
+                        }
+
                         // Acquire concurrency permit
                         let permit = match semaphore.acquire().await {
                             Ok(permit) => permit,

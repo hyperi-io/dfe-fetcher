@@ -183,6 +183,16 @@ impl PipelineState {
 
         self.buffer_manager.remove_bytes(payload_size);
 
+        if let Err(ref transport_err) = result {
+            // Track transport health metrics
+            let err_str = transport_err.to_string();
+            if err_str.contains("backpressured") {
+                self.metrics.inc_transport_backpressured();
+            } else {
+                self.metrics.inc_transport_send_errors();
+            }
+        }
+
         if let Err(ref transport_err) = result
             && let Some(ref dlq) = self.dlq
         {
@@ -309,6 +319,10 @@ impl Orchestrator {
                 tokio::select! {
                     _ = interval.tick() => {
                         metrics_state.update_metrics(&metrics_ref).await;
+                        // Track transport health gauge
+                        if let Some(ref output) = metrics_state.output {
+                            metrics_ref.set_transport_healthy(output.any_healthy());
+                        }
                     }
                     _ = metrics_shutdown.cancelled() => break,
                 }
