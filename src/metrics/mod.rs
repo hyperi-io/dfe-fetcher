@@ -36,6 +36,17 @@ pub struct Metrics {
     extractor_runs_error: AtomicU64,
     extractor_records_total: AtomicU64,
 
+    // Backpressure / transport health
+    transport_backpressured_total: AtomicU64,
+    transport_send_errors_total: AtomicU64,
+    transport_healthy: AtomicU64, // gauge: 1=healthy, 0=unhealthy
+
+    // Filtering / extractor lifecycle
+    records_filtered_total: AtomicU64,
+    extractor_restart_exhausted_total: AtomicU64,
+    cursor_writes_total: AtomicU64,
+    cursor_write_failures_total: AtomicU64,
+
     // Gauges
     active_fetches: AtomicU64,
     active_extractors: AtomicU64,
@@ -108,6 +119,13 @@ impl Metrics {
             extractor_runs_success: AtomicU64::new(0),
             extractor_runs_error: AtomicU64::new(0),
             extractor_records_total: AtomicU64::new(0),
+            transport_backpressured_total: AtomicU64::new(0),
+            transport_send_errors_total: AtomicU64::new(0),
+            transport_healthy: AtomicU64::new(1),
+            records_filtered_total: AtomicU64::new(0),
+            extractor_restart_exhausted_total: AtomicU64::new(0),
+            cursor_writes_total: AtomicU64::new(0),
+            cursor_write_failures_total: AtomicU64::new(0),
             active_fetches: AtomicU64::new(0),
             active_extractors: AtomicU64::new(0),
             memory_used_bytes: AtomicU64::new(0),
@@ -194,6 +212,61 @@ impl Metrics {
     pub fn add_extractor_records(&self, count: u64) {
         self.extractor_records_total
             .fetch_add(count, Ordering::Relaxed);
+    }
+
+    // ==========================================================================
+    // Backpressure / transport health
+    // ==========================================================================
+
+    /// Increment transport backpressure events.
+    #[inline]
+    pub fn inc_transport_backpressured(&self) {
+        self.transport_backpressured_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment transport send errors.
+    #[inline]
+    pub fn inc_transport_send_errors(&self) {
+        self.transport_send_errors_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set transport health gauge (1=healthy, 0=unhealthy).
+    #[inline]
+    pub fn set_transport_healthy(&self, healthy: bool) {
+        self.transport_healthy
+            .store(if healthy { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    // ==========================================================================
+    // Filtering / extractor lifecycle
+    // ==========================================================================
+
+    /// Increment records filtered counter.
+    #[inline]
+    pub fn inc_records_filtered(&self) {
+        self.records_filtered_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment extractor restart exhausted counter.
+    #[inline]
+    pub fn inc_extractor_restart_exhausted(&self) {
+        self.extractor_restart_exhausted_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment cursor writes counter.
+    #[inline]
+    pub fn inc_cursor_writes(&self) {
+        self.cursor_writes_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment cursor write failures counter.
+    #[inline]
+    pub fn inc_cursor_write_failures(&self) {
+        self.cursor_write_failures_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     // ==========================================================================
@@ -326,6 +399,62 @@ impl Metrics {
         output.push_str(&format!(
             "fetcher_extractor_records_total {}\n",
             self.extractor_records_total.load(Ordering::Relaxed)
+        ));
+
+        // Backpressure / transport health
+        output.push_str(
+            "# HELP fetcher_transport_backpressured_total Transport backpressure events\n",
+        );
+        output.push_str("# TYPE fetcher_transport_backpressured_total counter\n");
+        output.push_str(&format!(
+            "fetcher_transport_backpressured_total {}\n",
+            self.transport_backpressured_total.load(Ordering::Relaxed)
+        ));
+
+        output.push_str("# HELP fetcher_transport_send_errors_total Transport send errors\n");
+        output.push_str("# TYPE fetcher_transport_send_errors_total counter\n");
+        output.push_str(&format!(
+            "fetcher_transport_send_errors_total {}\n",
+            self.transport_send_errors_total.load(Ordering::Relaxed)
+        ));
+
+        output.push_str("# HELP fetcher_transport_healthy Transport health status\n");
+        output.push_str("# TYPE fetcher_transport_healthy gauge\n");
+        output.push_str(&format!(
+            "fetcher_transport_healthy {}\n",
+            self.transport_healthy.load(Ordering::Relaxed)
+        ));
+
+        // Filtering / extractor lifecycle
+        output.push_str("# HELP fetcher_records_filtered_total Records filtered out\n");
+        output.push_str("# TYPE fetcher_records_filtered_total counter\n");
+        output.push_str(&format!(
+            "fetcher_records_filtered_total {}\n",
+            self.records_filtered_total.load(Ordering::Relaxed)
+        ));
+
+        output.push_str(
+            "# HELP fetcher_extractor_restart_exhausted_total Extractor restart retries exhausted\n",
+        );
+        output.push_str("# TYPE fetcher_extractor_restart_exhausted_total counter\n");
+        output.push_str(&format!(
+            "fetcher_extractor_restart_exhausted_total {}\n",
+            self.extractor_restart_exhausted_total
+                .load(Ordering::Relaxed)
+        ));
+
+        output.push_str("# HELP fetcher_cursor_writes_total Cursor state writes\n");
+        output.push_str("# TYPE fetcher_cursor_writes_total counter\n");
+        output.push_str(&format!(
+            "fetcher_cursor_writes_total {}\n",
+            self.cursor_writes_total.load(Ordering::Relaxed)
+        ));
+
+        output.push_str("# HELP fetcher_cursor_write_failures_total Cursor state write failures\n");
+        output.push_str("# TYPE fetcher_cursor_write_failures_total counter\n");
+        output.push_str(&format!(
+            "fetcher_cursor_write_failures_total {}\n",
+            self.cursor_write_failures_total.load(Ordering::Relaxed)
         ));
 
         // Gauges
