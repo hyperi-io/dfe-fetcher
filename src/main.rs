@@ -350,12 +350,12 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         }
     };
 
-    // Create scheduler
+    // Create scheduler (reads interval/jitter/window_hours from shared_config per tick)
     let scheduler = Scheduler::new(
         &config.scheduler,
+        orchestrator.shared_config(),
         cursor_store,
         instance_id,
-        config.cursor.default_window_hours,
     );
 
     // Register native sources
@@ -372,18 +372,18 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
             continue;
         }
 
-        let interval = scheduler.effective_interval(None);
+        let initial_interval = scheduler.effective_interval(None);
         let state = Arc::clone(&pipeline_state);
         let ready_state = Arc::clone(&pipeline_state);
         info!(
             source = source.name(),
-            interval_secs = interval.as_secs(),
-            "Starting fetch schedule"
+            interval_secs = initial_interval.as_secs(),
+            "Starting fetch schedule (interval is hot-reloaded)"
         );
 
         scheduler.spawn_source_task(
             Arc::clone(source),
-            interval,
+            None,
             Arc::clone(&metrics),
             shutdown_token.clone(),
             Arc::new(move |results| {
