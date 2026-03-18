@@ -8,14 +8,10 @@
 
 //! Buffer management and memory pressure detection.
 //!
-//! Provides `TieredSink` (local implementation using hyperi-rustlib's
-//! `CircuitBreaker`) and `BufferManager` for tracking in-flight bytes.
-
-mod tiered;
+//! Provides `BufferManager` for tracking in-flight bytes and detecting
+//! memory pressure.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-pub use tiered::{TieredSink, TieredSinkStats};
 
 use crate::config::BufferConfig;
 

@@ -41,7 +41,7 @@
 //!            │
 //!            ▼
 //! ┌─────────────────────────────────┐
-//! │   Kafka Sink (TieredSink)       │
+//! │   Output Transport (Kafka/gRPC) │
 //! └─────────────────────────────────┘
 //! ```
 
@@ -72,7 +72,6 @@ pub mod metrics;
 pub mod output;
 pub mod pipeline;
 pub mod scheduler;
-pub mod sink;
 pub mod source;
 
 pub use error::{Error, Result};
