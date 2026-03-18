@@ -252,7 +252,8 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     });
 
     // Create and run the pipeline orchestrator
-    let orchestrator = Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone())?;
+    let orchestrator =
+        Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
     let pipeline_state = orchestrator.state();
 
     // Start config hot-reload

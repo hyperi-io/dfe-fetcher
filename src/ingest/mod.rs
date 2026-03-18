@@ -157,11 +157,11 @@ mod tests {
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
         let pipeline = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics)).unwrap_or_else(|_| {
+            PipelineState::new(shared, Arc::clone(&metrics), None).unwrap_or_else(|_| {
                 let config = Config::default();
                 let shared = SharedConfig::new(config);
-                // Kafka not configured — pipeline won't deliver but won't panic
-                PipelineState::new(shared, Arc::new(Metrics::new()))
+                // No output configured — pipeline won't deliver but won't panic
+                PipelineState::new(shared, Arc::new(Metrics::new()), None)
                     .expect("default config should work")
             }),
         );
