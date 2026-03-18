@@ -87,7 +87,7 @@ async fn aws_fetch_cloudtrail() {
     let config = make_aws_config().expect("AWS credentials not found in .env");
     let source = AwsSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     // CloudTrail may return empty if no recent events, but must not error
     eprintln!(
         "AWS CloudTrail: {} result(s), {} total records",
@@ -135,7 +135,7 @@ async fn aws_fetch_cloudwatch_logs() {
     let config = make_aws_cloudwatch_logs_config().expect("AWS credentials not found in .env");
     let source = AwsSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "AWS CloudWatch Logs: {} result(s), {} total records",
         results.len(),
@@ -176,7 +176,7 @@ async fn aws_fetch_cloudwatch_metrics() {
     let config = make_aws_cloudwatch_metrics_config().expect("AWS credentials not found in .env");
     let source = AwsSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "AWS CloudWatch Metrics: {} result(s), {} total records",
         results.len(),
@@ -235,7 +235,7 @@ async fn azure_fetch_activity_log() {
     let config = make_azure_config().expect("Azure credentials not found in .env");
     let source = AzureSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "Azure Activity Log: {} result(s), {} total records",
         results.len(),
@@ -301,7 +301,7 @@ async fn gcp_fetch_cloud_logging() {
     };
     let source = GcpSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "GCP Cloud Logging: {} result(s), {} total records",
         results.len(),
