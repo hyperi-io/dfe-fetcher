@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use dfe_fetcher::config::{Config, SharedConfig};
 use dfe_fetcher::cursor::file::FileCursorStore;
@@ -126,8 +126,7 @@ fn bench_cel_filter_evaluation(c: &mut Criterion) {
 fn bench_file_cursor_set_get(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let tmp_dir = tempfile::TempDir::new().expect("temp dir");
-    let store =
-        FileCursorStore::new(tmp_dir.path().to_str().expect("path")).expect("cursor store");
+    let store = FileCursorStore::new(tmp_dir.path().to_str().expect("path")).expect("cursor store");
 
     let cursor = CursorValue {
         cursor_key: "bench.cursor".to_string(),
@@ -148,10 +147,7 @@ fn bench_file_cursor_set_get(c: &mut Criterion) {
                     .set(black_box("bench.cursor"), black_box(&cursor))
                     .await
                     .expect("set");
-                let _ = store
-                    .get(black_box("bench.cursor"))
-                    .await
-                    .expect("get");
+                let _ = store.get(black_box("bench.cursor")).await.expect("get");
             });
         });
     });

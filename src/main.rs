@@ -334,17 +334,21 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     }
 
     // Create cursor store for incremental fetching
-    let cursor_store: Option<Arc<dyn cursor::CursorStore>> =
-        match cursor::create_cursor_store(&config.cursor, &config.output).await {
-            Ok(store) => {
-                info!("Cursor store initialised");
-                Some(Arc::from(store))
-            }
-            Err(e) => {
-                warn!(error = %e, "Cursor store unavailable, fetches will use default lookback window");
-                None
-            }
-        };
+    let cursor_store: Option<Arc<dyn cursor::CursorStore>> = match cursor::create_cursor_store(
+        &config.cursor,
+        &config.output,
+    )
+    .await
+    {
+        Ok(store) => {
+            info!("Cursor store initialised");
+            Some(Arc::from(store))
+        }
+        Err(e) => {
+            warn!(error = %e, "Cursor store unavailable, fetches will use default lookback window");
+            None
+        }
+    };
 
     // Create scheduler
     let scheduler = Scheduler::new(

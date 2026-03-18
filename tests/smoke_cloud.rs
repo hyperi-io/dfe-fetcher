@@ -10,7 +10,7 @@
 
 //! Smoke tests against real cloud APIs.
 //!
-//! These tests are `#[ignore]`d by default because they require real credentials.
+//! These tests are `#[ignore = "requires live cloud credentials"]`d by default because they require real credentials.
 //! Run with:
 //!
 //! ```bash
@@ -67,7 +67,7 @@ fn make_aws_config() -> Option<AwsSourceConfig> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_health_check() {
     load_env();
     let config = make_aws_config().expect("AWS credentials not found in .env");
@@ -81,7 +81,7 @@ async fn aws_health_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_fetch_cloudtrail() {
     load_env();
     let config = make_aws_config().expect("AWS credentials not found in .env");
@@ -129,7 +129,7 @@ fn make_aws_cloudwatch_logs_config() -> Option<AwsSourceConfig> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_fetch_cloudwatch_logs() {
     load_env();
     let config = make_aws_cloudwatch_logs_config().expect("AWS credentials not found in .env");
@@ -170,7 +170,7 @@ fn make_aws_cloudwatch_metrics_config() -> Option<AwsSourceConfig> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_fetch_cloudwatch_metrics() {
     load_env();
     let config = make_aws_cloudwatch_metrics_config().expect("AWS credentials not found in .env");
@@ -215,7 +215,7 @@ fn make_azure_config() -> Option<AzureSourceConfig> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn azure_health_check() {
     load_env();
     let config = make_azure_config().expect("Azure credentials not found in .env");
@@ -229,7 +229,7 @@ async fn azure_health_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn azure_fetch_activity_log() {
     load_env();
     let config = make_azure_config().expect("Azure credentials not found in .env");
@@ -275,7 +275,7 @@ fn make_gcp_config() -> Option<GcpSourceConfig> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn gcp_health_check() {
     load_env();
     let Some(config) = make_gcp_config() else {
@@ -292,7 +292,7 @@ async fn gcp_health_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn gcp_fetch_cloud_logging() {
     load_env();
     let Some(config) = make_gcp_config() else {

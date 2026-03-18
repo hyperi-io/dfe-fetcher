@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use tracing::{debug, warn};
 
-use super::{normalize_cursor_key, CursorStore, CursorValue};
+use super::{CursorStore, CursorValue, normalize_cursor_key};
 use crate::error::{Error, Result};
 
 /// File-based cursor store.
