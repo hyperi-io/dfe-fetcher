@@ -40,6 +40,7 @@ hyperi-rustlib = { version = ">=1.13.1", features = [
     "dlq",
     "deployment",
     "cli",
+    "top",
     "expression",
 ] }
 
@@ -159,3 +160,7 @@ trivially_copy_pass_by_ref = "allow"
 format_push_string = "allow"
 single_char_add_str = "allow"
 uninlined_format_args = "allow"
+
+[[bench]]
+name = "pipeline"
+harness = false

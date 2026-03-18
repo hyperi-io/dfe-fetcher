@@ -27,9 +27,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, VersionInfo};
+use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, TopArgs, VersionInfo};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
+use hyperi_rustlib::top::{TopConfig, run_top};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -98,6 +99,9 @@ enum AppCommand {
     /// Print deployment contract as JSON to stdout.
     #[command(name = "emit-contract")]
     EmitContract,
+
+    /// Live TUI metrics dashboard (connects to running instance's /metrics endpoint).
+    Top(TopArgs),
 }
 
 impl DfeApp for App {
@@ -185,6 +189,14 @@ async fn main() {
             AppCommand::EmitContract => {
                 let contract = deployment::contract();
                 println!("{}", contract.to_json());
+                return;
+            }
+            AppCommand::Top(args) => {
+                let config = TopConfig::from_args(args);
+                if let Err(e) = run_top(&config) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
                 return;
             }
             _ => {}
