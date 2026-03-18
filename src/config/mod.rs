@@ -166,7 +166,7 @@ impl Config {
                 .output
                 .kafka
                 .as_ref()
-                .map_or(false, |k| !k.brokers.is_empty());
+                .is_some_and(|k| !k.brokers.is_empty());
             if !has_output_brokers && self.kafka.brokers.is_empty() {
                 return Err(Error::Config(
                     "kafka brokers required when output.type includes kafka".into(),
@@ -178,7 +178,7 @@ impl Config {
                 .output
                 .grpc
                 .as_ref()
-                .map_or(true, |g| g.endpoint.is_none())
+                .is_none_or(|g| g.endpoint.is_none())
         {
             return Err(Error::Config(
                 "grpc.endpoint required when output.type includes grpc".into(),
@@ -293,11 +293,11 @@ impl Config {
 /// otherwise auto-derives from first enabled source's distinguishing config.
 #[must_use]
 pub fn derive_instance_id(config: &Config) -> String {
+    use sha2::{Digest, Sha256};
+
     if let Some(ref id) = config.instance_id {
         return id.to_lowercase();
     }
-
-    use sha2::{Digest, Sha256};
 
     if config.sources.aws.enabled {
         let input = format!(
@@ -311,12 +311,7 @@ pub fn derive_instance_id(config: &Config) -> String {
     if config.sources.azure.enabled {
         let input = format!(
             "{}{}",
-            config
-                .sources
-                .azure
-                .tenant_id
-                .as_deref()
-                .unwrap_or(""),
+            config.sources.azure.tenant_id.as_deref().unwrap_or(""),
             config
                 .sources
                 .azure
@@ -925,6 +920,7 @@ pub struct PluginsConfig {
     #[serde(default)]
     pub directory: Option<String>,
     #[serde(flatten, default)]
+    #[allow(clippy::pub_underscore_fields)]
     pub _rest: serde_json::Map<String, serde_json::Value>,
 }
 

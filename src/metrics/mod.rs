@@ -248,7 +248,7 @@ impl Metrics {
     #[inline]
     pub fn set_transport_healthy(&self, healthy: bool) {
         self.transport_healthy
-            .store(if healthy { 1 } else { 0 }, Ordering::Relaxed);
+            .store(u64::from(healthy), Ordering::Relaxed);
     }
 
     // ==========================================================================
@@ -289,7 +289,7 @@ impl Metrics {
     #[inline]
     pub fn set_pipeline_ready(&self, ready: bool) {
         self.pipeline_ready
-            .store(if ready { 1 } else { 0 }, Ordering::Relaxed);
+            .store(u64::from(ready), Ordering::Relaxed);
     }
 
     /// Increment records delivered counter.

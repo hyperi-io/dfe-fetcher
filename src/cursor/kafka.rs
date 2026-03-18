@@ -30,7 +30,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use tracing::{debug, warn};
 
-use super::{normalize_cursor_key, CursorStore, CursorValue};
+use super::{CursorStore, CursorValue, normalize_cursor_key};
 use crate::config::CursorConfig;
 use crate::error::{Error, Result};
 
@@ -63,7 +63,8 @@ impl KafkaCursorStore {
         producer_config.client_id = format!("{}-cursor", producer_config.client_id);
         producer_config.topics = vec![topic.clone()];
         // Consumer group for initial load — unique per startup to always read from beginning
-        producer_config.group = format!("{}-cursor-{}", producer_config.group, uuid::Uuid::new_v4());
+        producer_config.group =
+            format!("{}-cursor-{}", producer_config.group, uuid::Uuid::new_v4());
         producer_config.auto_offset_reset = "earliest".to_string();
         producer_config.enable_partition_eof = true;
 
@@ -151,7 +152,7 @@ impl KafkaCursorStore {
 
             // Commit offsets so the consumer advances
             if let Some(last) = messages.last() {
-                let _ = transport.commit(&[last.token.clone()]).await;
+                let _ = transport.commit(std::slice::from_ref(&last.token)).await;
             }
         }
 
@@ -186,7 +187,11 @@ impl CursorStore for KafkaCursorStore {
 
         match self.transport.send(&self.topic, &payload).await {
             SendResult::Ok => {
-                debug!(key = normalised, topic = self.topic, "Cursor persisted to Kafka");
+                debug!(
+                    key = normalised,
+                    topic = self.topic,
+                    "Cursor persisted to Kafka"
+                );
             }
             SendResult::Backpressured => {
                 warn!(
@@ -258,10 +263,7 @@ mod tests {
         // Insert into cache
         {
             let mut c = cache.write();
-            c.insert(
-                normalize_cursor_key("aws.cloudtrail"),
-                value.clone(),
-            );
+            c.insert(normalize_cursor_key("aws.cloudtrail"), value.clone());
         }
 
         // Read from cache

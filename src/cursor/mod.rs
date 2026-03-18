@@ -148,7 +148,10 @@ mod tests {
         };
 
         let json = serde_json::to_string(&value).unwrap();
-        assert!(!json.contains("api_cursor"), "None fields should be skipped");
+        assert!(
+            !json.contains("api_cursor"),
+            "None fields should be skipped"
+        );
 
         let parsed: CursorValue = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.api_cursor, None);

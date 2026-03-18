@@ -233,6 +233,7 @@ async fn build_fetch_window(
         }
     }
 
+    #[allow(clippy::cast_possible_wrap)]
     let start = now - chrono::Duration::hours(default_window_hours as i64);
     FetchWindow { start, end: now }
 }

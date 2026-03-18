@@ -427,7 +427,7 @@ async fn test_aws_fetch_cloudwatch_metrics_success() {
             "MetricDataResults": [
                 {
                     "Id": "q0",
-                    "Timestamps": [1709424000.0, 1709424300.0],
+                    "Timestamps": [1_709_424_000.0, 1_709_424_300.0],
                     "Values": [45.2, 62.1]
                 }
             ]
@@ -532,7 +532,7 @@ async fn test_aws_fetch_cloudwatch_metrics_otlp() {
             "MetricDataResults": [
                 {
                     "Id": "q0",
-                    "Timestamps": [1709424000.0, 1709424300.0],
+                    "Timestamps": [1_709_424_000.0, 1_709_424_300.0],
                     "Values": [45.2, 62.1]
                 }
             ]

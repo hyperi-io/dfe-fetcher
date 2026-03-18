@@ -210,7 +210,11 @@ impl Source for AzureSource {
     }
 
     fn service_names(&self) -> Vec<&str> {
-        self.config.services.iter().map(|s| s.name.as_str()).collect()
+        self.config
+            .services
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect()
     }
 }
 

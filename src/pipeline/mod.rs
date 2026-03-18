@@ -130,12 +130,12 @@ impl PipelineState {
                 let enriched = self.enrich_record(record, &result.source);
 
                 // Apply CEL filter if configured — drop records that don't match
-                if let Some(ref expr) = filter_expr {
-                    if !Self::evaluate_filter(expr, &enriched) {
-                        self.metrics.inc_records_filtered();
-                        debug!(source = %result.source, "Record dropped by filter");
-                        continue;
-                    }
+                if let Some(ref expr) = filter_expr
+                    && !Self::evaluate_filter(expr, &enriched)
+                {
+                    self.metrics.inc_records_filtered();
+                    debug!(source = %result.source, "Record dropped by filter");
+                    continue;
                 }
 
                 self.send_to_transports(&topic, enriched).await?;
@@ -200,8 +200,7 @@ impl PipelineState {
     /// Fail-open: non-JSON payloads, non-object JSON, and evaluation errors
     /// all pass through (record is kept).
     fn evaluate_filter(expression: &str, payload: &Bytes) -> bool {
-        let Ok(value): std::result::Result<serde_json::Value, _> =
-            serde_json::from_slice(payload)
+        let Ok(value): std::result::Result<serde_json::Value, _> = serde_json::from_slice(payload)
         else {
             // Non-JSON payload — can't filter, keep it
             return true;
@@ -315,13 +314,13 @@ impl Orchestrator {
             .output
             .kafka
             .as_ref()
-            .map_or(false, |k| !k.brokers.is_empty());
+            .is_some_and(|k| !k.brokers.is_empty());
         let has_legacy_kafka = !cfg.kafka.brokers.is_empty();
         let has_grpc = cfg
             .output
             .grpc
             .as_ref()
-            .map_or(false, |g| g.endpoint.is_some());
+            .is_some_and(|g| g.endpoint.is_some());
 
         let output = if has_output_kafka || has_legacy_kafka || has_grpc {
             Some(OutputManager::new(&cfg.output, &cfg.kafka).await?)
@@ -330,8 +329,7 @@ impl Orchestrator {
             None
         };
 
-        let state =
-            PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output)?;
+        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output)?;
 
         Ok(Self {
             state: Arc::new(state),
@@ -437,16 +435,14 @@ mod tests {
     #[test]
     fn test_filter_passes_matching_record() {
         let payload = Bytes::from(r#"{"eventName": "CreateUser", "severity": "high"}"#);
-        let result =
-            PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
+        let result = PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
         assert!(result, "Record should pass — eventName is not ConsoleLogin");
     }
 
     #[test]
     fn test_filter_drops_non_matching_record() {
         let payload = Bytes::from(r#"{"eventName": "ConsoleLogin", "severity": "low"}"#);
-        let result =
-            PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
+        let result = PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
         assert!(
             !result,
             "Record should be dropped — eventName is ConsoleLogin"
@@ -465,16 +461,14 @@ mod tests {
     #[test]
     fn test_filter_non_json_passes() {
         let payload = Bytes::from("not json at all");
-        let result =
-            PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
+        let result = PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
         assert!(result, "Non-JSON payload should pass through (fail-open)");
     }
 
     #[test]
     fn test_filter_non_object_json_passes() {
         let payload = Bytes::from("[1, 2, 3]");
-        let result =
-            PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
+        let result = PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
         assert!(
             result,
             "JSON array (not object) should pass through (fail-open)"
@@ -485,8 +479,7 @@ mod tests {
     fn test_filter_missing_field_drops() {
         // evaluate_condition returns false when referenced field is missing
         let payload = Bytes::from(r#"{"other": "value"}"#);
-        let result =
-            PipelineState::evaluate_filter(r#"eventName == "CreateUser""#, &payload);
+        let result = PipelineState::evaluate_filter(r#"eventName == "CreateUser""#, &payload);
         assert!(
             !result,
             "Missing field should cause condition to evaluate to false"
@@ -505,13 +498,7 @@ mod tests {
             state.get_filter_for_source("aws.cloudtrail", &config),
             Some(r#"severity == "high""#.to_string())
         );
-        assert_eq!(
-            state.get_filter_for_source("azure.defender", &config),
-            None
-        );
-        assert_eq!(
-            state.get_filter_for_source("unknown.source", &config),
-            None
-        );
+        assert_eq!(state.get_filter_for_source("azure.defender", &config), None);
+        assert_eq!(state.get_filter_for_source("unknown.source", &config), None);
     }
 }

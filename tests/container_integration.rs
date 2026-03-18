@@ -65,7 +65,7 @@ fn test_pipeline_state() -> Arc<PipelineState> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker runtime"]
 async fn test_scheduled_container_outputs_json_lines() {
     let config = test_container_config(
         "json-echo",
@@ -106,14 +106,11 @@ async fn test_scheduled_container_outputs_json_lines() {
     // The extractor should no longer be running after the scheduled container exits
     // (it waits for the next interval tick). Check that no panic occurred —
     // if we reach this point, the container ran without error.
-    assert!(
-        true,
-        "Container extractor completed without panic or hang"
-    );
+    // Reaching this point proves the container ran without panic or hang.
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker runtime"]
 async fn test_container_timeout_kills_process() {
     let config = test_container_config(
         "sleepy",
@@ -163,7 +160,7 @@ async fn test_container_timeout_kills_process() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires Docker runtime"]
 async fn test_container_nonexistent_image_fails() {
     let config = test_container_config(
         "bad-image",
