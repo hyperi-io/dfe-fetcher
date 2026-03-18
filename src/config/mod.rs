@@ -232,6 +232,44 @@ impl Config {
             )));
         }
 
+        // Validate source filter expressions (CEL)
+        if let Some(ref filter) = self.sources.aws.filter {
+            let errors = hyperi_rustlib::expression::validate(filter);
+            if !errors.is_empty() {
+                return Err(Error::Config(format!(
+                    "sources.aws.filter invalid: {}",
+                    errors.join(", ")
+                )));
+            }
+        }
+        if let Some(ref filter) = self.sources.azure.filter {
+            let errors = hyperi_rustlib::expression::validate(filter);
+            if !errors.is_empty() {
+                return Err(Error::Config(format!(
+                    "sources.azure.filter invalid: {}",
+                    errors.join(", ")
+                )));
+            }
+        }
+        if let Some(ref filter) = self.sources.m365.filter {
+            let errors = hyperi_rustlib::expression::validate(filter);
+            if !errors.is_empty() {
+                return Err(Error::Config(format!(
+                    "sources.m365.filter invalid: {}",
+                    errors.join(", ")
+                )));
+            }
+        }
+        if let Some(ref filter) = self.sources.gcp.filter {
+            let errors = hyperi_rustlib::expression::validate(filter);
+            if !errors.is_empty() {
+                return Err(Error::Config(format!(
+                    "sources.gcp.filter invalid: {}",
+                    errors.join(", ")
+                )));
+            }
+        }
+
         // Validate Vector gRPC address
         if self.extractors.vector.enabled
             && self
@@ -1344,6 +1382,28 @@ mod tests {
             apply_env_overrides(&mut config);
             assert_eq!(config.metrics.address, "0.0.0.0:8888");
         });
+    }
+
+    #[test]
+    fn test_valid_filter_expression() {
+        let mut config = Config::default();
+        config.kafka.brokers = vec!["localhost:9092".to_string()];
+        config.sources.aws.filter = Some(r#"eventName != "ConsoleLogin""#.to_string());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_filter_expression() {
+        let mut config = Config::default();
+        config.kafka.brokers = vec!["localhost:9092".to_string()];
+        config.sources.aws.filter = Some("invalid @@@ expression".to_string());
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("sources.aws.filter invalid"),
+            "Error should mention aws filter: {err_msg}"
+        );
     }
 
     #[test]
