@@ -24,11 +24,6 @@ graph TB
             NS_GCP[GCP Source]
         end
 
-        subgraph "Plugin Sources (.so)"
-            Plugin1[Custom Plugin A]
-            Plugin2[Custom Plugin B]
-        end
-
         subgraph "Container Extractors"
             CE1[Container 1<br>e.g. YACE]
             CE2[Container 2<br>e.g. custom tool]
@@ -41,10 +36,11 @@ graph TB
         end
 
         Scheduler[Scheduler<br>Timing + Concurrency]
-        Pipeline[Pipeline<br>Enrich + Route]
+        CursorStore[Cursor Store<br>File / Kafka]
+        Pipeline[Pipeline<br>Enrich + Filter + Route]
         Ingest[Ingest Server<br>HTTP :8080]
         GRPC[gRPC Receiver<br>Vector Protocol :6000]
-        KafkaSink[Kafka Sink<br>TieredSink]
+        Output[Output Transport<br>Kafka / gRPC / Both]
         Metrics[Metrics Server<br>Prometheus :9090]
     end
 
@@ -65,10 +61,9 @@ graph TB
     NS_Azure --> Scheduler
     NS_M365 --> Scheduler
     NS_GCP --> Scheduler
-    Plugin1 --> Scheduler
-    Plugin2 --> Scheduler
 
-    Scheduler --> Pipeline
+    Scheduler --> CursorStore
+    CursorStore --> Pipeline
     CE1 -->|stdout / HTTP| Ingest
     CE2 -->|stdout / HTTP| Ingest
     CE3 -->|stdout / HTTP| Ingest
@@ -77,9 +72,9 @@ graph TB
     Ingest --> Pipeline
     GRPC --> Pipeline
 
-    Pipeline --> KafkaSink
-    KafkaSink --> Kafka
-    Kafka --> Receiver
+    Pipeline --> Output
+    Output --> Kafka
+    Output -->|gRPC| Receiver
     Kafka --> Loader
 ```
 
@@ -93,20 +88,14 @@ graph LR
         A3 --> A4[FetchResult]
     end
 
-    subgraph "Mode 2: Plugin .so"
-        B1[Rust Module] --> B2[Dynamic Load .so]
-        B2 --> B3[Implements Source trait]
-        B3 --> B4[FetchResult]
-    end
-
-    subgraph "Mode 3: Container"
+    subgraph "Mode 2: Container"
         C1[OSS Tool Exists?] -->|Yes| C2[Wrap in Container]
         C2 --> C3[Docker/Podman Run]
         C3 --> C4[stdout JSON lines<br>OR HTTP POST]
         C4 --> C5[IngestMessage]
     end
 
-    subgraph "Mode 4: Vector.dev"
+    subgraph "Mode 3: Vector.dev"
         D1[Vector Config] --> D2[Container or Sidecar]
         D2 --> D3[gRPC Vector Protocol]
         D3 --> D4[IngestMessage]
@@ -119,20 +108,24 @@ graph LR
 sequenceDiagram
     participant S as Source/Extractor
     participant Sch as Scheduler
+    participant C as Cursor Store
     participant P as Pipeline
-    participant K as Kafka Sink
-    participant T as Kafka Topic
+    participant O as Output Transport
+    participant T as Kafka / gRPC
 
     Note over Sch: Timer tick (interval + jitter)
+    Sch->>C: Load cursor (last fetch window)
     Sch->>Sch: Acquire concurrency permit
-    Sch->>S: fetch()
+    Sch->>S: fetch(from_cursor)
     S->>S: Authenticate with service
     S->>S: API call (with pagination)
     S-->>Sch: Vec<FetchResult>
     Sch->>P: deliver(results)
-    P->>P: Enrich: add _timestamp_fetcher, _source_fetcher
-    P->>K: send(topic + suffix, payload)
-    K->>T: Produce message
+    P->>P: Enrich: add _timestamp_fetcher, _source_fetcher, _timestamp_received
+    P->>P: CEL filter: evaluate per-source filter expression
+    P->>O: send(topic + suffix, payload)
+    O->>T: Produce message (Kafka and/or gRPC)
+    Sch->>C: Save cursor (new fetch window)
     Note over T: topic = "{source}{topic_suffix}"<br>e.g. "aws_land"
 ```
 
@@ -238,10 +231,12 @@ graph TD
     main --> source
     main --> extractor
     main --> ingest
+    main --> output
+    main --> cursor
 
     pipeline --> config
     pipeline --> metrics
-    pipeline --> sink
+    pipeline --> output
     pipeline --> buffer
     pipeline --> source
     pipeline --> error
@@ -249,6 +244,7 @@ graph TD
     scheduler --> config
     scheduler --> metrics
     scheduler --> source
+    scheduler --> cursor
 
     source --> config
     source --> credential
@@ -260,10 +256,13 @@ graph TD
 
     ingest[ingest<br>HTTP server] --> pipeline
 
-    credential[credential.rs<br>vault/env/literal<br>OAuth2 TokenManager] --> error
+    output[output.rs<br>Kafka / gRPC / Both] --> config
+    output --> error
 
-    sink --> config
-    sink --> error
+    cursor[cursor/<br>File / Kafka] --> config
+    cursor --> error
+
+    credential[credential.rs<br>vault/env/literal<br>OAuth2 TokenManager] --> error
 
     buffer --> config
 
@@ -275,7 +274,8 @@ graph TD
         rustlib_metrics[metrics]
         rustlib_tiered[tiered-sink]
         rustlib_secrets[secrets]
-        rustlib_transport[gRPC transport]
+        rustlib_transport[Transport trait<br>Kafka + gRPC]
+        rustlib_expression[expression<br>CEL filtering]
     end
 
     config --> rustlib_config
@@ -283,7 +283,9 @@ graph TD
     metrics --> rustlib_metrics
     buffer --> rustlib_tiered
     credential --> rustlib_secrets
+    output --> rustlib_transport
     extractor --> rustlib_transport
+    pipeline --> rustlib_expression
 ```
 
 ## Decision Framework: Native vs Container

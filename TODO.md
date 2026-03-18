@@ -6,10 +6,7 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
-- [ ] **Commit Phase 6 changes to dfe-fetcher** `[IN PROGRESS]`
-  - Current state: All Phase 6 work done (CLI module, DeploymentContract, Dockerfile/Helm/Compose artifacts, base image ubuntu:24.04). Cargo.toml bumped to `>=1.13.1`. Uncommitted files: `Cargo.toml`, `Cargo.lock`, `Dockerfile`, `src/lib.rs`, `src/main.rs`, `src/deployment.rs`, `chart/`, `docker-compose.yaml`, `TODO.md`.
-  - Next: Run `cargo fmt --check && cargo clippy -- -D warnings && cargo test`, then commit all.
-  - Blockers: None
+None.
 
 ---
 
@@ -27,33 +24,31 @@ This is the **single source of truth** for all tasks and progress.
 
 ### Hardening
 
-4. [ ] **Ingest endpoint authentication** — `/ingest/:source` HTTP endpoint has no auth. Add bearer token or shared secret validation to prevent unauthorised POST.
+4. [x] **Ingest endpoint authentication** — Bearer token validation via `auth_token` config field. Credential resolution supports vault/env/literal.
 
-5. [ ] **Container restart-on-crash** — Continuous containers don't auto-restart with backoff if they exit unexpectedly. Add exponential backoff restart logic in `run_continuous`.
+5. [x] **Container restart-on-crash** — Exponential backoff restart with configurable `max_restart_attempts`, `max_restart_backoff_secs`, and `stable_after_secs`.
 
-6. [ ] **Incremental fetching / cursor state** — All sources fetch a fixed time window (1-24 hours) on every run. No state tracking between runs, so records are duplicated. Add cursor/checkpoint persistence (file or Kafka offset).
+6. [x] **Incremental fetching / cursor state** — Cursor store with file and Kafka backends. Auto-selects backend based on output config. Sources resume from last successful fetch window.
 
-7. [ ] **Plugin .so loading** — Plugin registry exists as a stub. Actual `libloading` calls require `unsafe` code. Either move plugin loader to a separate crate without `#![forbid(unsafe_code)]` or change to `#![deny(unsafe_code)]` with targeted `#[allow]`.
+7. [x] **Per-message filtering** — CEL expression filtering via rustlib `expression` feature. Configurable per-source `filter:` field evaluated before output delivery.
 
-8. [ ] **Per-message filtering** — All sources emit every record fetched. Add configurable post-fetch filtering using DFE expression language (from rustlib) to drop/keep records before Kafka delivery. Applies to all sources, not just CloudWatch. Separate from source-level API query filters.
-
-9. [ ] **`_timestamp_received` enrichment** — All fetched data should set `_timestamp_received` to the time it was fetched (aligns with `common-header/timeseries.yaml` schema).
+8. [x] **`_timestamp_received` enrichment** — All fetched data sets `_timestamp_received` to fetch time (aligns with `common-header/timeseries.yaml` schema).
 
 ### Testing
 
 8. [x] **Wiremock source tests** — 31 wiremock tests across all 4 sources (AWS 6, Azure 8, GCP 7, M365 10) covering fetch success, pagination, empty responses, error handling, and health checks. URL override fields added to config structs.
 
-9. [ ] **Container extractor integration test** — Test with a simple `echo` container that outputs JSON to stdout.
+9. [x] **Container extractor integration test** — Docker-based test with `alpine` container producing JSON to stdout. 3 tests in `tests/container_integration.rs`.
 
 10. [ ] **Kafka sink integration test** — Use testcontainers or mock Kafka to test produce/flush cycle.
 
-11. [ ] **Benchmarks** — Enrichment throughput, Kafka produce rate, buffer pressure. Place in `benches/`.
+11. [x] **Benchmarks** — Pipeline enrichment throughput benchmark in `benches/pipeline.rs`.
 
 ### Nice-to-Have
 
 12. [x] **Helm chart** — Generated from `DeploymentContract` via `dfe-fetcher emit-chart <dir>`. Includes Deployment, Service, ConfigMap, Secret, HPA, KEDA, ServiceAccount.
 13. [x] **Config --validate flag** — Available as `dfe-fetcher config-check` subcommand (rustlib CLI module).
-14. [ ] **Adopt rustlib `top` feature** — Live TUI metrics dashboard. Requires enabling `top` feature + ratatui dep.
+14. [x] **Adopt rustlib `top` feature** — Live TUI metrics dashboard via `dfe-fetcher top` subcommand.
 
 ---
 
@@ -110,11 +105,9 @@ This is the **single source of truth** for all tasks and progress.
 - [x] `fetch_scc` — Security Command Center findings (requires organization_id)
 - [x] `fetch_cloud_logging` — entries.list with custom filter from config
 
-### Phase 4: Plugin System
+### Phase 4: Plugin System (Removed)
 
-- [x] Add `libloading` dependency
-- [x] Define plugin C ABI types and PluginRegistry structure
-- [x] Implement `load_from_config` — directory scanning + explicit entries (stub, no unsafe loading)
+Plugin system was removed. Three extraction modes remain: native, container, and vector.
 
 ### Phase 5: Container Extractor Hardening
 
@@ -153,12 +146,11 @@ This is the **single source of truth** for all tasks and progress.
 ## Build Status
 
 ```
-cargo fmt --check    ✅ Clean (last verified before Phase 6 CLI/deployment work)
-cargo clippy -D warn ✅ Clean (last verified before Phase 6 CLI/deployment work)
-cargo test           ✅ 111/111 passing (43 unit + 19 integration + 49 source)
-cargo test --test smoke_cloud -- --ignored  ✅ 8 smoke tests (AWS CloudTrail/CW Logs/CW Metrics + Azure + GCP)
-
-Phase 6 changes (CLI module, DeploymentContract, artifacts) uncommitted — verify before committing.
+cargo fmt --check    — verify before push
+cargo clippy -D warn — verify before push
+cargo test           — 137 tests (69 unit + 19 integration + 49 source)
+cargo test --test smoke_cloud -- --ignored  — 8 smoke tests (live cloud APIs)
+cargo test --test container_integration -- --ignored  — 3 container tests (Docker)
 ```
 
 ---

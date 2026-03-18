@@ -38,16 +38,16 @@ Native Rust fetcher that:
 
 1. Fetches data from cloud services via native Rust sources (AWS, Azure, M365, GCP)
 2. Manages container-based extractors for third-party tools (any language)
-3. Supports dynamically loaded Rust plugin modules (.so)
-4. Integrates with Vector.dev via native gRPC protocol
-5. Delivers all fetched data to Kafka for the DFE pipeline
+3. Integrates with Vector.dev via native gRPC protocol
+4. Delivers all fetched data to Kafka and/or gRPC for the DFE pipeline
+5. Tracks incremental fetch state via cursor store (file or Kafka)
+6. Filters records per-source using CEL expressions before delivery
 
-### Four Extraction Modes
+### Three Extraction Modes
 
 1. **Native Sources** (`src/source/`) — Rust-native implementations using crates
-2. **Plugin Sources** (`src/extractor/plugin/`) — Dynamically loaded .so modules
-3. **Container Extractors** (`src/extractor/container/`) — Docker/podman isolated containers
-4. **Vector Extractors** (`src/extractor/vector/`) — Vector.dev instances via gRPC
+2. **Container Extractors** (`src/extractor/container/`) — Docker/podman isolated containers
+3. **Vector Extractors** (`src/extractor/vector/`) — Vector.dev instances via gRPC
 
 ### Decision Framework
 
@@ -62,21 +62,22 @@ Native Rust fetcher that:
 2. **Native Sources** — AWS, Azure, M365, GCP source implementations with OAuth2/SigV4 auth
 3. **Credential Resolver** — `vault:path:key`, `env:VAR`, literal string resolution via rustlib SecretsManager
 4. **Token Manager** — OAuth2 client_credentials with automatic caching (60s before expiry)
-5. **Container Manager** — Docker/podman lifecycle with image pull policies, stderr capture, timeouts
-6. **Plugin Loader** — Registry and C ABI types defined (actual unsafe loading deferred to separate crate)
-7. **Vector Manager** — Native gRPC Vector protocol integration via rustlib GrpcTransport
-8. **Pipeline** — Enrichment (`_timestamp_fetcher`, `_source_fetcher` fields) + Kafka delivery
-9. **TieredSink** — In-memory buffering with circuit breaker (from rustlib)
-10. **Ingest Server** — axum HTTP server for container extractors using HTTP communication
-11. **Metrics** — Prometheus-compatible `/metrics` endpoint with fetch/extractor/memory counters
+5. **Container Manager** — Docker/podman lifecycle with image pull policies, stderr capture, timeouts, restart-on-crash with exponential backoff
+6. **Vector Manager** — Native gRPC Vector protocol integration via rustlib GrpcTransport
+7. **Pipeline** — Enrichment (`_timestamp_fetcher`, `_source_fetcher`, `_timestamp_received` fields) + CEL filtering + output delivery
+8. **Output Transport** — Unified transport layer via rustlib Transport trait (Kafka, gRPC, or both)
+9. **Cursor Store** — Incremental fetch state persistence (file or Kafka backend, auto-selected)
+10. **TieredSink** — In-memory buffering with circuit breaker (from rustlib)
+11. **Ingest Server** — axum HTTP server for container extractors with bearer token auth
+12. **Metrics** — Prometheus-compatible `/metrics` endpoint with fetch/extractor/memory counters
 
 ### Tech Stack
 
 - **Language:** Rust
 - **HTTP Client:** reqwest (shared factory in `src/credential.rs`)
 - **HTTP Server:** axum 0.7 (metrics + ingest endpoint)
-- **Kafka:** rdkafka 0.39
-- **Shared Library:** hyperi-rustlib >=1.9.2 (config, secrets, metrics, tiered-sink, gRPC transport)
+- **Output Transport:** rustlib Transport trait (wraps rdkafka + tonic/gRPC)
+- **Shared Library:** hyperi-rustlib (config, secrets, metrics, tiered-sink, transport, expression)
 - **Container Runtime:** Docker or podman (exec via CLI)
 - **Deployment:** Kubernetes (one container per source + config)
 
@@ -102,8 +103,8 @@ Native Rust fetcher that:
 
 ### forbid(unsafe_code)
 
-**Decision:** `#![forbid(unsafe_code)]` in lib.rs. Plugin .so loading deferred to a separate crate.
-**Rationale:** Safety guarantee for the core codebase. Only the plugin loader needs unsafe, and it can live in its own crate with targeted allows.
+**Decision:** `#![forbid(unsafe_code)]` in lib.rs. No plugin system — plugin feature was removed.
+**Rationale:** Safety guarantee for the entire codebase. Three extraction modes (native, container, vector) cover all use cases without needing dynamic .so loading.
 
 ### Credential Resolution
 
@@ -114,12 +115,13 @@ Native Rust fetcher that:
 
 ## External Dependencies
 
-- **hyperi-rustlib >=1.9.2** — Config cascade, secrets (SecretsManager/SecretsConfig/SecretValue), logger, metrics, gRPC transport (GrpcTransport with vector_compat), tiered-sink (CircuitBreaker/CircuitState), config reload (ConfigReloader/ReloaderConfig)
-- **AWS APIs** — CloudTrail, GuardDuty, SecurityHub, Config (SigV4 signing placeholder)
+- **hyperi-rustlib** — Config cascade, secrets, logger, metrics, Transport trait (Kafka + gRPC), tiered-sink, config reload, expression (CEL filtering), CLI framework
+- **AWS APIs** — CloudTrail, GuardDuty, SecurityHub, Config (SigV4 signing via reqsign)
 - **Azure APIs** — Activity Log, Defender, Sentinel, Entra ID (Microsoft Graph + Azure Management)
 - **M365 APIs** — Office 365 Management Activity API, Microsoft Graph Security
-- **GCP APIs** — Cloud Audit Logs, Security Command Center, Cloud Logging (JWT signing placeholder)
-- **Kafka** — Output delivery to DFE pipeline via rdkafka FutureProducer
+- **GCP APIs** — Cloud Audit Logs, Security Command Center, Cloud Logging (JWT signing via jsonwebtoken)
+- **Kafka** — Output delivery via rustlib Transport trait (wraps rdkafka)
+- **gRPC** — Optional output delivery to dfe-receiver via rustlib Transport trait
 
 ---
 
@@ -134,25 +136,26 @@ src/
 │   ├── mod.rs        # Config, validation, all sub-configs
 │   └── shared.rs     # SharedConfig (Arc<RwLock<Config>>)
 ├── credential.rs     # Credential resolver (vault/env/literal), OAuth2 TokenManager, HTTP client factory
-├── error.rs          # Centralised error types (Config, Source, Credential, Sink, Extractor)
+├── cursor/           # Incremental fetch state persistence
+│   ├── mod.rs        # CursorStore trait, CursorValue, auto-select backend
+│   ├── file.rs       # File-based cursor backend (one JSON file per key)
+│   └── kafka.rs      # Kafka compacted topic cursor backend
+├── error.rs          # Centralised error types (Config, Source, Credential, Output, Extractor)
 ├── extractor/        # External extractors
 │   ├── mod.rs        # Extractor trait
-│   ├── container/    # Docker/podman container management (pull, run, stderr, timeout)
-│   ├── plugin/       # Plugin registry stub (C ABI types defined, loading deferred)
+│   ├── container/    # Docker/podman container management (pull, run, stderr, timeout, restart)
 │   └── vector/       # Vector.dev gRPC integration via rustlib
-├── ingest/           # HTTP ingest server (axum)
+├── ingest/           # HTTP ingest server (axum) with bearer token auth
 │   └── mod.rs        # POST /ingest/:source, GET /health
 ├── lib.rs            # Public module exports, #![forbid(unsafe_code)]
 ├── main.rs           # CLI entry point (clap), signal handling (SIGINT+SIGTERM)
 ├── metrics/          # Prometheus metrics with saturating gauge ops
 │   └── mod.rs        # Metrics struct, render() for /metrics
-├── pipeline/         # Orchestration, enrichment, Kafka delivery
+├── output.rs         # Output transport layer (Kafka / gRPC / Both via rustlib Transport trait)
+├── pipeline/         # Orchestration, enrichment, CEL filtering, output delivery
 │   └── mod.rs        # PipelineState, Orchestrator, enrich_record
 ├── scheduler/        # Fetch timing with fastrand jitter, semaphore concurrency
 │   └── mod.rs        # Scheduler with per-source interval overrides
-├── sink/             # Sink trait + Kafka implementation
-│   ├── mod.rs        # Sink trait (send, flush, is_healthy)
-│   └── kafka/        # Kafka producer (rdkafka FutureProducer)
 └── source/           # Native source trait + providers
     ├── mod.rs        # Source trait, FetchResult struct
     ├── aws/          # AWS (CloudTrail, GuardDuty, SecurityHub, Config)
@@ -161,11 +164,16 @@ src/
     └── m365/         # M365 (Audit Log, Message Trace, DLP, Alerts)
 
 tests/
+├── container_integration.rs  # Docker container extractor tests (3 tests, requires Docker)
 ├── integration.rs    # Config, enrichment, metrics, credentials, buffer (19 tests)
-├── source_aws.rs     # AWS disabled/health-check/no-creds tests (3 tests)
-├── source_azure.rs   # Azure disabled/health-check/missing-tenant tests (3 tests)
-├── source_gcp.rs     # GCP disabled/health-check/no-creds tests (3 tests)
-└── source_m365.rs    # M365 disabled/health-check/missing-tenant tests (3 tests)
+├── smoke_cloud.rs    # Live cloud API tests (8 tests, requires credentials)
+├── source_aws.rs     # AWS wiremock + disabled/health-check tests
+├── source_azure.rs   # Azure wiremock + disabled/health-check tests
+├── source_gcp.rs     # GCP wiremock + disabled/health-check tests
+└── source_m365.rs    # M365 wiremock + disabled/health-check tests
+
+benches/
+└── pipeline.rs       # Pipeline enrichment throughput benchmark
 ```
 
 ---
