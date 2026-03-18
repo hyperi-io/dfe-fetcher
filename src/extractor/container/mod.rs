@@ -355,16 +355,64 @@ impl ContainerExtractor {
                     }
                 }
             } else {
-                self.running.store(true, Ordering::Relaxed);
-                self.metrics.inc_extractor_runs_total();
-                match self.run_continuous().await {
-                    Ok(()) => self.metrics.inc_extractor_runs_success(),
-                    Err(e) => {
-                        self.metrics.inc_extractor_runs_error();
-                        error!(name = %name, error = %e, "Continuous extractor failed");
+                let mut attempt = 0u32;
+                loop {
+                    let start = std::time::Instant::now();
+                    self.running.store(true, Ordering::Relaxed);
+                    self.metrics.inc_extractor_runs_total();
+
+                    match self.run_continuous().await {
+                        Ok(()) => {
+                            self.metrics.inc_extractor_runs_success();
+                            info!(name = %name, "Continuous extractor exited normally");
+                        }
+                        Err(e) => {
+                            self.metrics.inc_extractor_runs_error();
+                            error!(name = %name, error = %e, attempt, "Continuous extractor failed");
+                        }
+                    }
+                    self.running.store(false, Ordering::Relaxed);
+
+                    // Reset backoff if container ran long enough to be considered stable
+                    if start.elapsed().as_secs() >= self.config.stable_after_secs {
+                        attempt = 0;
+                    }
+
+                    attempt += 1;
+
+                    // Check restart limit (0 = unlimited)
+                    if self.config.max_restart_attempts > 0
+                        && attempt > self.config.max_restart_attempts
+                    {
+                        error!(
+                            name = %name,
+                            attempts = attempt,
+                            "Restart attempts exhausted, stopping container extractor"
+                        );
+                        self.metrics.inc_extractor_restart_exhausted();
+                        break;
+                    }
+
+                    // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at max_restart_backoff_secs
+                    let backoff_secs =
+                        (1u64 << attempt.min(6)).min(self.config.max_restart_backoff_secs);
+                    let backoff = std::time::Duration::from_secs(backoff_secs);
+
+                    info!(
+                        name = %name,
+                        backoff_secs = backoff.as_secs(),
+                        attempt,
+                        "Restarting container after backoff"
+                    );
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = self.shutdown.cancelled() => {
+                            info!(name = %name, "Shutdown during restart backoff");
+                            break;
+                        }
                     }
                 }
-                self.running.store(false, Ordering::Relaxed);
             }
         });
     }
