@@ -64,6 +64,7 @@
 pub mod buffer;
 pub mod config;
 pub mod credential;
+pub mod cursor;
 pub mod deployment;
 pub mod error;
 pub mod extractor;
