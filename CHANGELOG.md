@@ -1,3 +1,30 @@
+# [1.1.0-dev.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.1...v1.1.0-dev.2) (2026-03-18)
+
+
+### Bug Fixes
+
+* add backpressure handling with stall, metrics, and transport health tracking ([bea83a0](https://github.com/hyperi-io/dfe-fetcher/commit/bea83a0f3f8e352755d7a8131f6009989b74485a))
+* add container restart-on-crash with exponential backoff ([d6089bd](https://github.com/hyperi-io/dfe-fetcher/commit/d6089bd795a32871d6cf6726d543f0792d772034))
+* add cursor store with file and kafka backends ([e51791b](https://github.com/hyperi-io/dfe-fetcher/commit/e51791bd1017f86af874b79178b51e9ea311905c))
+* add FetchWindow to Source trait for incremental fetching ([3ce62b9](https://github.com/hyperi-io/dfe-fetcher/commit/3ce62b9442f5b983fa49b5921d29c9c8a60fae8d))
+* add output, cursor, instance_id, filter, auth, restart config ([0f87cb0](https://github.com/hyperi-io/dfe-fetcher/commit/0f87cb06ea8e4eb52c353a959d4d292f4c52df6b))
+* add OutputTransport using rustlib Transport trait ([67e5c7e](https://github.com/hyperi-io/dfe-fetcher/commit/67e5c7e8ab2de59b7fd6158b9eb53b0426d70e2e))
+* add per-message CEL filtering with rustlib expression engine ([a912cdd](https://github.com/hyperi-io/dfe-fetcher/commit/a912cdd155c6f094a594a4d29db8844643dc12e9))
+* add transport, cursor, and filter error variants ([24daaf9](https://github.com/hyperi-io/dfe-fetcher/commit/24daaf95e931a59bcbaacb077def4efa8ba9832d))
+* address review findings — enrichment, dual-write, stale docs, deprecation warning ([c5c3e19](https://github.com/hyperi-io/dfe-fetcher/commit/c5c3e19ac6797bd6676bfdabb967d45654ed45e0))
+* delete custom Sink trait, use rustlib Transport uniformly ([58ae98f](https://github.com/hyperi-io/dfe-fetcher/commit/58ae98f9d8960b45e60df6f2305c52682789aab5))
+* format output.rs clone_from line ([42bb1df](https://github.com/hyperi-io/dfe-fetcher/commit/42bb1df3d671268a192073046ba8398bec4cc091))
+* integrate cursor store into scheduler for incremental fetching ([c158eb9](https://github.com/hyperi-io/dfe-fetcher/commit/c158eb9606465341bdb3d03e0cad2a06c9be8246))
+* remove plugin .so system, use container/sidecar approach ([26a22c9](https://github.com/hyperi-io/dfe-fetcher/commit/26a22c9a7d2a2b2025922747cec8dbbd0be80c92))
+* resolve all clippy warnings ([efa28f3](https://github.com/hyperi-io/dfe-fetcher/commit/efa28f3948306ddcbbeaa65aab5cf785cf0253c2))
+* rewrite pipeline to use rustlib Transport via OutputManager ([ed2f34e](https://github.com/hyperi-io/dfe-fetcher/commit/ed2f34ea8f08b6c689ec14ba75fb6aee1f242254))
+* standardise metric names to dfe_ prefix for cross-service consistency ([5aefbf6](https://github.com/hyperi-io/dfe-fetcher/commit/5aefbf6d70c042de283d4b9d140a102bcc35b271))
+
+
+### Features
+
+* add TUI dashboard subcommand via rustlib top module ([c316933](https://github.com/hyperi-io/dfe-fetcher/commit/c31693305a6fcaa7719db05416dc4789dcad276e))
+
 # [1.1.0-dev.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.0.0...v1.1.0-dev.1) (2026-03-16)
 
 
