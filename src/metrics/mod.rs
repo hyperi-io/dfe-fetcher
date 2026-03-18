@@ -47,6 +47,10 @@ pub struct Metrics {
     cursor_writes_total: AtomicU64,
     cursor_write_failures_total: AtomicU64,
 
+    // Pipeline / delivery
+    pipeline_ready: AtomicU64,          // gauge: 1=ready, 0=backpressured
+    records_delivered_total: AtomicU64, // counter
+
     // Gauges
     active_fetches: AtomicU64,
     active_extractors: AtomicU64,
@@ -126,6 +130,8 @@ impl Metrics {
             extractor_restart_exhausted_total: AtomicU64::new(0),
             cursor_writes_total: AtomicU64::new(0),
             cursor_write_failures_total: AtomicU64::new(0),
+            pipeline_ready: AtomicU64::new(1),
+            records_delivered_total: AtomicU64::new(0),
             active_fetches: AtomicU64::new(0),
             active_extractors: AtomicU64::new(0),
             memory_used_bytes: AtomicU64::new(0),
@@ -270,6 +276,23 @@ impl Metrics {
     }
 
     // ==========================================================================
+    // Pipeline / delivery
+    // ==========================================================================
+
+    /// Set pipeline readiness gauge (1=ready, 0=backpressured).
+    #[inline]
+    pub fn set_pipeline_ready(&self, ready: bool) {
+        self.pipeline_ready
+            .store(if ready { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    /// Increment records delivered counter.
+    #[inline]
+    pub fn inc_records_delivered(&self) {
+        self.records_delivered_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // ==========================================================================
     // Gauges
     // ==========================================================================
 
@@ -322,175 +345,198 @@ impl Metrics {
         let mut output = String::with_capacity(4096);
 
         // Fetch counters
-        output.push_str("# HELP fetcher_fetches_total Total number of fetch operations\n");
-        output.push_str("# TYPE fetcher_fetches_total counter\n");
+        output.push_str("# HELP dfe_fetches_total Total number of fetch operations\n");
+        output.push_str("# TYPE dfe_fetches_total counter\n");
         output.push_str(&format!(
-            "fetcher_fetches_total {}\n",
+            "dfe_fetches_total {}\n",
             self.fetches_total.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_fetches_success Successful fetch operations\n");
-        output.push_str("# TYPE fetcher_fetches_success counter\n");
+        output.push_str("# HELP dfe_fetches_success Successful fetch operations\n");
+        output.push_str("# TYPE dfe_fetches_success counter\n");
         output.push_str(&format!(
-            "fetcher_fetches_success {}\n",
+            "dfe_fetches_success {}\n",
             self.fetches_success.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_fetches_error Failed fetch operations\n");
-        output.push_str("# TYPE fetcher_fetches_error counter\n");
+        output.push_str("# HELP dfe_fetches_error Failed fetch operations\n");
+        output.push_str("# TYPE dfe_fetches_error counter\n");
         output.push_str(&format!(
-            "fetcher_fetches_error {}\n",
+            "dfe_fetches_error {}\n",
             self.fetches_error.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_records_fetched_total Total records fetched\n");
-        output.push_str("# TYPE fetcher_records_fetched_total counter\n");
+        output.push_str("# HELP dfe_records_received_total Total records received\n");
+        output.push_str("# TYPE dfe_records_received_total counter\n");
         output.push_str(&format!(
-            "fetcher_records_fetched_total {}\n",
+            "dfe_records_received_total {}\n",
             self.records_fetched.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_bytes_fetched_total Total bytes fetched\n");
-        output.push_str("# TYPE fetcher_bytes_fetched_total counter\n");
+        output.push_str("# HELP dfe_bytes_received_total Total bytes received\n");
+        output.push_str("# TYPE dfe_bytes_received_total counter\n");
         output.push_str(&format!(
-            "fetcher_bytes_fetched_total {}\n",
+            "dfe_bytes_received_total {}\n",
             self.bytes_fetched.load(Ordering::Relaxed)
         ));
 
         // Delivery counters
-        output.push_str("# HELP fetcher_messages_sent_kafka_total Messages delivered to Kafka\n");
-        output.push_str("# TYPE fetcher_messages_sent_kafka_total counter\n");
+        output.push_str(
+            "# HELP dfe_transport_sent_total Total messages sent successfully via transport\n",
+        );
+        output.push_str("# TYPE dfe_transport_sent_total counter\n");
         output.push_str(&format!(
-            "fetcher_messages_sent_kafka_total {}\n",
+            "dfe_transport_sent_total {}\n",
             self.messages_sent_kafka.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_messages_dlq_total Messages sent to DLQ\n");
-        output.push_str("# TYPE fetcher_messages_dlq_total counter\n");
+        output.push_str("# HELP dfe_records_dlq_total Total records routed to dead letter queue\n");
+        output.push_str("# TYPE dfe_records_dlq_total counter\n");
         output.push_str(&format!(
-            "fetcher_messages_dlq_total {}\n",
+            "dfe_records_dlq_total {}\n",
             self.messages_dlq.load(Ordering::Relaxed)
         ));
 
-        // Extractor counters
-        output.push_str("# HELP fetcher_extractor_runs_total Total extractor runs\n");
-        output.push_str("# TYPE fetcher_extractor_runs_total counter\n");
+        output.push_str("# HELP dfe_records_delivered_total Total records delivered to output\n");
+        output.push_str("# TYPE dfe_records_delivered_total counter\n");
         output.push_str(&format!(
-            "fetcher_extractor_runs_total {}\n",
+            "dfe_records_delivered_total {}\n",
+            self.records_delivered_total.load(Ordering::Relaxed)
+        ));
+
+        // Extractor counters
+        output.push_str("# HELP dfe_extractor_runs_total Total extractor runs\n");
+        output.push_str("# TYPE dfe_extractor_runs_total counter\n");
+        output.push_str(&format!(
+            "dfe_extractor_runs_total {}\n",
             self.extractor_runs_total.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_extractor_runs_success Successful extractor runs\n");
-        output.push_str("# TYPE fetcher_extractor_runs_success counter\n");
+        output.push_str("# HELP dfe_extractor_runs_success Successful extractor runs\n");
+        output.push_str("# TYPE dfe_extractor_runs_success counter\n");
         output.push_str(&format!(
-            "fetcher_extractor_runs_success {}\n",
+            "dfe_extractor_runs_success {}\n",
             self.extractor_runs_success.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_extractor_runs_error Failed extractor runs\n");
-        output.push_str("# TYPE fetcher_extractor_runs_error counter\n");
+        output.push_str("# HELP dfe_extractor_runs_error Failed extractor runs\n");
+        output.push_str("# TYPE dfe_extractor_runs_error counter\n");
         output.push_str(&format!(
-            "fetcher_extractor_runs_error {}\n",
+            "dfe_extractor_runs_error {}\n",
             self.extractor_runs_error.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_extractor_records_total Total records from extractors\n");
-        output.push_str("# TYPE fetcher_extractor_records_total counter\n");
+        output.push_str("# HELP dfe_extractor_records_total Total records from extractors\n");
+        output.push_str("# TYPE dfe_extractor_records_total counter\n");
         output.push_str(&format!(
-            "fetcher_extractor_records_total {}\n",
+            "dfe_extractor_records_total {}\n",
             self.extractor_records_total.load(Ordering::Relaxed)
         ));
 
         // Backpressure / transport health
         output.push_str(
-            "# HELP fetcher_transport_backpressured_total Transport backpressure events\n",
+            "# HELP dfe_transport_backpressured_total Total send attempts rejected due to backpressure\n",
         );
-        output.push_str("# TYPE fetcher_transport_backpressured_total counter\n");
+        output.push_str("# TYPE dfe_transport_backpressured_total counter\n");
         output.push_str(&format!(
-            "fetcher_transport_backpressured_total {}\n",
+            "dfe_transport_backpressured_total {}\n",
             self.transport_backpressured_total.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_transport_send_errors_total Transport send errors\n");
-        output.push_str("# TYPE fetcher_transport_send_errors_total counter\n");
+        output.push_str(
+            "# HELP dfe_transport_send_errors_total Total messages that failed to send\n",
+        );
+        output.push_str("# TYPE dfe_transport_send_errors_total counter\n");
         output.push_str(&format!(
-            "fetcher_transport_send_errors_total {}\n",
+            "dfe_transport_send_errors_total {}\n",
             self.transport_send_errors_total.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_transport_healthy Transport health status\n");
-        output.push_str("# TYPE fetcher_transport_healthy gauge\n");
+        output.push_str(
+            "# HELP dfe_transport_healthy Transport health status (1=healthy, 0=unhealthy)\n",
+        );
+        output.push_str("# TYPE dfe_transport_healthy gauge\n");
         output.push_str(&format!(
-            "fetcher_transport_healthy {}\n",
+            "dfe_transport_healthy {}\n",
             self.transport_healthy.load(Ordering::Relaxed)
         ));
 
         // Filtering / extractor lifecycle
-        output.push_str("# HELP fetcher_records_filtered_total Records filtered out\n");
-        output.push_str("# TYPE fetcher_records_filtered_total counter\n");
+        output.push_str(
+            "# HELP dfe_records_filtered_total Total records dropped by filter expressions\n",
+        );
+        output.push_str("# TYPE dfe_records_filtered_total counter\n");
         output.push_str(&format!(
-            "fetcher_records_filtered_total {}\n",
+            "dfe_records_filtered_total {}\n",
             self.records_filtered_total.load(Ordering::Relaxed)
         ));
 
         output.push_str(
-            "# HELP fetcher_extractor_restart_exhausted_total Extractor restart retries exhausted\n",
+            "# HELP dfe_extractor_restart_exhausted_total Extractor restart retries exhausted\n",
         );
-        output.push_str("# TYPE fetcher_extractor_restart_exhausted_total counter\n");
+        output.push_str("# TYPE dfe_extractor_restart_exhausted_total counter\n");
         output.push_str(&format!(
-            "fetcher_extractor_restart_exhausted_total {}\n",
+            "dfe_extractor_restart_exhausted_total {}\n",
             self.extractor_restart_exhausted_total
                 .load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_cursor_writes_total Cursor state writes\n");
-        output.push_str("# TYPE fetcher_cursor_writes_total counter\n");
+        output.push_str("# HELP dfe_cursor_writes_total Cursor state writes\n");
+        output.push_str("# TYPE dfe_cursor_writes_total counter\n");
         output.push_str(&format!(
-            "fetcher_cursor_writes_total {}\n",
+            "dfe_cursor_writes_total {}\n",
             self.cursor_writes_total.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_cursor_write_failures_total Cursor state write failures\n");
-        output.push_str("# TYPE fetcher_cursor_write_failures_total counter\n");
+        output.push_str("# HELP dfe_cursor_write_failures_total Cursor state write failures\n");
+        output.push_str("# TYPE dfe_cursor_write_failures_total counter\n");
         output.push_str(&format!(
-            "fetcher_cursor_write_failures_total {}\n",
+            "dfe_cursor_write_failures_total {}\n",
             self.cursor_write_failures_total.load(Ordering::Relaxed)
         ));
 
         // Gauges
-        output.push_str("# HELP fetcher_active_fetches Current active fetch operations\n");
-        output.push_str("# TYPE fetcher_active_fetches gauge\n");
+        output
+            .push_str("# HELP dfe_pipeline_ready Pipeline readiness (1=ready, 0=backpressured)\n");
+        output.push_str("# TYPE dfe_pipeline_ready gauge\n");
         output.push_str(&format!(
-            "fetcher_active_fetches {}\n",
+            "dfe_pipeline_ready {}\n",
+            self.pipeline_ready.load(Ordering::Relaxed)
+        ));
+
+        output.push_str("# HELP dfe_active_fetches Current active fetch operations\n");
+        output.push_str("# TYPE dfe_active_fetches gauge\n");
+        output.push_str(&format!(
+            "dfe_active_fetches {}\n",
             self.active_fetches.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_active_extractors Current running extractors\n");
-        output.push_str("# TYPE fetcher_active_extractors gauge\n");
+        output.push_str("# HELP dfe_active_extractors Current running extractors\n");
+        output.push_str("# TYPE dfe_active_extractors gauge\n");
         output.push_str(&format!(
-            "fetcher_active_extractors {}\n",
+            "dfe_active_extractors {}\n",
             self.active_extractors.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_memory_used_bytes Current memory usage\n");
-        output.push_str("# TYPE fetcher_memory_used_bytes gauge\n");
+        output.push_str("# HELP dfe_memory_used_bytes Current memory usage\n");
+        output.push_str("# TYPE dfe_memory_used_bytes gauge\n");
         output.push_str(&format!(
-            "fetcher_memory_used_bytes {}\n",
+            "dfe_memory_used_bytes {}\n",
             self.memory_used_bytes.load(Ordering::Relaxed)
         ));
 
-        output.push_str("# HELP fetcher_memory_limit_bytes Memory limit\n");
-        output.push_str("# TYPE fetcher_memory_limit_bytes gauge\n");
+        output.push_str("# HELP dfe_memory_limit_bytes Memory limit\n");
+        output.push_str("# TYPE dfe_memory_limit_bytes gauge\n");
         output.push_str(&format!(
-            "fetcher_memory_limit_bytes {}\n",
+            "dfe_memory_limit_bytes {}\n",
             self.memory_limit_bytes.load(Ordering::Relaxed)
         ));
 
         // Rate
-        output.push_str("# HELP fetcher_fetch_rate_per_second Current fetch rate\n");
-        output.push_str("# TYPE fetcher_fetch_rate_per_second gauge\n");
+        output.push_str("# HELP dfe_fetch_rate_per_second Current fetch rate\n");
+        output.push_str("# TYPE dfe_fetch_rate_per_second gauge\n");
         output.push_str(&format!(
-            "fetcher_fetch_rate_per_second {:.2}\n",
+            "dfe_fetch_rate_per_second {:.2}\n",
             self.fetch_rate()
         ));
 
@@ -517,8 +563,8 @@ mod tests {
         metrics.inc_fetches_success();
 
         let output = metrics.render();
-        assert!(output.contains("fetcher_fetches_total 2"));
-        assert!(output.contains("fetcher_fetches_success 1"));
+        assert!(output.contains("dfe_fetches_total 2"));
+        assert!(output.contains("dfe_fetches_success 1"));
     }
 
     #[test]
@@ -530,9 +576,9 @@ mod tests {
         metrics.add_extractor_records(42);
 
         let output = metrics.render();
-        assert!(output.contains("fetcher_extractor_runs_total 1"));
-        assert!(output.contains("fetcher_extractor_runs_success 1"));
-        assert!(output.contains("fetcher_extractor_records_total 42"));
+        assert!(output.contains("dfe_extractor_runs_total 1"));
+        assert!(output.contains("dfe_extractor_runs_success 1"));
+        assert!(output.contains("dfe_extractor_records_total 42"));
     }
 
     #[test]
@@ -542,7 +588,7 @@ mod tests {
         metrics.set_memory_usage(500_000, 1_000_000);
 
         let output = metrics.render();
-        assert!(output.contains("fetcher_memory_used_bytes 500000"));
-        assert!(output.contains("fetcher_memory_limit_bytes 1000000"));
+        assert!(output.contains("dfe_memory_used_bytes 500000"));
+        assert!(output.contains("dfe_memory_limit_bytes 1000000"));
     }
 }

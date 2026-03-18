@@ -134,11 +134,11 @@ fn test_metrics_render_prometheus_format() {
 
     let output = metrics.render();
 
-    assert!(output.contains("fetcher_fetches_total 1"));
-    assert!(output.contains("fetcher_fetches_success 1"));
-    assert!(output.contains("fetcher_records_fetched_total 42"));
-    assert!(output.contains("fetcher_bytes_fetched_total 1024"));
-    assert!(output.contains("fetcher_fetches_error 0"));
+    assert!(output.contains("dfe_fetches_total 1"));
+    assert!(output.contains("dfe_fetches_success 1"));
+    assert!(output.contains("dfe_records_received_total 42"));
+    assert!(output.contains("dfe_bytes_received_total 1024"));
+    assert!(output.contains("dfe_fetches_error 0"));
 }
 
 #[test]
@@ -151,10 +151,10 @@ fn test_metrics_extractor_counters() {
     metrics.add_extractor_records(100);
 
     let output = metrics.render();
-    assert!(output.contains("fetcher_extractor_runs_total 2"));
-    assert!(output.contains("fetcher_extractor_runs_success 1"));
-    assert!(output.contains("fetcher_extractor_runs_error 1"));
-    assert!(output.contains("fetcher_extractor_records_total 100"));
+    assert!(output.contains("dfe_extractor_runs_total 2"));
+    assert!(output.contains("dfe_extractor_runs_success 1"));
+    assert!(output.contains("dfe_extractor_runs_error 1"));
+    assert!(output.contains("dfe_extractor_records_total 100"));
 }
 
 // =============================================================================
