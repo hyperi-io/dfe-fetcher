@@ -31,7 +31,7 @@ async fn test_azure_disabled_returns_empty() {
     assert!(!source.is_enabled());
     assert_eq!(source.name(), "azure");
 
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
     assert!(results.is_empty());
 }
 
@@ -117,7 +117,7 @@ async fn test_azure_fetch_activity_log_success() {
         }],
     );
     let source = AzureSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "azure.activity_log");
@@ -160,7 +160,7 @@ async fn test_azure_fetch_activity_log_pagination() {
         }],
     );
     let source = AzureSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].records.len(), 3);
@@ -189,7 +189,7 @@ async fn test_azure_fetch_activity_log_empty() {
         }],
     );
     let source = AzureSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     // Empty value array → no FetchResult returned
     assert!(results.is_empty());
@@ -219,7 +219,7 @@ async fn test_azure_fetch_defender_success() {
         }],
     );
     let source = AzureSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "azure.defender");
@@ -257,7 +257,7 @@ async fn test_azure_fetch_entra_id_success() {
         }],
     );
     let source = AzureSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "azure.entra_id");
@@ -285,7 +285,7 @@ async fn test_azure_fetch_error_500() {
         }],
     );
     let source = AzureSource::new(config);
-    let err = source.fetch().await.unwrap_err();
+    let err = source.fetch(None).await.unwrap_err();
 
     let msg = err.to_string();
     assert!(

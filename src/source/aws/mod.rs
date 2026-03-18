@@ -36,7 +36,7 @@ use tracing::{info, warn};
 use crate::config::AwsSourceConfig;
 use crate::credential;
 use crate::error::{Error, Result};
-use crate::source::{FetchResult, Source};
+use crate::source::{FetchResult, FetchWindow, Source};
 
 /// Map CloudWatch unit strings to UCUM (Unified Code for Units of Measure) codes
 /// for OpenTelemetry compatibility.
@@ -219,7 +219,7 @@ impl Source for AwsSource {
         self.config.enabled
     }
 
-    async fn fetch(&self) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
@@ -263,6 +263,14 @@ impl Source for AwsSource {
                 Ok(false)
             }
         }
+    }
+
+    fn cursor_prefix(&self) -> String {
+        "aws".to_string()
+    }
+
+    fn service_names(&self) -> Vec<&str> {
+        self.config.services.iter().map(|s| s.name.as_str()).collect()
     }
 }
 

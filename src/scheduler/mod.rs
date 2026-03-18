@@ -97,7 +97,7 @@ impl Scheduler {
                         metrics.inc_fetches_total();
                         metrics.inc_active_fetches();
 
-                        match source.fetch().await {
+                        match source.fetch(None).await {
                             Ok(results) => {
                                 let total_records: usize =
                                     results.iter().map(|r| r.records.len()).sum();

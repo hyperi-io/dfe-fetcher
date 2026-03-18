@@ -20,8 +20,22 @@ pub mod m365;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 
 use crate::error::Result;
+
+/// Time window for incremental fetching.
+///
+/// When provided to `Source::fetch`, the source should restrict its query
+/// to events within `[start, end)`. When `None`, sources fall back to
+/// their own default window (typically "last N hours").
+#[derive(Debug, Clone)]
+pub struct FetchWindow {
+    /// Inclusive start of the window.
+    pub start: DateTime<Utc>,
+    /// Exclusive end of the window.
+    pub end: DateTime<Utc>,
+}
 
 /// A batch of fetched records ready for delivery to the pipeline.
 #[derive(Debug, Clone)]
@@ -53,12 +67,29 @@ pub trait Source: Send + Sync {
 
     /// Fetch data from the external service.
     ///
+    /// When `window` is `Some`, the source should restrict its query to the
+    /// given time range. When `None`, sources use their own default window.
+    ///
     /// Returns a list of fetch results (one per service/sub-source).
     /// Each result contains records ready for Kafka delivery.
-    async fn fetch(&self) -> Result<Vec<FetchResult>>;
+    async fn fetch(&self, window: Option<&FetchWindow>) -> Result<Vec<FetchResult>>;
 
     /// Check if the source is healthy (credentials valid, API reachable).
     async fn health_check(&self) -> Result<bool>;
+
+    /// Prefix used for cursor keys in the cursor store.
+    ///
+    /// Defaults to the source name. Override if a more specific prefix is needed.
+    fn cursor_prefix(&self) -> String {
+        self.name().to_string()
+    }
+
+    /// List of configured service names within this source.
+    ///
+    /// Used by the cursor store to track per-service fetch positions.
+    fn service_names(&self) -> Vec<&str> {
+        vec![]
+    }
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ async fn test_m365_disabled_returns_empty() {
     assert!(!source.is_enabled());
     assert_eq!(source.name(), "m365");
 
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
     assert!(results.is_empty());
 }
 
@@ -130,7 +130,7 @@ async fn test_m365_fetch_audit_log_success() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "m365.audit_log");
@@ -156,7 +156,7 @@ async fn test_m365_fetch_audit_log_empty() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert!(results.is_empty());
 }
@@ -188,7 +188,7 @@ async fn test_m365_fetch_audit_log_404_starts_subscription() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     // Returns empty (subscription just started, no data yet)
     assert!(results.is_empty());
@@ -216,7 +216,7 @@ async fn test_m365_fetch_message_trace_success() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "m365.message_trace");
@@ -247,7 +247,7 @@ async fn test_m365_fetch_dlp_success() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "m365.dlp");
@@ -287,7 +287,7 @@ async fn test_m365_fetch_dlp_pagination() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].records.len(), 3);
@@ -317,7 +317,7 @@ async fn test_m365_fetch_alerts_success() {
         }],
     );
     let source = M365Source::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "m365.alerts");
@@ -342,7 +342,7 @@ async fn test_m365_fetch_error_500() {
         }],
     );
     let source = M365Source::new(config);
-    let err = source.fetch().await.unwrap_err();
+    let err = source.fetch(None).await.unwrap_err();
 
     let msg = err.to_string();
     assert!(
