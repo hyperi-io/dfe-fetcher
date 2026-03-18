@@ -251,6 +251,58 @@ impl Config {
     }
 }
 
+/// Derive instance ID from config. Uses explicit value if set,
+/// otherwise auto-derives from first enabled source's distinguishing config.
+#[must_use]
+pub fn derive_instance_id(config: &Config) -> String {
+    if let Some(ref id) = config.instance_id {
+        return id.to_lowercase();
+    }
+
+    use sha2::{Digest, Sha256};
+
+    if config.sources.aws.enabled {
+        let input = format!(
+            "{}{}",
+            config.sources.aws.region,
+            config.sources.aws.access_key_id.as_deref().unwrap_or("")
+        );
+        let hash = hex::encode(&Sha256::digest(input.as_bytes())[..4]);
+        return format!("aws-{hash}");
+    }
+    if config.sources.azure.enabled {
+        let input = format!(
+            "{}{}",
+            config
+                .sources
+                .azure
+                .tenant_id
+                .as_deref()
+                .unwrap_or(""),
+            config
+                .sources
+                .azure
+                .subscription_id
+                .as_deref()
+                .unwrap_or("")
+        );
+        let hash = hex::encode(&Sha256::digest(input.as_bytes())[..4]);
+        return format!("azure-{hash}");
+    }
+    if config.sources.m365.enabled {
+        let input = config.sources.m365.tenant_id.as_deref().unwrap_or("");
+        let hash = hex::encode(&Sha256::digest(input.as_bytes())[..4]);
+        return format!("m365-{hash}");
+    }
+    if config.sources.gcp.enabled {
+        let input = config.sources.gcp.project_id.as_deref().unwrap_or("");
+        let hash = hex::encode(&Sha256::digest(input.as_bytes())[..4]);
+        return format!("gcp-{hash}");
+    }
+
+    "dfe-fetcher".to_string()
+}
+
 /// Reload configuration from the same source.
 pub fn reload_config(current: &Config) -> Result<Config> {
     Config::load(current.config_path.as_deref())

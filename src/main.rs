@@ -34,7 +34,8 @@ use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use dfe_fetcher::config::{Config, reload_config};
+use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
+use dfe_fetcher::cursor;
 use dfe_fetcher::deployment;
 use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
@@ -307,8 +308,36 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         }
     });
 
+    // Derive instance identity for cursor isolation
+    let instance_id = derive_instance_id(&config);
+    info!(instance_id, "Fetcher instance identity");
+    if config.instance_id.is_none() {
+        warn!(
+            instance_id,
+            "Instance ID was auto-derived; set 'instance_id' in config for stable cursor keys"
+        );
+    }
+
+    // Create cursor store for incremental fetching
+    let cursor_store: Option<Arc<dyn cursor::CursorStore>> =
+        match cursor::create_cursor_store(&config.cursor, &config.output).await {
+            Ok(store) => {
+                info!("Cursor store initialised");
+                Some(Arc::from(store))
+            }
+            Err(e) => {
+                warn!(error = %e, "Cursor store unavailable, fetches will use default lookback window");
+                None
+            }
+        };
+
     // Create scheduler
-    let scheduler = Scheduler::new(&config.scheduler);
+    let scheduler = Scheduler::new(
+        &config.scheduler,
+        cursor_store,
+        instance_id,
+        config.cursor.default_window_hours,
+    );
 
     // Register native sources
     let sources: Vec<Arc<dyn Source>> = vec![
