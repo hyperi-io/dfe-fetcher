@@ -32,6 +32,7 @@ hyperi-rustlib = { version = ">=1.13.1", features = [
     "transport-kafka",
     "transport-grpc",
     "transport-grpc-vector-compat",
+    "transport-memory",
     "spool",
     "tiered-sink",
     "runtime",
@@ -54,9 +55,6 @@ serde_yaml_ng = "0.10"
 
 # HTTP client (for API calls to external services)
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "stream"] }
-
-# Kafka producer (for output to pipeline)
-rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "sasl"] }
 
 # Performance
 fastrand = "2"

@@ -32,7 +32,7 @@ pub enum Error {
 
     /// Kafka producer error.
     #[error("Kafka error: {0}")]
-    Kafka(#[from] rdkafka::error::KafkaError),
+    Kafka(String),
 
     /// HTTP client error.
     #[error("HTTP error: {0}")]
