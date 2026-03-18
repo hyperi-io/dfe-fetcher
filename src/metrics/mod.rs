@@ -213,6 +213,12 @@ impl Metrics {
         self.extractor_runs_error.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Get the count of failed extractor runs.
+    #[inline]
+    pub fn extractor_runs_error(&self) -> u64 {
+        self.extractor_runs_error.load(Ordering::Relaxed)
+    }
+
     /// Add records from extractors.
     #[inline]
     pub fn add_extractor_records(&self, count: u64) {
