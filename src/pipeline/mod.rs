@@ -18,8 +18,6 @@
 //!     │
 //! Container Extractors (stdout / HTTP)
 //!     │
-//! Plugin Extractors (.so modules)
-//!     │
 //! Vector Extractors (gRPC)
 //!     │
 //!     └─── Pipeline ──→ Enrich ──→ Output Transport ──→ DFE Pipeline
@@ -152,7 +150,7 @@ impl PipelineState {
             return payload;
         };
 
-        let mut buf = Vec::with_capacity(raw.len() + 80);
+        let mut buf = Vec::with_capacity(raw.len() + 120);
         buf.extend_from_slice(&raw[..insert_pos]);
 
         // Add comma if not empty object
@@ -164,7 +162,7 @@ impl PipelineState {
             buf.push(b',');
         }
         buf.extend_from_slice(
-            format!("\"_timestamp_fetcher\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
+            format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
         );
         buf.extend_from_slice(&raw[insert_pos..]);
         Bytes::from(buf)
@@ -374,11 +372,13 @@ mod tests {
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         assert!(enriched_str.contains("\"_timestamp_fetcher\":"));
+        assert!(enriched_str.contains("\"_timestamp_received\":"));
         assert!(enriched_str.contains("\"_source_fetcher\":\"aws.cloudtrail\""));
 
         // Verify it's still valid JSON
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert!(parsed.get("_timestamp_fetcher").is_some());
+        assert!(parsed.get("_timestamp_received").is_some());
         assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "aws.cloudtrail"

@@ -200,6 +200,9 @@ async fn main() {
 
 /// Main service loop — called by the DfeApp lifecycle after logging and config.
 async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Result<()> {
+    // Warn if deprecated plugin config is present
+    config.extractors.plugins.warn_if_configured();
+
     // Initialise metrics
     let metrics = Arc::new(Metrics::new());
 
