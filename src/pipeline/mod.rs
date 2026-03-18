@@ -23,6 +23,7 @@
 //!     └─── Pipeline ──→ Enrich ──→ Output Transport ──→ DFE Pipeline
 //! ```
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -30,7 +31,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use hyperi_rustlib::dlq::{Dlq, DlqEntry};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::buffer::BufferManager;
 use crate::config::{Config, SharedConfig};
@@ -123,9 +124,20 @@ impl PipelineState {
 
         for result in results {
             let topic = format!("{}{}", result.topic, topic_suffix);
+            let filter_expr = self.get_filter_for_source(&result.source, &config);
 
             for record in result.records {
                 let enriched = self.enrich_record(record, &result.source);
+
+                // Apply CEL filter if configured — drop records that don't match
+                if let Some(ref expr) = filter_expr {
+                    if !Self::evaluate_filter(expr, &enriched) {
+                        self.metrics.inc_records_filtered();
+                        debug!(source = %result.source, "Record dropped by filter");
+                        continue;
+                    }
+                }
+
                 self.send_to_transports(&topic, enriched).await?;
             }
         }
@@ -166,6 +178,42 @@ impl PipelineState {
         );
         buf.extend_from_slice(&raw[insert_pos..]);
         Bytes::from(buf)
+    }
+
+    /// Get the CEL filter expression for a source, if configured.
+    fn get_filter_for_source(&self, source: &str, config: &Config) -> Option<String> {
+        if source.starts_with("aws") {
+            config.sources.aws.filter.clone()
+        } else if source.starts_with("azure") {
+            config.sources.azure.filter.clone()
+        } else if source.starts_with("m365") {
+            config.sources.m365.filter.clone()
+        } else if source.starts_with("gcp") {
+            config.sources.gcp.filter.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Evaluate a CEL filter expression against a JSON record.
+    /// Returns true if record should be kept, false if it should be dropped.
+    /// Fail-open: non-JSON payloads, non-object JSON, and evaluation errors
+    /// all pass through (record is kept).
+    fn evaluate_filter(expression: &str, payload: &Bytes) -> bool {
+        let Ok(value): std::result::Result<serde_json::Value, _> =
+            serde_json::from_slice(payload)
+        else {
+            // Non-JSON payload — can't filter, keep it
+            return true;
+        };
+
+        let serde_json::Value::Object(map) = value else {
+            // Not a JSON object — can't filter, keep it
+            return true;
+        };
+
+        let context: HashMap<String, serde_json::Value> = map.into_iter().collect();
+        hyperi_rustlib::expression::evaluate_condition(expression, &context)
     }
 
     /// Send a message to output transports. On failure, routes to DLQ if available.
@@ -384,5 +432,86 @@ mod tests {
             "aws.cloudtrail"
         );
         assert_eq!(parsed.get("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_filter_passes_matching_record() {
+        let payload = Bytes::from(r#"{"eventName": "CreateUser", "severity": "high"}"#);
+        let result =
+            PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
+        assert!(result, "Record should pass — eventName is not ConsoleLogin");
+    }
+
+    #[test]
+    fn test_filter_drops_non_matching_record() {
+        let payload = Bytes::from(r#"{"eventName": "ConsoleLogin", "severity": "low"}"#);
+        let result =
+            PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
+        assert!(
+            !result,
+            "Record should be dropped — eventName is ConsoleLogin"
+        );
+    }
+
+    #[test]
+    fn test_no_filter_passes_all() {
+        // No filter configured means Option is None — deliver() skips filtering.
+        // Verify evaluate_filter itself returns true for a trivially true expression.
+        let payload = Bytes::from(r#"{"key": "value"}"#);
+        let result = PipelineState::evaluate_filter("true", &payload);
+        assert!(result, "Trivially true filter should pass all records");
+    }
+
+    #[test]
+    fn test_filter_non_json_passes() {
+        let payload = Bytes::from("not json at all");
+        let result =
+            PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
+        assert!(result, "Non-JSON payload should pass through (fail-open)");
+    }
+
+    #[test]
+    fn test_filter_non_object_json_passes() {
+        let payload = Bytes::from("[1, 2, 3]");
+        let result =
+            PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
+        assert!(
+            result,
+            "JSON array (not object) should pass through (fail-open)"
+        );
+    }
+
+    #[test]
+    fn test_filter_missing_field_drops() {
+        // evaluate_condition returns false when referenced field is missing
+        let payload = Bytes::from(r#"{"other": "value"}"#);
+        let result =
+            PipelineState::evaluate_filter(r#"eventName == "CreateUser""#, &payload);
+        assert!(
+            !result,
+            "Missing field should cause condition to evaluate to false"
+        );
+    }
+
+    #[test]
+    fn test_get_filter_for_source_aws() {
+        let mut config = Config::default();
+        config.sources.aws.filter = Some(r#"severity == "high""#.to_string());
+        let shared = SharedConfig::new(config.clone());
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::new(shared, metrics, None).unwrap();
+
+        assert_eq!(
+            state.get_filter_for_source("aws.cloudtrail", &config),
+            Some(r#"severity == "high""#.to_string())
+        );
+        assert_eq!(
+            state.get_filter_for_source("azure.defender", &config),
+            None
+        );
+        assert_eq!(
+            state.get_filter_for_source("unknown.source", &config),
+            None
+        );
     }
 }
