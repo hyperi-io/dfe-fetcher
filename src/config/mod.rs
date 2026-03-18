@@ -34,6 +34,33 @@ use crate::error::{Error, Result};
 pub const ENV_PREFIX: &str = "DFE_FETCHER";
 
 /// Main configuration struct.
+///
+/// ## Hot-reload behaviour
+///
+/// The config file is watched for changes. When reloaded, values are
+/// available via `SharedConfig::get()`. However, not all settings take
+/// effect without a restart.
+///
+/// **Hot-reloaded (takes effect on next fetch cycle):**
+/// - `scheduler.default_interval_secs` — fetch interval re-computed each cycle
+/// - `scheduler.jitter_percent` — jitter re-computed each cycle
+/// - `kafka.topic_suffix` — topic name suffix re-read on each delivery
+/// - `sources.*.filter` — CEL filter re-evaluated on each record
+/// - `cursor.default_window_hours` — lookback window re-read when no cursor exists
+///
+/// **Requires pod restart:**
+/// - `output.*` — transport connections established at startup
+/// - `kafka.*` (except `topic_suffix`) — transport config bound at startup
+/// - `ingest.*` — HTTP server binds at startup, auth token resolved once
+/// - `extractors.*` — containers and Vector instances spawned at startup
+/// - `metrics.*` — metrics server binds at startup
+/// - `instance_id` — cursor key prefix set at startup
+/// - `cursor.store` / `cursor.file_path` / `cursor.kafka_topic` — cursor store created at startup
+/// - `sources.*.enabled` — source registration at startup
+/// - `sources.*.credential_secret` / `tenant_id` / `client_id` etc. — credentials resolved once
+/// - `scheduler.max_concurrent_fetches` — semaphore created at startup
+/// - `dlq.*` — DLQ created at startup
+/// - `buffer.*` — buffer manager created at startup
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
