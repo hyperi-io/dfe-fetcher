@@ -132,9 +132,12 @@ impl OutputManager {
 
     /// Send a message to all configured transports.
     ///
-    /// Returns `Ok(())` if all transports accept the message.
-    /// Returns `Err` with the first transport failure (for DLQ routing).
+    /// Attempts delivery to every transport even if one fails, so that a
+    /// Kafka failure does not prevent gRPC from receiving the message (and
+    /// vice versa). Returns the first error encountered for DLQ routing.
     pub async fn send_all(&self, key: &str, payload: &[u8]) -> Result<()> {
+        let mut first_error: Option<Error> = None;
+
         for transport in &self.transports {
             if let Err(e) = transport.send(key, payload).await {
                 error!(
@@ -142,10 +145,16 @@ impl OutputManager {
                     error = %e,
                     "Output transport send failed"
                 );
-                return Err(e);
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
             }
         }
-        Ok(())
+
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Check if all transports are healthy.

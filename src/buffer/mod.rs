@@ -1,6 +1,6 @@
 // Project:   dfe-fetcher
 // File:      src/buffer/mod.rs
-// Purpose:   Memory pressure detection and tiered sink re-exports
+// Purpose:   Memory pressure detection and buffer management
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2

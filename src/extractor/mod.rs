@@ -1,6 +1,6 @@
 // Project:   dfe-fetcher
 // File:      src/extractor/mod.rs
-// Purpose:   External data extractor management (containers, plugins, vector)
+// Purpose:   External data extractor management (containers, vector)
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2
@@ -44,7 +44,7 @@ use bytes::Bytes;
 use crate::error::Result;
 use crate::source::FetchResult;
 
-/// Trait for external extractors (containers, plugins, vector instances).
+/// Trait for external extractors (containers, vector instances).
 ///
 /// Unlike `Source` which actively pulls data, extractors are managed processes
 /// that push data to the fetcher. The fetcher starts/stops/monitors them.

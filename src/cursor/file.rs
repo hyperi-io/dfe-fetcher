@@ -13,7 +13,7 @@
 //! If the directory is not writable at startup, the store operates in
 //! degraded read-only mode — sets are silently skipped with a warning.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use tracing::{debug, warn};
@@ -157,18 +157,6 @@ impl CursorStore for FileCursorStore {
                 path.display()
             ))),
         }
-    }
-}
-
-/// Check if a path is writable by attempting to create a probe file.
-#[allow(dead_code)]
-fn is_writable(path: &Path) -> bool {
-    let probe = path.join(".probe_write_test");
-    if std::fs::write(&probe, b"test").is_ok() {
-        let _ = std::fs::remove_file(&probe);
-        true
-    } else {
-        false
     }
 }
 
