@@ -69,6 +69,7 @@ pub mod error;
 pub mod extractor;
 pub mod ingest;
 pub mod metrics;
+pub mod output;
 pub mod pipeline;
 pub mod scheduler;
 pub mod sink;
