@@ -62,6 +62,7 @@ fn make_aws_config() -> Option<AwsSourceConfig> {
             config: HashMap::new(),
         }],
         topic: "test-aws".to_string(),
+        filter: None,
     })
 }
 
@@ -123,6 +124,7 @@ fn make_aws_cloudwatch_logs_config() -> Option<AwsSourceConfig> {
             config: svc_config,
         }],
         topic: "test-aws".to_string(),
+        filter: None,
     })
 }
 
@@ -163,6 +165,7 @@ fn make_aws_cloudwatch_metrics_config() -> Option<AwsSourceConfig> {
             config: svc_config,
         }],
         topic: "test-aws".to_string(),
+        filter: None,
     })
 }
 
@@ -207,6 +210,7 @@ fn make_azure_config() -> Option<AzureSourceConfig> {
             config: HashMap::new(),
         }],
         topic: "test-azure".to_string(),
+        filter: None,
     })
 }
 
@@ -266,6 +270,7 @@ fn make_gcp_config() -> Option<GcpSourceConfig> {
             config: HashMap::new(),
         }],
         topic: "test-gcp".to_string(),
+        filter: None,
     })
 }
 
