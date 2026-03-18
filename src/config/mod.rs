@@ -66,6 +66,19 @@ pub struct Config {
     #[serde(default)]
     pub config_reload_secs: u64,
 
+    /// Instance identity for cursor isolation across multiple fetcher pods.
+    /// Auto-derived from source config if omitted.
+    #[serde(default)]
+    pub instance_id: Option<String>,
+
+    /// Output transport configuration.
+    #[serde(default)]
+    pub output: OutputConfig,
+
+    /// Cursor store configuration.
+    #[serde(default)]
+    pub cursor: CursorConfig,
+
     /// Path to the config file (set by loader, not deserialized).
     #[serde(skip)]
     pub config_path: Option<String>,
@@ -83,6 +96,9 @@ impl Default for Config {
             metrics: MetricsConfig::default(),
             dlq: DlqConfig::default(),
             config_reload_secs: 0,
+            instance_id: None,
+            output: OutputConfig::default(),
+            cursor: CursorConfig::default(),
             config_path: None,
         }
     }
@@ -143,10 +159,29 @@ impl Config {
             // Allow startup with no sources for config validation
         }
 
-        // Validate Kafka config if output is kafka
-        if self.kafka.brokers.is_empty() {
+        // Validate output transport config
+        if self.output.includes_kafka() {
+            // Check output.kafka first, then legacy kafka section
+            let has_output_brokers = self
+                .output
+                .kafka
+                .as_ref()
+                .map_or(false, |k| !k.brokers.is_empty());
+            if !has_output_brokers && self.kafka.brokers.is_empty() {
+                return Err(Error::Config(
+                    "kafka brokers required when output.type includes kafka".into(),
+                ));
+            }
+        }
+        if self.output.includes_grpc()
+            && self
+                .output
+                .grpc
+                .as_ref()
+                .map_or(true, |g| g.endpoint.is_none())
+        {
             return Err(Error::Config(
-                "kafka.brokers is required for output delivery".into(),
+                "grpc.endpoint required when output.type includes grpc".into(),
             ));
         }
 
@@ -421,6 +456,10 @@ pub struct AwsSourceConfig {
     /// Endpoint URL override for testing (e.g., wiremock server URI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_override: Option<String>,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 impl Default for AwsSourceConfig {
@@ -436,6 +475,7 @@ impl Default for AwsSourceConfig {
             services: vec![],
             topic: "aws".to_string(),
             endpoint_override: None,
+            filter: None,
         }
     }
 }
@@ -493,6 +533,10 @@ pub struct AzureSourceConfig {
     /// Token endpoint URL override for testing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_url_override: Option<String>,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 impl Default for AzureSourceConfig {
@@ -510,6 +554,7 @@ impl Default for AzureSourceConfig {
             management_url_override: None,
             graph_url_override: None,
             token_url_override: None,
+            filter: None,
         }
     }
 }
@@ -564,6 +609,10 @@ pub struct M365SourceConfig {
     /// Token endpoint URL override for testing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_url_override: Option<String>,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 impl Default for M365SourceConfig {
@@ -580,6 +629,7 @@ impl Default for M365SourceConfig {
             management_url_override: None,
             graph_url_override: None,
             token_url_override: None,
+            filter: None,
         }
     }
 }
@@ -627,6 +677,10 @@ pub struct GcpSourceConfig {
     /// Token endpoint URL override for testing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_url_override: Option<String>,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 impl Default for GcpSourceConfig {
@@ -641,6 +695,7 @@ impl Default for GcpSourceConfig {
             topic: "gcp".to_string(),
             api_url_override: None,
             token_url_override: None,
+            filter: None,
         }
     }
 }
@@ -740,6 +795,26 @@ pub struct ContainerExtractorConfig {
     /// Image pull policy: "always", "if-not-present", "never". Default: "if-not-present".
     #[serde(default = "default_pull_policy")]
     pub pull_policy: String,
+
+    /// Maximum restart attempts for continuous mode (0 = unlimited).
+    #[serde(default)]
+    pub max_restart_attempts: u32,
+
+    /// Maximum backoff delay between restarts in seconds.
+    #[serde(default = "default_restart_backoff_max")]
+    pub max_restart_backoff_secs: u64,
+
+    /// Seconds of stable running before resetting backoff counter.
+    #[serde(default = "default_stable_after")]
+    pub stable_after_secs: u64,
+}
+
+fn default_restart_backoff_max() -> u64 {
+    60
+}
+
+fn default_stable_after() -> u64 {
+    300
 }
 
 fn default_pull_policy() -> String {
@@ -838,6 +913,11 @@ pub struct IngestConfig {
 
     /// Maximum request body size in bytes.
     pub max_body_size: usize,
+
+    /// Bearer token for authentication (credential resolver format).
+    /// Empty or absent = no auth (backward compatible, logs warning).
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 impl Default for IngestConfig {
@@ -846,6 +926,7 @@ impl Default for IngestConfig {
             enabled: true,
             bind_address: "0.0.0.0:8080".to_string(),
             max_body_size: 10 * 1024 * 1024, // 10MB
+            auth_token: None,
         }
     }
 }
@@ -1014,6 +1095,85 @@ impl Default for MetricsConfig {
         Self {
             enabled: true,
             address: "0.0.0.0:9090".to_string(),
+        }
+    }
+}
+
+// =============================================================================
+// Output transport configuration
+// =============================================================================
+
+/// Output transport mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OutputConfig {
+    /// Transport type: "kafka", "grpc", or "both".
+    #[serde(rename = "type", default = "default_output_type")]
+    pub output_type: String,
+
+    /// Kafka transport configuration (rustlib KafkaConfig).
+    #[serde(default)]
+    pub kafka: Option<hyperi_rustlib::transport::KafkaConfig>,
+
+    /// gRPC transport configuration (rustlib GrpcConfig, client mode).
+    #[serde(default)]
+    pub grpc: Option<hyperi_rustlib::transport::GrpcConfig>,
+}
+
+fn default_output_type() -> String {
+    "kafka".to_string()
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            output_type: default_output_type(),
+            kafka: None,
+            grpc: None,
+        }
+    }
+}
+
+impl OutputConfig {
+    /// Check if output includes Kafka transport.
+    pub fn includes_kafka(&self) -> bool {
+        self.output_type == "kafka" || self.output_type == "both"
+    }
+
+    /// Check if output includes gRPC transport.
+    pub fn includes_grpc(&self) -> bool {
+        self.output_type == "grpc" || self.output_type == "both"
+    }
+}
+
+// =============================================================================
+// Cursor store configuration
+// =============================================================================
+
+/// Cursor store configuration for incremental fetching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CursorConfig {
+    /// Store backend: "auto", "kafka", or "file".
+    pub store: String,
+
+    /// File-based cursor directory.
+    pub file_path: String,
+
+    /// Kafka topic for cursor state (compacted).
+    pub kafka_topic: String,
+
+    /// Default lookback window in hours when no cursor exists.
+    pub default_window_hours: u64,
+}
+
+impl Default for CursorConfig {
+    fn default() -> Self {
+        Self {
+            store: "auto".to_string(),
+            file_path: "/var/lib/dfe-fetcher/cursors".to_string(),
+            kafka_topic: "dfe-fetcher-cursors".to_string(),
+            default_window_hours: 1,
         }
     }
 }
