@@ -9,7 +9,7 @@
 //! Pipeline orchestration module.
 //!
 //! Coordinates the flow of fetched data from sources/extractors
-//! through enrichment and delivery to Kafka sinks.
+//! through enrichment and delivery to output transports (Kafka, gRPC).
 //!
 //! ## Data Flow
 //!
@@ -22,7 +22,7 @@
 //!     │
 //! Vector Extractors (gRPC)
 //!     │
-//!     └─── Pipeline ──→ Enrich ──→ Kafka Sink ──→ DFE Pipeline
+//!     └─── Pipeline ──→ Enrich ──→ Output Transport ──→ DFE Pipeline
 //! ```
 
 use std::sync::Arc;
@@ -34,18 +34,17 @@ use hyperi_rustlib::dlq::{Dlq, DlqEntry};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::buffer::{BufferManager, TieredSink};
+use crate::buffer::BufferManager;
 use crate::config::{Config, SharedConfig};
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
-use crate::sink::Sink;
-use crate::sink::kafka::KafkaSink;
+use crate::output::OutputManager;
 use crate::source::FetchResult;
 
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
-    kafka_sink: Option<Arc<TieredSink<KafkaSink>>>,
+    output: Option<Arc<OutputManager>>,
     buffer_manager: Arc<BufferManager>,
     dlq: Option<Dlq>,
     metrics: Arc<Metrics>,
@@ -54,17 +53,18 @@ pub struct PipelineState {
 
 impl PipelineState {
     /// Create new pipeline state.
-    pub fn new(shared_config: SharedConfig, metrics: Arc<Metrics>) -> Result<Self> {
+    ///
+    /// The `output` parameter is optional: pass `None` for tests or when
+    /// output transports are not yet initialised (the [`Orchestrator`]
+    /// creates the [`OutputManager`] asynchronously and injects it via
+    /// [`set_output`](Self::set_output)).
+    pub fn new(
+        shared_config: SharedConfig,
+        metrics: Arc<Metrics>,
+        output: Option<OutputManager>,
+    ) -> Result<Self> {
         let config = shared_config.get();
         let buffer_manager = Arc::new(BufferManager::new(&config.buffer));
-
-        // Initialise Kafka sink if brokers configured
-        let kafka_sink = if !config.kafka.brokers.is_empty() {
-            let primary = KafkaSink::new(&config.kafka)?;
-            Some(Arc::new(TieredSink::new(primary, &config.buffer)))
-        } else {
-            None
-        };
 
         // Initialise DLQ if enabled
         let dlq = if config.dlq.enabled {
@@ -81,7 +81,7 @@ impl PipelineState {
 
         Ok(Self {
             shared_config,
-            kafka_sink,
+            output: output.map(Arc::new),
             buffer_manager,
             dlq,
             metrics,
@@ -109,8 +109,8 @@ impl PipelineState {
             return false;
         }
 
-        if let Some(ref kafka) = self.kafka_sink
-            && !kafka.is_healthy()
+        if let Some(ref output) = self.output
+            && !output.any_healthy()
         {
             return false;
         }
@@ -118,7 +118,7 @@ impl PipelineState {
         true
     }
 
-    /// Deliver a batch of fetch results to Kafka.
+    /// Deliver a batch of fetch results to output transports.
     pub async fn deliver(&self, results: Vec<FetchResult>) -> Result<()> {
         let config = self.shared_config.get();
         let topic_suffix = &config.kafka.topic_suffix;
@@ -128,7 +128,7 @@ impl PipelineState {
 
             for record in result.records {
                 let enriched = self.enrich_record(record, &result.source);
-                self.send_to_kafka(&topic, enriched).await?;
+                self.send_to_transports(&topic, enriched).await?;
             }
         }
 
@@ -137,7 +137,7 @@ impl PipelineState {
 
     /// Deliver a single ingest message (from container/HTTP extractors).
     pub async fn deliver_ingest(&self, topic: &str, payload: Bytes) -> Result<()> {
-        self.send_to_kafka(topic, payload).await
+        self.send_to_transports(topic, payload).await
     }
 
     /// Enrich a record with fetcher metadata.
@@ -170,25 +170,25 @@ impl PipelineState {
         Bytes::from(buf)
     }
 
-    /// Send a message to Kafka. On failure, routes to DLQ if available.
-    async fn send_to_kafka(&self, topic: &str, payload: Bytes) -> Result<()> {
-        let Some(ref sink) = self.kafka_sink else {
-            return Err(Error::Config("Kafka sink not configured".into()));
+    /// Send a message to output transports. On failure, routes to DLQ if available.
+    async fn send_to_transports(&self, topic: &str, payload: Bytes) -> Result<()> {
+        let Some(ref output) = self.output else {
+            return Err(Error::Config("Output transport not configured".into()));
         };
 
         let payload_size = payload.len() as u64;
         self.buffer_manager.add_bytes(payload_size);
 
-        let result = sink.send(topic, payload.clone()).await;
+        let result = output.send_all(topic, payload.as_ref()).await;
 
         self.buffer_manager.remove_bytes(payload_size);
 
-        if let Err(ref kafka_err) = result
+        if let Err(ref transport_err) = result
             && let Some(ref dlq) = self.dlq
         {
             let entry = DlqEntry::new(
                 "dfe-fetcher",
-                format!("kafka send failed: {kafka_err}"),
+                format!("transport send failed: {transport_err}"),
                 payload.to_vec(),
             )
             .with_destination(topic);
@@ -197,13 +197,13 @@ impl PipelineState {
                 error!(
                     error = %dlq_err,
                     topic,
-                    "Failed to send to DLQ after Kafka failure"
+                    "Failed to send to DLQ after transport failure"
                 );
                 return result;
             }
 
             self.metrics.inc_messages_dlq();
-            warn!(topic, error = %kafka_err, "Message routed to DLQ after Kafka failure");
+            warn!(topic, error = %transport_err, "Message routed to DLQ after transport failure");
             return Ok(());
         }
 
@@ -241,10 +241,41 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Create a new orchestrator.
-    pub fn new(config: Config, metrics: Arc<Metrics>, shutdown: CancellationToken) -> Result<Self> {
+    /// Create a new orchestrator with output transports initialised.
+    ///
+    /// Async because output transport creation (Kafka, gRPC) requires
+    /// network connections. Pass a config with no brokers to skip
+    /// output transport initialisation (tests, config-check).
+    pub async fn new(
+        config: Config,
+        metrics: Arc<Metrics>,
+        shutdown: CancellationToken,
+    ) -> Result<Self> {
         let shared_config = SharedConfig::new(config);
-        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics))?;
+        let cfg = shared_config.get();
+
+        // Create output manager if any output transports are configured
+        let has_output_kafka = cfg
+            .output
+            .kafka
+            .as_ref()
+            .map_or(false, |k| !k.brokers.is_empty());
+        let has_legacy_kafka = !cfg.kafka.brokers.is_empty();
+        let has_grpc = cfg
+            .output
+            .grpc
+            .as_ref()
+            .map_or(false, |g| g.endpoint.is_some());
+
+        let output = if has_output_kafka || has_legacy_kafka || has_grpc {
+            Some(OutputManager::new(&cfg.output, &cfg.kafka).await?)
+        } else {
+            info!("No output transports configured, delivery disabled");
+            None
+        };
+
+        let state =
+            PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output)?;
 
         Ok(Self {
             state: Arc::new(state),
@@ -268,11 +299,6 @@ impl Orchestrator {
     pub async fn run(&self) -> Result<()> {
         info!("Pipeline orchestrator running");
 
-        // Start drain tasks for tiered sinks
-        if let Some(ref kafka) = self.state.kafka_sink {
-            kafka.clone().start_drain_task(self.shutdown.clone());
-        }
-
         // Periodic metrics update (1s interval)
         let metrics_state = Arc::clone(&self.state);
         let metrics_ref = Arc::clone(&self.metrics);
@@ -294,11 +320,9 @@ impl Orchestrator {
 
         info!("Pipeline orchestrator shutting down");
 
-        // Flush all sinks
-        if let Some(ref kafka) = self.state.kafka_sink
-            && let Err(e) = kafka.flush().await
-        {
-            error!(error = %e, "Failed to flush Kafka sink");
+        // Close all output transports
+        if let Some(ref output) = self.state.output {
+            output.close_all().await;
         }
 
         info!("Pipeline orchestrator stopped");
@@ -315,13 +339,13 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics).unwrap_or_else(|_| {
-            // Kafka not configured, create minimal state
+        let state = PipelineState::new(shared, metrics, None).unwrap_or_else(|_| {
+            // No output configured, create minimal state
             let config = Config::default();
             let shared = SharedConfig::new(config);
             PipelineState {
                 shared_config: shared,
-                kafka_sink: None,
+                output: None,
                 buffer_manager: Arc::new(BufferManager::new(
                     &crate::config::BufferConfig::default(),
                 )),
