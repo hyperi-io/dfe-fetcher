@@ -19,28 +19,41 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::SchedulerConfig;
+use crate::cursor::{CursorStore, CursorValue};
 use crate::metrics::Metrics;
-use crate::source::{FetchResult, Source};
+use crate::source::{FetchResult, FetchWindow, Source};
 
 /// Fetch scheduler that coordinates timing and concurrency.
 pub struct Scheduler {
     config: SchedulerConfig,
     concurrency_semaphore: Arc<Semaphore>,
+    cursor_store: Option<Arc<dyn CursorStore>>,
+    instance_id: String,
+    default_window_hours: u64,
 }
 
 impl Scheduler {
     /// Create a new scheduler from configuration.
-    pub fn new(config: &SchedulerConfig) -> Self {
+    pub fn new(
+        config: &SchedulerConfig,
+        cursor_store: Option<Arc<dyn CursorStore>>,
+        instance_id: String,
+        default_window_hours: u64,
+    ) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_fetches));
 
         Self {
             config: config.clone(),
             concurrency_semaphore: semaphore,
+            cursor_store,
+            instance_id,
+            default_window_hours,
         }
     }
 
@@ -71,6 +84,10 @@ impl Scheduler {
     /// `false` (e.g. output transports are backpressured or unhealthy), the
     /// task stalls with a 5-second poll interval instead of fetching and
     /// routing everything to DLQ.
+    ///
+    /// When a cursor store is configured, the scheduler reads the last fetch
+    /// position before each fetch to compute a `FetchWindow`, and writes the
+    /// cursor back after successful delivery.
     pub fn spawn_source_task(
         &self,
         source: Arc<dyn Source>,
@@ -81,8 +98,13 @@ impl Scheduler {
         is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
     ) {
         let semaphore = Arc::clone(&self.concurrency_semaphore);
+        let cursor_store = self.cursor_store.clone();
+        let instance_id = self.instance_id.clone();
+        let default_window_hours = self.default_window_hours;
 
         tokio::spawn(async move {
+            let cursor_key = format!("{}.{}", instance_id, source.cursor_prefix());
+
             let mut interval_timer = tokio::time::interval(interval);
 
             // Skip first immediate tick (let startup complete)
@@ -119,7 +141,23 @@ impl Scheduler {
                         metrics.inc_fetches_total();
                         metrics.inc_active_fetches();
 
-                        match source.fetch(None).await {
+                        // Read cursor to compute fetch window
+                        let window = build_fetch_window(
+                            cursor_store.as_deref(),
+                            &cursor_key,
+                            default_window_hours,
+                        )
+                        .await;
+
+                        debug!(
+                            source = source.name(),
+                            cursor_key,
+                            window_start = %window.start,
+                            window_end = %window.end,
+                            "Fetch window computed"
+                        );
+
+                        match source.fetch(Some(&window)).await {
                             Ok(results) => {
                                 let total_records: usize =
                                     results.iter().map(|r| r.records.len()).sum();
@@ -134,6 +172,16 @@ impl Scheduler {
                                     );
                                     callback(results);
                                 }
+
+                                // Write cursor after successful fetch + delivery
+                                write_cursor(
+                                    cursor_store.as_deref(),
+                                    &cursor_key,
+                                    &window,
+                                    total_records as u64,
+                                    &metrics,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 metrics.inc_fetches_error();
@@ -158,6 +206,69 @@ impl Scheduler {
     }
 }
 
+/// Build a `FetchWindow` from the cursor store. If no cursor exists or the
+/// read fails, falls back to `now - default_window_hours`.
+async fn build_fetch_window(
+    store: Option<&dyn CursorStore>,
+    cursor_key: &str,
+    default_window_hours: u64,
+) -> FetchWindow {
+    let now = Utc::now();
+
+    if let Some(store) = store {
+        match store.get(cursor_key).await {
+            Ok(Some(cursor)) => {
+                debug!(cursor_key, last_end = %cursor.last_fetch_end, "Cursor found, resuming");
+                return FetchWindow {
+                    start: cursor.last_fetch_end,
+                    end: now,
+                };
+            }
+            Ok(None) => {
+                debug!(cursor_key, "No cursor found, using default lookback");
+            }
+            Err(e) => {
+                warn!(cursor_key, error = %e, "Cursor read failed, using default lookback");
+            }
+        }
+    }
+
+    let start = now - chrono::Duration::hours(default_window_hours as i64);
+    FetchWindow { start, end: now }
+}
+
+/// Write cursor after a successful fetch. Logs warning on failure but does
+/// not propagate the error — cursor failures must not block the pipeline.
+async fn write_cursor(
+    store: Option<&dyn CursorStore>,
+    cursor_key: &str,
+    window: &FetchWindow,
+    records: u64,
+    metrics: &Metrics,
+) {
+    let Some(store) = store else { return };
+
+    let value = CursorValue {
+        cursor_key: cursor_key.to_string(),
+        last_fetch_end: window.end,
+        last_fetch_records: records,
+        updated_at: Utc::now(),
+        api_cursor: None,
+        version: 1,
+    };
+
+    match store.set(cursor_key, &value).await {
+        Ok(()) => {
+            metrics.inc_cursor_writes();
+            debug!(cursor_key, end = %window.end, "Cursor updated");
+        }
+        Err(e) => {
+            metrics.inc_cursor_write_failures();
+            warn!(cursor_key, error = %e, "Cursor write failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,7 +280,7 @@ mod tests {
             max_concurrent_fetches: 10,
             jitter_percent: 0,
         };
-        let scheduler = Scheduler::new(&config);
+        let scheduler = Scheduler::new(&config, None, "test".into(), 1);
 
         let interval = scheduler.effective_interval(None);
         assert_eq!(interval.as_secs(), 300);
@@ -182,7 +293,7 @@ mod tests {
             max_concurrent_fetches: 10,
             jitter_percent: 0,
         };
-        let scheduler = Scheduler::new(&config);
+        let scheduler = Scheduler::new(&config, None, "test".into(), 1);
 
         let interval = scheduler.effective_interval(Some(60));
         assert_eq!(interval.as_secs(), 60);
@@ -195,9 +306,18 @@ mod tests {
             max_concurrent_fetches: 10,
             jitter_percent: 10,
         };
-        let scheduler = Scheduler::new(&config);
+        let scheduler = Scheduler::new(&config, None, "test".into(), 1);
 
         let jitter = scheduler.calculate_jitter(300);
         assert!(jitter <= 30); // 10% of 300 = 30
+    }
+
+    #[tokio::test]
+    async fn test_build_fetch_window_no_store() {
+        let window = build_fetch_window(None, "test.key", 2).await;
+        let expected_start = Utc::now() - chrono::Duration::hours(2);
+        // Allow 1 second tolerance
+        assert!((window.start - expected_start).num_seconds().abs() < 2);
+        assert!((window.end - Utc::now()).num_seconds().abs() < 2);
     }
 }
