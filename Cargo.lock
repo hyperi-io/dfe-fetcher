@@ -15,6 +15,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
 dependencies = [
  "cfg-if",
+ "getrandom 0.3.4",
  "once_cell",
  "version_check",
  "zerocopy",
@@ -889,6 +890,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "deadpool"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "dfe-fetcher"
-version = "1.1.0-dev.1"
+version = "1.1.0-dev.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1641,9 +1656,9 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "1.16.1"
+version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "157ec86811bb0da62298c8273cea5115d874d7a1f0fffdf5c711e8c8e1070255"
+checksum = "3ba5f1f8cd8e24fd0fef2741cc103107d5d5496b9f1da81ea18ba05084a879fe"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1655,6 +1670,7 @@ dependencies = [
  "dotenvy",
  "figment",
  "file-rotate",
+ "libc",
  "lz4_flex",
  "metrics",
  "metrics-exporter-prometheus",
@@ -1682,6 +1698,7 @@ dependencies = [
  "tower-resilience",
  "tracing",
  "tracing-subscriber",
+ "tracing-throttle",
  "yaque",
  "zstd",
 ]
@@ -4750,6 +4767,18 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "tracing-throttle"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e4e430251f5ca8f86ea941286923dc2e91be7ca95fec777d75ee8ae1c493f64"
+dependencies = [
+ "ahash",
+ "dashmap",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
