@@ -23,7 +23,7 @@ doctest = false
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=1.16.3", features = [
+hyperi-rustlib = { version = ">=1.16.5", features = [
     "config",
     "config-reload",
     "logger",
@@ -43,6 +43,7 @@ hyperi-rustlib = { version = ">=1.16.3", features = [
     "top",
     "expression",
     "scaling",
+    "memory",
 ] }
 
 # Async runtime
@@ -84,7 +85,6 @@ bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
-sysinfo = "0.32"
 url = "2"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
