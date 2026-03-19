@@ -30,6 +30,7 @@ use clap::{Parser, Subcommand};
 use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, TopArgs, VersionInfo};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
+use hyperi_rustlib::scaling::{ScalingComponent, ScalingPressure};
 use hyperi_rustlib::top::{TopConfig, run_top};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
@@ -272,6 +273,20 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
     let pipeline_state = orchestrator.state();
 
+    // Create scaling pressure calculator for KEDA autoscaling
+    let scaling_pressure = Arc::new(ScalingPressure::new(
+        config.scaling.clone(),
+        vec![
+            ScalingComponent::new(
+                "buffer_depth",
+                0.40,
+                config.buffer.memory_limit.max(1) as f64,
+            ),
+            ScalingComponent::new("transport_errors", 0.30, 100.0),
+            ScalingComponent::new("memory", 0.30, 1.0),
+        ],
+    ));
+
     // Start config hot-reload
     // Keep handle alive for entire application lifetime (dropping stops the reloader)
     let _reloader_handle = {
@@ -314,11 +329,37 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         handle
     };
 
+    // Spawn periodic scaling pressure update (feeds buffer + transport health to ScalingPressure)
+    {
+        let scaling = Arc::clone(&scaling_pressure);
+        let state = Arc::clone(&pipeline_state);
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let bm = state.buffer_manager();
+                        let used = bm.total_bytes();
+                        let limit = bm.memory_limit();
+                        scaling.set_component("buffer_depth", used as f64);
+                        scaling.set_memory(used, limit);
+                        scaling.set_circuit_open(!state.output_healthy());
+                    }
+                    _ = shutdown.cancelled() => break,
+                }
+            }
+        });
+    }
+
     // Spawn metrics server
     let metrics_token = shutdown_token.clone();
     let metrics_clone = metrics.clone();
+    let scaling_clone = Arc::clone(&scaling_pressure);
     tokio::spawn(async move {
-        if let Err(e) = run_metrics_server(metrics_addr, metrics_clone, metrics_token).await {
+        if let Err(e) =
+            run_metrics_server(metrics_addr, metrics_clone, scaling_clone, metrics_token).await
+        {
             error!(error = %e, "Metrics server error");
         }
     });
@@ -481,13 +522,29 @@ fn reload_config_from_path(
 async fn run_metrics_server(
     addr: SocketAddr,
     metrics: Arc<Metrics>,
+    scaling: Arc<ScalingPressure>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     use axum::Router;
     use axum::routing::get;
     use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
 
-    let app = Router::new().route("/metrics", get(move || async move { metrics.render() }));
+    let app = Router::new().route(
+        "/metrics",
+        get(move || {
+            let m = metrics.clone();
+            let s = scaling.clone();
+            async move {
+                let mut output = m.render();
+                output.push_str(
+                    "# HELP dfe_scaling_pressure Composite scaling pressure for KEDA (0-100)\n",
+                );
+                output.push_str("# TYPE dfe_scaling_pressure gauge\n");
+                output.push_str(&format!("dfe_scaling_pressure {:.2}\n", s.calculate()));
+                output
+            }
+        }),
+    );
 
     let config = HttpServerConfig::new(addr.to_string());
 

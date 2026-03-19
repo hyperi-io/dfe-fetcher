@@ -106,6 +106,10 @@ pub struct Config {
     #[serde(default)]
     pub cursor: CursorConfig,
 
+    /// Scaling pressure configuration for KEDA autoscaling.
+    #[serde(default)]
+    pub scaling: hyperi_rustlib::scaling::ScalingPressureConfig,
+
     /// Path to the config file (set by loader, not deserialized).
     #[serde(skip)]
     pub config_path: Option<String>,
@@ -126,6 +130,7 @@ impl Default for Config {
             instance_id: None,
             output: OutputConfig::default(),
             cursor: CursorConfig::default(),
+            scaling: hyperi_rustlib::scaling::ScalingPressureConfig::default(),
             config_path: None,
         }
     }
