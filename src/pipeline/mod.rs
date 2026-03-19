@@ -270,6 +270,18 @@ impl PipelineState {
         &self.buffer_manager
     }
 
+    /// Check if any output transport is healthy.
+    ///
+    /// Returns `true` if no output is configured (nothing to fail) or if at
+    /// least one transport reports healthy. Used by the scaling pressure
+    /// circuit-breaker gate.
+    pub fn output_healthy(&self) -> bool {
+        match self.output {
+            Some(ref output) => output.any_healthy(),
+            None => true,
+        }
+    }
+
     /// Update metrics snapshot.
     pub async fn update_metrics(&self, metrics: &Metrics) {
         metrics.set_memory_usage(

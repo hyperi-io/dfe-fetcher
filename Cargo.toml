@@ -42,6 +42,7 @@ hyperi-rustlib = { version = ">=1.13.1", features = [
     "cli",
     "top",
     "expression",
+    "scaling",
 ] }
 
 # Async runtime
