@@ -312,3 +312,21 @@ graph TD
 | Okta System Log | Container/Native | Evaluate Rust crate quality |
 | CrowdStrike Falcon | Container | Vendor SDK typically Python |
 | Syslog Collection | Vector | Vector has native syslog source |
+
+### Sidecar Patterns
+
+For log sources that established tools handle well, use container extractors
+with Filebeat, Fluentd, or similar collection agents:
+
+| Source Type | Sidecar Tool | Communication |
+|-------------|-------------|---------------|
+| Syslog | Filebeat (system module) | HTTP POST to `/ingest/syslog` |
+| Windows Event Logs | Filebeat (winlogbeat) | HTTP POST to `/ingest/windows_events` |
+| Custom app logs | Filebeat (file input) | stdout JSON lines |
+| Network captures | Zeek / Suricata | stdout JSON lines |
+| Cloud provider logs | Cloud-specific CLI tools | stdout JSON lines |
+
+Each sidecar runs as a container extractor with `mode: continuous` and
+communicates via stdout (JSON lines) or HTTP POST to the ingest endpoint.
+The fetcher manages the container lifecycle including restart-on-crash with
+exponential backoff.
