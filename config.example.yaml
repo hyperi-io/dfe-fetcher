@@ -138,6 +138,46 @@ extractors:
     #     M365_CLIENT_ID: "client-beta-uuid"
     #     M365_CLIENT_SECRET: "vault:secret/m365/beta:client_secret"
 
+    # ─── Filebeat sidecar examples ───────────────────────────────────
+    # Use Filebeat for log sources that established tools handle well.
+    # Each runs as a container extractor — stdout (JSON lines) or HTTP POST.
+
+    # Example: Syslog collection via Filebeat
+    # - name: filebeat-syslog
+    #   image: docker.elastic.co/beats/filebeat:8.17.0    # REQUIRES RESTART
+    #   mode: continuous                                    # REQUIRES RESTART
+    #   communication: http                                 # Posts to /ingest/syslog
+    #   topic: syslog
+    #   env:
+    #     FETCHER_INGEST_URL: "http://localhost:8080/ingest/syslog"
+    #   volumes:
+    #     - "/var/log/syslog:/var/log/syslog:ro"
+    #     - "./filebeat-syslog.yml:/usr/share/filebeat/filebeat.yml:ro"
+    #   max_restart_attempts: 0
+    #   max_restart_backoff_secs: 60
+
+    # Example: Windows event log forwarding
+    # - name: filebeat-winevt
+    #   image: docker.elastic.co/beats/filebeat:8.17.0
+    #   mode: continuous
+    #   communication: http
+    #   topic: windows_events
+    #   volumes:
+    #     - "/mnt/winevt:/var/log/winevt:ro"
+    #     - "./filebeat-winevt.yml:/usr/share/filebeat/filebeat.yml:ro"
+
+    # Example: Custom application logs (stdout JSON output)
+    # - name: filebeat-applog
+    #   image: docker.elastic.co/beats/filebeat:8.17.0
+    #   mode: continuous
+    #   communication: stdout
+    #   topic: application_logs
+    #   volumes:
+    #     - "/var/log/myapp:/var/log/myapp:ro"
+    #     - "./filebeat-applog.yml:/usr/share/filebeat/filebeat.yml:ro"
+    #   memory_limit: "256m"
+    #   cpu_limit: 0.5
+
   # Vector.dev extractor integration
   vector:
     enabled: false
