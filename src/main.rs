@@ -485,18 +485,19 @@ async fn run_metrics_server(
 ) -> anyhow::Result<()> {
     use axum::Router;
     use axum::routing::get;
+    use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
 
-    let app = Router::new()
-        .route("/metrics", get(move || async move { metrics.render() }))
-        .route("/health/live", get(|| async { "OK" }))
-        .route("/health/ready", get(|| async { "OK" }));
+    let app = Router::new().route("/metrics", get(move || async move { metrics.render() }));
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let config = HttpServerConfig::new(addr.to_string());
+
     info!(addr = %addr, "Metrics server listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown.cancelled_owned())
-        .await?;
+    let server = HttpServer::new(config);
+    server
+        .serve_with_shutdown(app, shutdown.cancelled_owned())
+        .await
+        .map_err(|e| anyhow::anyhow!("Metrics server error: {e}"))?;
 
     Ok(())
 }

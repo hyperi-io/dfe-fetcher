@@ -15,7 +15,8 @@
 //!
 //! - `POST /ingest/{source}` — Receive JSON payload for a source.
 //!   The topic is derived from the source name + configured suffix.
-//! - `GET /health` — Health check for the ingest server.
+//! - `GET /health/live` — Liveness check (via rustlib `HttpServer`).
+//! - `GET /health/ready` — Readiness check (via rustlib `HttpServer`).
 //!
 //! ## Authentication
 //!
@@ -23,7 +24,6 @@
 //! a `Authorization: Bearer <token>` header. The `/health` endpoint is
 //! always exempt (K8s probes need unauthenticated access).
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
@@ -32,7 +32,8 @@ use axum::extract::{Path, State};
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::post;
+use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -139,24 +140,21 @@ pub async fn run_ingest_server(
     });
 
     let app = Router::new()
-        .route("/ingest/:source", post(handle_ingest))
-        .route("/ingest/:source/:topic", post(handle_ingest_with_topic))
-        .route("/health", get(|| async { "OK" }))
+        .route("/ingest/{source}", post(handle_ingest))
+        .route("/ingest/{source}/{topic}", post(handle_ingest_with_topic))
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
         .layer(axum::extract::DefaultBodyLimit::max(config.max_body_size));
 
-    let addr: SocketAddr = config
-        .bind_address
-        .parse()
-        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 8080)));
+    let http_config = HttpServerConfig::new(&config.bind_address);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(addr = %addr, "Ingest server listening");
+    info!(addr = %config.bind_address, "Ingest server listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown.cancelled_owned())
-        .await?;
+    let server = HttpServer::new(http_config);
+    server
+        .serve_with_shutdown(app, shutdown.cancelled_owned())
+        .await
+        .map_err(|e| anyhow::anyhow!("Ingest server error: {e}"))?;
 
     info!("Ingest server stopped");
     Ok(())
@@ -230,12 +228,17 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use axum::routing::get;
     use tower::ServiceExt;
 
     use crate::config::Config;
     use crate::config::SharedConfig;
 
     /// Build a test app with optional auth token.
+    ///
+    /// Adds `/health/live` and `/health/ready` manually to match
+    /// what rustlib `HttpServer::build_router` adds in production
+    /// (that method is private, so we replicate the routes here).
     fn test_app_with_auth(auth_token: Option<String>) -> (Router, Arc<PipelineState>) {
         let config = Config::default();
         let shared = SharedConfig::new(config);
@@ -255,9 +258,10 @@ mod tests {
         });
 
         let app = Router::new()
-            .route("/ingest/:source", post(handle_ingest))
-            .route("/ingest/:source/:topic", post(handle_ingest_with_topic))
-            .route("/health", get(|| async { "OK" }))
+            .route("/ingest/{source}", post(handle_ingest))
+            .route("/ingest/{source}/{topic}", post(handle_ingest_with_topic))
+            .route("/health/live", get(|| async { "OK" }))
+            .route("/health/ready", get(|| async { "OK" }))
             .with_state(state.clone())
             .layer(axum::middleware::from_fn_with_state(state, auth_middleware));
 
@@ -276,7 +280,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/health/live")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -410,7 +414,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/health/live")
                     .body(Body::empty())
                     .unwrap(),
             )
