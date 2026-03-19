@@ -23,10 +23,10 @@ pub use shared::SharedConfig;
 
 use std::collections::HashMap;
 
+use hyperi_rustlib::config::flat_env::{self, ApplyFlatEnv};
 use hyperi_rustlib::config::{self, ConfigOptions};
 use hyperi_rustlib::dlq::DlqConfig;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
 use crate::error::{Error, Result};
 
@@ -163,7 +163,7 @@ impl Config {
         config.config_path = config_path.map(String::from);
 
         // Apply flat env var overrides (DFE_FETCHER_*)
-        apply_env_overrides(&mut config);
+        config.apply_flat_env("DFE_FETCHER");
 
         Ok(config)
     }
@@ -175,7 +175,7 @@ impl Config {
 
         let mut config: Config = serde_yaml_ng::from_str(&content)?;
         config.config_path = Some(path.to_string());
-        apply_env_overrides(&mut config);
+        config.apply_flat_env("DFE_FETCHER");
         Ok(config)
     }
 
@@ -373,108 +373,82 @@ pub fn reload_config(current: &Config) -> Result<Config> {
     Config::load(current.config_path.as_deref())
 }
 
-/// Read an env var with the DFE_FETCHER_ prefix.
-fn env_var(name: &str) -> std::result::Result<String, std::env::VarError> {
-    std::env::var(format!("DFE_FETCHER_{name}"))
-}
+impl ApplyFlatEnv for Config {
+    fn apply_flat_env(&mut self, prefix: &str) {
+        // Kafka
+        if let Some(v) = flat_env::flat_env_list(prefix, "KAFKA_BROKERS") {
+            self.kafka.brokers = v;
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_CLIENT_ID") {
+            self.kafka.client_id = v;
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_SASL_MECHANISM") {
+            let sasl = self.kafka.sasl.get_or_insert_with(|| SaslConfig {
+                enabled: true,
+                mechanism: String::new(),
+                username: String::new(),
+                password: String::new(),
+            });
+            sasl.mechanism = v;
+            sasl.enabled = true;
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_SECURITY_PROTOCOL") {
+            self.kafka.tls.enabled = v.to_uppercase().contains("SSL");
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_SASL_USER") {
+            let sasl = self.kafka.sasl.get_or_insert_with(|| SaslConfig {
+                enabled: true,
+                mechanism: String::new(),
+                username: String::new(),
+                password: String::new(),
+            });
+            sasl.username = v;
+        }
+        if let Some(v) = flat_env::flat_env_string_sensitive(prefix, "KAFKA_SASL_PASSWORD") {
+            let sasl = self.kafka.sasl.get_or_insert_with(|| SaslConfig {
+                enabled: true,
+                mechanism: String::new(),
+                username: String::new(),
+                password: String::new(),
+            });
+            sasl.password = v;
+        }
 
-/// Apply flat environment variable overrides (DFE_FETCHER_* prefix).
-fn apply_env_overrides(config: &mut Config) {
-    // Kafka
-    if let Ok(v) = env_var("KAFKA_BROKERS") {
-        config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
-        debug!("Override: kafka.brokers from env");
-    }
-    if let Ok(v) = env_var("KAFKA_CLIENT_ID") {
-        config.kafka.client_id = v;
-        debug!("Override: kafka.client_id from env");
-    }
-    if let Ok(v) = env_var("KAFKA_SASL_MECHANISM") {
-        let sasl = config.kafka.sasl.get_or_insert_with(|| SaslConfig {
-            enabled: true,
-            mechanism: String::new(),
-            username: String::new(),
-            password: String::new(),
-        });
-        sasl.mechanism = v;
-        sasl.enabled = true;
-        debug!("Override: kafka.sasl.mechanism from env");
-    }
-    if let Ok(v) = env_var("KAFKA_SECURITY_PROTOCOL") {
-        config.kafka.tls.enabled = v.to_uppercase().contains("SSL");
-        debug!("Override: kafka.tls from env (protocol={v})");
-    }
-    if let Ok(v) = env_var("KAFKA_SASL_USER") {
-        let sasl = config.kafka.sasl.get_or_insert_with(|| SaslConfig {
-            enabled: true,
-            mechanism: String::new(),
-            username: String::new(),
-            password: String::new(),
-        });
-        sasl.username = v;
-        debug!("Override: kafka.sasl.username from env");
-    }
-    if let Ok(v) = env_var("KAFKA_SASL_PASSWORD") {
-        let sasl = config.kafka.sasl.get_or_insert_with(|| SaslConfig {
-            enabled: true,
-            mechanism: String::new(),
-            username: String::new(),
-            password: String::new(),
-        });
-        sasl.password = v;
-        debug!("Override: kafka.sasl.password from env (redacted)");
-    }
+        // Scheduler
+        if let Some(v) = flat_env::flat_env_parsed::<u64>(prefix, "DEFAULT_INTERVAL_SECS") {
+            self.scheduler.default_interval_secs = v;
+        }
 
-    // Scheduler
-    if let Ok(v) = env_var("DEFAULT_INTERVAL_SECS")
-        && let Ok(n) = v.parse()
-    {
-        config.scheduler.default_interval_secs = n;
-        debug!("Override: scheduler.default_interval_secs from env");
-    }
+        // Topic suffix
+        if let Some(v) = flat_env::flat_env_string(prefix, "TOPIC_SUFFIX") {
+            self.kafka.topic_suffix = v;
+        }
 
-    // Topic suffix
-    if let Ok(v) = env_var("TOPIC_SUFFIX") {
-        config.kafka.topic_suffix = v;
-        debug!("Override: kafka.topic_suffix from env");
-    }
+        // Buffer / memory
+        if let Some(v) = flat_env::flat_env_parsed::<usize>(prefix, "MEMORY_LIMIT") {
+            self.buffer.memory_limit = v;
+        }
+        if let Some(v) = flat_env::flat_env_parsed::<f64>(prefix, "PRESSURE_THRESHOLD") {
+            self.buffer.pressure_threshold = v;
+        }
 
-    // Buffer / memory
-    if let Ok(v) = env_var("MEMORY_LIMIT")
-        && let Ok(n) = v.parse()
-    {
-        config.buffer.memory_limit = n;
-        debug!("Override: buffer.memory_limit from env");
-    }
-    if let Ok(v) = env_var("PRESSURE_THRESHOLD")
-        && let Ok(n) = v.parse()
-    {
-        config.buffer.pressure_threshold = n;
-        debug!("Override: buffer.pressure_threshold from env");
-    }
+        // Metrics
+        if let Some(v) = flat_env::flat_env_string(prefix, "METRICS_ADDRESS") {
+            self.metrics.address = v;
+        }
 
-    // Metrics
-    if let Ok(v) = env_var("METRICS_ADDRESS") {
-        config.metrics.address = v;
-        debug!("Override: metrics.address from env");
-    }
+        // Config reload
+        if let Some(v) = flat_env::flat_env_parsed::<u64>(prefix, "CONFIG_RELOAD_SECS") {
+            self.config_reload_secs = v;
+        }
 
-    // Config reload
-    if let Ok(v) = env_var("CONFIG_RELOAD_SECS")
-        && let Ok(n) = v.parse()
-    {
-        config.config_reload_secs = n;
-        debug!("Override: config_reload_secs from env");
-    }
-
-    // DLQ
-    if let Ok(v) = env_var("DLQ_ENABLED") {
-        config.dlq.enabled = v == "true" || v == "1";
-        debug!("Override: dlq.enabled from env");
-    }
-    if let Ok(v) = env_var("DLQ_PATH") {
-        config.dlq.file.path = v.into();
-        debug!("Override: dlq.file.path from env");
+        // DLQ
+        if let Some(v) = flat_env::flat_env_bool(prefix, "DLQ_ENABLED") {
+            self.dlq.enabled = v;
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "DLQ_PATH") {
+            self.dlq.file.path = v.into();
+        }
     }
 }
 
@@ -1358,7 +1332,7 @@ mod tests {
             &[("DFE_FETCHER_KAFKA_BROKERS", "broker1:9092, broker2:9092")],
             || {
                 let mut config = Config::default();
-                apply_env_overrides(&mut config);
+                config.apply_flat_env("DFE_FETCHER");
                 assert_eq!(
                     config.kafka.brokers,
                     vec!["broker1:9092".to_string(), "broker2:9092".to_string()]
@@ -1371,7 +1345,7 @@ mod tests {
     fn test_env_override_kafka_client_id() {
         with_env(&[("DFE_FETCHER_KAFKA_CLIENT_ID", "my-fetcher")], || {
             let mut config = Config::default();
-            apply_env_overrides(&mut config);
+            config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.kafka.client_id, "my-fetcher");
         });
     }
@@ -1380,7 +1354,7 @@ mod tests {
     fn test_env_override_default_interval() {
         with_env(&[("DFE_FETCHER_DEFAULT_INTERVAL_SECS", "60")], || {
             let mut config = Config::default();
-            apply_env_overrides(&mut config);
+            config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.scheduler.default_interval_secs, 60);
         });
     }
@@ -1389,7 +1363,7 @@ mod tests {
     fn test_env_override_topic_suffix() {
         with_env(&[("DFE_FETCHER_TOPIC_SUFFIX", "_raw")], || {
             let mut config = Config::default();
-            apply_env_overrides(&mut config);
+            config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.kafka.topic_suffix, "_raw");
         });
     }
@@ -1398,7 +1372,7 @@ mod tests {
     fn test_env_override_memory_limit() {
         with_env(&[("DFE_FETCHER_MEMORY_LIMIT", "1073741824")], || {
             let mut config = Config::default();
-            apply_env_overrides(&mut config);
+            config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.buffer.memory_limit, 1_073_741_824);
         });
     }
@@ -1407,7 +1381,7 @@ mod tests {
     fn test_env_override_metrics_address() {
         with_env(&[("DFE_FETCHER_METRICS_ADDRESS", "0.0.0.0:8888")], || {
             let mut config = Config::default();
-            apply_env_overrides(&mut config);
+            config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.metrics.address, "0.0.0.0:8888");
         });
     }
@@ -1438,7 +1412,7 @@ mod tests {
     fn test_env_override_no_vars_set() {
         let mut config = Config::default();
         let original = config.clone();
-        apply_env_overrides(&mut config);
+        config.apply_flat_env("DFE_FETCHER");
         assert_eq!(config.kafka.brokers, original.kafka.brokers);
         assert_eq!(
             config.scheduler.default_interval_secs,
