@@ -250,11 +250,17 @@ impl PipelineState {
             .with_destination(topic);
 
             if let Err(dlq_err) = dlq.send(entry).await {
-                error!(
-                    error = %dlq_err,
-                    topic,
-                    "Failed to send to DLQ after transport failure"
-                );
+                {
+                    use std::sync::atomic::AtomicU64;
+                    static DLQ_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
+                    if hyperi_rustlib::logger::log_debounced(&DLQ_DEBOUNCE, 5_000) {
+                        error!(
+                            error = %dlq_err,
+                            topic,
+                            "Failed to send to DLQ (debounced, max 1/5s)"
+                        );
+                    }
+                }
                 return result;
             }
 

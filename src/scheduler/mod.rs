@@ -115,10 +115,16 @@ impl Scheduler {
 
                 // Wait for pipeline readiness (backpressure stall)
                 while !is_ready() {
-                    warn!(
-                        source = source.name(),
-                        "Pipeline not ready (backpressure), waiting 5s"
-                    );
+                    {
+                        use std::sync::atomic::AtomicU64;
+                        static BACKPRESSURE_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
+                        if hyperi_rustlib::logger::log_debounced(&BACKPRESSURE_DEBOUNCE, 10_000) {
+                            warn!(
+                                source = source.name(),
+                                "Pipeline not ready (backpressure), waiting"
+                            );
+                        }
+                    }
                     metrics.inc_transport_backpressured();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
