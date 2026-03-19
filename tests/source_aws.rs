@@ -6,11 +6,13 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 
 use dfe_fetcher::config::{AwsService, AwsSourceConfig};
-use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::Source;
+use dfe_fetcher::source::aws::AwsSource;
 use wiremock::matchers::{header, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -29,7 +31,7 @@ async fn test_aws_disabled_returns_empty() {
     assert!(!source.is_enabled());
     assert_eq!(source.name(), "aws");
 
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
     assert!(results.is_empty());
 }
 
@@ -101,7 +103,7 @@ async fn test_aws_fetch_cloudtrail_success() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "aws.cloudtrail");
@@ -132,7 +134,7 @@ async fn test_aws_fetch_cloudtrail_empty() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert!(results.is_empty());
 }
@@ -154,7 +156,7 @@ async fn test_aws_fetch_error_500() {
         }],
     );
     let source = AwsSource::new(config);
-    let err = source.fetch().await.unwrap_err();
+    let err = source.fetch(None).await.unwrap_err();
 
     let msg = err.to_string();
     assert!(
@@ -214,7 +216,7 @@ async fn test_aws_fetch_guardduty_chain() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "aws.guardduty");
@@ -247,7 +249,7 @@ async fn test_aws_fetch_securityhub_success() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "aws.securityhub");
@@ -303,7 +305,7 @@ async fn test_aws_fetch_cloudwatch_logs_success() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "aws.cloudwatch_logs");
@@ -334,7 +336,7 @@ async fn test_aws_fetch_cloudwatch_logs_empty() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert!(results.is_empty());
 }
@@ -381,7 +383,7 @@ async fn test_aws_fetch_cloudwatch_logs_pagination() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "aws.cloudwatch_logs");
@@ -425,7 +427,7 @@ async fn test_aws_fetch_cloudwatch_metrics_success() {
             "MetricDataResults": [
                 {
                     "Id": "q0",
-                    "Timestamps": [1709424000.0, 1709424300.0],
+                    "Timestamps": [1_709_424_000.0, 1_709_424_300.0],
                     "Values": [45.2, 62.1]
                 }
             ]
@@ -444,7 +446,7 @@ async fn test_aws_fetch_cloudwatch_metrics_success() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "aws.cloudwatch_metrics");
@@ -485,7 +487,7 @@ async fn test_aws_fetch_cloudwatch_metrics_empty() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert!(results.is_empty());
 }
@@ -530,7 +532,7 @@ async fn test_aws_fetch_cloudwatch_metrics_otlp() {
             "MetricDataResults": [
                 {
                     "Id": "q0",
-                    "Timestamps": [1709424000.0, 1709424300.0],
+                    "Timestamps": [1_709_424_000.0, 1_709_424_300.0],
                     "Values": [45.2, 62.1]
                 }
             ]
@@ -550,7 +552,7 @@ async fn test_aws_fetch_cloudwatch_metrics_otlp() {
         }],
     );
     let source = AwsSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     // OTLP format emits a single protobuf record
     assert_eq!(results.len(), 1);

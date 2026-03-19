@@ -1,3 +1,70 @@
+# [1.1.0-dev.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.3...v1.1.0-dev.4) (2026-03-19)
+
+
+### Bug Fixes
+
+* add DfeMetrics dual-emit alongside existing metrics ([5bed1b8](https://github.com/hyperi-io/dfe-fetcher/commit/5bed1b8309a84dd24df56893ce46e55fc0a85b28))
+* apply log spam controls at 4 hot spots ([e6e961b](https://github.com/hyperi-io/dfe-fetcher/commit/e6e961b3e93aae1c5ada3e54cf6bd9d814bc608c))
+* bump rustlib to >=1.16.3 for observability features ([7161073](https://github.com/hyperi-io/dfe-fetcher/commit/7161073cddc0af4b1edb8339c44bda7ff481acb5))
+* correct import ordering after log spam and security changes ([6aa642e](https://github.com/hyperi-io/dfe-fetcher/commit/6aa642eac67ca20878ede98cf4e261f785a48330))
+* migrate env overrides to rustlib ApplyFlatEnv trait ([765d12d](https://github.com/hyperi-io/dfe-fetcher/commit/765d12dbf0bdbc35e32f614ebd30b0ef9c75c7c8))
+* wire security event logging for auth, config, and DLQ ([c89b430](https://github.com/hyperi-io/dfe-fetcher/commit/c89b430a028ba6da438bfcbf880dd6b63cb09fdd))
+
+# [1.1.0-dev.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.2...v1.1.0-dev.3) (2026-03-19)
+
+
+### Bug Fixes
+
+* add ScalingPressure for KEDA-optimised autoscaling ([604b4c3](https://github.com/hyperi-io/dfe-fetcher/commit/604b4c3de203b72fc950697b78b84f423d0b7c4c))
+* make scheduler interval hot-reloadable, document reload behaviour ([a0be5ca](https://github.com/hyperi-io/dfe-fetcher/commit/a0be5ca5094fbd0ffe5133093c6d18cffabd4c11))
+* migrate ingest and metrics servers to rustlib HttpServer ([4480094](https://github.com/hyperi-io/dfe-fetcher/commit/44800946027e6f97129d0217f91aaa7776f28b1c))
+
+# [1.1.0-dev.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.1...v1.1.0-dev.2) (2026-03-18)
+
+
+### Bug Fixes
+
+* add backpressure handling with stall, metrics, and transport health tracking ([bea83a0](https://github.com/hyperi-io/dfe-fetcher/commit/bea83a0f3f8e352755d7a8131f6009989b74485a))
+* add container restart-on-crash with exponential backoff ([d6089bd](https://github.com/hyperi-io/dfe-fetcher/commit/d6089bd795a32871d6cf6726d543f0792d772034))
+* add cursor store with file and kafka backends ([e51791b](https://github.com/hyperi-io/dfe-fetcher/commit/e51791bd1017f86af874b79178b51e9ea311905c))
+* add FetchWindow to Source trait for incremental fetching ([3ce62b9](https://github.com/hyperi-io/dfe-fetcher/commit/3ce62b9442f5b983fa49b5921d29c9c8a60fae8d))
+* add output, cursor, instance_id, filter, auth, restart config ([0f87cb0](https://github.com/hyperi-io/dfe-fetcher/commit/0f87cb06ea8e4eb52c353a959d4d292f4c52df6b))
+* add OutputTransport using rustlib Transport trait ([67e5c7e](https://github.com/hyperi-io/dfe-fetcher/commit/67e5c7e8ab2de59b7fd6158b9eb53b0426d70e2e))
+* add per-message CEL filtering with rustlib expression engine ([a912cdd](https://github.com/hyperi-io/dfe-fetcher/commit/a912cdd155c6f094a594a4d29db8844643dc12e9))
+* add transport, cursor, and filter error variants ([24daaf9](https://github.com/hyperi-io/dfe-fetcher/commit/24daaf95e931a59bcbaacb077def4efa8ba9832d))
+* address review findings — enrichment, dual-write, stale docs, deprecation warning ([c5c3e19](https://github.com/hyperi-io/dfe-fetcher/commit/c5c3e19ac6797bd6676bfdabb967d45654ed45e0))
+* delete custom Sink trait, use rustlib Transport uniformly ([58ae98f](https://github.com/hyperi-io/dfe-fetcher/commit/58ae98f9d8960b45e60df6f2305c52682789aab5))
+* format output.rs clone_from line ([42bb1df](https://github.com/hyperi-io/dfe-fetcher/commit/42bb1df3d671268a192073046ba8398bec4cc091))
+* integrate cursor store into scheduler for incremental fetching ([c158eb9](https://github.com/hyperi-io/dfe-fetcher/commit/c158eb9606465341bdb3d03e0cad2a06c9be8246))
+* remove plugin .so system, use container/sidecar approach ([26a22c9](https://github.com/hyperi-io/dfe-fetcher/commit/26a22c9a7d2a2b2025922747cec8dbbd0be80c92))
+* resolve all clippy warnings ([efa28f3](https://github.com/hyperi-io/dfe-fetcher/commit/efa28f3948306ddcbbeaa65aab5cf785cf0253c2))
+* rewrite pipeline to use rustlib Transport via OutputManager ([ed2f34e](https://github.com/hyperi-io/dfe-fetcher/commit/ed2f34ea8f08b6c689ec14ba75fb6aee1f242254))
+* standardise metric names to dfe_ prefix for cross-service consistency ([5aefbf6](https://github.com/hyperi-io/dfe-fetcher/commit/5aefbf6d70c042de283d4b9d140a102bcc35b271))
+
+
+### Features
+
+* add TUI dashboard subcommand via rustlib top module ([c316933](https://github.com/hyperi-io/dfe-fetcher/commit/c31693305a6fcaa7719db05416dc4789dcad276e))
+
+# [1.1.0-dev.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.0.0...v1.1.0-dev.1) (2026-03-16)
+
+
+### Bug Fixes
+
+* add build.type app, remove legacy publish workflow ([2fdc2db](https://github.com/hyperi-io/dfe-fetcher/commit/2fdc2db7aa096730de6a488f894590f7a1dac41b))
+* add chart, infra, schemas to cargo publish exclude list [skip ci] ([644bcdf](https://github.com/hyperi-io/dfe-fetcher/commit/644bcdfc63ec56f09a75dcdfa307363a5ce32e31))
+* add native_deps and image_profile to deployment contract ([4922b73](https://github.com/hyperi-io/dfe-fetcher/commit/4922b73a7a00a53b6cbe8676ccd734287a3317fa))
+* migrate to hyperi-ci and upgrade to edition 2024 ([e09240a](https://github.com/hyperi-io/dfe-fetcher/commit/e09240a54120eb9de6952e24e0b59305bd039bae))
+* update aws-lc-sys to 0.38.0 for security patches ([9e16616](https://github.com/hyperi-io/dfe-fetcher/commit/9e16616a3e9b6086fe5e3aeda2d8a5d118f95cbf))
+* use crates.io for hyperi-rustlib instead of jfrog registry ([5337b3e](https://github.com/hyperi-io/dfe-fetcher/commit/5337b3e6e0e841d9efaeb66b239d6a8a063c97f4))
+
+
+### Features
+
+* add CLI module, deployment contract, and generated artifacts [skip ci] ([b0a8304](https://github.com/hyperi-io/dfe-fetcher/commit/b0a8304f28f8a9d0a72a872dc49fed86ac20b0c3))
+* add cloudwatch logs and metrics to aws source ([cf77190](https://github.com/hyperi-io/dfe-fetcher/commit/cf77190800c6d61a2eaf170a290e0a8b10354035))
+* add OTLP protobuf output for cloudwatch metrics ([f8ca862](https://github.com/hyperi-io/dfe-fetcher/commit/f8ca86274f3a6582f824a5448d559d4380f90411))
+
 # 1.0.0 (2026-03-03)
 
 

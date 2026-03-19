@@ -6,12 +6,21 @@
 # Config reload: send SIGHUP to reload
 
 # =============================================================================
+# Instance Identity
+# =============================================================================
+# Auto-derived from source config if omitted.
+# Explicit ID recommended for production — prevents cursor key collisions.
+# instance_id: "contoso-m365"
+
+# =============================================================================
 # Scheduler
 # =============================================================================
+# Interval and jitter are HOT-RELOADED — changes take effect on next fetch cycle.
+# max_concurrent_fetches REQUIRES RESTART (semaphore created at startup).
 scheduler:
-  default_interval_secs: 300    # 5 minutes
-  max_concurrent_fetches: 10
-  jitter_percent: 10            # Avoid thundering herd
+  default_interval_secs: 300    # 5 minutes — hot-reloaded
+  max_concurrent_fetches: 10    # REQUIRES RESTART
+  jitter_percent: 10            # Avoid thundering herd — hot-reloaded
 
 # =============================================================================
 # Native Sources (Rust-native, maintained in this repo)
@@ -19,9 +28,11 @@ scheduler:
 # Decision: use native source when a good Rust crate exists.
 # Otherwise, use a container extractor.
 
+# Sources — filter is HOT-RELOADED (re-evaluated per record).
+# enabled, credentials, services, topic REQUIRE RESTART.
 sources:
   aws:
-    enabled: false
+    enabled: false              # REQUIRES RESTART
     region: "us-east-1"
     # access_key_id: ""         # Prefer credential_secret in production
     # secret_access_key: ""
@@ -34,6 +45,7 @@ sources:
       - name: securityhub
       - name: config
     topic: "aws"
+    # filter: 'eventName != "ConsoleLogin"'  # hot-reloaded
 
   azure:
     enabled: false
@@ -48,6 +60,7 @@ sources:
       - name: sentinel
       - name: entra_id
     topic: "azure"
+    # filter: 'level == "Critical" || level == "Error"'  # hot-reloaded
 
   m365:
     enabled: false
@@ -61,6 +74,7 @@ sources:
       - name: dlp
       - name: alerts
     topic: "m365"
+    # filter: 'Workload != "Exchange"'  # hot-reloaded
 
   gcp:
     enabled: false
@@ -72,9 +86,10 @@ sources:
       - name: scc
       - name: cloud_logging
     topic: "gcp"
+    # filter: 'severity != "INFO"'  # hot-reloaded
 
 # =============================================================================
-# External Extractors
+# External Extractors — ALL REQUIRE RESTART
 # =============================================================================
 # For tools that don't have good Rust crates — wrap in containers.
 # One container per source + config. Can run N instances with different configs.
@@ -98,6 +113,9 @@ extractors:
     #     AWS_SECRET_ACCESS_KEY: "vault:secret/aws:secret_key"
     #   memory_limit: "512m"
     #   cpu_limit: 0.5
+    #   max_restart_attempts: 0      # 0 = unlimited
+    #   max_restart_backoff_secs: 60
+    #   stable_after_secs: 300
 
     # Example: Multiple M365 orgs (same tool, different config)
     # - name: m365-org-alpha
@@ -120,13 +138,45 @@ extractors:
     #     M365_CLIENT_ID: "client-beta-uuid"
     #     M365_CLIENT_SECRET: "vault:secret/m365/beta:client_secret"
 
-  # Plugin extractors (.so dynamic libraries)
-  plugins:
-    directory: null
-    # my_custom_source:
-    #   path: "/opt/dfe/plugins/libdfe_fetcher_plugin_custom.so"
-    #   topic: "custom_land"
-    #   interval_secs: 60
+    # ─── Filebeat sidecar examples ───────────────────────────────────
+    # Use Filebeat for log sources that established tools handle well.
+    # Each runs as a container extractor — stdout (JSON lines) or HTTP POST.
+
+    # Example: Syslog collection via Filebeat
+    # - name: filebeat-syslog
+    #   image: docker.elastic.co/beats/filebeat:8.17.0    # REQUIRES RESTART
+    #   mode: continuous                                    # REQUIRES RESTART
+    #   communication: http                                 # Posts to /ingest/syslog
+    #   topic: syslog
+    #   env:
+    #     FETCHER_INGEST_URL: "http://localhost:8080/ingest/syslog"
+    #   volumes:
+    #     - "/var/log/syslog:/var/log/syslog:ro"
+    #     - "./filebeat-syslog.yml:/usr/share/filebeat/filebeat.yml:ro"
+    #   max_restart_attempts: 0
+    #   max_restart_backoff_secs: 60
+
+    # Example: Windows event log forwarding
+    # - name: filebeat-winevt
+    #   image: docker.elastic.co/beats/filebeat:8.17.0
+    #   mode: continuous
+    #   communication: http
+    #   topic: windows_events
+    #   volumes:
+    #     - "/mnt/winevt:/var/log/winevt:ro"
+    #     - "./filebeat-winevt.yml:/usr/share/filebeat/filebeat.yml:ro"
+
+    # Example: Custom application logs (stdout JSON output)
+    # - name: filebeat-applog
+    #   image: docker.elastic.co/beats/filebeat:8.17.0
+    #   mode: continuous
+    #   communication: stdout
+    #   topic: application_logs
+    #   volumes:
+    #     - "/var/log/myapp:/var/log/myapp:ro"
+    #     - "./filebeat-applog.yml:/usr/share/filebeat/filebeat.yml:ro"
+    #   memory_limit: "256m"
+    #   cpu_limit: 0.5
 
   # Vector.dev extractor integration
   vector:
@@ -146,21 +196,35 @@ extractors:
     #   topic: syslog_land
 
 # =============================================================================
-# Ingest server (for container extractors using HTTP communication)
+# Ingest server — REQUIRES RESTART
 # =============================================================================
+# HTTP server binds at startup; auth token resolved once.
 ingest:
   enabled: true
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
+  # auth_token: "vault:secret/dfe:ingest_token"
 
 # =============================================================================
-# Kafka output
+# Output transport — REQUIRES RESTART
 # =============================================================================
+# Transport connections are established at startup.
+# Default: kafka (backward compatible with top-level kafka: section)
+# output:
+#   type: kafka            # "kafka" | "grpc" | "both"
+#   kafka:
+#     profile: production
+#     brokers: ["kafka:9092"]
+#     client_id: "dfe-fetcher"
+#   grpc:
+#     endpoint: "http://dfe-receiver:6000"
+
+# Kafka — transport config REQUIRES RESTART; topic_suffix is hot-reloaded.
 kafka:
-  brokers:
+  brokers:                        # REQUIRES RESTART
     - "localhost:9092"
-  client_id: "dfe-fetcher"
-  topic_suffix: "_land"
+  client_id: "dfe-fetcher"       # REQUIRES RESTART
+  topic_suffix: "_land"          # hot-reloaded
   sasl:
     enabled: false
     mechanism: "SCRAM-SHA-512"
@@ -178,14 +242,14 @@ kafka:
     retries: 5
 
 # =============================================================================
-# Buffer / Memory
+# Buffer / Memory — REQUIRES RESTART
 # =============================================================================
 buffer:
   memory_limit: 0             # 0 = auto-detect (67% available)
   pressure_threshold: 0.8
 
 # =============================================================================
-# Dead Letter Queue
+# Dead Letter Queue — REQUIRES RESTART
 # =============================================================================
 # Messages that fail Kafka delivery are routed to the DLQ for later replay.
 # File-only mode writes DLQ entries to local disk as JSON lines.
@@ -199,8 +263,21 @@ dlq:
   #   compress_rotated: true
 
 # =============================================================================
-# Metrics
+# Metrics — REQUIRES RESTART
 # =============================================================================
 metrics:
   enabled: true
   address: "0.0.0.0:9090"
+
+# =============================================================================
+# Cursor Store (incremental fetching)
+# =============================================================================
+# Tracks the last successful fetch window per source so restarts resume
+# from where they left off instead of re-fetching the same time range.
+# store/file_path/kafka_topic REQUIRE RESTART (cursor store created at startup).
+# default_window_hours is HOT-RELOADED (re-read when no cursor exists).
+# cursor:
+#   store: auto            # "auto" | "kafka" | "file" — REQUIRES RESTART
+#   file_path: "/var/lib/dfe-fetcher/cursors"  # REQUIRES RESTART
+#   kafka_topic: "dfe-fetcher-cursors"         # REQUIRES RESTART
+#   default_window_hours: 1                    # hot-reloaded

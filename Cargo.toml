@@ -8,9 +8,9 @@
 
 [package]
 name = "dfe-fetcher"
-version = "1.0.0"
-edition = "2021"
-rust-version = "1.75"
+version = "1.1.0-dev.4"
+edition = "2024"
+rust-version = "1.94"
 description = "Data fetcher for external services (AWS, Azure, M365, GCP)"
 license = "FSL-1.1-ALv2"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
@@ -22,8 +22,8 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-# HyperI shared library (from JFrog Cargo registry)
-hyperi-rustlib = { version = ">=1.13.1", registry = "hyperi", features = [
+# HyperI shared library
+hyperi-rustlib = { version = ">=1.16.3", features = [
     "config",
     "config-reload",
     "logger",
@@ -32,6 +32,7 @@ hyperi-rustlib = { version = ">=1.13.1", registry = "hyperi", features = [
     "transport-kafka",
     "transport-grpc",
     "transport-grpc-vector-compat",
+    "transport-memory",
     "spool",
     "tiered-sink",
     "runtime",
@@ -39,6 +40,9 @@ hyperi-rustlib = { version = ">=1.13.1", registry = "hyperi", features = [
     "dlq",
     "deployment",
     "cli",
+    "top",
+    "expression",
+    "scaling",
 ] }
 
 # Async runtime
@@ -54,9 +58,6 @@ serde_yaml_ng = "0.10"
 
 # HTTP client (for API calls to external services)
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "stream"] }
-
-# Kafka producer (for output to pipeline)
-rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "sasl"] }
 
 # Performance
 fastrand = "2"
@@ -76,7 +77,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # HTTP server (for metrics/health endpoints)
-axum = "0.7"
+axum = "0.8"
 bytes = "1"
 
 # Utilities
@@ -85,7 +86,6 @@ uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1"
 sysinfo = "0.32"
 url = "2"
-libloading = "0.8"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
 # AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
@@ -128,13 +128,13 @@ lto = "thin"
 codegen-units = 1
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints.clippy]
 # Use pedantic but allow some overly strict lints
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
-expect_used = "deny"
+expect_used = "warn"
 
 # Allow these pedantic lints (too noisy for early development)
 needless_raw_string_hashes = "allow"
@@ -161,3 +161,7 @@ trivially_copy_pass_by_ref = "allow"
 format_push_string = "allow"
 single_char_add_str = "allow"
 uninlined_format_args = "allow"
+
+[[bench]]
+name = "pipeline"
+harness = false

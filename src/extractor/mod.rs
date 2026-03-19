@@ -1,6 +1,6 @@
 // Project:   dfe-fetcher
 // File:      src/extractor/mod.rs
-// Purpose:   External data extractor management (containers, plugins, vector)
+// Purpose:   External data extractor management (containers, vector)
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2
@@ -17,10 +17,7 @@
 //!    outputs JSON lines to stdout or posts to the fetcher's ingest endpoint.
 //!    Example: `yet-another-cloudwatch-exporter` for CloudWatch metrics.
 //!
-//! 2. **Plugin extractors** (`plugin/`) — Dynamically loaded Rust `.so` modules
-//!    implementing the `Source` trait. Same plugin system as dfe-receiver.
-//!
-//! 3. **Vector extractors** (`vector/`) — Vector.dev instances configured as
+//! 2. **Vector extractors** (`vector/`) — Vector.dev instances configured as
 //!    sources that send data to the fetcher via native gRPC (Vector sink protocol).
 //!    Tightly coupled via hyperi-rustlib's gRPC support.
 //!
@@ -39,7 +36,6 @@
 //! - **gRPC** — Vector protocol for Vector-based extractors
 
 pub mod container;
-pub mod plugin;
 pub mod vector;
 
 use async_trait::async_trait;
@@ -48,7 +44,7 @@ use bytes::Bytes;
 use crate::error::Result;
 use crate::source::FetchResult;
 
-/// Trait for external extractors (containers, plugins, vector instances).
+/// Trait for external extractors (containers, vector instances).
 ///
 /// Unlike `Source` which actively pulls data, extractors are managed processes
 /// that push data to the fetcher. The fetcher starts/stops/monitors them.

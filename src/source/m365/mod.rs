@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use crate::config::M365SourceConfig;
 use crate::credential::{self, TokenManager};
 use crate::error::{Error, Result};
-use crate::source::{FetchResult, Source};
+use crate::source::{FetchResult, FetchWindow, Source};
 
 /// Microsoft 365 data source implementation.
 pub struct M365Source {
@@ -198,7 +198,7 @@ impl Source for M365Source {
         self.config.enabled
     }
 
-    async fn fetch(&self) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
@@ -232,6 +232,18 @@ impl Source for M365Source {
             Ok(tm) => Ok(tm.get_token().await.is_ok()),
             Err(_) => Ok(false),
         }
+    }
+
+    fn cursor_prefix(&self) -> String {
+        "m365".to_string()
+    }
+
+    fn service_names(&self) -> Vec<&str> {
+        self.config
+            .services
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect()
     }
 }
 
@@ -289,13 +301,13 @@ impl M365Source {
                     .bearer_auth(&token)
                     .send()
                     .await;
-                if let Ok(r) = content_resp {
-                    if r.status().is_success() {
-                        let events: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
-                        for event in events {
-                            if let Ok(json) = serde_json::to_vec(&event) {
-                                records.push(Bytes::from(json));
-                            }
+                if let Ok(r) = content_resp
+                    && r.status().is_success()
+                {
+                    let events: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
+                    for event in events {
+                        if let Ok(json) = serde_json::to_vec(&event) {
+                            records.push(Bytes::from(json));
                         }
                     }
                 }
@@ -368,7 +380,9 @@ impl M365Source {
             .graph_url_override
             .as_deref()
             .unwrap_or("https://graph.microsoft.com");
-        let url = format!("{graph_base}/v1.0/security/alerts_v2?$filter=category eq 'DataLossPrevention'&$top=100");
+        let url = format!(
+            "{graph_base}/v1.0/security/alerts_v2?$filter=category eq 'DataLossPrevention'&$top=100"
+        );
         let items = self.fetch_paginated(&token, &url, 10).await?;
         if items.is_empty() {
             return Ok(None);

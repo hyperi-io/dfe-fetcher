@@ -21,10 +21,6 @@
 //! └──────────┬──────────────────────┘
 //!            │
 //! ┌──────────┴──────────────────────┐
-//! │       Plugin Sources (.so)      │
-//! └──────────┬──────────────────────┘
-//!            │
-//! ┌──────────┴──────────────────────┐
 //! │   Container Extractors          │
 //! │  (Docker/podman, any language)  │
 //! └──────────┬──────────────────────┘
@@ -41,17 +37,10 @@
 //!            │
 //!            ▼
 //! ┌─────────────────────────────────┐
-//! │   Kafka Sink (TieredSink)       │
+//! │   Output Transport (Kafka/gRPC) │
 //! └─────────────────────────────────┘
 //! ```
 
-#![forbid(unsafe_code)]
-#![warn(clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::doc_markdown)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_precision_loss)]
@@ -71,14 +60,15 @@
 pub mod buffer;
 pub mod config;
 pub mod credential;
+pub mod cursor;
 pub mod deployment;
 pub mod error;
 pub mod extractor;
 pub mod ingest;
 pub mod metrics;
+pub mod output;
 pub mod pipeline;
 pub mod scheduler;
-pub mod sink;
 pub mod source;
 
 pub use error::{Error, Result};

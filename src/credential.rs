@@ -159,10 +159,10 @@ impl TokenManager {
         // Check cache
         {
             let cached = self.cached.read();
-            if let Some(ref token) = *cached {
-                if Instant::now() < token.expires_at {
-                    return Ok(token.access_token.clone());
-                }
+            if let Some(ref token) = *cached
+                && Instant::now() < token.expires_at
+            {
+                return Ok(token.access_token.clone());
             }
         }
 
@@ -256,6 +256,7 @@ pub fn http_client_with_timeout(timeout: Duration) -> Result<reqwest::Client> {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -268,11 +269,13 @@ mod tests {
 
     #[test]
     fn test_resolve_env() {
-        std::env::set_var("DFE_TEST_CRED_VAR", "test-value-123");
+        // SAFETY: test-only, single-threaded test runner
+        unsafe { std::env::set_var("DFE_TEST_CRED_VAR", "test-value-123") };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(resolve("env:DFE_TEST_CRED_VAR"));
         assert_eq!(result.unwrap(), "test-value-123");
-        std::env::remove_var("DFE_TEST_CRED_VAR");
+        // SAFETY: test-only, single-threaded test runner
+        unsafe { std::env::remove_var("DFE_TEST_CRED_VAR") };
     }
 
     #[test]

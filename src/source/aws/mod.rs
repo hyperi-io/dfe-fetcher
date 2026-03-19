@@ -24,8 +24,8 @@ use bytes::Bytes;
 use chrono::Utc;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
-    common::v1::{any_value, AnyValue, InstrumentationScope, KeyValue},
-    metrics::v1::{metric, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics},
+    common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
+    metrics::v1::{Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, metric},
     resource::v1::Resource,
 };
 use prost::Message;
@@ -36,7 +36,7 @@ use tracing::{info, warn};
 use crate::config::AwsSourceConfig;
 use crate::credential;
 use crate::error::{Error, Result};
-use crate::source::{FetchResult, Source};
+use crate::source::{FetchResult, FetchWindow, Source};
 
 /// Map CloudWatch unit strings to UCUM (Unified Code for Units of Measure) codes
 /// for OpenTelemetry compatibility.
@@ -219,7 +219,7 @@ impl Source for AwsSource {
         self.config.enabled
     }
 
-    async fn fetch(&self) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
@@ -263,6 +263,18 @@ impl Source for AwsSource {
                 Ok(false)
             }
         }
+    }
+
+    fn cursor_prefix(&self) -> String {
+        "aws".to_string()
+    }
+
+    fn service_names(&self) -> Vec<&str> {
+        self.config
+            .services
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect()
     }
 }
 
