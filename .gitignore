@@ -38,3 +38,6 @@ coverage.lcov
 .cargo/
 !.cargo/config.toml
 .tmp/
+
+# AI agent working files (not committed)
+docs/superpowers/

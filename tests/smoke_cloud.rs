@@ -6,9 +6,11 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! Smoke tests against real cloud APIs.
 //!
-//! These tests are `#[ignore]`d by default because they require real credentials.
+//! These tests are `#[ignore = "requires live cloud credentials"]`d by default because they require real credentials.
 //! Run with:
 //!
 //! ```bash
@@ -22,10 +24,10 @@ use std::collections::HashMap;
 
 use dfe_fetcher::config::{AwsService, AwsSourceConfig, AzureService, AzureSourceConfig};
 use dfe_fetcher::config::{GcpService, GcpSourceConfig};
+use dfe_fetcher::source::Source;
 use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::azure::AzureSource;
 use dfe_fetcher::source::gcp::GcpSource;
-use dfe_fetcher::source::Source;
 
 /// Load .env file, overriding any existing env vars (e.g. stale credentials
 /// from previous sessions). Panics if .env is missing (test requires credentials).
@@ -60,11 +62,12 @@ fn make_aws_config() -> Option<AwsSourceConfig> {
             config: HashMap::new(),
         }],
         topic: "test-aws".to_string(),
+        filter: None,
     })
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_health_check() {
     load_env();
     let config = make_aws_config().expect("AWS credentials not found in .env");
@@ -78,13 +81,13 @@ async fn aws_health_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_fetch_cloudtrail() {
     load_env();
     let config = make_aws_config().expect("AWS credentials not found in .env");
     let source = AwsSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     // CloudTrail may return empty if no recent events, but must not error
     eprintln!(
         "AWS CloudTrail: {} result(s), {} total records",
@@ -121,17 +124,18 @@ fn make_aws_cloudwatch_logs_config() -> Option<AwsSourceConfig> {
             config: svc_config,
         }],
         topic: "test-aws".to_string(),
+        filter: None,
     })
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_fetch_cloudwatch_logs() {
     load_env();
     let config = make_aws_cloudwatch_logs_config().expect("AWS credentials not found in .env");
     let source = AwsSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "AWS CloudWatch Logs: {} result(s), {} total records",
         results.len(),
@@ -161,17 +165,18 @@ fn make_aws_cloudwatch_metrics_config() -> Option<AwsSourceConfig> {
             config: svc_config,
         }],
         topic: "test-aws".to_string(),
+        filter: None,
     })
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn aws_fetch_cloudwatch_metrics() {
     load_env();
     let config = make_aws_cloudwatch_metrics_config().expect("AWS credentials not found in .env");
     let source = AwsSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "AWS CloudWatch Metrics: {} result(s), {} total records",
         results.len(),
@@ -205,11 +210,12 @@ fn make_azure_config() -> Option<AzureSourceConfig> {
             config: HashMap::new(),
         }],
         topic: "test-azure".to_string(),
+        filter: None,
     })
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn azure_health_check() {
     load_env();
     let config = make_azure_config().expect("Azure credentials not found in .env");
@@ -223,13 +229,13 @@ async fn azure_health_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn azure_fetch_activity_log() {
     load_env();
     let config = make_azure_config().expect("Azure credentials not found in .env");
     let source = AzureSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "Azure Activity Log: {} result(s), {} total records",
         results.len(),
@@ -264,11 +270,12 @@ fn make_gcp_config() -> Option<GcpSourceConfig> {
             config: HashMap::new(),
         }],
         topic: "test-gcp".to_string(),
+        filter: None,
     })
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn gcp_health_check() {
     load_env();
     let Some(config) = make_gcp_config() else {
@@ -285,7 +292,7 @@ async fn gcp_health_check() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires live cloud credentials"]
 async fn gcp_fetch_cloud_logging() {
     load_env();
     let Some(config) = make_gcp_config() else {
@@ -294,7 +301,7 @@ async fn gcp_fetch_cloud_logging() {
     };
     let source = GcpSource::new(config);
 
-    let results = source.fetch().await.expect("fetch failed");
+    let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "GCP Cloud Logging: {} result(s), {} total records",
         results.len(),

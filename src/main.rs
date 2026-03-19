@@ -11,8 +11,6 @@
 //! Uses hyperi-rustlib CLI module for standard arguments and subcommands.
 //! Implements the [`DfeApp`] trait for the standard DFE service lifecycle.
 
-#![forbid(unsafe_code)]
-
 // Jemalloc takes priority when enabled
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
@@ -29,14 +27,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, VersionInfo};
+use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, TopArgs, VersionInfo};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
+use hyperi_rustlib::logger::security;
+use hyperi_rustlib::scaling::{ScalingComponent, ScalingPressure};
+use hyperi_rustlib::top::{TopConfig, run_top};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use dfe_fetcher::config::{reload_config, Config};
+use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
+use dfe_fetcher::cursor;
 use dfe_fetcher::deployment;
 use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
@@ -44,11 +46,11 @@ use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::Orchestrator;
 use dfe_fetcher::scheduler::Scheduler;
+use dfe_fetcher::source::Source;
 use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::azure::AzureSource;
 use dfe_fetcher::source::gcp::GcpSource;
 use dfe_fetcher::source::m365::M365Source;
-use dfe_fetcher::source::Source;
 
 /// dfe-fetcher: Data fetcher for external services (AWS, Azure, M365, GCP).
 #[derive(Parser, Debug)]
@@ -99,6 +101,9 @@ enum AppCommand {
     /// Print deployment contract as JSON to stdout.
     #[command(name = "emit-contract")]
     EmitContract,
+
+    /// Live TUI metrics dashboard (connects to running instance's /metrics endpoint).
+    Top(TopArgs),
 }
 
 impl DfeApp for App {
@@ -188,6 +193,14 @@ async fn main() {
                 println!("{}", contract.to_json());
                 return;
             }
+            AppCommand::Top(args) => {
+                let config = TopConfig::from_args(args);
+                if let Err(e) = run_top(&config) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                return;
+            }
             _ => {}
         }
     }
@@ -201,8 +214,11 @@ async fn main() {
 
 /// Main service loop — called by the DfeApp lifecycle after logging and config.
 async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Result<()> {
-    // Initialise metrics
-    let metrics = Arc::new(Metrics::new());
+    // Warn if deprecated plugin config is present
+    config.extractors.plugins.warn_if_configured();
+
+    // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
+    let metrics = Arc::new(Metrics::with_dfe());
 
     // Create cancellation token for coordinated shutdown
     let shutdown_token = CancellationToken::new();
@@ -254,8 +270,23 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     });
 
     // Create and run the pipeline orchestrator
-    let orchestrator = Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone())?;
+    let orchestrator =
+        Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
     let pipeline_state = orchestrator.state();
+
+    // Create scaling pressure calculator for KEDA autoscaling
+    let scaling_pressure = Arc::new(ScalingPressure::new(
+        config.scaling.clone(),
+        vec![
+            ScalingComponent::new(
+                "buffer_depth",
+                0.40,
+                config.buffer.memory_limit.max(1) as f64,
+            ),
+            ScalingComponent::new("transport_errors", 0.30, 100.0),
+            ScalingComponent::new("memory", 0.30, 1.0),
+        ],
+    ));
 
     // Start config hot-reload
     // Keep handle alive for entire application lifetime (dropping stops the reloader)
@@ -299,17 +330,75 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         handle
     };
 
+    // Spawn periodic scaling pressure update (feeds buffer + transport health to ScalingPressure)
+    {
+        let scaling = Arc::clone(&scaling_pressure);
+        let state = Arc::clone(&pipeline_state);
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let bm = state.buffer_manager();
+                        let used = bm.total_bytes();
+                        let limit = bm.memory_limit();
+                        scaling.set_component("buffer_depth", used as f64);
+                        scaling.set_memory(used, limit);
+                        scaling.set_circuit_open(!state.output_healthy());
+                    }
+                    _ = shutdown.cancelled() => break,
+                }
+            }
+        });
+    }
+
     // Spawn metrics server
     let metrics_token = shutdown_token.clone();
     let metrics_clone = metrics.clone();
+    let scaling_clone = Arc::clone(&scaling_pressure);
     tokio::spawn(async move {
-        if let Err(e) = run_metrics_server(metrics_addr, metrics_clone, metrics_token).await {
+        if let Err(e) =
+            run_metrics_server(metrics_addr, metrics_clone, scaling_clone, metrics_token).await
+        {
             error!(error = %e, "Metrics server error");
         }
     });
 
-    // Create scheduler
-    let scheduler = Scheduler::new(&config.scheduler);
+    // Derive instance identity for cursor isolation
+    let instance_id = derive_instance_id(&config);
+    info!(instance_id, "Fetcher instance identity");
+    if config.instance_id.is_none() {
+        warn!(
+            instance_id,
+            "Instance ID was auto-derived; set 'instance_id' in config for stable cursor keys"
+        );
+    }
+
+    // Create cursor store for incremental fetching
+    let cursor_store: Option<Arc<dyn cursor::CursorStore>> = match cursor::create_cursor_store(
+        &config.cursor,
+        &config.output,
+    )
+    .await
+    {
+        Ok(store) => {
+            info!("Cursor store initialised");
+            Some(Arc::from(store))
+        }
+        Err(e) => {
+            warn!(error = %e, "Cursor store unavailable, fetches will use default lookback window");
+            None
+        }
+    };
+
+    // Create scheduler (reads interval/jitter/window_hours from shared_config per tick)
+    let scheduler = Scheduler::new(
+        &config.scheduler,
+        orchestrator.shared_config(),
+        cursor_store,
+        instance_id,
+    );
 
     // Register native sources
     let sources: Vec<Arc<dyn Source>> = vec![
@@ -325,17 +414,18 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
             continue;
         }
 
-        let interval = scheduler.effective_interval(None);
+        let initial_interval = scheduler.effective_interval(None);
         let state = Arc::clone(&pipeline_state);
+        let ready_state = Arc::clone(&pipeline_state);
         info!(
             source = source.name(),
-            interval_secs = interval.as_secs(),
-            "Starting fetch schedule"
+            interval_secs = initial_interval.as_secs(),
+            "Starting fetch schedule (interval is hot-reloaded)"
         );
 
         scheduler.spawn_source_task(
             Arc::clone(source),
-            interval,
+            None,
             Arc::clone(&metrics),
             shutdown_token.clone(),
             Arc::new(move |results| {
@@ -346,6 +436,7 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
                     }
                 });
             }),
+            Arc::new(move || ready_state.is_ready()),
         );
     }
 
@@ -396,10 +487,10 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         Arc::clone(&metrics),
         shutdown_token.clone(),
     );
-    if vector_manager.is_enabled() {
-        if let Err(e) = vector_manager.start().await {
-            error!(error = %e, "Failed to start Vector manager");
-        }
+    if vector_manager.is_enabled()
+        && let Err(e) = vector_manager.start().await
+    {
+        error!(error = %e, "Failed to start Vector manager");
     }
 
     // Run pipeline orchestrator (blocks until shutdown)
@@ -425,29 +516,50 @@ fn reload_config_from_path(
         config_path: config_path.map(String::from),
         ..Config::default()
     };
-    reload_config(&placeholder).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    let config = reload_config(&placeholder)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+    security::config_changed("config_reload", "system", "configuration reloaded");
+    Ok(config)
 }
 
 /// Run the Prometheus metrics HTTP server.
 async fn run_metrics_server(
     addr: SocketAddr,
     metrics: Arc<Metrics>,
+    scaling: Arc<ScalingPressure>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    use axum::routing::get;
     use axum::Router;
+    use axum::routing::get;
+    use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
 
-    let app = Router::new()
-        .route("/metrics", get(move || async move { metrics.render() }))
-        .route("/health/live", get(|| async { "OK" }))
-        .route("/health/ready", get(|| async { "OK" }));
+    let app = Router::new().route(
+        "/metrics",
+        get(move || {
+            let m = metrics.clone();
+            let s = scaling.clone();
+            async move {
+                let mut output = m.render();
+                output.push_str(
+                    "# HELP dfe_scaling_pressure Composite scaling pressure for KEDA (0-100)\n",
+                );
+                output.push_str("# TYPE dfe_scaling_pressure gauge\n");
+                output.push_str(&format!("dfe_scaling_pressure {:.2}\n", s.calculate()));
+                output
+            }
+        }),
+    );
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let config = HttpServerConfig::new(addr.to_string());
+
     info!(addr = %addr, "Metrics server listening");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown.cancelled_owned())
-        .await?;
+    let server = HttpServer::new(config);
+    server
+        .serve_with_shutdown(app, shutdown.cancelled_owned())
+        .await
+        .map_err(|e| anyhow::anyhow!("Metrics server error: {e}"))?;
 
     Ok(())
 }

@@ -9,7 +9,7 @@
 //! Pipeline orchestration module.
 //!
 //! Coordinates the flow of fetched data from sources/extractors
-//! through enrichment and delivery to Kafka sinks.
+//! through enrichment and delivery to output transports (Kafka, gRPC).
 //!
 //! ## Data Flow
 //!
@@ -18,34 +18,33 @@
 //!     │
 //! Container Extractors (stdout / HTTP)
 //!     │
-//! Plugin Extractors (.so modules)
-//!     │
 //! Vector Extractors (gRPC)
 //!     │
-//!     └─── Pipeline ──→ Enrich ──→ Kafka Sink ──→ DFE Pipeline
+//!     └─── Pipeline ──→ Enrich ──→ Output Transport ──→ DFE Pipeline
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use hyperi_rustlib::dlq::{Dlq, DlqEntry};
+use hyperi_rustlib::logger::security;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::buffer::{BufferManager, TieredSink};
+use crate::buffer::BufferManager;
 use crate::config::{Config, SharedConfig};
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
-use crate::sink::kafka::KafkaSink;
-use crate::sink::Sink;
+use crate::output::OutputManager;
 use crate::source::FetchResult;
 
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
-    kafka_sink: Option<Arc<TieredSink<KafkaSink>>>,
+    output: Option<Arc<OutputManager>>,
     buffer_manager: Arc<BufferManager>,
     dlq: Option<Dlq>,
     metrics: Arc<Metrics>,
@@ -54,17 +53,18 @@ pub struct PipelineState {
 
 impl PipelineState {
     /// Create new pipeline state.
-    pub fn new(shared_config: SharedConfig, metrics: Arc<Metrics>) -> Result<Self> {
+    ///
+    /// The `output` parameter is optional: pass `None` for tests or when
+    /// output transports are not yet initialised (the [`Orchestrator`]
+    /// creates the [`OutputManager`] asynchronously and injects it via
+    /// [`set_output`](Self::set_output)).
+    pub fn new(
+        shared_config: SharedConfig,
+        metrics: Arc<Metrics>,
+        output: Option<OutputManager>,
+    ) -> Result<Self> {
         let config = shared_config.get();
         let buffer_manager = Arc::new(BufferManager::new(&config.buffer));
-
-        // Initialise Kafka sink if brokers configured
-        let kafka_sink = if !config.kafka.brokers.is_empty() {
-            let primary = KafkaSink::new(&config.kafka)?;
-            Some(Arc::new(TieredSink::new(primary, &config.buffer)))
-        } else {
-            None
-        };
 
         // Initialise DLQ if enabled
         let dlq = if config.dlq.enabled {
@@ -81,7 +81,7 @@ impl PipelineState {
 
         Ok(Self {
             shared_config,
-            kafka_sink,
+            output: output.map(Arc::new),
             buffer_manager,
             dlq,
             metrics,
@@ -109,26 +109,37 @@ impl PipelineState {
             return false;
         }
 
-        if let Some(ref kafka) = self.kafka_sink {
-            if !kafka.is_healthy() {
-                return false;
-            }
+        if let Some(ref output) = self.output
+            && !output.any_healthy()
+        {
+            return false;
         }
 
         true
     }
 
-    /// Deliver a batch of fetch results to Kafka.
+    /// Deliver a batch of fetch results to output transports.
     pub async fn deliver(&self, results: Vec<FetchResult>) -> Result<()> {
         let config = self.shared_config.get();
         let topic_suffix = &config.kafka.topic_suffix;
 
         for result in results {
             let topic = format!("{}{}", result.topic, topic_suffix);
+            let filter_expr = self.get_filter_for_source(&result.source, &config);
 
             for record in result.records {
                 let enriched = self.enrich_record(record, &result.source);
-                self.send_to_kafka(&topic, enriched).await?;
+
+                // Apply CEL filter if configured — drop records that don't match
+                if let Some(ref expr) = filter_expr
+                    && !Self::evaluate_filter(expr, &enriched)
+                {
+                    self.metrics.inc_records_filtered();
+                    debug!(source = %result.source, "Record dropped by filter");
+                    continue;
+                }
+
+                self.send_to_transports(&topic, enriched).await?;
             }
         }
 
@@ -137,7 +148,7 @@ impl PipelineState {
 
     /// Deliver a single ingest message (from container/HTTP extractors).
     pub async fn deliver_ingest(&self, topic: &str, payload: Bytes) -> Result<()> {
-        self.send_to_kafka(topic, payload).await
+        self.send_to_transports(topic, payload).await
     }
 
     /// Enrich a record with fetcher metadata.
@@ -152,60 +163,115 @@ impl PipelineState {
             return payload;
         };
 
-        let mut buf = Vec::with_capacity(raw.len() + 80);
+        let mut buf = Vec::with_capacity(raw.len() + 120);
         buf.extend_from_slice(&raw[..insert_pos]);
 
         // Add comma if not empty object
         if let Some(pos) = raw[..insert_pos]
             .iter()
             .rposition(|b| !b.is_ascii_whitespace())
+            && raw[pos] != b'{'
         {
-            if raw[pos] != b'{' {
-                buf.push(b',');
-            }
+            buf.push(b',');
         }
         buf.extend_from_slice(
-            format!("\"_timestamp_fetcher\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
+            format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
         );
         buf.extend_from_slice(&raw[insert_pos..]);
         Bytes::from(buf)
     }
 
-    /// Send a message to Kafka. On failure, routes to DLQ if available.
-    async fn send_to_kafka(&self, topic: &str, payload: Bytes) -> Result<()> {
-        let Some(ref sink) = self.kafka_sink else {
-            return Err(Error::Config("Kafka sink not configured".into()));
+    /// Get the CEL filter expression for a source, if configured.
+    fn get_filter_for_source(&self, source: &str, config: &Config) -> Option<String> {
+        if source.starts_with("aws") {
+            config.sources.aws.filter.clone()
+        } else if source.starts_with("azure") {
+            config.sources.azure.filter.clone()
+        } else if source.starts_with("m365") {
+            config.sources.m365.filter.clone()
+        } else if source.starts_with("gcp") {
+            config.sources.gcp.filter.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Evaluate a CEL filter expression against a JSON record.
+    /// Returns true if record should be kept, false if it should be dropped.
+    /// Fail-open: non-JSON payloads, non-object JSON, and evaluation errors
+    /// all pass through (record is kept).
+    fn evaluate_filter(expression: &str, payload: &Bytes) -> bool {
+        let Ok(value): std::result::Result<serde_json::Value, _> = serde_json::from_slice(payload)
+        else {
+            // Non-JSON payload — can't filter, keep it
+            return true;
+        };
+
+        let serde_json::Value::Object(map) = value else {
+            // Not a JSON object — can't filter, keep it
+            return true;
+        };
+
+        let context: HashMap<String, serde_json::Value> = map.into_iter().collect();
+        hyperi_rustlib::expression::evaluate_condition(expression, &context)
+    }
+
+    /// Send a message to output transports. On failure, routes to DLQ if available.
+    async fn send_to_transports(&self, topic: &str, payload: Bytes) -> Result<()> {
+        let Some(ref output) = self.output else {
+            return Err(Error::Config("Output transport not configured".into()));
         };
 
         let payload_size = payload.len() as u64;
         self.buffer_manager.add_bytes(payload_size);
 
-        let result = sink.send(topic, payload.clone()).await;
+        let result = output.send_all(topic, payload.as_ref()).await;
 
         self.buffer_manager.remove_bytes(payload_size);
 
-        if let Err(ref kafka_err) = result {
-            if let Some(ref dlq) = self.dlq {
-                let entry = DlqEntry::new(
-                    "dfe-fetcher",
-                    format!("kafka send failed: {kafka_err}"),
-                    payload.to_vec(),
-                )
-                .with_destination(topic);
-
-                if let Err(dlq_err) = dlq.send(entry).await {
-                    error!(
-                        error = %dlq_err,
-                        topic,
-                        "Failed to send to DLQ after Kafka failure"
-                    );
-                    return result;
-                }
-
-                self.metrics.inc_messages_dlq();
-                warn!(topic, error = %kafka_err, "Message routed to DLQ after Kafka failure");
-                return Ok(());
+        if let Err(ref transport_err) = result {
+            // Track transport health metrics
+            let err_str = transport_err.to_string();
+            if err_str.contains("backpressured") {
+                self.metrics.inc_transport_backpressured();
+            } else {
+                self.metrics.inc_transport_send_errors();
             }
+        }
+
+        if let Err(ref transport_err) = result
+            && let Some(ref dlq) = self.dlq
+        {
+            let entry = DlqEntry::new(
+                "dfe-fetcher",
+                format!("transport send failed: {transport_err}"),
+                payload.to_vec(),
+            )
+            .with_destination(topic);
+
+            if let Err(dlq_err) = dlq.send(entry).await {
+                {
+                    use std::sync::atomic::AtomicU64;
+                    static DLQ_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
+                    if hyperi_rustlib::logger::log_debounced(&DLQ_DEBOUNCE, 5_000) {
+                        error!(
+                            error = %dlq_err,
+                            topic,
+                            "Failed to send to DLQ (debounced, max 1/5s)"
+                        );
+                    }
+                }
+                return result;
+            }
+
+            self.metrics.inc_messages_dlq();
+            security::record_dlq(
+                "transport_failure",
+                &format!("transport send failed: {transport_err}"),
+                Some(topic),
+            );
+            warn!(topic, error = %transport_err, "Message routed to DLQ after transport failure");
+            return Ok(());
         }
 
         result
@@ -214,6 +280,18 @@ impl PipelineState {
     /// Get buffer manager for external access.
     pub fn buffer_manager(&self) -> &Arc<BufferManager> {
         &self.buffer_manager
+    }
+
+    /// Check if any output transport is healthy.
+    ///
+    /// Returns `true` if no output is configured (nothing to fail) or if at
+    /// least one transport reports healthy. Used by the scaling pressure
+    /// circuit-breaker gate.
+    pub fn output_healthy(&self) -> bool {
+        match self.output {
+            Some(ref output) => output.any_healthy(),
+            None => true,
+        }
     }
 
     /// Update metrics snapshot.
@@ -242,10 +320,40 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Create a new orchestrator.
-    pub fn new(config: Config, metrics: Arc<Metrics>, shutdown: CancellationToken) -> Result<Self> {
+    /// Create a new orchestrator with output transports initialised.
+    ///
+    /// Async because output transport creation (Kafka, gRPC) requires
+    /// network connections. Pass a config with no brokers to skip
+    /// output transport initialisation (tests, config-check).
+    pub async fn new(
+        config: Config,
+        metrics: Arc<Metrics>,
+        shutdown: CancellationToken,
+    ) -> Result<Self> {
         let shared_config = SharedConfig::new(config);
-        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics))?;
+        let cfg = shared_config.get();
+
+        // Create output manager if any output transports are configured
+        let has_output_kafka = cfg
+            .output
+            .kafka
+            .as_ref()
+            .is_some_and(|k| !k.brokers.is_empty());
+        let has_legacy_kafka = !cfg.kafka.brokers.is_empty();
+        let has_grpc = cfg
+            .output
+            .grpc
+            .as_ref()
+            .is_some_and(|g| g.endpoint.is_some());
+
+        let output = if has_output_kafka || has_legacy_kafka || has_grpc {
+            Some(OutputManager::new(&cfg.output, &cfg.kafka).await?)
+        } else {
+            info!("No output transports configured, delivery disabled");
+            None
+        };
+
+        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output)?;
 
         Ok(Self {
             state: Arc::new(state),
@@ -269,11 +377,6 @@ impl Orchestrator {
     pub async fn run(&self) -> Result<()> {
         info!("Pipeline orchestrator running");
 
-        // Start drain tasks for tiered sinks
-        if let Some(ref kafka) = self.state.kafka_sink {
-            kafka.clone().start_drain_task(self.shutdown.clone());
-        }
-
         // Periodic metrics update (1s interval)
         let metrics_state = Arc::clone(&self.state);
         let metrics_ref = Arc::clone(&self.metrics);
@@ -284,6 +387,10 @@ impl Orchestrator {
                 tokio::select! {
                     _ = interval.tick() => {
                         metrics_state.update_metrics(&metrics_ref).await;
+                        // Track transport health gauge
+                        if let Some(ref output) = metrics_state.output {
+                            metrics_ref.set_transport_healthy(output.any_healthy());
+                        }
                     }
                     _ = metrics_shutdown.cancelled() => break,
                 }
@@ -295,11 +402,9 @@ impl Orchestrator {
 
         info!("Pipeline orchestrator shutting down");
 
-        // Flush all sinks
-        if let Some(ref kafka) = self.state.kafka_sink {
-            if let Err(e) = kafka.flush().await {
-                error!(error = %e, "Failed to flush Kafka sink");
-            }
+        // Close all output transports
+        if let Some(ref output) = self.state.output {
+            output.close_all().await;
         }
 
         info!("Pipeline orchestrator stopped");
@@ -316,13 +421,13 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics).unwrap_or_else(|_| {
-            // Kafka not configured, create minimal state
+        let state = PipelineState::new(shared, metrics, None).unwrap_or_else(|_| {
+            // No output configured, create minimal state
             let config = Config::default();
             let shared = SharedConfig::new(config);
             PipelineState {
                 shared_config: shared,
-                kafka_sink: None,
+                output: None,
                 buffer_manager: Arc::new(BufferManager::new(
                     &crate::config::BufferConfig::default(),
                 )),
@@ -337,15 +442,87 @@ mod tests {
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         assert!(enriched_str.contains("\"_timestamp_fetcher\":"));
+        assert!(enriched_str.contains("\"_timestamp_received\":"));
         assert!(enriched_str.contains("\"_source_fetcher\":\"aws.cloudtrail\""));
 
         // Verify it's still valid JSON
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert!(parsed.get("_timestamp_fetcher").is_some());
+        assert!(parsed.get("_timestamp_received").is_some());
         assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "aws.cloudtrail"
         );
         assert_eq!(parsed.get("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_filter_passes_matching_record() {
+        let payload = Bytes::from(r#"{"eventName": "CreateUser", "severity": "high"}"#);
+        let result = PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
+        assert!(result, "Record should pass — eventName is not ConsoleLogin");
+    }
+
+    #[test]
+    fn test_filter_drops_non_matching_record() {
+        let payload = Bytes::from(r#"{"eventName": "ConsoleLogin", "severity": "low"}"#);
+        let result = PipelineState::evaluate_filter(r#"eventName != "ConsoleLogin""#, &payload);
+        assert!(
+            !result,
+            "Record should be dropped — eventName is ConsoleLogin"
+        );
+    }
+
+    #[test]
+    fn test_no_filter_passes_all() {
+        // No filter configured means Option is None — deliver() skips filtering.
+        // Verify evaluate_filter itself returns true for a trivially true expression.
+        let payload = Bytes::from(r#"{"key": "value"}"#);
+        let result = PipelineState::evaluate_filter("true", &payload);
+        assert!(result, "Trivially true filter should pass all records");
+    }
+
+    #[test]
+    fn test_filter_non_json_passes() {
+        let payload = Bytes::from("not json at all");
+        let result = PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
+        assert!(result, "Non-JSON payload should pass through (fail-open)");
+    }
+
+    #[test]
+    fn test_filter_non_object_json_passes() {
+        let payload = Bytes::from("[1, 2, 3]");
+        let result = PipelineState::evaluate_filter(r#"eventName == "test""#, &payload);
+        assert!(
+            result,
+            "JSON array (not object) should pass through (fail-open)"
+        );
+    }
+
+    #[test]
+    fn test_filter_missing_field_drops() {
+        // evaluate_condition returns false when referenced field is missing
+        let payload = Bytes::from(r#"{"other": "value"}"#);
+        let result = PipelineState::evaluate_filter(r#"eventName == "CreateUser""#, &payload);
+        assert!(
+            !result,
+            "Missing field should cause condition to evaluate to false"
+        );
+    }
+
+    #[test]
+    fn test_get_filter_for_source_aws() {
+        let mut config = Config::default();
+        config.sources.aws.filter = Some(r#"severity == "high""#.to_string());
+        let shared = SharedConfig::new(config.clone());
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::new(shared, metrics, None).unwrap();
+
+        assert_eq!(
+            state.get_filter_for_source("aws.cloudtrail", &config),
+            Some(r#"severity == "high""#.to_string())
+        );
+        assert_eq!(state.get_filter_for_source("azure.defender", &config), None);
+        assert_eq!(state.get_filter_for_source("unknown.source", &config), None);
     }
 }

@@ -6,11 +6,13 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::HashMap;
 
 use dfe_fetcher::config::{GcpService, GcpSourceConfig};
-use dfe_fetcher::source::gcp::GcpSource;
 use dfe_fetcher::source::Source;
+use dfe_fetcher::source::gcp::GcpSource;
 use wiremock::matchers::{method, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -29,7 +31,7 @@ async fn test_gcp_disabled_returns_empty() {
     assert!(!source.is_enabled());
     assert_eq!(source.name(), "gcp");
 
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
     assert!(results.is_empty());
 }
 
@@ -98,7 +100,7 @@ async fn test_gcp_fetch_audit_logs_success() {
         }],
     );
     let source = GcpSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "gcp.audit_logs");
@@ -138,7 +140,7 @@ async fn test_gcp_fetch_audit_logs_pagination() {
         }],
     );
     let source = GcpSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].records.len(), 3);
@@ -164,7 +166,7 @@ async fn test_gcp_fetch_audit_logs_empty() {
         }],
     );
     let source = GcpSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert!(results.is_empty());
 }
@@ -198,7 +200,7 @@ async fn test_gcp_fetch_scc_success() {
         }],
     );
     let source = GcpSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "gcp.scc");
@@ -228,7 +230,7 @@ async fn test_gcp_fetch_cloud_logging_success() {
         }],
     );
     let source = GcpSource::new(config);
-    let results = source.fetch().await.unwrap();
+    let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].source, "gcp.cloud_logging");
@@ -253,7 +255,7 @@ async fn test_gcp_fetch_error_500() {
         }],
     );
     let source = GcpSource::new(config);
-    let err = source.fetch().await.unwrap_err();
+    let err = source.fetch(None).await.unwrap_err();
 
     let msg = err.to_string();
     assert!(

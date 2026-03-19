@@ -11,8 +11,8 @@
 //! Manages isolated containers running third-party extraction tools.
 //! Supports image pulling, stderr capture, timeouts, and health monitoring.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -112,11 +112,11 @@ impl ContainerExtractor {
                     .stderr(std::process::Stdio::null())
                     .status()
                     .await;
-                if let Ok(s) = status {
-                    if s.success() {
-                        debug!(image = %self.config.image, "Image exists locally, skipping pull");
-                        return Ok(());
-                    }
+                if let Ok(s) = status
+                    && s.success()
+                {
+                    debug!(image = %self.config.image, "Image exists locally, skipping pull");
+                    return Ok(());
                 }
             }
             _ => {} // "always" or unknown -> pull
@@ -141,15 +141,25 @@ impl ContainerExtractor {
         Ok(())
     }
 
-    /// Spawn a task that logs container stderr.
+    /// Spawn a task that logs container stderr (sampled 1/100 to avoid log spam).
     fn spawn_stderr_logger(child: &mut tokio::process::Child, name: String) {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(async move {
+                use std::sync::atomic::AtomicU64;
+                static STDERR_SAMPLES: AtomicU64 = AtomicU64::new(0);
+
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
-                        warn!(container = %name, stderr = %line, "Container stderr");
+                    if !line.trim().is_empty()
+                        && hyperi_rustlib::logger::log_sampled(&STDERR_SAMPLES, 100)
+                    {
+                        warn!(
+                            container = %name,
+                            stderr = %line,
+                            total = STDERR_SAMPLES.load(std::sync::atomic::Ordering::Relaxed),
+                            "Container stderr (sampled 1/100)"
+                        );
                     }
                 }
             });
@@ -177,34 +187,34 @@ impl ContainerExtractor {
 
         Self::spawn_stderr_logger(&mut child, self.config.name.clone());
 
-        if self.config.communication == "stdout" {
-            if let Some(stdout) = child.stdout.take() {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-                let mut record_count: u64 = 0;
+        if self.config.communication == "stdout"
+            && let Some(stdout) = child.stdout.take()
+        {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            let mut record_count: u64 = 0;
 
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let line = line.trim().to_string();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let payload = Bytes::from(line);
-                    let topic = format!(
-                        "{}{}",
-                        self.config.topic,
-                        self.pipeline.config().kafka.topic_suffix
-                    );
-                    if let Err(e) = self.pipeline.deliver_ingest(&topic, payload).await {
-                        error!(name = %self.config.name, error = %e, "Failed to deliver container output");
-                    } else {
-                        record_count += 1;
-                    }
+            while let Ok(Some(line)) = lines.next_line().await {
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    continue;
                 }
+                let payload = Bytes::from(line);
+                let topic = format!(
+                    "{}{}",
+                    self.config.topic,
+                    self.pipeline.config().kafka.topic_suffix
+                );
+                if let Err(e) = self.pipeline.deliver_ingest(&topic, payload).await {
+                    error!(name = %self.config.name, error = %e, "Failed to deliver container output");
+                } else {
+                    record_count += 1;
+                }
+            }
 
-                if record_count > 0 {
-                    self.metrics.add_extractor_records(record_count);
-                    info!(name = %self.config.name, records = record_count, "Scheduled extraction complete");
-                }
+            if record_count > 0 {
+                self.metrics.add_extractor_records(record_count);
+                info!(name = %self.config.name, records = record_count, "Scheduled extraction complete");
             }
         }
 
@@ -355,16 +365,64 @@ impl ContainerExtractor {
                     }
                 }
             } else {
-                self.running.store(true, Ordering::Relaxed);
-                self.metrics.inc_extractor_runs_total();
-                match self.run_continuous().await {
-                    Ok(()) => self.metrics.inc_extractor_runs_success(),
-                    Err(e) => {
-                        self.metrics.inc_extractor_runs_error();
-                        error!(name = %name, error = %e, "Continuous extractor failed");
+                let mut attempt = 0u32;
+                loop {
+                    let start = std::time::Instant::now();
+                    self.running.store(true, Ordering::Relaxed);
+                    self.metrics.inc_extractor_runs_total();
+
+                    match self.run_continuous().await {
+                        Ok(()) => {
+                            self.metrics.inc_extractor_runs_success();
+                            info!(name = %name, "Continuous extractor exited normally");
+                        }
+                        Err(e) => {
+                            self.metrics.inc_extractor_runs_error();
+                            error!(name = %name, error = %e, attempt, "Continuous extractor failed");
+                        }
+                    }
+                    self.running.store(false, Ordering::Relaxed);
+
+                    // Reset backoff if container ran long enough to be considered stable
+                    if start.elapsed().as_secs() >= self.config.stable_after_secs {
+                        attempt = 0;
+                    }
+
+                    attempt += 1;
+
+                    // Check restart limit (0 = unlimited)
+                    if self.config.max_restart_attempts > 0
+                        && attempt > self.config.max_restart_attempts
+                    {
+                        error!(
+                            name = %name,
+                            attempts = attempt,
+                            "Restart attempts exhausted, stopping container extractor"
+                        );
+                        self.metrics.inc_extractor_restart_exhausted();
+                        break;
+                    }
+
+                    // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at max_restart_backoff_secs
+                    let backoff_secs =
+                        (1u64 << attempt.min(6)).min(self.config.max_restart_backoff_secs);
+                    let backoff = std::time::Duration::from_secs(backoff_secs);
+
+                    info!(
+                        name = %name,
+                        backoff_secs = backoff.as_secs(),
+                        attempt,
+                        "Restarting container after backoff"
+                    );
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = self.shutdown.cancelled() => {
+                            info!(name = %name, "Shutdown during restart backoff");
+                            break;
+                        }
                     }
                 }
-                self.running.store(false, Ordering::Relaxed);
             }
         });
     }

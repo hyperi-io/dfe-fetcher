@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use crate::config::GcpSourceConfig;
 use crate::credential;
 use crate::error::{Error, Result};
-use crate::source::{FetchResult, Source};
+use crate::source::{FetchResult, FetchWindow, Source};
 
 /// GCP data source implementation.
 pub struct GcpSource {
@@ -288,7 +288,7 @@ impl Source for GcpSource {
         self.config.enabled
     }
 
-    async fn fetch(&self) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
@@ -324,6 +324,18 @@ impl Source for GcpSource {
                 Ok(false)
             }
         }
+    }
+
+    fn cursor_prefix(&self) -> String {
+        "gcp".to_string()
+    }
+
+    fn service_names(&self) -> Vec<&str> {
+        self.config
+            .services
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect()
     }
 }
 

@@ -32,7 +32,7 @@ pub enum Error {
 
     /// Kafka producer error.
     #[error("Kafka error: {0}")]
-    Kafka(#[from] rdkafka::error::KafkaError),
+    Kafka(String),
 
     /// HTTP client error.
     #[error("HTTP error: {0}")]
@@ -49,6 +49,18 @@ pub enum Error {
     /// Pipeline processing error.
     #[error("pipeline error: {0}")]
     Pipeline(String),
+
+    /// Transport error (Kafka, gRPC, memory).
+    #[error("transport error: {0}")]
+    Transport(String),
+
+    /// Cursor store error.
+    #[error("cursor error: {0}")]
+    Cursor(String),
+
+    /// Filter/expression evaluation error.
+    #[error("filter error: {0}")]
+    Filter(String),
 
     /// Shutdown requested.
     #[error("shutdown requested")]
@@ -101,6 +113,9 @@ impl IntoResponse for Error {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "kafka unavailable".to_string(),
             ),
+            Error::Transport(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            Error::Cursor(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Error::Filter(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Error::Shutdown => (StatusCode::SERVICE_UNAVAILABLE, "shutting down".to_string()),
             _ => (
                 StatusCode::INTERNAL_SERVER_ERROR,

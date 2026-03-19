@@ -6,6 +6,8 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
+#![allow(clippy::unwrap_used, clippy::expect_used, unsafe_code)]
+
 use bytes::Bytes;
 use dfe_fetcher::config::Config;
 use dfe_fetcher::metrics::Metrics;
@@ -132,11 +134,11 @@ fn test_metrics_render_prometheus_format() {
 
     let output = metrics.render();
 
-    assert!(output.contains("fetcher_fetches_total 1"));
-    assert!(output.contains("fetcher_fetches_success 1"));
-    assert!(output.contains("fetcher_records_fetched_total 42"));
-    assert!(output.contains("fetcher_bytes_fetched_total 1024"));
-    assert!(output.contains("fetcher_fetches_error 0"));
+    assert!(output.contains("dfe_fetches_total 1"));
+    assert!(output.contains("dfe_fetches_success 1"));
+    assert!(output.contains("dfe_records_received_total 42"));
+    assert!(output.contains("dfe_bytes_received_total 1024"));
+    assert!(output.contains("dfe_fetches_error 0"));
 }
 
 #[test]
@@ -149,10 +151,10 @@ fn test_metrics_extractor_counters() {
     metrics.add_extractor_records(100);
 
     let output = metrics.render();
-    assert!(output.contains("fetcher_extractor_runs_total 2"));
-    assert!(output.contains("fetcher_extractor_runs_success 1"));
-    assert!(output.contains("fetcher_extractor_runs_error 1"));
-    assert!(output.contains("fetcher_extractor_records_total 100"));
+    assert!(output.contains("dfe_extractor_runs_total 2"));
+    assert!(output.contains("dfe_extractor_runs_success 1"));
+    assert!(output.contains("dfe_extractor_runs_error 1"));
+    assert!(output.contains("dfe_extractor_records_total 100"));
 }
 
 // =============================================================================
@@ -167,10 +169,12 @@ async fn test_credential_resolve_literal() {
 
 #[tokio::test]
 async fn test_credential_resolve_env() {
-    std::env::set_var("DFE_TEST_INTEGRATION_CRED", "secret-from-env");
+    // SAFETY: test-only, single-threaded test runner
+    unsafe { std::env::set_var("DFE_TEST_INTEGRATION_CRED", "secret-from-env") };
     let result = dfe_fetcher::credential::resolve("env:DFE_TEST_INTEGRATION_CRED").await;
     assert_eq!(result.unwrap(), "secret-from-env");
-    std::env::remove_var("DFE_TEST_INTEGRATION_CRED");
+    // SAFETY: test-only, single-threaded test runner
+    unsafe { std::env::remove_var("DFE_TEST_INTEGRATION_CRED") };
 }
 
 #[tokio::test]
@@ -191,14 +195,18 @@ async fn test_credential_resolve_vault_invalid_format() {
 
 #[tokio::test]
 async fn test_credential_resolve_optional() {
-    assert!(dfe_fetcher::credential::resolve_optional(None)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(dfe_fetcher::credential::resolve_optional(Some(""))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        dfe_fetcher::credential::resolve_optional(None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        dfe_fetcher::credential::resolve_optional(Some(""))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         dfe_fetcher::credential::resolve_optional(Some("literal-value"))
             .await
@@ -267,7 +275,8 @@ fn test_buffer_manager_saturating_remove() {
 fn make_pipeline_state(
     shared: dfe_fetcher::config::SharedConfig,
 ) -> dfe_fetcher::pipeline::PipelineState {
-    // PipelineState::new creates state without kafka sink when no brokers are configured
+    // PipelineState::new with None output for tests (no Kafka/gRPC needed)
     let metrics = std::sync::Arc::new(Metrics::new());
-    dfe_fetcher::pipeline::PipelineState::new(shared, metrics).expect("pipeline state creation")
+    dfe_fetcher::pipeline::PipelineState::new(shared, metrics, None)
+        .expect("pipeline state creation")
 }
