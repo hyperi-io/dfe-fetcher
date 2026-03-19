@@ -1,3 +1,12 @@
+# [1.1.0-dev.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.2...v1.1.0-dev.3) (2026-03-19)
+
+
+### Bug Fixes
+
+* add ScalingPressure for KEDA-optimised autoscaling ([604b4c3](https://github.com/hyperi-io/dfe-fetcher/commit/604b4c3de203b72fc950697b78b84f423d0b7c4c))
+* make scheduler interval hot-reloadable, document reload behaviour ([a0be5ca](https://github.com/hyperi-io/dfe-fetcher/commit/a0be5ca5094fbd0ffe5133093c6d18cffabd4c11))
+* migrate ingest and metrics servers to rustlib HttpServer ([4480094](https://github.com/hyperi-io/dfe-fetcher/commit/44800946027e6f97129d0217f91aaa7776f28b1c))
+
 # [1.1.0-dev.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.1...v1.1.0-dev.2) (2026-03-18)
 
 
