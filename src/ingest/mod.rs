@@ -35,6 +35,7 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
 use tokio_util::sync::CancellationToken;
+use hyperi_rustlib::logger::security;
 use tracing::{debug, error, info, warn};
 
 use crate::config::IngestConfig;
@@ -89,16 +90,20 @@ async fn auth_middleware(
         .and_then(|v| v.to_str().ok());
 
     let Some(header_value) = auth_header else {
+        security::auth_failure("ingest_bearer", "missing_header", None);
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
     let Some(token) = header_value.strip_prefix("Bearer ") else {
+        security::auth_failure("ingest_bearer", "invalid_scheme", None);
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
     if constant_time_eq(token.as_bytes(), expected_token.as_bytes()) {
+        security::auth_success("ingest_bearer", "container_extractor", None);
         next.run(request).await
     } else {
+        security::auth_failure("ingest_bearer", "invalid_token", None);
         StatusCode::UNAUTHORIZED.into_response()
     }
 }
