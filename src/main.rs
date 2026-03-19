@@ -216,8 +216,8 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     // Warn if deprecated plugin config is present
     config.extractors.plugins.warn_if_configured();
 
-    // Initialise metrics
-    let metrics = Arc::new(Metrics::new());
+    // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
+    let metrics = Arc::new(Metrics::with_dfe());
 
     // Create cancellation token for coordinated shutdown
     let shutdown_token = CancellationToken::new();
