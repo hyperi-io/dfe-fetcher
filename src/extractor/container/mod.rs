@@ -141,15 +141,25 @@ impl ContainerExtractor {
         Ok(())
     }
 
-    /// Spawn a task that logs container stderr.
+    /// Spawn a task that logs container stderr (sampled 1/100 to avoid log spam).
     fn spawn_stderr_logger(child: &mut tokio::process::Child, name: String) {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(async move {
+                use std::sync::atomic::AtomicU64;
+                static STDERR_SAMPLES: AtomicU64 = AtomicU64::new(0);
+
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
-                        warn!(container = %name, stderr = %line, "Container stderr");
+                    if !line.trim().is_empty()
+                        && hyperi_rustlib::logger::log_sampled(&STDERR_SAMPLES, 100)
+                    {
+                        warn!(
+                            container = %name,
+                            stderr = %line,
+                            total = STDERR_SAMPLES.load(std::sync::atomic::Ordering::Relaxed),
+                            "Container stderr (sampled 1/100)"
+                        );
                     }
                 }
             });

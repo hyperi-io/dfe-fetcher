@@ -135,11 +135,18 @@ impl OutputManager {
 
         for transport in &self.transports {
             if let Err(e) = transport.send(key, payload).await {
-                error!(
-                    transport = transport.name(),
-                    error = %e,
-                    "Output transport send failed"
-                );
+                {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static SEND_ERROR_SAMPLES: AtomicU64 = AtomicU64::new(0);
+                    if hyperi_rustlib::logger::log_sampled(&SEND_ERROR_SAMPLES, 1000) {
+                        error!(
+                            transport = transport.name(),
+                            error = %e,
+                            total = SEND_ERROR_SAMPLES.load(Ordering::Relaxed),
+                            "Output transport send failed (sampled 1/1000)"
+                        );
+                    }
+                }
                 if first_error.is_none() {
                     first_error = Some(e);
                 }
