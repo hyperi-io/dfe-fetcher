@@ -14,11 +14,17 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use hyperi_rustlib::metrics::DfeMetrics;
 use parking_lot::RwLock;
 
 /// Metrics collector for dfe-fetcher.
-#[derive(Debug)]
+///
+/// Maintains local atomic counters for the hand-rolled `/metrics` endpoint
+/// and optionally dual-emits to rustlib [`DfeMetrics`] (standard DFE metric
+/// names registered with the `metrics` crate global recorder).
 pub struct Metrics {
+    /// Optional rustlib DfeMetrics for dual-emit to global `metrics` recorder.
+    dfe: Option<DfeMetrics>,
     // Fetch counters
     fetches_total: AtomicU64,
     fetches_success: AtomicU64,
@@ -109,9 +115,12 @@ impl RateWindow {
 }
 
 impl Metrics {
-    /// Create a new metrics collector.
+    /// Create a new metrics collector (without DfeMetrics dual-emit).
+    ///
+    /// Used in tests and contexts where no global `metrics` recorder is installed.
     pub fn new() -> Self {
         Self {
+            dfe: None,
             fetches_total: AtomicU64::new(0),
             fetches_success: AtomicU64::new(0),
             fetches_error: AtomicU64::new(0),
@@ -137,6 +146,18 @@ impl Metrics {
             memory_used_bytes: AtomicU64::new(0),
             memory_limit_bytes: AtomicU64::new(0),
             rate_window: RwLock::new(RateWindow::new(Duration::from_secs(60))),
+        }
+    }
+
+    /// Create a new metrics collector with DfeMetrics dual-emit enabled.
+    ///
+    /// Registers standard DFE metric descriptions with the global `metrics`
+    /// recorder. Use in production where `MetricsManager` is (or will be)
+    /// installed.
+    pub fn with_dfe() -> Self {
+        Self {
+            dfe: Some(DfeMetrics::register()),
+            ..Self::new()
         }
     }
 
@@ -167,6 +188,9 @@ impl Metrics {
     #[inline]
     pub fn add_records_fetched(&self, count: u64) {
         self.records_fetched.fetch_add(count, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.records_received(count);
+        }
     }
 
     /// Add bytes fetched.
@@ -189,6 +213,9 @@ impl Metrics {
     #[inline]
     pub fn inc_messages_dlq(&self) {
         self.messages_dlq.fetch_add(1, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.records_dlq(1);
+        }
     }
 
     // ==========================================================================
@@ -235,6 +262,9 @@ impl Metrics {
     pub fn inc_transport_backpressured(&self) {
         self.transport_backpressured_total
             .fetch_add(1, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.transport_backpressured("output", 1);
+        }
     }
 
     /// Increment transport send errors.
@@ -242,6 +272,9 @@ impl Metrics {
     pub fn inc_transport_send_errors(&self) {
         self.transport_send_errors_total
             .fetch_add(1, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.transport_send_errors("output", 1);
+        }
     }
 
     /// Set transport health gauge (1=healthy, 0=unhealthy).
@@ -249,6 +282,9 @@ impl Metrics {
     pub fn set_transport_healthy(&self, healthy: bool) {
         self.transport_healthy
             .store(u64::from(healthy), Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.transport_healthy("output", healthy);
+        }
     }
 
     // ==========================================================================
@@ -290,12 +326,18 @@ impl Metrics {
     pub fn set_pipeline_ready(&self, ready: bool) {
         self.pipeline_ready
             .store(u64::from(ready), Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.pipeline_ready(ready);
+        }
     }
 
     /// Increment records delivered counter.
     #[inline]
     pub fn inc_records_delivered(&self) {
         self.records_delivered_total.fetch_add(1, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.records_delivered(1);
+        }
     }
 
     // ==========================================================================
