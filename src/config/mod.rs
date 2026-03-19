@@ -1314,14 +1314,18 @@ mod tests {
 
     // -- env override tests --
 
+    // Serialise all tests that mutate process-wide env vars
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn with_env<F: FnOnce()>(vars: &[(&str, &str)], f: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for (k, v) in vars {
-            // SAFETY: test-only, single-threaded test runner
+            // SAFETY: test-only, serialised by ENV_LOCK
             unsafe { std::env::set_var(k, v) };
         }
         f();
         for (k, _) in vars {
-            // SAFETY: test-only, single-threaded test runner
+            // SAFETY: test-only, serialised by ENV_LOCK
             unsafe { std::env::remove_var(k) };
         }
     }
@@ -1410,6 +1414,7 @@ mod tests {
 
     #[test]
     fn test_env_override_no_vars_set() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut config = Config::default();
         let original = config.clone();
         config.apply_flat_env("DFE_FETCHER");
