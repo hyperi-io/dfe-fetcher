@@ -76,7 +76,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # HTTP server (for metrics/health endpoints)
-axum = "0.7"
+axum = "0.8"
 bytes = "1"
 
 # Utilities
