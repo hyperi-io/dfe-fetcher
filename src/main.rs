@@ -34,6 +34,7 @@ use hyperi_rustlib::scaling::{ScalingComponent, ScalingPressure};
 use hyperi_rustlib::top::{TopConfig, run_top};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
+use hyperi_rustlib::logger::security;
 use tracing::{error, info, warn};
 
 use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
@@ -515,7 +516,11 @@ fn reload_config_from_path(
         config_path: config_path.map(String::from),
         ..Config::default()
     };
-    reload_config(&placeholder).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    let config = reload_config(&placeholder)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+    security::config_changed("config_reload", "system", "configuration reloaded");
+    Ok(config)
 }
 
 /// Run the Prometheus metrics HTTP server.

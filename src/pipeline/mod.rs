@@ -31,6 +31,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use hyperi_rustlib::dlq::{Dlq, DlqEntry};
 use tokio_util::sync::CancellationToken;
+use hyperi_rustlib::logger::security;
 use tracing::{debug, error, info, warn};
 
 use crate::buffer::BufferManager;
@@ -258,6 +259,11 @@ impl PipelineState {
             }
 
             self.metrics.inc_messages_dlq();
+            security::record_dlq(
+                "transport_failure",
+                &format!("transport send failed: {transport_err}"),
+                Some(topic),
+            );
             warn!(topic, error = %transport_err, "Message routed to DLQ after transport failure");
             return Ok(());
         }
