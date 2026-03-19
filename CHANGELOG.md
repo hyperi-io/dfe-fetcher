@@ -1,3 +1,15 @@
+# [1.1.0-dev.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.3...v1.1.0-dev.4) (2026-03-19)
+
+
+### Bug Fixes
+
+* add DfeMetrics dual-emit alongside existing metrics ([5bed1b8](https://github.com/hyperi-io/dfe-fetcher/commit/5bed1b8309a84dd24df56893ce46e55fc0a85b28))
+* apply log spam controls at 4 hot spots ([e6e961b](https://github.com/hyperi-io/dfe-fetcher/commit/e6e961b3e93aae1c5ada3e54cf6bd9d814bc608c))
+* bump rustlib to >=1.16.3 for observability features ([7161073](https://github.com/hyperi-io/dfe-fetcher/commit/7161073cddc0af4b1edb8339c44bda7ff481acb5))
+* correct import ordering after log spam and security changes ([6aa642e](https://github.com/hyperi-io/dfe-fetcher/commit/6aa642eac67ca20878ede98cf4e261f785a48330))
+* migrate env overrides to rustlib ApplyFlatEnv trait ([765d12d](https://github.com/hyperi-io/dfe-fetcher/commit/765d12dbf0bdbc35e32f614ebd30b0ef9c75c7c8))
+* wire security event logging for auth, config, and DLQ ([c89b430](https://github.com/hyperi-io/dfe-fetcher/commit/c89b430a028ba6da438bfcbf880dd6b63cb09fdd))
+
 # [1.1.0-dev.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.2...v1.1.0-dev.3) (2026-03-19)
 
 
