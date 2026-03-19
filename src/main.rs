@@ -30,11 +30,11 @@ use clap::{Parser, Subcommand};
 use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, TopArgs, VersionInfo};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
+use hyperi_rustlib::logger::security;
 use hyperi_rustlib::scaling::{ScalingComponent, ScalingPressure};
 use hyperi_rustlib::top::{TopConfig, run_top};
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
-use hyperi_rustlib::logger::security;
 use tracing::{error, info, warn};
 
 use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
