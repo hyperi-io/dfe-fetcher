@@ -21,7 +21,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
@@ -219,7 +219,7 @@ impl Source for AwsSource {
         self.config.enabled
     }
 
-    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
@@ -230,15 +230,21 @@ impl Source for AwsSource {
             "Fetching AWS data"
         );
 
+        let now = Utc::now();
+        let (start, end) = match window {
+            Some(w) => (w.start, w.end),
+            None => (now - chrono::Duration::hours(1), now),
+        };
+
         let mut results = Vec::new();
         for service in &self.config.services {
             let fetch_result = match service.name.as_str() {
-                "cloudtrail" => self.fetch_cloudtrail(service).await?,
+                "cloudtrail" => self.fetch_cloudtrail(service, start, end).await?,
                 "guardduty" => self.fetch_guardduty(service).await?,
                 "securityhub" => self.fetch_securityhub(service).await?,
                 "config" => self.fetch_config(service).await?,
-                "cloudwatch_logs" => self.fetch_cloudwatch_logs(service).await?,
-                "cloudwatch_metrics" => self.fetch_cloudwatch_metrics(service).await?,
+                "cloudwatch_logs" => self.fetch_cloudwatch_logs(service, start, end).await?,
+                "cloudwatch_metrics" => self.fetch_cloudwatch_metrics(service, start, end).await?,
                 other => {
                     warn!(service = other, "Unknown AWS service, skipping");
                     continue;
@@ -282,13 +288,12 @@ impl AwsSource {
     async fn fetch_cloudtrail(
         &self,
         _service: &crate::config::AwsService,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
-        let now = Utc::now();
-        let start = now - chrono::Duration::hours(1);
-
         let payload = serde_json::json!({
             "StartTime": start.timestamp(),
-            "EndTime": now.timestamp(),
+            "EndTime": end.timestamp(),
             "MaxResults": 50
         });
 
@@ -489,6 +494,8 @@ impl AwsSource {
     async fn fetch_cloudwatch_logs(
         &self,
         service: &crate::config::AwsService,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
         let log_group = service
             .config
@@ -504,9 +511,6 @@ impl AwsSource {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let now = Utc::now();
-        let start = now - chrono::Duration::hours(1);
-
         let mut all_records = Vec::new();
         let mut next_token: Option<String> = None;
 
@@ -514,7 +518,7 @@ impl AwsSource {
             let mut payload = serde_json::json!({
                 "logGroupName": log_group,
                 "startTime": start.timestamp_millis(),
-                "endTime": now.timestamp_millis(),
+                "endTime": end.timestamp_millis(),
                 "limit": 10000
             });
 
@@ -563,6 +567,8 @@ impl AwsSource {
     async fn fetch_cloudwatch_metrics(
         &self,
         service: &crate::config::AwsService,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
         // Namespaces to query (required — prevents firehose)
         let namespaces: Vec<String> = service
@@ -600,7 +606,7 @@ impl AwsSource {
             .and_then(|v| v.as_i64())
             .unwrap_or(300);
 
-        let stat = service
+        let statistic = service
             .config
             .get("stat")
             .and_then(|v| v.as_str())
@@ -612,9 +618,6 @@ impl AwsSource {
             .get("output_format")
             .and_then(|v| v.as_str())
             .unwrap_or("json");
-
-        let now = Utc::now();
-        let start_time = now - chrono::Duration::hours(1);
 
         // Discover metrics per namespace via ListMetrics
         // Tuple: (namespace, metric_name, dimensions, unit)
@@ -667,7 +670,7 @@ impl AwsSource {
                                     "Dimensions": dimensions
                                 },
                                 "Period": period_secs,
-                                "Stat": stat
+                                "Stat": statistic
                             }
                         }));
                         query_meta.push((namespace.clone(), metric_name, dimensions, unit));
@@ -692,8 +695,8 @@ impl AwsSource {
         // GetMetricData in batches of 500 (API limit)
         for (batch_idx, chunk) in queries.chunks(500).enumerate() {
             let mut payload = serde_json::json!({
-                "StartTime": start_time.timestamp(),
-                "EndTime": now.timestamp(),
+                "StartTime": start.timestamp(),
+                "EndTime": end.timestamp(),
                 "MetricDataQueries": chunk
             });
 
@@ -759,9 +762,9 @@ impl AwsSource {
 
         // Build output records based on format
         let all_records = if output_format == "otlp" {
-            self.build_otlp_metrics(&data_points, stat)
+            self.build_otlp_metrics(&data_points, statistic)
         } else {
-            self.build_json_metrics(&data_points, stat)
+            self.build_json_metrics(&data_points, statistic)
         };
 
         info!(
