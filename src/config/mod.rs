@@ -1027,7 +1027,14 @@ impl Default for IngestConfig {
 // Kafka configuration (output)
 // =============================================================================
 
-/// Kafka producer configuration.
+/// Legacy Kafka producer configuration.
+///
+/// **Deprecated:** Use `output.kafka` (rustlib `KafkaConfig`) instead.
+/// This struct is kept for backward compatibility with existing config files
+/// that use the top-level `kafka:` section. Will be removed in next major version.
+///
+/// Migration: move your `kafka:` settings under `output.kafka:` using rustlib
+/// `KafkaConfig` format (profiles, `librdkafka_overrides`, standard field names).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KafkaConfig {

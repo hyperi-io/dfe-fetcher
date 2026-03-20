@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "dfe-fetcher"
-version = "1.1.0-dev.4"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -976,6 +976,7 @@ dependencies = [
  "hex",
  "hyperi-rustlib",
  "jsonwebtoken",
+ "metrics",
  "mimalloc",
  "opentelemetry-proto",
  "parking_lot",
@@ -1655,9 +1656,9 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "1.16.5"
+version = "1.16.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42d349fbc90741297b2237d0d0c00286c3114cbcc7ab286079ac8326a04889cd"
+checksum = "731ef33c2236347b82591e952de873e60e9c50341b641ee0719cf7c19e7a46d2"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
