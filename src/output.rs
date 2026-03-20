@@ -10,6 +10,8 @@
 //!
 //! Replaces the custom Sink trait with rustlib's unified Transport.
 //! Supports Kafka, gRPC, or both simultaneously via [`OutputManager`].
+//!
+//! All Kafka access via rustlib's `KafkaTransport` — no direct rdkafka dependency.
 
 use hyperi_rustlib::transport::{
     GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, Transport,

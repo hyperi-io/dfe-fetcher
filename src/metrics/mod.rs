@@ -10,6 +10,17 @@
 //!
 //! Exposes counters and gauges for monitoring fetch operations,
 //! source health, and delivery to Kafka.
+//!
+//! ## Dual-emit architecture
+//!
+//! Each metric exists as both a local [`AtomicU64`] field (for fast hot-path
+//! reads like `pipeline.is_ready()`) **and** as a `metrics` crate emission
+//! (so [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager) can render
+//! the full Prometheus text format).
+//!
+//! When [`Metrics::with_dfe()`] is used, fetcher-specific metrics are
+//! described and emitted through the `metrics` crate global recorder,
+//! alongside the standard DFE metrics from rustlib [`DfeMetrics`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -19,9 +30,10 @@ use hyperi_rustlib::scaling::RateWindow;
 
 /// Metrics collector for dfe-fetcher.
 ///
-/// Maintains local atomic counters for the hand-rolled `/metrics` endpoint
-/// and optionally dual-emits to rustlib [`DfeMetrics`] (standard DFE metric
-/// names registered with the `metrics` crate global recorder).
+/// Maintains local atomic counters for fast hot-path access and optionally
+/// dual-emits to the `metrics` crate global recorder (via rustlib
+/// [`DfeMetrics`] for standard DFE metrics, and direct `metrics::counter!` /
+/// `metrics::gauge!` calls for fetcher-specific metrics).
 pub struct Metrics {
     /// Optional rustlib DfeMetrics for dual-emit to global `metrics` recorder.
     dfe: Option<DfeMetrics>,
@@ -104,10 +116,40 @@ impl Metrics {
 
     /// Create a new metrics collector with DfeMetrics dual-emit enabled.
     ///
-    /// Registers standard DFE metric descriptions with the global `metrics`
-    /// recorder. Use in production where `MetricsManager` is (or will be)
-    /// installed.
+    /// Registers standard DFE metric descriptions **and** fetcher-specific
+    /// metric descriptions with the global `metrics` recorder. Use in
+    /// production where [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager)
+    /// is (or will be) installed.
     pub fn with_dfe() -> Self {
+        // Register fetcher-specific metrics with the global recorder.
+        // These are NOT part of DfeMetrics (which covers standard DFE metrics
+        // shared across receiver/loader/engine) — they are fetcher-only.
+        metrics::describe_counter!("dfe_fetches_total", "Total number of fetch operations");
+        metrics::describe_counter!("dfe_fetches_success", "Successful fetch operations");
+        metrics::describe_counter!("dfe_fetches_error", "Failed fetch operations");
+        metrics::describe_counter!("dfe_bytes_received_total", "Total bytes received");
+        metrics::describe_counter!("dfe_extractor_runs_total", "Total extractor runs");
+        metrics::describe_counter!("dfe_extractor_runs_success", "Successful extractor runs");
+        metrics::describe_counter!("dfe_extractor_runs_error", "Failed extractor runs");
+        metrics::describe_counter!(
+            "dfe_extractor_records_total",
+            "Total records from extractors"
+        );
+        metrics::describe_counter!(
+            "dfe_extractor_restart_exhausted_total",
+            "Extractor restart retries exhausted"
+        );
+        metrics::describe_counter!("dfe_cursor_writes_total", "Cursor state writes");
+        metrics::describe_counter!(
+            "dfe_cursor_write_failures_total",
+            "Cursor state write failures"
+        );
+        metrics::describe_gauge!("dfe_active_fetches", "Current active fetch operations");
+        metrics::describe_gauge!("dfe_active_extractors", "Current running extractors");
+        metrics::describe_gauge!("dfe_memory_used_bytes", "Current memory usage");
+        metrics::describe_gauge!("dfe_memory_limit_bytes", "Memory limit");
+        metrics::describe_gauge!("dfe_fetch_rate_per_second", "Current fetch rate");
+
         Self {
             dfe: Some(DfeMetrics::register()),
             ..Self::new()
@@ -123,18 +165,27 @@ impl Metrics {
     pub fn inc_fetches_total(&self) {
         let count = self.fetches_total.fetch_add(1, Ordering::Relaxed) + 1;
         self.rate_window.record(count);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_fetches_total").increment(1);
+        }
     }
 
     /// Increment successful fetches counter.
     #[inline]
     pub fn inc_fetches_success(&self) {
         self.fetches_success.fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_fetches_success").increment(1);
+        }
     }
 
     /// Increment failed fetches counter.
     #[inline]
     pub fn inc_fetches_error(&self) {
         self.fetches_error.fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_fetches_error").increment(1);
+        }
     }
 
     /// Add records fetched.
@@ -150,6 +201,9 @@ impl Metrics {
     #[inline]
     pub fn add_bytes_fetched(&self, bytes: u64) {
         self.bytes_fetched.fetch_add(bytes, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_bytes_received_total").increment(bytes);
+        }
     }
 
     // ==========================================================================
@@ -160,6 +214,9 @@ impl Metrics {
     #[inline]
     pub fn add_messages_sent_kafka(&self, count: u64) {
         self.messages_sent_kafka.fetch_add(count, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.transport_sent("output", count);
+        }
     }
 
     /// Increment DLQ messages counter.
@@ -179,18 +236,27 @@ impl Metrics {
     #[inline]
     pub fn inc_extractor_runs_total(&self) {
         self.extractor_runs_total.fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_extractor_runs_total").increment(1);
+        }
     }
 
     /// Increment successful extractor runs.
     #[inline]
     pub fn inc_extractor_runs_success(&self) {
         self.extractor_runs_success.fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_extractor_runs_success").increment(1);
+        }
     }
 
     /// Increment failed extractor runs.
     #[inline]
     pub fn inc_extractor_runs_error(&self) {
         self.extractor_runs_error.fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_extractor_runs_error").increment(1);
+        }
     }
 
     /// Get the count of failed extractor runs.
@@ -204,6 +270,9 @@ impl Metrics {
     pub fn add_extractor_records(&self, count: u64) {
         self.extractor_records_total
             .fetch_add(count, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_extractor_records_total").increment(count);
+        }
     }
 
     // ==========================================================================
@@ -248,6 +317,9 @@ impl Metrics {
     #[inline]
     pub fn inc_records_filtered(&self) {
         self.records_filtered_total.fetch_add(1, Ordering::Relaxed);
+        if let Some(ref dfe) = self.dfe {
+            dfe.records_filtered(1);
+        }
     }
 
     /// Increment extractor restart exhausted counter.
@@ -255,12 +327,18 @@ impl Metrics {
     pub fn inc_extractor_restart_exhausted(&self) {
         self.extractor_restart_exhausted_total
             .fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_extractor_restart_exhausted_total").increment(1);
+        }
     }
 
     /// Increment cursor writes counter.
     #[inline]
     pub fn inc_cursor_writes(&self) {
         self.cursor_writes_total.fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_cursor_writes_total").increment(1);
+        }
     }
 
     /// Increment cursor write failures counter.
@@ -268,6 +346,9 @@ impl Metrics {
     pub fn inc_cursor_write_failures(&self) {
         self.cursor_write_failures_total
             .fetch_add(1, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("dfe_cursor_write_failures_total").increment(1);
+        }
     }
 
     // ==========================================================================
@@ -300,7 +381,10 @@ impl Metrics {
     /// Increment active fetches.
     #[inline]
     pub fn inc_active_fetches(&self) {
-        self.active_fetches.fetch_add(1, Ordering::Relaxed);
+        let val = self.active_fetches.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.dfe.is_some() {
+            metrics::gauge!("dfe_active_fetches").set(val as f64);
+        }
     }
 
     /// Decrement active fetches (saturating — never wraps below zero).
@@ -311,12 +395,19 @@ impl Metrics {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
+        if self.dfe.is_some() {
+            let val = self.active_fetches.load(Ordering::Relaxed);
+            metrics::gauge!("dfe_active_fetches").set(val as f64);
+        }
     }
 
     /// Increment active extractors.
     #[inline]
     pub fn inc_active_extractors(&self) {
-        self.active_extractors.fetch_add(1, Ordering::Relaxed);
+        let val = self.active_extractors.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.dfe.is_some() {
+            metrics::gauge!("dfe_active_extractors").set(val as f64);
+        }
     }
 
     /// Decrement active extractors (saturating — never wraps below zero).
@@ -327,6 +418,10 @@ impl Metrics {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
+        if self.dfe.is_some() {
+            let val = self.active_extractors.load(Ordering::Relaxed);
+            metrics::gauge!("dfe_active_extractors").set(val as f64);
+        }
     }
 
     /// Set memory usage.
@@ -334,6 +429,10 @@ impl Metrics {
     pub fn set_memory_usage(&self, used: u64, limit: u64) {
         self.memory_used_bytes.store(used, Ordering::Relaxed);
         self.memory_limit_bytes.store(limit, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::gauge!("dfe_memory_used_bytes").set(used as f64);
+            metrics::gauge!("dfe_memory_limit_bytes").set(limit as f64);
+        }
     }
 
     /// Get fetch rate per second.
@@ -341,7 +440,20 @@ impl Metrics {
         self.rate_window.rate_per_second()
     }
 
-    /// Render metrics in Prometheus format.
+    /// Update the fetch rate gauge in the metrics recorder.
+    ///
+    /// Call this periodically (e.g. from the metrics server tick) to keep
+    /// the `dfe_fetch_rate_per_second` gauge current.
+    pub fn update_rate_gauge(&self) {
+        if self.dfe.is_some() {
+            metrics::gauge!("dfe_fetch_rate_per_second").set(self.fetch_rate());
+        }
+    }
+
+    /// Render metrics in Prometheus format (hand-rolled, for tests and fallback).
+    ///
+    /// In production, prefer the [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager)
+    /// render path which includes all metrics registered via the `metrics` crate.
     pub fn render(&self) -> String {
         let mut output = String::with_capacity(4096);
 

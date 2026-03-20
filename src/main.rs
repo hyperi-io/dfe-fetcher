@@ -31,6 +31,7 @@ use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, TopArgs
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
 use hyperi_rustlib::logger::security;
+use hyperi_rustlib::metrics::MetricsManager;
 use hyperi_rustlib::scaling::{ScalingComponent, ScalingPressure};
 use hyperi_rustlib::top::{TopConfig, run_top};
 use tokio::signal;
@@ -217,6 +218,17 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     // Warn if deprecated plugin config is present
     config.extractors.plugins.warn_if_configured();
 
+    // Warn if using legacy kafka: config section instead of output.kafka:
+    if !config.kafka.brokers.is_empty() && config.output.kafka.is_none() {
+        warn!(
+            "Using legacy kafka: config section — migrate to output.kafka: (rustlib KafkaConfig format)"
+        );
+    }
+
+    // Install MetricsManager (Prometheus recorder) BEFORE creating Metrics::with_dfe()
+    // so that all subsequent metrics::counter!/gauge! calls go through the recorder.
+    let metrics_manager = Arc::new(MetricsManager::new(""));
+
     // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
     let metrics = Arc::new(Metrics::with_dfe());
 
@@ -357,9 +369,16 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     let metrics_token = shutdown_token.clone();
     let metrics_clone = metrics.clone();
     let scaling_clone = Arc::clone(&scaling_pressure);
+    let mm_clone = Arc::clone(&metrics_manager);
     tokio::spawn(async move {
-        if let Err(e) =
-            run_metrics_server(metrics_addr, metrics_clone, scaling_clone, metrics_token).await
+        if let Err(e) = run_metrics_server(
+            metrics_addr,
+            metrics_clone,
+            scaling_clone,
+            mm_clone,
+            metrics_token,
+        )
+        .await
         {
             error!(error = %e, "Metrics server error");
         }
@@ -525,10 +544,15 @@ fn reload_config_from_path(
 }
 
 /// Run the Prometheus metrics HTTP server.
+///
+/// Uses [`MetricsManager::render()`] to serve all metrics registered via the
+/// `metrics` crate (both fetcher-specific and standard DFE metrics). The
+/// hand-rolled `Metrics::render()` is kept only for test assertions.
 async fn run_metrics_server(
     addr: SocketAddr,
     metrics: Arc<Metrics>,
     scaling: Arc<ScalingPressure>,
+    metrics_manager: Arc<MetricsManager>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     use axum::Router;
@@ -540,8 +564,15 @@ async fn run_metrics_server(
         get(move || {
             let m = metrics.clone();
             let s = scaling.clone();
+            let mm = metrics_manager.clone();
             async move {
-                let mut output = m.render();
+                // Update rate gauge before rendering (rate is computed, not event-driven)
+                m.update_rate_gauge();
+
+                // Render all metrics via the MetricsManager Prometheus recorder
+                let mut output = mm.render();
+
+                // Append scaling pressure (computed metric, not registered via metrics crate)
                 output.push_str(
                     "# HELP dfe_scaling_pressure Composite scaling pressure for KEDA (0-100)\n",
                 );
