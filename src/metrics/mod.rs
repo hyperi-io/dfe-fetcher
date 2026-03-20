@@ -12,10 +12,10 @@
 //! source health, and delivery to Kafka.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hyperi_rustlib::metrics::DfeMetrics;
-use parking_lot::RwLock;
+use hyperi_rustlib::scaling::RateWindow;
 
 /// Metrics collector for dfe-fetcher.
 ///
@@ -63,55 +63,8 @@ pub struct Metrics {
     memory_used_bytes: AtomicU64,
     memory_limit_bytes: AtomicU64,
 
-    // Rate tracking
-    rate_window: RwLock<RateWindow>,
-}
-
-/// Sliding window for rate calculation.
-#[derive(Debug)]
-struct RateWindow {
-    samples: Vec<(Instant, u64)>,
-    window_size: Duration,
-}
-
-impl RateWindow {
-    fn new(window_size: Duration) -> Self {
-        Self {
-            samples: Vec::with_capacity(60),
-            window_size,
-        }
-    }
-
-    fn add_sample(&mut self, value: u64) {
-        let now = Instant::now();
-        self.samples.push((now, value));
-
-        // Remove old samples
-        if let Some(cutoff) = now.checked_sub(self.window_size) {
-            self.samples.retain(|(t, _)| *t > cutoff);
-        }
-    }
-
-    fn rate_per_second(&self) -> f64 {
-        if self.samples.len() < 2 {
-            return 0.0;
-        }
-
-        let Some(first) = self.samples.first() else {
-            return 0.0;
-        };
-        let Some(last) = self.samples.last() else {
-            return 0.0;
-        };
-
-        let duration = last.0.duration_since(first.0);
-        if duration.is_zero() {
-            return 0.0;
-        }
-
-        let delta = last.1.saturating_sub(first.1);
-        delta as f64 / duration.as_secs_f64()
-    }
+    // Rate tracking (rustlib RateWindow has internal RwLock)
+    rate_window: RateWindow,
 }
 
 impl Metrics {
@@ -145,7 +98,7 @@ impl Metrics {
             active_extractors: AtomicU64::new(0),
             memory_used_bytes: AtomicU64::new(0),
             memory_limit_bytes: AtomicU64::new(0),
-            rate_window: RwLock::new(RateWindow::new(Duration::from_secs(60))),
+            rate_window: RateWindow::new(Duration::from_secs(60)),
         }
     }
 
@@ -169,7 +122,7 @@ impl Metrics {
     #[inline]
     pub fn inc_fetches_total(&self) {
         let count = self.fetches_total.fetch_add(1, Ordering::Relaxed) + 1;
-        self.rate_window.write().add_sample(count);
+        self.rate_window.record(count);
     }
 
     /// Increment successful fetches counter.
@@ -385,7 +338,7 @@ impl Metrics {
 
     /// Get fetch rate per second.
     pub fn fetch_rate(&self) -> f64 {
-        self.rate_window.read().rate_per_second()
+        self.rate_window.rate_per_second()
     }
 
     /// Render metrics in Prometheus format.
