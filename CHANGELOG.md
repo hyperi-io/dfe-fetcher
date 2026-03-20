@@ -1,3 +1,14 @@
+## [1.1.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3...v1.1.4) (2026-03-20)
+
+
+### Bug Fixes
+
+* add dfe_fetcher_api_errors_total with source and code labels ([44f3752](https://github.com/hyperi-io/dfe-fetcher/commit/44f37528854ca9520fcbed3d5b83a12be762ba05))
+* add fetch_duration_seconds histogram and cursor_age_seconds gauge ([6b9c0b5](https://github.com/hyperi-io/dfe-fetcher/commit/6b9c0b57b8758bc4fa03099646be5a5149043b5b))
+* add ingest request metrics and extractor name labels ([1ed51a4](https://github.com/hyperi-io/dfe-fetcher/commit/1ed51a43d982dae95c4ff66ac5ff7e5ec4c2c76d))
+* merge fetch counters into dfe_fetcher_fetches_total with source+status labels, fix MetricsManager namespace ([d5c39f2](https://github.com/hyperi-io/dfe-fetcher/commit/d5c39f212d48be81e258fa162874db64244e93d5))
+* rename fetcher metrics to dfe_fetcher_* prefix, add _total suffix to all counters ([1df0bb0](https://github.com/hyperi-io/dfe-fetcher/commit/1df0bb0674fc80575f131fc59ac37914fdd401b7))
+
 ## [1.1.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.2...v1.1.3) (2026-03-20)
 
 
