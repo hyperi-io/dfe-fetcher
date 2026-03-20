@@ -176,6 +176,10 @@ impl Metrics {
             "dfe_fetcher_cursor_age_seconds",
             "Seconds since cursor last_fetch_end (data staleness)"
         );
+        metrics::describe_counter!(
+            "dfe_fetcher_api_errors_total",
+            "Cloud API errors by source and category"
+        );
 
         Self {
             dfe: Some(DfeMetrics::register()),
@@ -212,6 +216,21 @@ impl Metrics {
         self.fetches_error.fetch_add(1, Ordering::Relaxed);
         if self.dfe.is_some() {
             metrics::counter!("dfe_fetcher_fetches_error_total").increment(1);
+        }
+    }
+
+    /// Record a cloud API error.
+    ///
+    /// `code` should be one of: "4xx", "5xx", "timeout", "network"
+    #[inline]
+    pub fn inc_api_error(&self, source: &str, code: &str) {
+        if self.dfe.is_some() {
+            metrics::counter!(
+                "dfe_fetcher_api_errors_total",
+                "source" => source.to_string(),
+                "code" => code.to_string()
+            )
+            .increment(1);
         }
     }
 
