@@ -976,6 +976,7 @@ dependencies = [
  "hex",
  "hyperi-rustlib",
  "jsonwebtoken",
+ "metrics",
  "mimalloc",
  "opentelemetry-proto",
  "parking_lot",
