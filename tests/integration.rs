@@ -127,18 +127,16 @@ fn test_enrich_large_payload() {
 #[test]
 fn test_metrics_render_prometheus_format() {
     let metrics = Metrics::new();
-    metrics.inc_fetches_total();
     metrics.inc_fetches_success();
     metrics.add_records_fetched(42);
     metrics.add_bytes_fetched(1024);
 
     let output = metrics.render();
 
-    assert!(output.contains("dfe_fetcher_fetches_total 1"));
-    assert!(output.contains("dfe_fetcher_fetches_success_total 1"));
+    assert!(output.contains("dfe_fetcher_fetches_total{status=\"success\"} 1"));
+    assert!(output.contains("dfe_fetcher_fetches_total{status=\"error\"} 0"));
     assert!(output.contains("dfe_records_received_total 42"));
     assert!(output.contains("dfe_fetcher_bytes_received_total 1024"));
-    assert!(output.contains("dfe_fetcher_fetches_error_total 0"));
 }
 
 #[test]
