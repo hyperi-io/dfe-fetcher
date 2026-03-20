@@ -1,11 +1,4 @@
-## [1.1.2-dev.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.2-dev.1...v1.1.2-dev.2) (2026-03-20)
-
-
-### Bug Fixes
-
-* standardise test infra with dual-mode common module ([2432195](https://github.com/hyperi-io/dfe-fetcher/commit/243219585108ef79f7ee3a0973c7e8cadbec5b1e))
-
-## [1.1.2-dev.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.1...v1.1.2-dev.1) (2026-03-20)
+## [1.1.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.1...v1.1.2) (2026-03-20)
 
 
 ### Bug Fixes
