@@ -18,6 +18,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use tracing::{debug, info, warn};
 
 use crate::config::GcpSourceConfig;
@@ -288,19 +289,25 @@ impl Source for GcpSource {
         self.config.enabled
     }
 
-    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
 
         info!(services = self.config.services.len(), "Fetching GCP data");
 
+        let now = Utc::now();
+        let (start, end) = match window {
+            Some(w) => (w.start, w.end),
+            None => (now - chrono::Duration::hours(1), now),
+        };
+
         let mut results = Vec::new();
         for service in &self.config.services {
             let fetch_result = match service.name.as_str() {
-                "audit_logs" => self.fetch_audit_logs(service).await?,
+                "audit_logs" => self.fetch_audit_logs(service, start, end).await?,
                 "scc" => self.fetch_scc(service).await?,
-                "cloud_logging" => self.fetch_cloud_logging(service).await?,
+                "cloud_logging" => self.fetch_cloud_logging(service, start, end).await?,
                 other => {
                     warn!(service = other, "Unknown GCP service, skipping");
                     continue;
@@ -343,6 +350,8 @@ impl GcpSource {
     async fn fetch_audit_logs(
         &self,
         _service: &crate::config::GcpService,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
         let token = self.get_access_token().await?;
         let project_id = self
@@ -351,14 +360,12 @@ impl GcpSource {
             .as_deref()
             .ok_or_else(|| Error::Config("gcp.project_id is required for audit_logs".into()))?;
 
-        let now = chrono::Utc::now();
-        let start = now - chrono::Duration::hours(1);
-
         let body = serde_json::json!({
             "resourceNames": [format!("projects/{project_id}")],
             "filter": format!(
-                "logName:\"cloudaudit.googleapis.com\" AND timestamp >= \"{}\"",
-                start.to_rfc3339()
+                "logName:\"cloudaudit.googleapis.com\" AND timestamp >= \"{}\" AND timestamp < \"{}\"",
+                start.to_rfc3339(),
+                end.to_rfc3339()
             ),
             "pageSize": 100,
             "orderBy": "timestamp desc"
@@ -435,6 +442,8 @@ impl GcpSource {
     async fn fetch_cloud_logging(
         &self,
         _service: &crate::config::GcpService,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
         let token = self.get_access_token().await?;
         let project_id =
@@ -452,12 +461,9 @@ impl GcpSource {
             .and_then(|v| v.as_str())
             .unwrap_or("severity >= WARNING");
 
-        let now = chrono::Utc::now();
-        let start = now - chrono::Duration::hours(1);
-
         let body = serde_json::json!({
             "resourceNames": [format!("projects/{project_id}")],
-            "filter": format!("{filter} AND timestamp >= \"{}\"", start.to_rfc3339()),
+            "filter": format!("{filter} AND timestamp >= \"{}\" AND timestamp < \"{}\"", start.to_rfc3339(), end.to_rfc3339()),
             "pageSize": 100,
             "orderBy": "timestamp desc"
         });
