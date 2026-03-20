@@ -77,10 +77,18 @@ pub fn normalize_cursor_key(key: &str) -> String {
 pub async fn create_cursor_store(
     cursor_config: &CursorConfig,
     output_config: &OutputConfig,
+    legacy_kafka: &crate::config::KafkaConfig,
 ) -> Result<Box<dyn CursorStore>> {
+    let has_kafka = output_config.includes_kafka()
+        || output_config
+            .kafka
+            .as_ref()
+            .is_some_and(|k| !k.brokers.is_empty())
+        || !legacy_kafka.brokers.is_empty();
+
     let backend = match cursor_config.store.as_str() {
         "auto" => {
-            if output_config.includes_kafka() {
+            if has_kafka {
                 "kafka"
             } else {
                 "file"
@@ -93,12 +101,18 @@ pub async fn create_cursor_store(
 
     match backend {
         "kafka" => {
-            let kafka_config = output_config.kafka.as_ref().ok_or_else(|| {
-                Error::Cursor(
-                    "cursor store is 'kafka' but no output.kafka config is present".into(),
-                )
-            })?;
-            let store = kafka::KafkaCursorStore::new(cursor_config, kafka_config).await?;
+            // Prefer output.kafka, fall back to legacy kafka config
+            let kafka_config = if let Some(ref kc) = output_config.kafka {
+                kc.clone()
+            } else if !legacy_kafka.brokers.is_empty() {
+                // Build rustlib KafkaConfig from legacy config (same mapping as OutputManager)
+                crate::output::build_rustlib_kafka_config(legacy_kafka)
+            } else {
+                return Err(Error::Cursor(
+                    "cursor store is 'kafka' but no Kafka config is present".into(),
+                ));
+            };
+            let store = kafka::KafkaCursorStore::new(cursor_config, &kafka_config).await?;
             Ok(Box::new(store))
         }
         "file" => {

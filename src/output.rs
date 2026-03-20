@@ -185,7 +185,7 @@ impl OutputManager {
 
 /// Build a rustlib [`KafkaConfig`](RustlibKafkaConfig) from the legacy
 /// fetcher-specific [`KafkaConfig`](LegacyKafkaConfig) section.
-fn build_rustlib_kafka_config(legacy: &LegacyKafkaConfig) -> RustlibKafkaConfig {
+pub(crate) fn build_rustlib_kafka_config(legacy: &LegacyKafkaConfig) -> RustlibKafkaConfig {
     let mut config = RustlibKafkaConfig {
         brokers: legacy.brokers.clone(),
         client_id: legacy.client_id.clone(),
