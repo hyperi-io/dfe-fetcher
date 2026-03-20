@@ -34,18 +34,18 @@ use hyperi_rustlib::logger::security;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::buffer::BufferManager;
 use crate::config::{Config, SharedConfig};
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
 use crate::output::OutputManager;
 use crate::source::FetchResult;
+use hyperi_rustlib::memory::MemoryGuard;
 
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
     output: Option<Arc<OutputManager>>,
-    buffer_manager: Arc<BufferManager>,
+    memory_guard: Arc<MemoryGuard>,
     dlq: Option<Dlq>,
     metrics: Arc<Metrics>,
     ready: AtomicBool,
@@ -64,7 +64,18 @@ impl PipelineState {
         output: Option<OutputManager>,
     ) -> Result<Self> {
         let config = shared_config.get();
-        let buffer_manager = Arc::new(BufferManager::new(&config.buffer));
+
+        // Create MemoryGuard — prefer env vars (cgroup-aware), fall back to BufferConfig
+        let mut mg_config = hyperi_rustlib::memory::MemoryGuardConfig::from_env("DFE_FETCHER");
+        if mg_config.limit_bytes == 0 && config.buffer.memory_limit > 0 {
+            // Legacy config fallback: explicit limit from buffer.memory_limit
+            mg_config.limit_bytes = config.buffer.memory_limit as u64;
+        }
+        if config.buffer.pressure_threshold > 0.0 && config.buffer.pressure_threshold <= 1.0 {
+            // Honour legacy pressure_threshold if set explicitly
+            mg_config.pressure_threshold = config.buffer.pressure_threshold;
+        }
+        let memory_guard = Arc::new(MemoryGuard::new(mg_config));
 
         // Initialise DLQ if enabled
         let dlq = if config.dlq.enabled {
@@ -82,7 +93,7 @@ impl PipelineState {
         Ok(Self {
             shared_config,
             output: output.map(Arc::new),
-            buffer_manager,
+            memory_guard,
             dlq,
             metrics,
             ready: AtomicBool::new(true),
@@ -105,7 +116,7 @@ impl PipelineState {
             return false;
         }
 
-        if self.buffer_manager.is_under_pressure() {
+        if self.memory_guard.under_pressure() {
             return false;
         }
 
@@ -223,11 +234,11 @@ impl PipelineState {
         };
 
         let payload_size = payload.len() as u64;
-        self.buffer_manager.add_bytes(payload_size);
+        self.memory_guard.add_bytes(payload_size);
 
         let result = output.send_all(topic, payload.as_ref()).await;
 
-        self.buffer_manager.remove_bytes(payload_size);
+        self.memory_guard.release(payload_size);
 
         if let Err(ref transport_err) = result {
             // Track transport health metrics
@@ -277,9 +288,9 @@ impl PipelineState {
         result
     }
 
-    /// Get buffer manager for external access.
-    pub fn buffer_manager(&self) -> &Arc<BufferManager> {
-        &self.buffer_manager
+    /// Get memory guard for external access (scaling pressure, metrics).
+    pub fn memory_guard(&self) -> &Arc<MemoryGuard> {
+        &self.memory_guard
     }
 
     /// Check if any output transport is healthy.
@@ -297,8 +308,8 @@ impl PipelineState {
     /// Update metrics snapshot.
     pub async fn update_metrics(&self, metrics: &Metrics) {
         metrics.set_memory_usage(
-            self.buffer_manager.total_bytes(),
-            self.buffer_manager.memory_limit(),
+            self.memory_guard.current_bytes(),
+            self.memory_guard.limit_bytes(),
         );
     }
 
@@ -428,8 +439,11 @@ mod tests {
             PipelineState {
                 shared_config: shared,
                 output: None,
-                buffer_manager: Arc::new(BufferManager::new(
-                    &crate::config::BufferConfig::default(),
+                memory_guard: Arc::new(MemoryGuard::new(
+                    hyperi_rustlib::memory::MemoryGuardConfig {
+                        limit_bytes: 1_073_741_824, // 1 GiB for tests
+                        ..Default::default()
+                    },
                 )),
                 dlq: None,
                 metrics: Arc::new(Metrics::new()),

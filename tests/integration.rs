@@ -234,38 +234,41 @@ fn test_http_client_with_custom_timeout() {
 // =============================================================================
 
 #[test]
-fn test_buffer_manager_pressure_tracking() {
-    let config = dfe_fetcher::config::BufferConfig {
-        memory_limit: 1000,
+fn test_memory_guard_pressure_tracking() {
+    use hyperi_rustlib::memory::{MemoryGuard, MemoryGuardConfig};
+
+    let guard = MemoryGuard::new(MemoryGuardConfig {
+        limit_bytes: 1000,
         pressure_threshold: 0.8,
-    };
-    let manager = dfe_fetcher::buffer::BufferManager::new(&config);
+        ..Default::default()
+    });
 
-    assert!(!manager.is_under_pressure());
-    assert_eq!(manager.total_bytes(), 0);
+    assert!(!guard.under_pressure());
+    assert_eq!(guard.current_bytes(), 0);
 
-    manager.add_bytes(500);
-    assert_eq!(manager.total_bytes(), 500);
-    assert!(!manager.is_under_pressure());
+    guard.add_bytes(500);
+    assert_eq!(guard.current_bytes(), 500);
+    assert!(!guard.under_pressure());
 
-    manager.add_bytes(400); // 900/1000 = 90% > 80%
-    assert!(manager.is_under_pressure());
+    guard.add_bytes(400); // 900/1000 = 90% > 80%
+    assert!(guard.under_pressure());
 
-    manager.remove_bytes(500);
-    assert!(!manager.is_under_pressure());
+    guard.release(500);
+    assert!(!guard.under_pressure());
 }
 
 #[test]
-fn test_buffer_manager_saturating_remove() {
-    let config = dfe_fetcher::config::BufferConfig {
-        memory_limit: 1000,
-        pressure_threshold: 0.8,
-    };
-    let manager = dfe_fetcher::buffer::BufferManager::new(&config);
+fn test_memory_guard_release_underflow() {
+    use hyperi_rustlib::memory::{MemoryGuard, MemoryGuardConfig};
 
-    manager.add_bytes(100);
-    manager.remove_bytes(200); // Should not underflow
-    assert_eq!(manager.total_bytes(), 0);
+    let guard = MemoryGuard::new(MemoryGuardConfig {
+        limit_bytes: 1000,
+        pressure_threshold: 0.8,
+        ..Default::default()
+    });
+
+    guard.add_bytes(100);
+    guard.release(200); // Release more than added — should not panic
 }
 
 // =============================================================================

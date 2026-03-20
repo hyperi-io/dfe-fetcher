@@ -57,7 +57,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 #![cfg_attr(test, allow(clippy::expect_used))]
 
-pub mod buffer;
+// buffer module removed — replaced by hyperi_rustlib::memory::MemoryGuard
 pub mod config;
 pub mod credential;
 pub mod cursor;
