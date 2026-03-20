@@ -167,6 +167,15 @@ impl Metrics {
         metrics::describe_gauge!("dfe_fetcher_memory_used_bytes", "Current memory usage");
         metrics::describe_gauge!("dfe_fetcher_memory_limit_bytes", "Memory limit");
         metrics::describe_gauge!("dfe_fetcher_fetch_rate", "Current fetch rate");
+        metrics::describe_histogram!(
+            "dfe_fetcher_fetch_duration_seconds",
+            metrics::Unit::Seconds,
+            "Time per fetch cycle"
+        );
+        metrics::describe_gauge!(
+            "dfe_fetcher_cursor_age_seconds",
+            "Seconds since cursor last_fetch_end (data staleness)"
+        );
 
         Self {
             dfe: Some(DfeMetrics::register()),
@@ -465,6 +474,30 @@ impl Metrics {
     pub fn update_rate_gauge(&self) {
         if self.dfe.is_some() {
             metrics::gauge!("dfe_fetcher_fetch_rate").set(self.fetch_rate());
+        }
+    }
+
+    /// Record fetch cycle duration.
+    #[inline]
+    pub fn record_fetch_duration(&self, source: &str, duration: Duration) {
+        if self.dfe.is_some() {
+            metrics::histogram!(
+                "dfe_fetcher_fetch_duration_seconds",
+                "source" => source.to_string()
+            )
+            .record(duration.as_secs_f64());
+        }
+    }
+
+    /// Set cursor age for a source.
+    #[inline]
+    pub fn set_cursor_age(&self, source: &str, age_seconds: f64) {
+        if self.dfe.is_some() {
+            metrics::gauge!(
+                "dfe_fetcher_cursor_age_seconds",
+                "source" => source.to_string()
+            )
+            .set(age_seconds);
         }
     }
 
