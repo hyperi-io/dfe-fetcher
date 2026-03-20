@@ -1,3 +1,10 @@
+# [1.1.0-dev.5](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.4...v1.1.0-dev.5) (2026-03-20)
+
+
+### Bug Fixes
+
+* replace BufferManager with rustlib MemoryGuard ([27f35fe](https://github.com/hyperi-io/dfe-fetcher/commit/27f35fec69c29b0f4f1a2a062b0c3b2d7ba7afd6))
+
 # [1.1.0-dev.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0-dev.3...v1.1.0-dev.4) (2026-03-19)
 
 
