@@ -144,13 +144,17 @@ impl Scheduler {
                     }
                 };
 
-                metrics.inc_fetches_total();
                 metrics.inc_active_fetches();
 
                 // Read cursor to compute fetch window
-                let window =
-                    build_fetch_window(cursor_store.as_deref(), &cursor_key, default_window_hours)
-                        .await;
+                let window = build_fetch_window(
+                    cursor_store.as_deref(),
+                    &cursor_key,
+                    default_window_hours,
+                    &metrics,
+                    &source.cursor_prefix(),
+                )
+                .await;
 
                 debug!(
                     source = source.name(),
@@ -160,10 +164,14 @@ impl Scheduler {
                     "Fetch window computed"
                 );
 
+                let fetch_start = std::time::Instant::now();
                 match source.fetch(Some(&window)).await {
                     Ok(results) => {
+                        let fetch_duration = fetch_start.elapsed();
+                        metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
+
                         let total_records: usize = results.iter().map(|r| r.records.len()).sum();
-                        metrics.inc_fetches_success();
+                        metrics.inc_fetches_success_for(&source.cursor_prefix());
                         metrics.add_records_fetched(total_records as u64);
 
                         if total_records > 0 {
@@ -186,10 +194,17 @@ impl Scheduler {
                         .await;
                     }
                     Err(e) => {
-                        metrics.inc_fetches_error();
+                        let fetch_duration = fetch_start.elapsed();
+                        metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
+
+                        let code = crate::source::classify_api_error(&e);
+                        metrics.inc_api_error(&source.cursor_prefix(), code);
+
+                        metrics.inc_fetches_error_for(&source.cursor_prefix());
                         error!(
                             source = source.name(),
                             error = %e,
+                            error_code = code,
                             "Fetch failed"
                         );
                     }
@@ -239,10 +254,15 @@ fn calculate_jitter(base_secs: u64, jitter_percent: u8) -> u64 {
 
 /// Build a `FetchWindow` from the cursor store. If no cursor exists or the
 /// read fails, falls back to `now - default_window_hours`.
+///
+/// When a cursor is found, records its age (seconds since `last_fetch_end`)
+/// as `dfe_fetcher_cursor_age_seconds` for staleness monitoring.
 async fn build_fetch_window(
     store: Option<&dyn CursorStore>,
     cursor_key: &str,
     default_window_hours: u64,
+    metrics: &Metrics,
+    source_prefix: &str,
 ) -> FetchWindow {
     let now = Utc::now();
 
@@ -250,6 +270,8 @@ async fn build_fetch_window(
         match store.get(cursor_key).await {
             Ok(Some(cursor)) => {
                 debug!(cursor_key, last_end = %cursor.last_fetch_end, "Cursor found, resuming");
+                let age_secs = (now - cursor.last_fetch_end).num_seconds().max(0) as f64;
+                metrics.set_cursor_age(source_prefix, age_secs);
                 return FetchWindow {
                     start: cursor.last_fetch_end,
                     end: now,
@@ -363,7 +385,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_fetch_window_no_store() {
-        let window = build_fetch_window(None, "test.key", 2).await;
+        let metrics = Metrics::new();
+        let window = build_fetch_window(None, "test.key", 2, &metrics, "test").await;
         let expected_start = Utc::now() - chrono::Duration::hours(2);
         // Allow 1 second tolerance
         assert!((window.start - expected_start).num_seconds().abs() < 2);

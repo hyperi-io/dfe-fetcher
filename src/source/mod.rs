@@ -92,6 +92,31 @@ pub trait Source: Send + Sync {
     }
 }
 
+/// Classify an HTTP/API error into a bounded category for metrics.
+///
+/// Returns one of: "4xx", "5xx", "timeout", "network"
+pub fn classify_api_error(error: &crate::error::Error) -> &'static str {
+    let msg = error.to_string();
+    if msg.contains("timed out") || msg.contains("timeout") {
+        "timeout"
+    } else if msg.contains("status: 4")
+        || msg.contains("401")
+        || msg.contains("403")
+        || msg.contains("404")
+        || msg.contains("429")
+    {
+        "4xx"
+    } else if msg.contains("status: 5")
+        || msg.contains("500")
+        || msg.contains("502")
+        || msg.contains("503")
+    {
+        "5xx"
+    } else {
+        "network"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
