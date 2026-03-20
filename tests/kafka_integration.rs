@@ -8,14 +8,15 @@
 
 //! Integration tests requiring a running Kafka broker.
 //!
-//! Supports two modes via `TEST_MODE` env var:
-//!
-//! - `remote` (default) — uses DevEx Kafka cluster via `KAFKA_*` env vars
-//! - `docker` — uses local Docker Kafka (pending rustlib test infra)
+//! Supports dual-mode via `TEST_MODE` env var (see `tests/common/mod.rs`):
+//! - `remote` (default) — devex Kafka cluster via `.env`
+//! - `docker` — dfe-docker infra profile (localhost:19092, no auth)
 //!
 //! Run with: `cargo test --test kafka_integration -- --ignored`
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
 
 use chrono::Utc;
 
@@ -23,68 +24,17 @@ use dfe_fetcher::config::{CursorConfig, OutputConfig};
 use dfe_fetcher::cursor::kafka::KafkaCursorStore;
 use dfe_fetcher::cursor::{CursorStore, CursorValue};
 
-/// Build a KafkaConfig from env vars, respecting TEST_MODE.
-///
-/// - `remote`: reads `KAFKA_BROKERS`, `KAFKA_SASL_*`, `KAFKA_SECURITY_PROTOCOL`
-/// - `docker`: uses `DOCKER_KAFKA_BROKERS` (default `localhost:9092`), plaintext
-fn kafka_config_from_env() -> hyperi_rustlib::transport::KafkaConfig {
-    // Load .env if present (won't override existing env vars)
-    let _ = dotenvy::dotenv();
-
-    let test_mode = std::env::var("TEST_MODE").unwrap_or_else(|_| "remote".to_string());
-
-    if test_mode == "docker" {
-        let brokers =
-            std::env::var("DOCKER_KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
-        hyperi_rustlib::transport::KafkaConfig {
-            brokers: brokers.split(',').map(|s| s.trim().to_string()).collect(),
-            security_protocol: "plaintext".to_string(),
-            client_id: "dfe-fetcher-test".to_string(),
-            group: "dfe-fetcher-test".to_string(),
-            ..Default::default()
-        }
-    } else {
-        // Remote mode — read from KAFKA_* env vars
-        let brokers =
-            std::env::var("KAFKA_BROKERS").expect("KAFKA_BROKERS required for TEST_MODE=remote");
-        let mut config = hyperi_rustlib::transport::KafkaConfig {
-            brokers: brokers.split(',').map(|s| s.trim().to_string()).collect(),
-            client_id: "dfe-fetcher-test".to_string(),
-            group: "dfe-fetcher-test".to_string(),
-            ..Default::default()
-        };
-
-        if let Ok(protocol) = std::env::var("KAFKA_SECURITY_PROTOCOL") {
-            config.security_protocol = protocol.to_lowercase();
-        }
-        if let Ok(mechanism) = std::env::var("KAFKA_SASL_MECHANISM") {
-            config.sasl_mechanism = Some(mechanism);
-        }
-        if let Ok(user) = std::env::var("KAFKA_SASL_USER") {
-            config.sasl_username = Some(user);
-        }
-        if let Ok(password) = std::env::var("KAFKA_SASL_PASSWORD") {
-            config.sasl_password = Some(password);
-        }
-
-        config
-    }
-}
-
-/// Test topic name with unique suffix to avoid collisions.
-fn test_topic(base: &str) -> String {
-    let prefix = std::env::var("TEST_TOPIC_PREFIX").unwrap_or_else(|_| "dfe-fetcher-test".into());
-    format!("{prefix}-{base}-{}", Utc::now().timestamp_millis())
-}
-
 /// Verify the KafkaCursorStore can write, read, and delete cursors
 /// through a real Kafka broker.
 #[tokio::test]
 #[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
 async fn test_cursor_store_kafka_roundtrip() {
-    let kafka_config = kafka_config_from_env();
+    skip_if_no_kafka!();
+
+    let kf = common::kafka_test_config();
+    let kafka_config = kf.to_rustlib_config();
     let cursor_config = CursorConfig {
-        kafka_topic: test_topic("cursor"),
+        kafka_topic: common::test_topic("cursor"),
         ..Default::default()
     };
 
@@ -126,16 +76,17 @@ async fn test_cursor_store_kafka_roundtrip() {
 }
 
 /// Verify that OutputManager can send a message to Kafka without error.
-/// This confirms the Kafka producer initialisation and basic send path work.
 #[tokio::test]
 #[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
 async fn test_output_transport_kafka_send() {
-    let kafka_config = kafka_config_from_env();
-    let topic = test_topic("output");
+    skip_if_no_kafka!();
+
+    let kf = common::kafka_test_config();
+    let topic = common::test_topic("output");
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kafka_config),
+        kafka: Some(kf.to_rustlib_config()),
         grpc: None,
     };
 
