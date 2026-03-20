@@ -198,10 +198,14 @@ impl Scheduler {
                         let fetch_duration = fetch_start.elapsed();
                         metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
 
+                        let code = crate::source::classify_api_error(&e);
+                        metrics.inc_api_error(&source.cursor_prefix(), code);
+
                         metrics.inc_fetches_error();
                         error!(
                             source = source.name(),
                             error = %e,
+                            error_code = code,
                             "Fetch failed"
                         );
                     }
