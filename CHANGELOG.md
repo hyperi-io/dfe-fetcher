@@ -1,3 +1,11 @@
+## [1.1.3-dev.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.2...v1.1.3-dev.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* add ingest request metrics and extractor name labels ([1ed51a4](https://github.com/hyperi-io/dfe-fetcher/commit/1ed51a43d982dae95c4ff66ac5ff7e5ec4c2c76d))
+* merge fetch counters into dfe_fetcher_fetches_total with source+status labels, fix MetricsManager namespace ([d5c39f2](https://github.com/hyperi-io/dfe-fetcher/commit/d5c39f212d48be81e258fa162874db64244e93d5))
+
 ## [1.1.3-dev.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.1...v1.1.3-dev.2) (2026-03-20)
 
 
