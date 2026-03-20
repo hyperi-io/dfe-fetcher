@@ -18,6 +18,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use tracing::{debug, info, warn};
 
 use crate::config::AzureSourceConfig;
@@ -169,17 +170,23 @@ impl Source for AzureSource {
         self.config.enabled
     }
 
-    async fn fetch(&self, _window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
+    async fn fetch(&self, window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {
         if !self.config.enabled {
             return Ok(vec![]);
         }
 
         info!(services = self.config.services.len(), "Fetching Azure data");
 
+        let now = Utc::now();
+        let (start, end) = match window {
+            Some(w) => (w.start, w.end),
+            None => (now - chrono::Duration::hours(24), now),
+        };
+
         let mut results = Vec::new();
         for service in &self.config.services {
             let fetch_result = match service.name.as_str() {
-                "activity_log" => self.fetch_activity_log(service).await?,
+                "activity_log" => self.fetch_activity_log(service, start, end).await?,
                 "defender" => self.fetch_defender(service).await?,
                 "sentinel" => self.fetch_sentinel(service).await?,
                 "entra_id" => self.fetch_entra_id(service).await?,
@@ -222,6 +229,8 @@ impl AzureSource {
     async fn fetch_activity_log(
         &self,
         _service: &crate::config::AzureService,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
         let tm = self.management_token_manager().await?;
         let token = tm.get_token().await?;
@@ -230,15 +239,12 @@ impl AzureSource {
             Error::Config("azure.subscription_id is required for activity_log".into())
         })?;
 
-        // Fetch last 24 hours of activity logs
-        let now = chrono::Utc::now();
-        let start = now - chrono::Duration::hours(24);
         // Azure Activity Log requires ISO 8601 without sub-second precision
         let fmt = "%Y-%m-%dT%H:%M:%SZ";
         let filter = format!(
             "eventTimestamp ge '{}' and eventTimestamp le '{}'",
             start.format(fmt),
-            now.format(fmt)
+            end.format(fmt)
         );
 
         let mgmt_base = self
