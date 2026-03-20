@@ -126,13 +126,8 @@ impl Metrics {
         // shared across receiver/loader/engine) — they are fetcher-only.
         metrics::describe_counter!(
             "dfe_fetcher_fetches_total",
-            "Total number of fetch operations"
+            "Fetch operations by source and status"
         );
-        metrics::describe_counter!(
-            "dfe_fetcher_fetches_success_total",
-            "Successful fetch operations"
-        );
-        metrics::describe_counter!("dfe_fetcher_fetches_error_total", "Failed fetch operations");
         metrics::describe_counter!("dfe_fetcher_bytes_received_total", "Total bytes received");
         metrics::describe_counter!("dfe_fetcher_extractor_runs_total", "Total extractor runs");
         metrics::describe_counter!(
@@ -191,32 +186,59 @@ impl Metrics {
     // Fetch counters
     // ==========================================================================
 
-    /// Increment total fetches counter.
+    /// Increment successful fetches counter for a named source.
+    ///
+    /// Increments both the local `fetches_success` and `fetches_total` atomics,
+    /// and emits `dfe_fetcher_fetches_total{source="..",status="success"}` via the
+    /// `metrics` crate when DfeMetrics is active.
     #[inline]
-    pub fn inc_fetches_total(&self) {
+    pub fn inc_fetches_success_for(&self, source: &str) {
+        self.fetches_success.fetch_add(1, Ordering::Relaxed);
         let count = self.fetches_total.fetch_add(1, Ordering::Relaxed) + 1;
         self.rate_window.record(count);
         if self.dfe.is_some() {
-            metrics::counter!("dfe_fetcher_fetches_total").increment(1);
+            metrics::counter!(
+                "dfe_fetcher_fetches_total",
+                "source" => source.to_string(),
+                "status" => "success"
+            )
+            .increment(1);
         }
     }
 
-    /// Increment successful fetches counter.
+    /// Increment successful fetches counter (source = "unknown").
+    ///
+    /// Convenience wrapper for tests and call sites without source context.
     #[inline]
     pub fn inc_fetches_success(&self) {
-        self.fetches_success.fetch_add(1, Ordering::Relaxed);
+        self.inc_fetches_success_for("unknown");
+    }
+
+    /// Increment failed fetches counter for a named source.
+    ///
+    /// Increments both the local `fetches_error` and `fetches_total` atomics,
+    /// and emits `dfe_fetcher_fetches_total{source="..",status="error"}` via the
+    /// `metrics` crate when DfeMetrics is active.
+    #[inline]
+    pub fn inc_fetches_error_for(&self, source: &str) {
+        self.fetches_error.fetch_add(1, Ordering::Relaxed);
+        self.fetches_total.fetch_add(1, Ordering::Relaxed);
         if self.dfe.is_some() {
-            metrics::counter!("dfe_fetcher_fetches_success_total").increment(1);
+            metrics::counter!(
+                "dfe_fetcher_fetches_total",
+                "source" => source.to_string(),
+                "status" => "error"
+            )
+            .increment(1);
         }
     }
 
-    /// Increment failed fetches counter.
+    /// Increment failed fetches counter (source = "unknown").
+    ///
+    /// Convenience wrapper for tests and call sites without source context.
     #[inline]
     pub fn inc_fetches_error(&self) {
-        self.fetches_error.fetch_add(1, Ordering::Relaxed);
-        if self.dfe.is_some() {
-            metrics::counter!("dfe_fetcher_fetches_error_total").increment(1);
-        }
+        self.inc_fetches_error_for("unknown");
     }
 
     /// Record a cloud API error.
@@ -527,25 +549,15 @@ impl Metrics {
     pub fn render(&self) -> String {
         let mut output = String::with_capacity(4096);
 
-        // Fetch counters
-        output.push_str("# HELP dfe_fetcher_fetches_total Total number of fetch operations\n");
+        // Fetch counters (labelled by status)
+        output.push_str("# HELP dfe_fetcher_fetches_total Fetch operations by source and status\n");
         output.push_str("# TYPE dfe_fetcher_fetches_total counter\n");
         output.push_str(&format!(
-            "dfe_fetcher_fetches_total {}\n",
-            self.fetches_total.load(Ordering::Relaxed)
-        ));
-
-        output.push_str("# HELP dfe_fetcher_fetches_success_total Successful fetch operations\n");
-        output.push_str("# TYPE dfe_fetcher_fetches_success_total counter\n");
-        output.push_str(&format!(
-            "dfe_fetcher_fetches_success_total {}\n",
+            "dfe_fetcher_fetches_total{{status=\"success\"}} {}\n",
             self.fetches_success.load(Ordering::Relaxed)
         ));
-
-        output.push_str("# HELP dfe_fetcher_fetches_error_total Failed fetch operations\n");
-        output.push_str("# TYPE dfe_fetcher_fetches_error_total counter\n");
         output.push_str(&format!(
-            "dfe_fetcher_fetches_error_total {}\n",
+            "dfe_fetcher_fetches_total{{status=\"error\"}} {}\n",
             self.fetches_error.load(Ordering::Relaxed)
         ));
 
@@ -746,13 +758,12 @@ mod tests {
     fn test_metrics_counters() {
         let metrics = Metrics::new();
 
-        metrics.inc_fetches_total();
-        metrics.inc_fetches_total();
         metrics.inc_fetches_success();
+        metrics.inc_fetches_error();
 
         let output = metrics.render();
-        assert!(output.contains("dfe_fetcher_fetches_total 2"));
-        assert!(output.contains("dfe_fetcher_fetches_success_total 1"));
+        assert!(output.contains("dfe_fetcher_fetches_total{status=\"success\"} 1"));
+        assert!(output.contains("dfe_fetcher_fetches_total{status=\"error\"} 1"));
     }
 
     #[test]

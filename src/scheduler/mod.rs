@@ -144,7 +144,6 @@ impl Scheduler {
                     }
                 };
 
-                metrics.inc_fetches_total();
                 metrics.inc_active_fetches();
 
                 // Read cursor to compute fetch window
@@ -172,7 +171,7 @@ impl Scheduler {
                         metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
 
                         let total_records: usize = results.iter().map(|r| r.records.len()).sum();
-                        metrics.inc_fetches_success();
+                        metrics.inc_fetches_success_for(&source.cursor_prefix());
                         metrics.add_records_fetched(total_records as u64);
 
                         if total_records > 0 {
@@ -201,7 +200,7 @@ impl Scheduler {
                         let code = crate::source::classify_api_error(&e);
                         metrics.inc_api_error(&source.cursor_prefix(), code);
 
-                        metrics.inc_fetches_error();
+                        metrics.inc_fetches_error_for(&source.cursor_prefix());
                         error!(
                             source = source.name(),
                             error = %e,
