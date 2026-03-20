@@ -348,11 +348,10 @@ impl ContainerExtractor {
                     tokio::select! {
                         _ = interval.tick() => {
                             self.running.store(true, Ordering::Relaxed);
-                            self.metrics.inc_extractor_runs_total();
                             match self.run_scheduled().await {
-                                Ok(()) => self.metrics.inc_extractor_runs_success(),
+                                Ok(()) => self.metrics.inc_extractor_run_for(&name, "success"),
                                 Err(e) => {
-                                    self.metrics.inc_extractor_runs_error();
+                                    self.metrics.inc_extractor_run_for(&name, "error");
                                     error!(name = %name, error = %e, "Scheduled extraction failed");
                                 }
                             }
@@ -369,15 +368,14 @@ impl ContainerExtractor {
                 loop {
                     let start = std::time::Instant::now();
                     self.running.store(true, Ordering::Relaxed);
-                    self.metrics.inc_extractor_runs_total();
 
                     match self.run_continuous().await {
                         Ok(()) => {
-                            self.metrics.inc_extractor_runs_success();
+                            self.metrics.inc_extractor_run_for(&name, "success");
                             info!(name = %name, "Continuous extractor exited normally");
                         }
                         Err(e) => {
-                            self.metrics.inc_extractor_runs_error();
+                            self.metrics.inc_extractor_run_for(&name, "error");
                             error!(name = %name, error = %e, attempt, "Continuous extractor failed");
                         }
                     }

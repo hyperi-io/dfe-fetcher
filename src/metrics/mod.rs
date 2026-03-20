@@ -175,6 +175,15 @@ impl Metrics {
             "dfe_fetcher_api_errors_total",
             "Cloud API errors by source and category"
         );
+        metrics::describe_counter!(
+            "dfe_fetcher_ingest_requests_total",
+            "Ingest HTTP requests by status"
+        );
+        metrics::describe_histogram!(
+            "dfe_fetcher_ingest_duration_seconds",
+            metrics::Unit::Seconds,
+            "Ingest request processing latency"
+        );
 
         Self {
             dfe: Some(DfeMetrics::register()),
@@ -340,6 +349,58 @@ impl Metrics {
             .fetch_add(count, Ordering::Relaxed);
         if self.dfe.is_some() {
             metrics::counter!("dfe_fetcher_extractor_records_total").increment(count);
+        }
+    }
+
+    /// Increment extractor runs counter with name and status labels.
+    ///
+    /// Emits `dfe_fetcher_extractor_runs_total{name="..",status=".."}` via the
+    /// `metrics` crate when DfeMetrics is active. Also updates local atomics
+    /// for the aggregate counters.
+    #[inline]
+    pub fn inc_extractor_run_for(&self, name: &str, status: &str) {
+        self.extractor_runs_total.fetch_add(1, Ordering::Relaxed);
+        match status {
+            "success" => {
+                self.extractor_runs_success.fetch_add(1, Ordering::Relaxed);
+            }
+            "error" => {
+                self.extractor_runs_error.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+        if self.dfe.is_some() {
+            metrics::counter!(
+                "dfe_fetcher_extractor_runs_total",
+                "name" => name.to_string(),
+                "status" => status.to_string()
+            )
+            .increment(1);
+        }
+    }
+
+    // ==========================================================================
+    // Ingest metrics
+    // ==========================================================================
+
+    /// Increment ingest request counter with a status label.
+    #[inline]
+    pub fn inc_ingest_request(&self, status: &str) {
+        if self.dfe.is_some() {
+            metrics::counter!(
+                "dfe_fetcher_ingest_requests_total",
+                "status" => status.to_string()
+            )
+            .increment(1);
+        }
+    }
+
+    /// Record ingest request processing latency.
+    #[inline]
+    pub fn record_ingest_duration(&self, duration: std::time::Duration) {
+        if self.dfe.is_some() {
+            metrics::histogram!("dfe_fetcher_ingest_duration_seconds")
+                .record(duration.as_secs_f64());
         }
     }
 
