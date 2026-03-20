@@ -173,7 +173,11 @@ async fn handle_ingest(
     Path(source): Path<String>,
     body: Bytes,
 ) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
     if body.is_empty() {
+        state.metrics.record_ingest_duration(start.elapsed());
+        state.metrics.inc_ingest_request("error");
         return StatusCode::BAD_REQUEST;
     }
 
@@ -190,8 +194,14 @@ async fn handle_ingest(
     state.metrics.add_records_fetched(1);
 
     match state.pipeline.deliver_ingest(&topic, body).await {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            state.metrics.record_ingest_duration(start.elapsed());
+            state.metrics.inc_ingest_request("success");
+            StatusCode::OK
+        }
         Err(e) => {
+            state.metrics.record_ingest_duration(start.elapsed());
+            state.metrics.inc_ingest_request("error");
             error!(source = %source, error = %e, "Failed to deliver ingest message");
             StatusCode::SERVICE_UNAVAILABLE
         }
@@ -206,7 +216,11 @@ async fn handle_ingest_with_topic(
     Path((source, topic)): Path<(String, String)>,
     body: Bytes,
 ) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+
     if body.is_empty() {
+        state.metrics.record_ingest_duration(start.elapsed());
+        state.metrics.inc_ingest_request("error");
         return StatusCode::BAD_REQUEST;
     }
 
@@ -220,8 +234,14 @@ async fn handle_ingest_with_topic(
     state.metrics.add_records_fetched(1);
 
     match state.pipeline.deliver_ingest(&topic, body).await {
-        Ok(()) => StatusCode::OK,
+        Ok(()) => {
+            state.metrics.record_ingest_duration(start.elapsed());
+            state.metrics.inc_ingest_request("success");
+            StatusCode::OK
+        }
         Err(e) => {
+            state.metrics.record_ingest_duration(start.elapsed());
+            state.metrics.inc_ingest_request("error");
             error!(source = %source, topic = %topic, error = %e, "Failed to deliver ingest message");
             StatusCode::SERVICE_UNAVAILABLE
         }
