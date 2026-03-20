@@ -340,9 +340,9 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let bm = state.buffer_manager();
-                        let used = bm.total_bytes();
-                        let limit = bm.memory_limit();
+                        let mg = state.memory_guard();
+                        let used = mg.current_bytes();
+                        let limit = mg.limit_bytes();
                         scaling.set_component("buffer_depth", used as f64);
                         scaling.set_memory(used, limit);
                         scaling.set_circuit_open(!state.output_healthy());
