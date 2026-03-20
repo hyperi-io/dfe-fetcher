@@ -227,7 +227,7 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
 
     // Install MetricsManager (Prometheus recorder) BEFORE creating Metrics::with_dfe()
     // so that all subsequent metrics::counter!/gauge! calls go through the recorder.
-    let metrics_manager = Arc::new(MetricsManager::new(""));
+    let metrics_manager = Arc::new(MetricsManager::new("dfe_fetcher"));
 
     // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
     let metrics = Arc::new(Metrics::with_dfe());
