@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "dfe-fetcher"
-version = "1.1.0-dev.5"
+version = "1.1.2-dev.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1655,9 +1655,9 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "1.16.5"
+version = "1.16.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42d349fbc90741297b2237d0d0c00286c3114cbcc7ab286079ac8326a04889cd"
+checksum = "3d2b08ab0a283e3c141b9179912777030357ee14eac22b23e1376203aa26af23"
 dependencies = [
  "async-trait",
  "axum 0.8.8",

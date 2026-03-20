@@ -6,7 +6,17 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
-None.
+### rustlib Migration (Eliminate Bespoke Code)
+
+Audit performed against rustlib v1.16.6. These items replace hand-rolled code with rustlib equivalents.
+
+- [ ] **Migrate metrics to MetricsManager** — Replace 450-line hand-rolled `src/metrics/mod.rs` (AtomicU64 + render()) with rustlib `MetricsManager`. Keep `DfeMetrics` dual-emit (already wired). The hand-rolled `/metrics` renderer can be replaced by `MetricsManager::start_server()` Prometheus endpoint.
+- [ ] **Migrate HTTP server to rustlib HttpServer** — Replace bespoke axum metrics+health server in `src/main.rs` with rustlib `HttpServer` (built-in `/health/live`, `/health/ready`, `/metrics`). Keep ingest server separate (domain-specific auth).
+- [ ] **Wire MemoryGuard** — BufferManager was deleted but `MemoryGuard` from rustlib `memory` feature is not yet integrated. Wire `MemoryGuard::new(config)` into pipeline for cgroup-aware memory pressure detection. Remove any remaining manual memory tracking.
+- [ ] **Wire ScalingPressure** — Config `scaling: ScalingPressureConfig` exists but calculator not instantiated. Wire `ScalingPressure::new(&config)` and expose pressure score via `/scaling/pressure` endpoint for KEDA.
+- [ ] **Replace RateWindow** — Hand-rolled `RateWindow` in metrics (65 lines) duplicates `scaling::rate_window::RateWindow` in rustlib. Replace.
+- [ ] **Deprecate legacy KafkaConfig** — Bespoke `KafkaConfig`/`SaslConfig`/`KafkaTlsConfig`/`ProducerConfig` (120 lines) in config.rs exists only for backward compat with legacy `kafka:` config key. Add migration path: log deprecation, document `output.kafka:` (rustlib `KafkaConfig`) as the replacement. Target removal in next major.
+- [ ] **Kafka integration tests** — Existing tests use `KafkaTransport` correctly via `output.rs`. Verify no remaining direct `rdkafka` usage anywhere (should be zero — all via rustlib transport).
 
 ---
 
@@ -40,7 +50,7 @@ None.
 
 9. [x] **Container extractor integration test** — Docker-based test with `alpine` container producing JSON to stdout. 3 tests in `tests/container_integration.rs`.
 
-10. [ ] **Kafka sink integration test** — Use testcontainers or mock Kafka to test produce/flush cycle.
+10. [x] **Kafka integration test** — Dual-mode (Docker/remote) tests in `tests/kafka_integration.rs` and `tests/e2e_kafka.rs`. 5 tests covering cursor roundtrip, transport send, produce-consume, enrichment verification, and cursor-driven FetchWindow.
 
 11. [x] **Benchmarks** — Pipeline enrichment throughput benchmark in `benches/pipeline.rs`.
 
@@ -148,9 +158,11 @@ Plugin system was removed. Three extraction modes remain: native, container, and
 ```
 cargo fmt --check    — verify before push
 cargo clippy -D warn — verify before push
-cargo test           — 137 tests (69 unit + 19 integration + 49 source)
-cargo test --test smoke_cloud -- --ignored  — 8 smoke tests (live cloud APIs)
-cargo test --test container_integration -- --ignored  — 3 container tests (Docker)
+cargo test           — 140 tests (70 unit + 21 integration + 49 source)
+cargo test --test smoke_cloud -- --ignored          — 8 smoke tests (live cloud APIs)
+cargo test --test container_integration -- --ignored — 3 container tests (Docker)
+cargo test --test kafka_integration -- --ignored     — 2 Kafka tests (Docker or remote)
+cargo test --test e2e_kafka -- --ignored             — 3 e2e tests (Docker or remote)
 ```
 
 ---

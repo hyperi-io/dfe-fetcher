@@ -122,13 +122,18 @@ async fn test_e2e_enriched_record_in_kafka() {
     let topic = common::test_topic("e2e-enriched");
 
     // Create a PipelineState with real Kafka output
-    let mut config = Config::default();
-    config.output = OutputConfig {
-        output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
-        grpc: None,
+    let config = Config {
+        output: OutputConfig {
+            output_type: "kafka".to_string(),
+            kafka: Some(kf.to_rustlib_config()),
+            grpc: None,
+        },
+        kafka: dfe_fetcher::config::KafkaConfig {
+            topic_suffix: String::new(), // no suffix — use topic as-is
+            ..Default::default()
+        },
+        ..Default::default()
     };
-    config.kafka.topic_suffix = String::new(); // no suffix — use topic as-is
 
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
