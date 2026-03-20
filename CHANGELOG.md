@@ -1,3 +1,13 @@
+## [1.1.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.2...v1.1.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* bump rustlib to >=1.16.6, fix clippy, add rustlib migration roadmap ([81ec6c9](https://github.com/hyperi-io/dfe-fetcher/commit/81ec6c962f67b6191c9f1adb02d22769696dc291))
+* register all metrics with metrics crate, deprecate legacy KafkaConfig ([012a319](https://github.com/hyperi-io/dfe-fetcher/commit/012a31915e575b42e4be1d92dc706fcbb24778fd))
+* replace hand-rolled RateWindow with rustlib scaling::RateWindow ([9602f44](https://github.com/hyperi-io/dfe-fetcher/commit/9602f4411c5e5436a42acab246fa917074396f27))
+* standardise test infra with dual-mode common module ([2432195](https://github.com/hyperi-io/dfe-fetcher/commit/243219585108ef79f7ee3a0973c7e8cadbec5b1e))
+
 ## [1.1.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.1...v1.1.2) (2026-03-20)
 
 
