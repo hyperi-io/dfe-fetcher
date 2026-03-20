@@ -23,7 +23,7 @@ doctest = false
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=1.16.7", features = [
+hyperi-rustlib = { version = ">=1.18.0", features = [
     "config",
     "config-reload",
     "logger",
