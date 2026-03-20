@@ -6,7 +6,12 @@
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
-//! Integration tests requiring a running Kafka broker at localhost:9092.
+//! Integration tests requiring a running Kafka broker.
+//!
+//! Supports two modes via `TEST_MODE` env var:
+//!
+//! - `remote` (default) — uses DevEx Kafka cluster via `KAFKA_*` env vars
+//! - `docker` — uses local Docker Kafka (pending rustlib test infra)
 //!
 //! Run with: `cargo test --test kafka_integration -- --ignored`
 
@@ -18,25 +23,68 @@ use dfe_fetcher::config::{CursorConfig, OutputConfig};
 use dfe_fetcher::cursor::kafka::KafkaCursorStore;
 use dfe_fetcher::cursor::{CursorStore, CursorValue};
 
+/// Build a KafkaConfig from env vars, respecting TEST_MODE.
+///
+/// - `remote`: reads `KAFKA_BROKERS`, `KAFKA_SASL_*`, `KAFKA_SECURITY_PROTOCOL`
+/// - `docker`: uses `DOCKER_KAFKA_BROKERS` (default `localhost:9092`), plaintext
+fn kafka_config_from_env() -> hyperi_rustlib::transport::KafkaConfig {
+    // Load .env if present (won't override existing env vars)
+    let _ = dotenvy::dotenv();
+
+    let test_mode = std::env::var("TEST_MODE").unwrap_or_else(|_| "remote".to_string());
+
+    if test_mode == "docker" {
+        let brokers =
+            std::env::var("DOCKER_KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_string());
+        hyperi_rustlib::transport::KafkaConfig {
+            brokers: brokers.split(',').map(|s| s.trim().to_string()).collect(),
+            security_protocol: "plaintext".to_string(),
+            client_id: "dfe-fetcher-test".to_string(),
+            group: "dfe-fetcher-test".to_string(),
+            ..Default::default()
+        }
+    } else {
+        // Remote mode — read from KAFKA_* env vars
+        let brokers =
+            std::env::var("KAFKA_BROKERS").expect("KAFKA_BROKERS required for TEST_MODE=remote");
+        let mut config = hyperi_rustlib::transport::KafkaConfig {
+            brokers: brokers.split(',').map(|s| s.trim().to_string()).collect(),
+            client_id: "dfe-fetcher-test".to_string(),
+            group: "dfe-fetcher-test".to_string(),
+            ..Default::default()
+        };
+
+        if let Ok(protocol) = std::env::var("KAFKA_SECURITY_PROTOCOL") {
+            config.security_protocol = protocol.to_lowercase();
+        }
+        if let Ok(mechanism) = std::env::var("KAFKA_SASL_MECHANISM") {
+            config.sasl_mechanism = Some(mechanism);
+        }
+        if let Ok(user) = std::env::var("KAFKA_SASL_USER") {
+            config.sasl_username = Some(user);
+        }
+        if let Ok(password) = std::env::var("KAFKA_SASL_PASSWORD") {
+            config.sasl_password = Some(password);
+        }
+
+        config
+    }
+}
+
+/// Test topic name with unique suffix to avoid collisions.
+fn test_topic(base: &str) -> String {
+    let prefix = std::env::var("TEST_TOPIC_PREFIX").unwrap_or_else(|_| "dfe-fetcher-test".into());
+    format!("{prefix}-{base}-{}", Utc::now().timestamp_millis())
+}
+
 /// Verify the KafkaCursorStore can write, read, and delete cursors
 /// through a real Kafka broker.
 #[tokio::test]
-#[ignore = "requires Kafka at localhost:9092"]
+#[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
 async fn test_cursor_store_kafka_roundtrip() {
-    let unique_topic = format!(
-        "dfe-fetcher-cursor-test-{}",
-        Utc::now().timestamp_millis()
-    );
-
-    let kafka_config = hyperi_rustlib::transport::KafkaConfig {
-        brokers: vec!["localhost:9092".to_string()],
-        group: "cursor-roundtrip-test".to_string(),
-        client_id: "cursor-roundtrip-test".to_string(),
-        ..Default::default()
-    };
-
+    let kafka_config = kafka_config_from_env();
     let cursor_config = CursorConfig {
-        kafka_topic: unique_topic,
+        kafka_topic: test_topic("cursor"),
         ..Default::default()
     };
 
@@ -80,21 +128,10 @@ async fn test_cursor_store_kafka_roundtrip() {
 /// Verify that OutputManager can send a message to Kafka without error.
 /// This confirms the Kafka producer initialisation and basic send path work.
 #[tokio::test]
-#[ignore = "requires Kafka at localhost:9092"]
+#[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
 async fn test_output_transport_kafka_send() {
-    let unique_topic = format!(
-        "dfe-fetcher-output-test-{}",
-        Utc::now().timestamp_millis()
-    );
-
-    // Configure output with a Kafka transport pointing at localhost:9092
-    let kafka_config = hyperi_rustlib::transport::KafkaConfig {
-        brokers: vec!["localhost:9092".to_string()],
-        group: "output-send-test".to_string(),
-        client_id: "output-send-test".to_string(),
-        topics: vec![unique_topic.clone()],
-        ..Default::default()
-    };
+    let kafka_config = kafka_config_from_env();
+    let topic = test_topic("output");
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
@@ -110,7 +147,7 @@ async fn test_output_transport_kafka_send() {
 
     // Send a test message
     let payload = br#"{"test": true, "source": "integration_test"}"#;
-    let result = output.send_all(&unique_topic, payload).await;
+    let result = output.send_all(&topic, payload).await;
     assert!(
         result.is_ok(),
         "send_all should succeed: {:?}",
@@ -118,7 +155,10 @@ async fn test_output_transport_kafka_send() {
     );
 
     // Verify transport reports healthy
-    assert!(output.any_healthy(), "transport should be healthy after send");
+    assert!(
+        output.any_healthy(),
+        "transport should be healthy after send"
+    );
 
     // Graceful close
     output.close_all().await;

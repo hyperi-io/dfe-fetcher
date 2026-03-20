@@ -379,6 +379,7 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     let cursor_store: Option<Arc<dyn cursor::CursorStore>> = match cursor::create_cursor_store(
         &config.cursor,
         &config.output,
+        &config.kafka,
     )
     .await
     {

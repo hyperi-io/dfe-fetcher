@@ -606,7 +606,7 @@ impl AwsSource {
             .and_then(|v| v.as_i64())
             .unwrap_or(300);
 
-        let stat = service
+        let statistic = service
             .config
             .get("stat")
             .and_then(|v| v.as_str())
@@ -670,7 +670,7 @@ impl AwsSource {
                                     "Dimensions": dimensions
                                 },
                                 "Period": period_secs,
-                                "Stat": stat
+                                "Stat": statistic
                             }
                         }));
                         query_meta.push((namespace.clone(), metric_name, dimensions, unit));
@@ -762,9 +762,9 @@ impl AwsSource {
 
         // Build output records based on format
         let all_records = if output_format == "otlp" {
-            self.build_otlp_metrics(&data_points, stat)
+            self.build_otlp_metrics(&data_points, statistic)
         } else {
-            self.build_json_metrics(&data_points, stat)
+            self.build_json_metrics(&data_points, statistic)
         };
 
         info!(
