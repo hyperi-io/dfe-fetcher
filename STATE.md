@@ -115,7 +115,14 @@ Native Rust fetcher that:
 
 ## External Dependencies
 
-- **hyperi-rustlib** — Config cascade, secrets, logger, metrics, Transport trait (Kafka + gRPC), tiered-sink, config reload, expression (CEL filtering), CLI framework
+- **hyperi-rustlib** — Config cascade, secrets, logger, metrics, Transport trait (Kafka + gRPC), tiered-sink, config reload, expression (CEL filtering), CLI framework, MemoryGuard, ScalingPressure, DfeMetrics
+
+### CRITICAL: hyperi-rustlib Usage Rules
+
+- **ALWAYS use the crates.io release** — `hyperi-rustlib = { version = ">=X.Y.Z", features = [...] }` in Cargo.toml
+- **NEVER add `path = "/projects/hyperi-rustlib"` to Cargo.toml** — local path overrides break CI and other developers
+- **Source is at `/projects/hyperi-rustlib`** for reading API docs and checking available features — READ ONLY, never link to it
+- **To test unreleased rustlib changes:** publish a new version to crates.io first, then bump the version here
 - **AWS APIs** — CloudTrail, GuardDuty, SecurityHub, Config (SigV4 signing via reqsign)
 - **Azure APIs** — Activity Log, Defender, Sentinel, Entra ID (Microsoft Graph + Azure Management)
 - **M365 APIs** — Office 365 Management Activity API, Microsoft Graph Security
