@@ -1,3 +1,11 @@
+## [1.1.2-dev.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.1...v1.1.2-dev.1) (2026-03-20)
+
+
+### Bug Fixes
+
+* GA blockers — FetchWindow, cursor fallback, integration tests, .env ([eba3026](https://github.com/hyperi-io/dfe-fetcher/commit/eba3026ab78cdcc6d2656fac0322b25e3f31f457))
+* wire FetchWindow into all source implementations for cursor-based incremental fetching ([f547795](https://github.com/hyperi-io/dfe-fetcher/commit/f547795dc846bdab883bf3095ee84b26836d006d))
+
 ## [1.1.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.0...v1.1.1) (2026-03-20)
 
 
