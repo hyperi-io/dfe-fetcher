@@ -28,7 +28,7 @@ This is the **single source of truth** for all tasks and progress.
 - [x] **Wire ScalingPressure** — Integrated via rustlib `scaling` feature with KEDA endpoint
 - [x] **Replace RateWindow** — Using rustlib `scaling::RateWindow`
 - [x] **Kafka integration tests** — Verified zero direct `rdkafka` usage, all via rustlib transport
-- [ ] **Deprecate legacy KafkaConfig** — Bespoke `KafkaConfig`/`SaslConfig`/`KafkaTlsConfig`/`ProducerConfig` in config.rs kept for backward compat. Log deprecation, document `output.kafka:` as replacement. Target removal in next major.
+- [x] **Deprecate legacy KafkaConfig** — Runtime warning logged at startup. `output.topic_suffix` added as forward migration path. Doc comment marks structs deprecated. Target removal in next major.
 
 ---
 
