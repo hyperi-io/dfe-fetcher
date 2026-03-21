@@ -44,6 +44,7 @@ async fn test_e2e_produce_consume_roundtrip() {
         output_type: "kafka".to_string(),
         kafka: Some(kf.to_rustlib_config()),
         grpc: None,
+        topic_suffix: None,
     };
     let legacy_kafka = dfe_fetcher::config::KafkaConfig::default();
     let output = dfe_fetcher::output::OutputManager::new(&output_config, &legacy_kafka)
@@ -127,10 +128,7 @@ async fn test_e2e_enriched_record_in_kafka() {
             output_type: "kafka".to_string(),
             kafka: Some(kf.to_rustlib_config()),
             grpc: None,
-        },
-        kafka: dfe_fetcher::config::KafkaConfig {
-            topic_suffix: String::new(), // no suffix — use topic as-is
-            ..Default::default()
+            topic_suffix: Some(String::new()), // no suffix — use topic as-is
         },
         ..Default::default()
     };
