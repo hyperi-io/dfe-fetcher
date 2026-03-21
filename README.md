@@ -20,7 +20,7 @@ Vector.dev Extractors (gRPC)
 Pipeline (enrich + route)
            |
            v
-Kafka Sink (TieredSink)
+Output Transport (Kafka / gRPC)
 ```
 
 ## Features
