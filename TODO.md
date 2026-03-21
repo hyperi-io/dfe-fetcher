@@ -6,17 +6,29 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
-### rustlib Migration (Eliminate Bespoke Code)
+### Metrics Standard Migration (DFE-METRICS-MIGRATION-FETCHER.md)
 
-Audit performed against rustlib v1.16.6. These items replace hand-rolled code with rustlib equivalents.
+- [x] Bump rustlib to >=1.18.0
+- [x] Fix MetricsManager namespace from `""` to `"dfe_fetcher"`
+- [x] Rename all fetcher metrics to `dfe_fetcher_*` prefix (namespace collision fixed)
+- [x] Fix counters missing `_total` suffix
+- [x] Merge fetches_success/error into `dfe_fetcher_fetches_total{source, status}` labels
+- [x] Add `dfe_fetcher_fetch_duration_seconds` histogram (per-source)
+- [x] Add `dfe_fetcher_cursor_age_seconds` gauge (data staleness SLO)
+- [x] Add `dfe_fetcher_api_errors_total` with `source` + `code` labels
+- [x] Add `dfe_fetcher_ingest_requests_total` + `dfe_fetcher_ingest_duration_seconds`
+- [x] Add `dfe_fetcher_extractor_runs_total` with `name` + `status` labels
+- [x] Wire all DfeMetrics methods (records, transport, pipeline, scaling, auth)
+- [ ] **Adopt metrics-dfe groups** (AppMetrics, SinkMetrics, BackpressureMetrics) — BLOCKED: `metrics-dfe` feature not yet published on crates.io. Adopt when rustlib ships it.
+- [ ] **Configure histogram buckets** — Using defaults. Will configure tuned buckets when metrics-dfe groups land.
 
-- [ ] **Migrate metrics to MetricsManager** — Replace 450-line hand-rolled `src/metrics/mod.rs` (AtomicU64 + render()) with rustlib `MetricsManager`. Keep `DfeMetrics` dual-emit (already wired). The hand-rolled `/metrics` renderer can be replaced by `MetricsManager::start_server()` Prometheus endpoint.
-- [ ] **Migrate HTTP server to rustlib HttpServer** — Replace bespoke axum metrics+health server in `src/main.rs` with rustlib `HttpServer` (built-in `/health/live`, `/health/ready`, `/metrics`). Keep ingest server separate (domain-specific auth).
-- [ ] **Wire MemoryGuard** — BufferManager was deleted but `MemoryGuard` from rustlib `memory` feature is not yet integrated. Wire `MemoryGuard::new(config)` into pipeline for cgroup-aware memory pressure detection. Remove any remaining manual memory tracking.
-- [ ] **Wire ScalingPressure** — Config `scaling: ScalingPressureConfig` exists but calculator not instantiated. Wire `ScalingPressure::new(&config)` and expose pressure score via `/scaling/pressure` endpoint for KEDA.
-- [ ] **Replace RateWindow** — Hand-rolled `RateWindow` in metrics (65 lines) duplicates `scaling::rate_window::RateWindow` in rustlib. Replace.
-- [ ] **Deprecate legacy KafkaConfig** — Bespoke `KafkaConfig`/`SaslConfig`/`KafkaTlsConfig`/`ProducerConfig` (120 lines) in config.rs exists only for backward compat with legacy `kafka:` config key. Add migration path: log deprecation, document `output.kafka:` (rustlib `KafkaConfig`) as the replacement. Target removal in next major.
-- [ ] **Kafka integration tests** — Existing tests use `KafkaTransport` correctly via `output.rs`. Verify no remaining direct `rdkafka` usage anywhere (should be zero — all via rustlib transport).
+### Remaining rustlib Migration
+
+- [x] **Wire MemoryGuard** — Integrated via rustlib `memory` feature (cgroup-aware)
+- [x] **Wire ScalingPressure** — Integrated via rustlib `scaling` feature with KEDA endpoint
+- [x] **Replace RateWindow** — Using rustlib `scaling::RateWindow`
+- [x] **Kafka integration tests** — Verified zero direct `rdkafka` usage, all via rustlib transport
+- [ ] **Deprecate legacy KafkaConfig** — Bespoke `KafkaConfig`/`SaslConfig`/`KafkaTlsConfig`/`ProducerConfig` in config.rs kept for backward compat. Log deprecation, document `output.kafka:` as replacement. Target removal in next major.
 
 ---
 
