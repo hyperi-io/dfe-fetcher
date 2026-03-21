@@ -88,6 +88,7 @@ async fn test_output_transport_kafka_send() {
         output_type: "kafka".to_string(),
         kafka: Some(kf.to_rustlib_config()),
         grpc: None,
+        topic_suffix: None,
     };
 
     let legacy_kafka = dfe_fetcher::config::KafkaConfig::default();
