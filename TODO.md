@@ -30,6 +30,12 @@ This is the **single source of truth** for all tasks and progress.
 - [x] **Kafka integration tests** — Verified zero direct `rdkafka` usage, all via rustlib transport
 - [x] **Deprecate legacy KafkaConfig** — Runtime warning logged at startup. `output.topic_suffix` added as forward migration path. Doc comment marks structs deprecated. Target removal in next major.
 
+### Upcoming
+
+- [ ] **Update hyperi-ai submodule** — pull latest standards and skills
+- [ ] **Documentation review** — run full doco review skill against codebase, fix stale content
+- [ ] **Rebuild CI with updated hyperi-ci** — hyperi-ci has significant updates (prod/test change separation). Re-run full CI pipeline, verify test/build/release workflow still works end-to-end.
+
 ---
 
 ## Remaining Work
