@@ -151,7 +151,7 @@ src/
 │   └── vector/       # Vector.dev gRPC integration via rustlib
 ├── ingest/           # HTTP ingest server (axum) with bearer token auth
 │   └── mod.rs        # POST /ingest/:source, GET /health
-├── lib.rs            # Public module exports, #![forbid(unsafe_code)]
+├── lib.rs            # Public module exports (unsafe_code = "deny" in Cargo.toml lints)
 ├── main.rs           # CLI entry point (clap), signal handling (SIGINT+SIGTERM)
 ├── metrics/          # DfeMetrics dual-emit + MetricsManager (dfe_fetcher_* prefix)
 │   └── mod.rs        # Metrics struct, DfeMetrics wiring, hand-rolled render() fallback
@@ -170,15 +170,24 @@ src/
 tests/
 ├── common/           # Shared test infrastructure (dual-mode Docker/remote)
 │   └── mod.rs        # TestMode, KafkaTestConfig, skip_if_no_kafka! macro
-├── container_integration.rs  # Docker container extractor tests (3 tests, requires Docker)
-├── e2e_kafka.rs      # End-to-end Kafka tests (produce/consume, enrichment, cursor)
-├── integration.rs    # Config, enrichment, metrics, credentials (21 tests)
-├── kafka_integration.rs  # Kafka cursor store + transport tests (2 tests)
-├── smoke_cloud.rs    # Live cloud API tests (8 tests, requires credentials)
-├── source_aws.rs     # AWS wiremock + disabled/health-check tests
-├── source_azure.rs   # Azure wiremock + disabled/health-check tests
-├── source_gcp.rs     # GCP wiremock + disabled/health-check tests
-└── source_m365.rs    # M365 wiremock + disabled/health-check tests
+├── integration/      # Integration tests (single binary, wiremock + unit-style)
+│   ├── main.rs       # Test binary entry point (mod declarations)
+│   ├── config.rs     # Config validation, env overrides, filter expressions
+│   ├── credentials.rs # Credential resolver tests
+│   ├── deployment.rs # DeploymentContract, topic suffix, cursor selection
+│   ├── pipeline.rs   # Enrichment, CEL filtering, metrics rendering
+│   ├── source_aws.rs # AWS wiremock tests (6 tests)
+│   ├── source_azure.rs # Azure wiremock tests (8 tests)
+│   ├── source_gcp.rs # GCP wiremock tests (7 tests)
+│   └── source_m365.rs # M365 wiremock tests (10 tests)
+├── e2e/              # End-to-end tests (requires Docker/Kafka, #[ignore])
+│   ├── main.rs       # Test binary entry point
+│   ├── container.rs  # Docker container extractor tests (3 tests)
+│   ├── kafka.rs      # Kafka produce/consume roundtrip + enrichment (3 tests)
+│   ├── kafka_cursor.rs # Kafka cursor store + transport tests (2 tests)
+│   └── smoke_cloud.rs # Live cloud API tests (8 tests, requires credentials)
+├── fixtures/         # Test data files (empty — fixtures inline for now)
+└── smoke.rs          # Mandatory startup smoke test (config, metrics, pipeline init)
 
 benches/
 └── pipeline.rs       # Pipeline enrichment throughput benchmark
