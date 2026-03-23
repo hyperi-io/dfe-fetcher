@@ -32,9 +32,12 @@ This is the **single source of truth** for all tasks and progress.
 
 ### Upcoming
 
-- [ ] **Update hyperi-ai submodule** — pull latest standards and skills
 - [ ] **Documentation review** — run full doco review skill against codebase, fix stale content
 - [ ] **Rebuild CI with updated hyperi-ci** — hyperi-ci has significant updates (prod/test change separation). Re-run full CI pipeline, verify test/build/release workflow still works end-to-end.
+- [ ] **Wire FetchWindow into sources** — all 4 sources currently ignore the `_window` parameter. Each source's time-window logic needs updating to use `window.start`/`window.end` instead of hardcoded lookbacks. Cursors don't actually work end-to-end until this is done.
+- [ ] **Cursor store fallback for legacy Kafka config** — `create_cursor_store` doesn't fall back to the legacy `kafka:` section when `output.kafka` is `None`. Needs the same legacy mapping as `OutputManager`.
+- [ ] **Adopt metrics-dfe groups** — BLOCKED: `metrics-dfe` feature not yet published. Adopt when rustlib ships AppMetrics/SinkMetrics/BackpressureMetrics.
+- [ ] **Deprecate legacy KafkaConfig** — target removal in next major version
 
 ---
 
@@ -66,11 +69,17 @@ This is the **single source of truth** for all tasks and progress.
 
 8. [x] **Wiremock source tests** — 31 wiremock tests across all 4 sources (AWS 6, Azure 8, GCP 7, M365 10) covering fetch success, pagination, empty responses, error handling, and health checks. URL override fields added to config structs.
 
-9. [x] **Container extractor integration test** — Docker-based test with `alpine` container producing JSON to stdout. 3 tests in `tests/container_integration.rs`.
+9. [x] **Container extractor integration test** — Docker-based test with `alpine` container producing JSON to stdout. 3 tests in `tests/e2e/container.rs`.
 
-10. [x] **Kafka integration test** — Dual-mode (Docker/remote) tests in `tests/kafka_integration.rs` and `tests/e2e_kafka.rs`. 5 tests covering cursor roundtrip, transport send, produce-consume, enrichment verification, and cursor-driven FetchWindow.
+10. [x] **Kafka integration test** — Dual-mode (Docker/remote) tests in `tests/e2e/kafka.rs`. 5 tests covering cursor roundtrip, transport send, produce-consume, enrichment verification, and cursor-driven FetchWindow.
 
 11. [x] **Benchmarks** — Pipeline enrichment throughput benchmark in `benches/pipeline.rs`.
+
+12. [x] **Test restructuring** — Standard layout: `tests/integration/`, `tests/e2e/`, `tests/smoke.rs`, `tests/common/`. Consolidated source tests into single binary.
+
+13. [x] **Startup smoke test** — `tests/smoke.rs` validates `Config::default()`, `Metrics::new()`, `PipelineState::new()`, enrichment, and `DeploymentContract` don't panic.
+
+14. [x] **Backpressure/hot-reload/backoff tests** — Scheduler stall test, hot-reload interval test, container restart backoff unit tests, deployment contract/topic suffix/cursor selection tests.
 
 ### Nice-to-Have
 
@@ -176,11 +185,10 @@ Plugin system was removed. Three extraction modes remain: native, container, and
 ```
 cargo fmt --check    — verify before push
 cargo clippy -D warn — verify before push
-cargo test           — 140 tests (70 unit + 21 integration + 49 source)
-cargo test --test smoke_cloud -- --ignored          — 8 smoke tests (live cloud APIs)
-cargo test --test container_integration -- --ignored — 3 container tests (Docker)
-cargo test --test kafka_integration -- --ignored     — 2 Kafka tests (Docker or remote)
-cargo test --test e2e_kafka -- --ignored             — 3 e2e tests (Docker or remote)
+cargo test           — 141 tests passing (run `cargo test` for count)
+cargo test --test smoke -- --ignored                 — startup smoke test
+cargo test --test e2e -- --ignored                   — 5 Kafka e2e + 3 container tests (Docker)
+cargo test --test integration -- --ignored           — 8 smoke_cloud tests (live cloud APIs)
 ```
 
 ---
