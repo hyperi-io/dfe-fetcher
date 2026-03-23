@@ -1,5 +1,5 @@
 // Project:   dfe-fetcher
-// File:      tests/e2e_kafka.rs
+// File:      tests/e2e/kafka.rs
 // Purpose:   End-to-end tests exercising real Kafka produce + consume
 // Language:  Rust
 //
@@ -9,11 +9,10 @@
 //! End-to-end Kafka tests — produce via OutputManager, consume back, verify.
 //!
 //! These tests exercise the full transport path through a real Kafka broker.
-//! Run with: `TEST_MODE=docker cargo test --test e2e_kafka -- --ignored`
+//! Run with: `TEST_MODE=docker cargo test --test e2e -- --ignored`
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
-mod common;
+use super::common;
+use crate::skip_if_no_kafka;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -112,7 +111,7 @@ async fn test_e2e_produce_consume_roundtrip() {
     let _ = consumer.close().await;
 }
 
-/// Pipeline enrichment → Kafka delivery: verify _timestamp_fetcher and _source_fetcher
+/// Pipeline enrichment -> Kafka delivery: verify _timestamp_fetcher and _source_fetcher
 /// are present in the message received from Kafka.
 #[tokio::test]
 #[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
@@ -185,7 +184,7 @@ async fn test_e2e_enriched_record_in_kafka() {
     let _ = consumer.close().await;
 }
 
-/// Cursor store → FetchWindow integration: write cursor, verify next window starts
+/// Cursor store -> FetchWindow integration: write cursor, verify next window starts
 /// from cursor.last_fetch_end.
 #[tokio::test]
 #[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
@@ -207,7 +206,7 @@ async fn test_e2e_cursor_drives_fetch_window() {
 
     let key = "e2e-instance.aws.cloudtrail";
 
-    // No cursor → default window (scheduler would use default_window_hours)
+    // No cursor -> default window (scheduler would use default_window_hours)
     assert!(store.get(key).await.unwrap().is_none());
 
     // Simulate a successful fetch: write cursor at a known time

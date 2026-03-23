@@ -1,5 +1,5 @@
 // Project:   dfe-fetcher
-// File:      tests/kafka_integration.rs
+// File:      tests/e2e/kafka_cursor.rs
 // Purpose:   Kafka integration tests for cursor store and output transport
 // Language:  Rust
 //
@@ -12,11 +12,10 @@
 //! - `remote` (default) — devex Kafka cluster via `.env`
 //! - `docker` — dfe-docker infra profile (localhost:19092, no auth)
 //!
-//! Run with: `cargo test --test kafka_integration -- --ignored`
+//! Run with: `cargo test --test e2e -- --ignored`
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
-mod common;
+use super::common;
+use crate::skip_if_no_kafka;
 
 use chrono::Utc;
 
