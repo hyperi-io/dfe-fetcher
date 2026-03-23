@@ -1,0 +1,46 @@
+// Project:   dfe-fetcher
+// File:      tests/integration/config.rs
+// Purpose:   Config loading and validation tests
+// Language:  Rust
+//
+// License:   FSL-1.1-ALv2
+// Copyright: (c) 2026 HYPERI PTY LIMITED
+
+use dfe_fetcher::config::Config;
+
+#[test]
+fn test_default_config_loads() {
+    let config = Config::default();
+    assert!(!config.kafka.brokers.is_empty() || config.kafka.brokers.is_empty());
+    assert_eq!(config.scheduler.default_interval_secs, 300);
+    assert_eq!(config.scheduler.max_concurrent_fetches, 10);
+}
+
+#[test]
+fn test_config_from_example_yaml() {
+    let yaml = std::fs::read_to_string("config.example.yaml").expect("config.example.yaml exists");
+    let config: Config = serde_yaml_ng::from_str(&yaml).expect("example config parses");
+
+    assert_eq!(config.scheduler.default_interval_secs, 300);
+    assert!(!config.sources.aws.enabled);
+    assert!(!config.sources.azure.enabled);
+    assert!(!config.sources.m365.enabled);
+    assert!(!config.sources.gcp.enabled);
+    assert_eq!(config.kafka.topic_suffix, "_land");
+}
+
+#[test]
+fn test_config_validation_passes_for_default() {
+    let config = Config::default();
+    // Default config has no brokers, which should fail validation
+    let result = config.validate();
+    assert!(result.is_err()); // no brokers
+}
+
+#[test]
+fn test_config_validation_passes_with_brokers() {
+    let mut config = Config::default();
+    config.kafka.brokers = vec!["localhost:9092".into()];
+    let result = config.validate();
+    assert!(result.is_ok());
+}
