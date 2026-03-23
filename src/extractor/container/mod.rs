@@ -426,6 +426,25 @@ impl ContainerExtractor {
     }
 }
 
+/// Calculate exponential backoff delay for container restart.
+///
+/// Formula: `min(2^attempt, max_backoff_secs)` seconds.
+/// Attempt 1 = 2s, 2 = 4s, 3 = 8s, ... capped at `max_backoff_secs`.
+pub fn restart_backoff_secs(attempt: u32, max_backoff_secs: u64) -> u64 {
+    (1u64 << attempt.min(6)).min(max_backoff_secs)
+}
+
+/// Determine whether backoff counter should reset based on how long the
+/// container ran before failing.
+pub fn should_reset_backoff(run_duration_secs: u64, stable_after_secs: u64) -> bool {
+    run_duration_secs >= stable_after_secs
+}
+
+/// Determine whether restart attempts are exhausted.
+pub fn restart_exhausted(attempt: u32, max_attempts: u32) -> bool {
+    max_attempts > 0 && attempt > max_attempts
+}
+
 #[async_trait]
 impl Extractor for ContainerExtractor {
     fn name(&self) -> &str {
@@ -484,5 +503,140 @@ impl Extractor for ContainerExtractor {
             .await
             .map_err(|e| Error::Source(format!("failed to inspect container: {e}")))?;
         Ok(String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    #[test]
+    fn test_restart_backoff_exponential() {
+        assert_eq!(restart_backoff_secs(1, 60), 2);
+        assert_eq!(restart_backoff_secs(2, 60), 4);
+        assert_eq!(restart_backoff_secs(3, 60), 8);
+        assert_eq!(restart_backoff_secs(4, 60), 16);
+        assert_eq!(restart_backoff_secs(5, 60), 32);
+        assert_eq!(restart_backoff_secs(6, 60), 60); // capped
+        assert_eq!(restart_backoff_secs(7, 60), 60); // still capped
+        assert_eq!(restart_backoff_secs(100, 60), 60); // way past cap
+    }
+
+    #[test]
+    fn test_restart_backoff_low_cap() {
+        assert_eq!(restart_backoff_secs(1, 3), 2);
+        assert_eq!(restart_backoff_secs(2, 3), 3); // capped at 3
+        assert_eq!(restart_backoff_secs(3, 3), 3);
+    }
+
+    #[test]
+    fn test_should_reset_backoff() {
+        assert!(should_reset_backoff(300, 300)); // exactly at threshold
+        assert!(should_reset_backoff(301, 300)); // above threshold
+        assert!(!should_reset_backoff(299, 300)); // below threshold
+        assert!(!should_reset_backoff(0, 300)); // just started
+    }
+
+    #[test]
+    fn test_restart_exhausted() {
+        // max_attempts = 0 means unlimited
+        assert!(!restart_exhausted(1, 0));
+        assert!(!restart_exhausted(100, 0));
+
+        // max_attempts = 5
+        assert!(!restart_exhausted(1, 5));
+        assert!(!restart_exhausted(5, 5));
+        assert!(restart_exhausted(6, 5));
+    }
+
+    #[test]
+    fn test_container_name() {
+        let config = ContainerExtractorConfig {
+            name: "my-tool".to_string(),
+            image: "alpine:latest".to_string(),
+            ..default_container_config()
+        };
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+        let pipeline_config = crate::config::Config::default();
+        let shared = crate::config::SharedConfig::new(pipeline_config);
+        let state = Arc::new(PipelineState::new(shared, metrics.clone(), None).expect("pipeline"));
+        let ext = ContainerExtractor::new(config, state, metrics, shutdown);
+        assert_eq!(ext.container_name(), "dfe-fetcher-my-tool");
+    }
+
+    #[test]
+    fn test_build_run_args_basic() {
+        let config = ContainerExtractorConfig {
+            name: "test".to_string(),
+            image: "alpine:latest".to_string(),
+            command: Some(vec!["echo".to_string(), "hello".to_string()]),
+            ..default_container_config()
+        };
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+        let pipeline_config = crate::config::Config::default();
+        let shared = crate::config::SharedConfig::new(pipeline_config);
+        let state = Arc::new(PipelineState::new(shared, metrics.clone(), None).expect("pipeline"));
+        let ext = ContainerExtractor::new(config, state, metrics, shutdown);
+        let args = ext.build_run_args();
+
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--rm".to_string()));
+        assert!(args.contains(&"alpine:latest".to_string()));
+        assert!(args.contains(&"echo".to_string()));
+        assert!(args.contains(&"hello".to_string()));
+        assert!(args.contains(&"managed-by=dfe-fetcher".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_with_resources() {
+        let config = ContainerExtractorConfig {
+            name: "test".to_string(),
+            image: "alpine:latest".to_string(),
+            memory_limit: Some("512m".to_string()),
+            cpu_limit: Some(1.5),
+            network: Some("dfe-net".to_string()),
+            ..default_container_config()
+        };
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+        let pipeline_config = crate::config::Config::default();
+        let shared = crate::config::SharedConfig::new(pipeline_config);
+        let state = Arc::new(PipelineState::new(shared, metrics.clone(), None).expect("pipeline"));
+        let ext = ContainerExtractor::new(config, state, metrics, shutdown);
+        let args = ext.build_run_args();
+
+        assert!(args.contains(&"--memory".to_string()));
+        assert!(args.contains(&"512m".to_string()));
+        assert!(args.contains(&"--cpus".to_string()));
+        assert!(args.contains(&"1.5".to_string()));
+        assert!(args.contains(&"--network".to_string()));
+        assert!(args.contains(&"dfe-net".to_string()));
+    }
+
+    fn default_container_config() -> ContainerExtractorConfig {
+        ContainerExtractorConfig {
+            name: String::new(),
+            image: String::new(),
+            runtime: None,
+            mode: "scheduled".to_string(),
+            communication: "stdout".to_string(),
+            topic: "test".to_string(),
+            interval_secs: None,
+            env: HashMap::new(),
+            volumes: vec![],
+            network: None,
+            memory_limit: None,
+            cpu_limit: None,
+            command: None,
+            timeout_secs: None,
+            pull_policy: "if-not-present".to_string(),
+            max_restart_attempts: 0,
+            max_restart_backoff_secs: 60,
+            stable_after_secs: 300,
+        }
     }
 }
