@@ -395,6 +395,274 @@ async fn test_cursor_file_store_incremental_window() {
 }
 
 // =============================================================================
+// Startup smoke tests
+// =============================================================================
+
+/// Verify Orchestrator::new() completes without panic for a default config.
+/// This catches init-time panics (missing fields, bad defaults, type mismatches)
+/// that would cause a production outage on deploy.
+#[tokio::test]
+async fn test_startup_orchestrator_boots_with_default_config() {
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    let config = Config::default();
+    let metrics = Arc::new(Metrics::new());
+    let shutdown = CancellationToken::new();
+
+    // Default config has no Kafka brokers, so Orchestrator should start
+    // without output transports (info log: "No output transports configured")
+    let result = dfe_fetcher::pipeline::Orchestrator::new(config, metrics, shutdown.clone()).await;
+
+    assert!(
+        result.is_ok(),
+        "Orchestrator::new should succeed with default config: {:?}",
+        result.err()
+    );
+
+    let orchestrator = result.unwrap();
+    let state = orchestrator.state();
+
+    // Pipeline should be ready (no output = no health check failure)
+    assert!(state.is_ready(), "Pipeline should be ready after boot");
+
+    // Config should be accessible
+    let config = state.config();
+    assert_eq!(config.scheduler.default_interval_secs, 300);
+}
+
+/// Verify PipelineState can be created, used for enrichment, and doesn't panic
+/// when send_to_transports is called without an output manager.
+#[tokio::test]
+async fn test_startup_pipeline_state_no_output() {
+    use std::sync::Arc;
+
+    let config = Config::default();
+    let shared = dfe_fetcher::config::SharedConfig::new(config);
+    let metrics = Arc::new(Metrics::new());
+
+    let state = dfe_fetcher::pipeline::PipelineState::new(shared, metrics, None)
+        .expect("PipelineState::new should succeed");
+
+    // Enrichment should work without output
+    let raw = Bytes::from(r#"{"test":true}"#);
+    let enriched = state.enrich_record(raw, "test.source");
+    let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+    assert_eq!(parsed["test"], true);
+    assert!(parsed["_timestamp_fetcher"].is_number());
+    assert!(parsed["_source_fetcher"].is_string());
+
+    // Deliver should fail gracefully (no output configured)
+    let result = state.deliver_ingest("test-topic", enriched).await;
+    assert!(
+        result.is_err(),
+        "deliver should fail without output transport"
+    );
+}
+
+/// Verify the Scheduler can be created and computes intervals correctly
+/// without needing any runtime resources.
+#[test]
+fn test_startup_scheduler_creation() {
+    let config = Config::default();
+    let shared = dfe_fetcher::config::SharedConfig::new(config);
+    let scheduler_config = dfe_fetcher::config::SchedulerConfig::default();
+
+    let scheduler =
+        dfe_fetcher::scheduler::Scheduler::new(&scheduler_config, shared, None, "test-id".into());
+
+    let interval = scheduler.effective_interval(None);
+    // Default 300s + up to 10% jitter = 300-330s
+    assert!(interval.as_secs() >= 300);
+    assert!(interval.as_secs() <= 330);
+}
+
+/// Verify instance_id derivation works for all source types.
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_startup_instance_id_derivation() {
+    // Explicit ID
+    let config = Config {
+        instance_id: Some("my-instance".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        dfe_fetcher::config::derive_instance_id(&config),
+        "my-instance"
+    );
+
+    // Auto-derive from AWS
+    let config = Config {
+        sources: dfe_fetcher::config::SourcesConfig {
+            aws: dfe_fetcher::config::AwsSourceConfig {
+                enabled: true,
+                region: "us-east-1".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let id = dfe_fetcher::config::derive_instance_id(&config);
+    assert!(id.starts_with("aws-"), "should derive aws- prefix: {id}");
+    assert_eq!(id.len(), 12); // "aws-" + 8 hex chars
+
+    // Auto-derive from M365
+    let config = Config {
+        sources: dfe_fetcher::config::SourcesConfig {
+            m365: dfe_fetcher::config::M365SourceConfig {
+                enabled: true,
+                tenant_id: Some("contoso-tenant".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let id = dfe_fetcher::config::derive_instance_id(&config);
+    assert!(id.starts_with("m365-"), "should derive m365- prefix: {id}");
+
+    // No sources enabled
+    let config = Config::default();
+    assert_eq!(
+        dfe_fetcher::config::derive_instance_id(&config),
+        "dfe-fetcher"
+    );
+}
+
+// =============================================================================
+// Output transport (unit-testable parts)
+// =============================================================================
+
+/// Verify build_rustlib_kafka_config maps legacy config fields correctly.
+#[test]
+fn test_output_legacy_kafka_config_mapping() {
+    use dfe_fetcher::config::{KafkaConfig, KafkaTlsConfig, ProducerConfig, SaslConfig};
+
+    let legacy = KafkaConfig {
+        brokers: vec!["broker1:9092".into(), "broker2:9092".into()],
+        client_id: "my-fetcher".into(),
+        topic_suffix: "_raw".into(),
+        sasl: Some(SaslConfig {
+            enabled: true,
+            mechanism: "SCRAM-SHA-256".into(),
+            username: "user".into(),
+            password: "pass".into(),
+        }),
+        tls: KafkaTlsConfig {
+            enabled: true,
+            ca_file: Some("/etc/ssl/ca.pem".into()),
+            cert_file: None,
+            key_file: None,
+        },
+        producer: ProducerConfig {
+            batch_size: 1_000_000,
+            batch_messages: 5000,
+            linger_ms: 50,
+            compression: "zstd".into(),
+            acks: "all".into(),
+            retries: 3,
+        },
+    };
+
+    let rustlib = dfe_fetcher::output::build_rustlib_kafka_config(&legacy);
+
+    // Basic fields
+    assert_eq!(rustlib.brokers, vec!["broker1:9092", "broker2:9092"]);
+    assert_eq!(rustlib.client_id, "my-fetcher");
+
+    // SASL
+    assert_eq!(rustlib.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
+    assert_eq!(rustlib.sasl_username.as_deref(), Some("user"));
+    assert_eq!(rustlib.sasl_password.as_deref(), Some("pass"));
+    assert_eq!(rustlib.security_protocol, "sasl_ssl");
+
+    // TLS
+    assert_eq!(rustlib.ssl_ca_location.as_deref(), Some("/etc/ssl/ca.pem"));
+
+    // Producer overrides
+    assert_eq!(
+        rustlib
+            .librdkafka_overrides
+            .get("compression.type")
+            .unwrap(),
+        "zstd"
+    );
+    assert_eq!(rustlib.librdkafka_overrides.get("acks").unwrap(), "all");
+    assert_eq!(rustlib.librdkafka_overrides.get("linger.ms").unwrap(), "50");
+}
+
+/// Verify build_rustlib_kafka_config with no SASL (plaintext).
+#[test]
+fn test_output_legacy_kafka_config_no_sasl() {
+    let legacy = dfe_fetcher::config::KafkaConfig::default();
+    let rustlib = dfe_fetcher::output::build_rustlib_kafka_config(&legacy);
+
+    assert_eq!(rustlib.security_protocol, "plaintext");
+    assert!(rustlib.sasl_mechanism.is_none());
+    assert!(rustlib.sasl_username.is_none());
+}
+
+/// Verify OutputConfig helper methods.
+#[test]
+fn test_output_config_mode_helpers() {
+    use dfe_fetcher::config::OutputConfig;
+
+    let kafka = OutputConfig {
+        output_type: "kafka".into(),
+        ..Default::default()
+    };
+    assert!(kafka.includes_kafka());
+    assert!(!kafka.includes_grpc());
+
+    let grpc = OutputConfig {
+        output_type: "grpc".into(),
+        ..Default::default()
+    };
+    assert!(!grpc.includes_kafka());
+    assert!(grpc.includes_grpc());
+
+    let both = OutputConfig {
+        output_type: "both".into(),
+        ..Default::default()
+    };
+    assert!(both.includes_kafka());
+    assert!(both.includes_grpc());
+}
+
+// =============================================================================
+// Error type coverage
+// =============================================================================
+
+/// Verify IntoResponse status code mapping for all error variants.
+#[test]
+fn test_error_into_response_status_codes() {
+    use axum::response::IntoResponse;
+    use dfe_fetcher::error::Error;
+
+    let cases: Vec<(Error, u16)> = vec![
+        (Error::Config("bad".into()), 500),
+        (Error::Source("fail".into()), 502),
+        (Error::Credential("denied".into()), 401),
+        (Error::Pipeline("stall".into()), 500),
+        (Error::Transport("down".into()), 503),
+        (Error::Cursor("lost".into()), 500),
+        (Error::Filter("invalid".into()), 500),
+        (Error::Kafka("timeout".into()), 503),
+    ];
+
+    for (error, expected_status) in cases {
+        let response = error.into_response();
+        assert_eq!(
+            response.status().as_u16(),
+            expected_status,
+            "Error variant should map to HTTP {}",
+            expected_status
+        );
+    }
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
