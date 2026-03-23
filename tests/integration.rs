@@ -663,6 +663,129 @@ fn test_error_into_response_status_codes() {
 }
 
 // =============================================================================
+// Deployment contract
+// =============================================================================
+
+/// Verify the deployment contract generates without panic and has correct values.
+#[test]
+fn test_deployment_contract_structure() {
+    let contract = dfe_fetcher::deployment::contract();
+
+    assert_eq!(contract.app_name, "dfe-fetcher");
+    assert_eq!(contract.binary_name, "dfe-fetcher");
+    assert_eq!(contract.env_prefix, "DFE_FETCHER");
+    assert_eq!(contract.metrics_port, 9090);
+
+    // Health endpoints
+    assert_eq!(contract.health.liveness_path, "/health/live");
+    assert_eq!(contract.health.readiness_path, "/health/ready");
+    assert_eq!(contract.health.metrics_path, "/metrics");
+
+    // Extra ports: ingest (8080) and vector-grpc (6000)
+    assert_eq!(contract.extra_ports.len(), 2);
+    assert_eq!(contract.extra_ports[0].port, 8080);
+    assert_eq!(contract.extra_ports[1].port, 6000);
+
+    // Secret groups: kafka, aws, azure, m365, gcp
+    assert_eq!(contract.secrets.len(), 5);
+    let group_names: Vec<_> = contract
+        .secrets
+        .iter()
+        .map(|s| s.group_name.as_str())
+        .collect();
+    assert!(group_names.contains(&"kafka"));
+    assert!(group_names.contains(&"aws"));
+    assert!(group_names.contains(&"azure"));
+    assert!(group_names.contains(&"m365"));
+    assert!(group_names.contains(&"gcp"));
+
+    // KEDA autoscaling
+    let keda = contract.keda.as_ref().expect("keda should be configured");
+    assert_eq!(keda.min_replicas, 1);
+    assert_eq!(keda.max_replicas, 5);
+
+    // Default config should contain expected keys
+    let default_cfg = contract.default_config.as_ref().expect("default config");
+    assert!(default_cfg["scheduler"]["default_interval_secs"].is_number());
+    assert!(default_cfg["kafka"]["brokers"].is_array());
+}
+
+// =============================================================================
+// Pipeline topic suffix resolution
+// =============================================================================
+
+/// Verify topic suffix is read from OutputConfig (new) or legacy KafkaConfig.
+#[test]
+fn test_topic_suffix_resolution() {
+    use dfe_fetcher::config::{Config, OutputConfig, SharedConfig};
+
+    // New-style: output.topic_suffix takes precedence
+    let config = Config {
+        output: OutputConfig {
+            topic_suffix: Some("_raw".to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let shared = SharedConfig::new(config);
+    let cfg = shared.get();
+    let suffix = cfg
+        .output
+        .topic_suffix
+        .as_deref()
+        .unwrap_or(&cfg.kafka.topic_suffix);
+    assert_eq!(suffix, "_raw");
+
+    // Legacy: falls back to kafka.topic_suffix
+    let config = Config::default();
+    let shared = SharedConfig::new(config);
+    let cfg = shared.get();
+    let suffix = cfg
+        .output
+        .topic_suffix
+        .as_deref()
+        .unwrap_or(&cfg.kafka.topic_suffix);
+    assert_eq!(suffix, "_land");
+}
+
+// =============================================================================
+// Cursor store auto-selection
+// =============================================================================
+
+/// Verify cursor store selection logic based on output mode.
+#[tokio::test]
+async fn test_cursor_store_auto_selection() {
+    use dfe_fetcher::config::{CursorConfig, OutputConfig};
+
+    // gRPC-only → should select file store (no Kafka available)
+    let cursor_config = CursorConfig {
+        store: "auto".to_string(),
+        file_path: "/tmp/dfe-test-cursor-auto".to_string(),
+        ..Default::default()
+    };
+    let grpc_output = OutputConfig {
+        output_type: "grpc".to_string(),
+        ..Default::default()
+    };
+    let store = dfe_fetcher::cursor::create_cursor_store(&cursor_config, &grpc_output, &dfe_fetcher::config::KafkaConfig::default()).await;
+    // Should succeed (file store) — directory will be created or degraded mode
+    assert!(store.is_ok(), "auto + grpc should resolve to file store");
+
+    // Explicit "file" → file store regardless of output mode
+    let file_config = CursorConfig {
+        store: "file".to_string(),
+        file_path: "/tmp/dfe-test-cursor-explicit".to_string(),
+        ..Default::default()
+    };
+    let kafka_output = OutputConfig {
+        output_type: "kafka".to_string(),
+        ..Default::default()
+    };
+    let store = dfe_fetcher::cursor::create_cursor_store(&file_config, &kafka_output, &dfe_fetcher::config::KafkaConfig::default()).await;
+    assert!(store.is_ok(), "explicit file should always succeed");
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
