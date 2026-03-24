@@ -1,3 +1,10 @@
+## [1.1.3-dev.5](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.4...v1.1.3-dev.5) (2026-03-24)
+
+
+### Bug Fixes
+
+* replace invalid Renovate preset :pinActionsToFullSha with helpers:pinGitHubActionDigestsToSemver ([d649acd](https://github.com/hyperi-io/dfe-fetcher/commit/d649acd7c02776f31c21b909791438af49ba2ddc))
+
 ## [1.1.3-dev.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.3...v1.1.3-dev.4) (2026-03-22)
 
 
