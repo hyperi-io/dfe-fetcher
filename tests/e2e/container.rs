@@ -1,5 +1,5 @@
 // Project:   dfe-fetcher
-// File:      tests/container_integration.rs
+// File:      tests/e2e/container.rs
 // Purpose:   Container extractor integration tests (requires Docker)
 // Language:  Rust
 //
@@ -8,9 +8,7 @@
 
 //! Container extractor integration tests (requires Docker).
 //!
-//! Run with: cargo test --test container_integration -- --ignored
-
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! Run with: cargo test --test e2e -- --ignored
 
 use std::collections::HashMap;
 use std::sync::Arc;

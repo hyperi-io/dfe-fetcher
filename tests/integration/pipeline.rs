@@ -1,61 +1,14 @@
 // Project:   dfe-fetcher
-// File:      tests/integration.rs
-// Purpose:   Integration tests for config loading, pipeline, metrics, ingest
+// File:      tests/integration/pipeline.rs
+// Purpose:   Pipeline enrichment, CEL filtering, and cursor store tests
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
-#![allow(clippy::unwrap_used, clippy::expect_used, unsafe_code)]
-
 use bytes::Bytes;
 use dfe_fetcher::config::Config;
 use dfe_fetcher::metrics::Metrics;
-
-// =============================================================================
-// Config loading
-// =============================================================================
-
-#[test]
-fn test_default_config_loads() {
-    let config = Config::default();
-    assert!(!config.kafka.brokers.is_empty() || config.kafka.brokers.is_empty());
-    assert_eq!(config.scheduler.default_interval_secs, 300);
-    assert_eq!(config.scheduler.max_concurrent_fetches, 10);
-}
-
-#[test]
-fn test_config_from_example_yaml() {
-    let yaml = std::fs::read_to_string("config.example.yaml").expect("config.example.yaml exists");
-    let config: Config = serde_yaml_ng::from_str(&yaml).expect("example config parses");
-
-    assert_eq!(config.scheduler.default_interval_secs, 300);
-    assert!(!config.sources.aws.enabled);
-    assert!(!config.sources.azure.enabled);
-    assert!(!config.sources.m365.enabled);
-    assert!(!config.sources.gcp.enabled);
-    assert_eq!(config.kafka.topic_suffix, "_land");
-}
-
-#[test]
-fn test_config_validation_passes_for_default() {
-    let config = Config::default();
-    // Default config has no brokers, which should fail validation
-    let result = config.validate();
-    assert!(result.is_err()); // no brokers
-}
-
-#[test]
-fn test_config_validation_passes_with_brokers() {
-    let mut config = Config::default();
-    config.kafka.brokers = vec!["localhost:9092".into()];
-    let result = config.validate();
-    assert!(result.is_ok());
-}
-
-// =============================================================================
-// Pipeline enrichment edge cases
-// =============================================================================
 
 #[test]
 fn test_enrich_empty_json_object() {
@@ -120,160 +73,7 @@ fn test_enrich_large_payload() {
     assert_eq!(parsed["field_99"].as_str().unwrap(), "value_99");
 }
 
-// =============================================================================
-// Metrics rendering
-// =============================================================================
-
-#[test]
-fn test_metrics_render_prometheus_format() {
-    let metrics = Metrics::new();
-    metrics.inc_fetches_success();
-    metrics.add_records_fetched(42);
-    metrics.add_bytes_fetched(1024);
-
-    let output = metrics.render();
-
-    assert!(output.contains("dfe_fetcher_fetches_total{status=\"success\"} 1"));
-    assert!(output.contains("dfe_fetcher_fetches_total{status=\"error\"} 0"));
-    assert!(output.contains("dfe_records_received_total 42"));
-    assert!(output.contains("dfe_fetcher_bytes_received_total 1024"));
-}
-
-#[test]
-fn test_metrics_extractor_counters() {
-    let metrics = Metrics::new();
-    metrics.inc_extractor_runs_total();
-    metrics.inc_extractor_runs_total();
-    metrics.inc_extractor_runs_success();
-    metrics.inc_extractor_runs_error();
-    metrics.add_extractor_records(100);
-
-    let output = metrics.render();
-    assert!(output.contains("dfe_fetcher_extractor_runs_total 2"));
-    assert!(output.contains("dfe_fetcher_extractor_runs_success_total 1"));
-    assert!(output.contains("dfe_fetcher_extractor_runs_error_total 1"));
-    assert!(output.contains("dfe_fetcher_extractor_records_total 100"));
-}
-
-// =============================================================================
-// Credential resolution
-// =============================================================================
-
-#[tokio::test]
-async fn test_credential_resolve_literal() {
-    let result = dfe_fetcher::credential::resolve("my-api-key-123").await;
-    assert_eq!(result.unwrap(), "my-api-key-123");
-}
-
-#[tokio::test]
-async fn test_credential_resolve_env() {
-    // SAFETY: test-only, single-threaded test runner
-    unsafe { std::env::set_var("DFE_TEST_INTEGRATION_CRED", "secret-from-env") };
-    let result = dfe_fetcher::credential::resolve("env:DFE_TEST_INTEGRATION_CRED").await;
-    assert_eq!(result.unwrap(), "secret-from-env");
-    // SAFETY: test-only, single-threaded test runner
-    unsafe { std::env::remove_var("DFE_TEST_INTEGRATION_CRED") };
-}
-
-#[tokio::test]
-async fn test_credential_resolve_env_missing() {
-    let result = dfe_fetcher::credential::resolve("env:NONEXISTENT_VAR_ABC123").await;
-    assert!(result.is_err());
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("NONEXISTENT_VAR_ABC123"));
-}
-
-#[tokio::test]
-async fn test_credential_resolve_vault_invalid_format() {
-    let result = dfe_fetcher::credential::resolve("vault:no-colon-here").await;
-    assert!(result.is_err());
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(err_msg.contains("invalid vault spec"));
-}
-
-#[tokio::test]
-async fn test_credential_resolve_optional() {
-    assert!(
-        dfe_fetcher::credential::resolve_optional(None)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        dfe_fetcher::credential::resolve_optional(Some(""))
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        dfe_fetcher::credential::resolve_optional(Some("literal-value"))
-            .await
-            .unwrap()
-            .unwrap(),
-        "literal-value"
-    );
-}
-
-#[test]
-fn test_http_client_factory() {
-    let client = dfe_fetcher::credential::http_client();
-    assert!(client.is_ok());
-}
-
-#[test]
-fn test_http_client_with_custom_timeout() {
-    let client =
-        dfe_fetcher::credential::http_client_with_timeout(std::time::Duration::from_secs(5));
-    assert!(client.is_ok());
-}
-
-// =============================================================================
-// Buffer manager
-// =============================================================================
-
-#[test]
-fn test_memory_guard_pressure_tracking() {
-    use hyperi_rustlib::memory::{MemoryGuard, MemoryGuardConfig};
-
-    let guard = MemoryGuard::new(MemoryGuardConfig {
-        limit_bytes: 1000,
-        pressure_threshold: 0.8,
-        ..Default::default()
-    });
-
-    assert!(!guard.under_pressure());
-    assert_eq!(guard.current_bytes(), 0);
-
-    guard.add_bytes(500);
-    assert_eq!(guard.current_bytes(), 500);
-    assert!(!guard.under_pressure());
-
-    guard.add_bytes(400); // 900/1000 = 90% > 80%
-    assert!(guard.under_pressure());
-
-    guard.release(500);
-    assert!(!guard.under_pressure());
-}
-
-#[test]
-fn test_memory_guard_release_underflow() {
-    use hyperi_rustlib::memory::{MemoryGuard, MemoryGuardConfig};
-
-    let guard = MemoryGuard::new(MemoryGuardConfig {
-        limit_bytes: 1000,
-        pressure_threshold: 0.8,
-        ..Default::default()
-    });
-
-    guard.add_bytes(100);
-    guard.release(200); // Release more than added — should not panic
-}
-
-// =============================================================================
-// End-to-end pipeline enrichment + CEL filtering
-// =============================================================================
-
-/// Verify the full enrich → filter pipeline path works end-to-end.
+/// Verify the full enrich -> filter pipeline path works end-to-end.
 /// Uses `enrich_record` for enrichment and `hyperi_rustlib::expression::evaluate_condition`
 /// for CEL filtering (since `evaluate_filter` is private to the pipeline module).
 #[tokio::test]
@@ -331,7 +131,7 @@ async fn test_pipeline_deliver_enriches_and_filters() {
     assert!(!drops, "ConsoleLogin should be filtered out");
 }
 
-/// Verify the cursor → fetch window flow works end-to-end:
+/// Verify the cursor -> fetch window flow works end-to-end:
 /// no cursor returns None, set stores state, get retrieves it.
 #[tokio::test]
 async fn test_cursor_file_store_incremental_window() {
@@ -393,10 +193,6 @@ async fn test_cursor_file_store_incremental_window() {
         "last_fetch_end should match the updated cursor"
     );
 }
-
-// =============================================================================
-// Helpers
-// =============================================================================
 
 fn make_pipeline_state(
     shared: dfe_fetcher::config::SharedConfig,
