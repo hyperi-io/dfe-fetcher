@@ -6,17 +6,38 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
-### rustlib Migration (Eliminate Bespoke Code)
+### Metrics Standard Migration (DFE-METRICS-MIGRATION-FETCHER.md)
 
-Audit performed against rustlib v1.16.6. These items replace hand-rolled code with rustlib equivalents.
+- [x] Bump rustlib to >=1.18.0
+- [x] Fix MetricsManager namespace from `""` to `"dfe_fetcher"`
+- [x] Rename all fetcher metrics to `dfe_fetcher_*` prefix (namespace collision fixed)
+- [x] Fix counters missing `_total` suffix
+- [x] Merge fetches_success/error into `dfe_fetcher_fetches_total{source, status}` labels
+- [x] Add `dfe_fetcher_fetch_duration_seconds` histogram (per-source)
+- [x] Add `dfe_fetcher_cursor_age_seconds` gauge (data staleness SLO)
+- [x] Add `dfe_fetcher_api_errors_total` with `source` + `code` labels
+- [x] Add `dfe_fetcher_ingest_requests_total` + `dfe_fetcher_ingest_duration_seconds`
+- [x] Add `dfe_fetcher_extractor_runs_total` with `name` + `status` labels
+- [x] Wire all DfeMetrics methods (records, transport, pipeline, scaling, auth)
+- [ ] **Adopt metrics-dfe groups** (AppMetrics, SinkMetrics, BackpressureMetrics) — BLOCKED: `metrics-dfe` feature not yet published on crates.io. Adopt when rustlib ships it.
+- [ ] **Configure histogram buckets** — Using defaults. Will configure tuned buckets when metrics-dfe groups land.
 
-- [ ] **Migrate metrics to MetricsManager** — Replace 450-line hand-rolled `src/metrics/mod.rs` (AtomicU64 + render()) with rustlib `MetricsManager`. Keep `DfeMetrics` dual-emit (already wired). The hand-rolled `/metrics` renderer can be replaced by `MetricsManager::start_server()` Prometheus endpoint.
-- [ ] **Migrate HTTP server to rustlib HttpServer** — Replace bespoke axum metrics+health server in `src/main.rs` with rustlib `HttpServer` (built-in `/health/live`, `/health/ready`, `/metrics`). Keep ingest server separate (domain-specific auth).
-- [ ] **Wire MemoryGuard** — BufferManager was deleted but `MemoryGuard` from rustlib `memory` feature is not yet integrated. Wire `MemoryGuard::new(config)` into pipeline for cgroup-aware memory pressure detection. Remove any remaining manual memory tracking.
-- [ ] **Wire ScalingPressure** — Config `scaling: ScalingPressureConfig` exists but calculator not instantiated. Wire `ScalingPressure::new(&config)` and expose pressure score via `/scaling/pressure` endpoint for KEDA.
-- [ ] **Replace RateWindow** — Hand-rolled `RateWindow` in metrics (65 lines) duplicates `scaling::rate_window::RateWindow` in rustlib. Replace.
-- [ ] **Deprecate legacy KafkaConfig** — Bespoke `KafkaConfig`/`SaslConfig`/`KafkaTlsConfig`/`ProducerConfig` (120 lines) in config.rs exists only for backward compat with legacy `kafka:` config key. Add migration path: log deprecation, document `output.kafka:` (rustlib `KafkaConfig`) as the replacement. Target removal in next major.
-- [ ] **Kafka integration tests** — Existing tests use `KafkaTransport` correctly via `output.rs`. Verify no remaining direct `rdkafka` usage anywhere (should be zero — all via rustlib transport).
+### Remaining rustlib Migration
+
+- [x] **Wire MemoryGuard** — Integrated via rustlib `memory` feature (cgroup-aware)
+- [x] **Wire ScalingPressure** — Integrated via rustlib `scaling` feature with KEDA endpoint
+- [x] **Replace RateWindow** — Using rustlib `scaling::RateWindow`
+- [x] **Kafka integration tests** — Verified zero direct `rdkafka` usage, all via rustlib transport
+- [x] **Deprecate legacy KafkaConfig** — Runtime warning logged at startup. `output.topic_suffix` added as forward migration path. Doc comment marks structs deprecated. Target removal in next major.
+
+### Upcoming
+
+- [ ] **Documentation review** — run full doco review skill against codebase, fix stale content
+- [ ] **Rebuild CI with updated hyperi-ci** — hyperi-ci has significant updates (prod/test change separation). Re-run full CI pipeline, verify test/build/release workflow still works end-to-end.
+- [ ] **Wire FetchWindow into sources** — all 4 sources currently ignore the `_window` parameter. Each source's time-window logic needs updating to use `window.start`/`window.end` instead of hardcoded lookbacks. Cursors don't actually work end-to-end until this is done.
+- [ ] **Cursor store fallback for legacy Kafka config** — `create_cursor_store` doesn't fall back to the legacy `kafka:` section when `output.kafka` is `None`. Needs the same legacy mapping as `OutputManager`.
+- [ ] **Adopt metrics-dfe groups** — BLOCKED: `metrics-dfe` feature not yet published. Adopt when rustlib ships AppMetrics/SinkMetrics/BackpressureMetrics.
+- [ ] **Deprecate legacy KafkaConfig** — target removal in next major version
 
 ---
 
@@ -48,11 +69,17 @@ Audit performed against rustlib v1.16.6. These items replace hand-rolled code wi
 
 8. [x] **Wiremock source tests** — 31 wiremock tests across all 4 sources (AWS 6, Azure 8, GCP 7, M365 10) covering fetch success, pagination, empty responses, error handling, and health checks. URL override fields added to config structs.
 
-9. [x] **Container extractor integration test** — Docker-based test with `alpine` container producing JSON to stdout. 3 tests in `tests/container_integration.rs`.
+9. [x] **Container extractor integration test** — Docker-based test with `alpine` container producing JSON to stdout. 3 tests in `tests/e2e/container.rs`.
 
-10. [x] **Kafka integration test** — Dual-mode (Docker/remote) tests in `tests/kafka_integration.rs` and `tests/e2e_kafka.rs`. 5 tests covering cursor roundtrip, transport send, produce-consume, enrichment verification, and cursor-driven FetchWindow.
+10. [x] **Kafka integration test** — Dual-mode (Docker/remote) tests in `tests/e2e/kafka.rs`. 5 tests covering cursor roundtrip, transport send, produce-consume, enrichment verification, and cursor-driven FetchWindow.
 
 11. [x] **Benchmarks** — Pipeline enrichment throughput benchmark in `benches/pipeline.rs`.
+
+12. [x] **Test restructuring** — Standard layout: `tests/integration/`, `tests/e2e/`, `tests/smoke.rs`, `tests/common/`. Consolidated source tests into single binary.
+
+13. [x] **Startup smoke test** — `tests/smoke.rs` validates `Config::default()`, `Metrics::new()`, `PipelineState::new()`, enrichment, and `DeploymentContract` don't panic.
+
+14. [x] **Backpressure/hot-reload/backoff tests** — Scheduler stall test, hot-reload interval test, container restart backoff unit tests, deployment contract/topic suffix/cursor selection tests.
 
 ### Nice-to-Have
 
@@ -158,11 +185,10 @@ Plugin system was removed. Three extraction modes remain: native, container, and
 ```
 cargo fmt --check    — verify before push
 cargo clippy -D warn — verify before push
-cargo test           — 140 tests (70 unit + 21 integration + 49 source)
-cargo test --test smoke_cloud -- --ignored          — 8 smoke tests (live cloud APIs)
-cargo test --test container_integration -- --ignored — 3 container tests (Docker)
-cargo test --test kafka_integration -- --ignored     — 2 Kafka tests (Docker or remote)
-cargo test --test e2e_kafka -- --ignored             — 3 e2e tests (Docker or remote)
+cargo test           — 141 tests passing (run `cargo test` for count)
+cargo test --test smoke -- --ignored                 — startup smoke test
+cargo test --test e2e -- --ignored                   — 5 Kafka e2e + 3 container tests (Docker)
+cargo test --test integration -- --ignored           — 8 smoke_cloud tests (live cloud APIs)
 ```
 
 ---

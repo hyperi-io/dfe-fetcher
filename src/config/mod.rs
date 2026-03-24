@@ -1217,6 +1217,11 @@ pub struct OutputConfig {
     /// gRPC transport configuration (rustlib GrpcConfig, client mode).
     #[serde(default)]
     pub grpc: Option<hyperi_rustlib::transport::GrpcConfig>,
+
+    /// Suffix appended to source topic names (e.g., "_land").
+    /// If set, takes precedence over legacy `kafka.topic_suffix`.
+    #[serde(default)]
+    pub topic_suffix: Option<String>,
 }
 
 fn default_output_type() -> String {
@@ -1229,6 +1234,7 @@ impl Default for OutputConfig {
             output_type: default_output_type(),
             kafka: None,
             grpc: None,
+            topic_suffix: None,
         }
     }
 }

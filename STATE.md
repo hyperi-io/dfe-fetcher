@@ -67,16 +67,16 @@ Native Rust fetcher that:
 7. **Pipeline** — Enrichment (`_timestamp_fetcher`, `_source_fetcher`, `_timestamp_received` fields) + CEL filtering + output delivery
 8. **Output Transport** — Unified transport layer via rustlib Transport trait (Kafka, gRPC, or both)
 9. **Cursor Store** — Incremental fetch state persistence (file or Kafka backend, auto-selected)
-10. **TieredSink** — In-memory buffering with circuit breaker (from rustlib)
+10. **MemoryGuard** — Cgroup-aware memory pressure detection (from rustlib)
 11. **Ingest Server** — axum HTTP server for container extractors with bearer token auth
-12. **Metrics** — Prometheus-compatible `/metrics` endpoint with fetch/extractor/memory counters
+12. **Metrics** — DfeMetrics dual-emit (`dfe_fetcher_*` prefix) + MetricsManager Prometheus endpoint
 
 ### Tech Stack
 
 - **Language:** Rust
 - **HTTP Client:** reqwest (shared factory in `src/credential.rs`)
-- **HTTP Server:** axum 0.7 (metrics + ingest endpoint)
-- **Output Transport:** rustlib Transport trait (wraps rdkafka + tonic/gRPC)
+- **HTTP Server:** axum 0.8 (ingest endpoint) + rustlib HttpServer (metrics/health)
+- **Output Transport:** rustlib Transport trait (Kafka + gRPC, no direct rdkafka dep)
 - **Shared Library:** hyperi-rustlib (config, secrets, metrics, tiered-sink, transport, expression)
 - **Container Runtime:** Docker or podman (exec via CLI)
 - **Deployment:** Kubernetes (one container per source + config)
@@ -103,8 +103,8 @@ Native Rust fetcher that:
 
 ### forbid(unsafe_code)
 
-**Decision:** `#![forbid(unsafe_code)]` in lib.rs. No plugin system — plugin feature was removed.
-**Rationale:** Safety guarantee for the entire codebase. Three extraction modes (native, container, vector) cover all use cases without needing dynamic .so loading.
+**Decision:** `unsafe_code = "deny"` in Cargo.toml lints. No plugin system — removed in favour of container/sidecar approach.
+**Rationale:** Safety guarantee for the entire codebase. Three extraction modes (native, container, vector) cover all use cases.
 
 ### Credential Resolution
 
@@ -136,9 +136,6 @@ Native Rust fetcher that:
 
 ```
 src/
-├── buffer/           # Memory pressure tracking, TieredSink wrapper
-│   ├── mod.rs        # BufferManager with saturating atomic ops
-│   └── tiered.rs     # TieredSink<S> with circuit breaker
 ├── config/           # 7-layer config cascade, all config structs
 │   ├── mod.rs        # Config, validation, all sub-configs
 │   └── shared.rs     # SharedConfig (Arc<RwLock<Config>>)
@@ -154,10 +151,10 @@ src/
 │   └── vector/       # Vector.dev gRPC integration via rustlib
 ├── ingest/           # HTTP ingest server (axum) with bearer token auth
 │   └── mod.rs        # POST /ingest/:source, GET /health
-├── lib.rs            # Public module exports, #![forbid(unsafe_code)]
+├── lib.rs            # Public module exports (unsafe_code = "deny" in Cargo.toml lints)
 ├── main.rs           # CLI entry point (clap), signal handling (SIGINT+SIGTERM)
-├── metrics/          # Prometheus metrics with saturating gauge ops
-│   └── mod.rs        # Metrics struct, render() for /metrics
+├── metrics/          # DfeMetrics dual-emit + MetricsManager (dfe_fetcher_* prefix)
+│   └── mod.rs        # Metrics struct, DfeMetrics wiring, hand-rolled render() fallback
 ├── output.rs         # Output transport layer (Kafka / gRPC / Both via rustlib Transport trait)
 ├── pipeline/         # Orchestration, enrichment, CEL filtering, output delivery
 │   └── mod.rs        # PipelineState, Orchestrator, enrich_record
@@ -171,13 +168,26 @@ src/
     └── m365/         # M365 (Audit Log, Message Trace, DLP, Alerts)
 
 tests/
-├── container_integration.rs  # Docker container extractor tests (3 tests, requires Docker)
-├── integration.rs    # Config, enrichment, metrics, credentials, buffer (19 tests)
-├── smoke_cloud.rs    # Live cloud API tests (8 tests, requires credentials)
-├── source_aws.rs     # AWS wiremock + disabled/health-check tests
-├── source_azure.rs   # Azure wiremock + disabled/health-check tests
-├── source_gcp.rs     # GCP wiremock + disabled/health-check tests
-└── source_m365.rs    # M365 wiremock + disabled/health-check tests
+├── common/           # Shared test infrastructure (dual-mode Docker/remote)
+│   └── mod.rs        # TestMode, KafkaTestConfig, skip_if_no_kafka! macro
+├── integration/      # Integration tests (single binary, wiremock + unit-style)
+│   ├── main.rs       # Test binary entry point (mod declarations)
+│   ├── config.rs     # Config validation, env overrides, filter expressions
+│   ├── credentials.rs # Credential resolver tests
+│   ├── deployment.rs # DeploymentContract, topic suffix, cursor selection
+│   ├── pipeline.rs   # Enrichment, CEL filtering, metrics rendering
+│   ├── source_aws.rs # AWS wiremock tests (6 tests)
+│   ├── source_azure.rs # Azure wiremock tests (8 tests)
+│   ├── source_gcp.rs # GCP wiremock tests (7 tests)
+│   └── source_m365.rs # M365 wiremock tests (10 tests)
+├── e2e/              # End-to-end tests (requires Docker/Kafka, #[ignore])
+│   ├── main.rs       # Test binary entry point
+│   ├── container.rs  # Docker container extractor tests (3 tests)
+│   ├── kafka.rs      # Kafka produce/consume roundtrip + enrichment (3 tests)
+│   ├── kafka_cursor.rs # Kafka cursor store + transport tests (2 tests)
+│   └── smoke_cloud.rs # Live cloud API tests (8 tests, requires credentials)
+├── fixtures/         # Test data files (empty — fixtures inline for now)
+└── smoke.rs          # Mandatory startup smoke test (config, metrics, pipeline init)
 
 benches/
 └── pipeline.rs       # Pipeline enrichment throughput benchmark
