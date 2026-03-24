@@ -1,3 +1,12 @@
+## [1.1.5](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.4...v1.1.5) (2026-03-24)
+
+
+### Bug Fixes
+
+* deprecate legacy kafka: config, add output.topic_suffix ([981038f](https://github.com/hyperi-io/dfe-fetcher/commit/981038ff2399b16495c465ccf7bce1ff3f1bb779))
+* inline Renovate config (preset resolution broken) ([0eb0c57](https://github.com/hyperi-io/dfe-fetcher/commit/0eb0c579bdac3aaca8990a621bb5354bb3c2b54e))
+* replace invalid Renovate preset :pinActionsToFullSha with helpers:pinGitHubActionDigestsToSemver ([d649acd](https://github.com/hyperi-io/dfe-fetcher/commit/d649acd7c02776f31c21b909791438af49ba2ddc))
+
 ## [1.1.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3...v1.1.4) (2026-03-20)
 
 
