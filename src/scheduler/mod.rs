@@ -392,4 +392,250 @@ mod tests {
         assert!((window.start - expected_start).num_seconds().abs() < 2);
         assert!((window.end - Utc::now()).num_seconds().abs() < 2);
     }
+
+    #[tokio::test]
+    async fn test_build_fetch_window_with_cursor() {
+        use crate::cursor::file::FileCursorStore;
+        use crate::cursor::{CursorStore, CursorValue};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+
+        let last_end = Utc::now() - chrono::Duration::minutes(10);
+        let cursor = CursorValue {
+            cursor_key: "test.key".to_string(),
+            last_fetch_end: last_end,
+            last_fetch_records: 50,
+            updated_at: Utc::now(),
+            api_cursor: None,
+            version: 1,
+        };
+        store.set("test.key", &cursor).await.unwrap();
+
+        let metrics = Metrics::new();
+        let window = build_fetch_window(Some(&store), "test.key", 2, &metrics, "test").await;
+
+        // Window should start from cursor, not default lookback
+        assert!(
+            (window.start - last_end).num_seconds().abs() < 2,
+            "window.start should match cursor.last_fetch_end"
+        );
+        assert!(window.end > window.start);
+    }
+
+    /// Test that the scheduler stalls when is_ready returns false,
+    /// and resumes when it returns true. Uses tokio::time::pause()
+    /// to control time without real delays.
+    #[tokio::test]
+    async fn test_scheduler_stalls_on_backpressure() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        use crate::source::{FetchResult, Source};
+
+        // Mock source that counts fetch calls
+        struct CountingSource {
+            fetch_count: AtomicU64,
+        }
+
+        #[async_trait::async_trait]
+        impl Source for CountingSource {
+            fn name(&self) -> &'static str {
+                "counting"
+            }
+            fn is_enabled(&self) -> bool {
+                true
+            }
+            async fn fetch(
+                &self,
+                _window: Option<&crate::source::FetchWindow>,
+            ) -> crate::error::Result<Vec<FetchResult>> {
+                self.fetch_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(vec![])
+            }
+            async fn health_check(&self) -> crate::error::Result<bool> {
+                Ok(true)
+            }
+        }
+
+        tokio::time::pause();
+
+        // Very short interval so the test runs fast with paused time
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.scheduler.jitter_percent = 0;
+        let shared = SharedConfig::new(cfg);
+
+        let scheduler_config = SchedulerConfig {
+            default_interval_secs: 1,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+
+        let scheduler = Scheduler::new(&scheduler_config, shared, None, "test".into());
+
+        let source = Arc::new(CountingSource {
+            fetch_count: AtomicU64::new(0),
+        });
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+
+        // Start with is_ready = false (backpressured)
+        let ready = Arc::new(AtomicBool::new(false));
+        let ready_clone = ready.clone();
+        let is_ready = Arc::new(move || ready_clone.load(std::sync::atomic::Ordering::Relaxed));
+
+        let callback = Arc::new(|_results: Vec<FetchResult>| {});
+
+        scheduler.spawn_source_task(
+            source.clone(),
+            Some(1),
+            metrics.clone(),
+            shutdown.clone(),
+            callback,
+            is_ready,
+        );
+
+        // Advance time past the initial sleep + several backpressure poll intervals
+        // (step in 1s increments to let spawned task run)
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        // No fetches should have happened — pipeline was not ready
+        let fetches_while_stalled = source
+            .fetch_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            fetches_while_stalled, 0,
+            "scheduler should NOT fetch while backpressured"
+        );
+
+        // Mark pipeline as ready
+        ready.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Advance time for the stall poll to detect readiness + one fetch cycle
+        for _ in 0..15 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let fetches_after_ready = source
+            .fetch_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            fetches_after_ready >= 1,
+            "scheduler should fetch after pipeline becomes ready, got {fetches_after_ready}"
+        );
+
+        shutdown.cancel();
+    }
+
+    /// Test that changing SharedConfig interval is picked up by the scheduler
+    /// on the next tick (hot-reload).
+    #[tokio::test]
+    async fn test_scheduler_hot_reload_interval() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+
+        use crate::source::{FetchResult, Source};
+
+        struct CountingSource {
+            fetch_count: AtomicU64,
+        }
+
+        #[async_trait::async_trait]
+        impl Source for CountingSource {
+            fn name(&self) -> &'static str {
+                "counting"
+            }
+            fn is_enabled(&self) -> bool {
+                true
+            }
+            async fn fetch(
+                &self,
+                _window: Option<&crate::source::FetchWindow>,
+            ) -> crate::error::Result<Vec<FetchResult>> {
+                self.fetch_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(vec![])
+            }
+            async fn health_check(&self) -> crate::error::Result<bool> {
+                Ok(true)
+            }
+        }
+
+        tokio::time::pause();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.default_interval_secs = 2;
+        cfg.scheduler.jitter_percent = 0;
+        let shared = SharedConfig::new(cfg);
+
+        let scheduler_config = SchedulerConfig {
+            default_interval_secs: 2,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let scheduler = Scheduler::new(&scheduler_config, shared.clone(), None, "test".into());
+
+        let source = Arc::new(CountingSource {
+            fetch_count: AtomicU64::new(0),
+        });
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+        let is_ready = Arc::new(|| true);
+        let callback = Arc::new(|_results: Vec<FetchResult>| {});
+
+        scheduler.spawn_source_task(
+            source.clone(),
+            None, // use config default
+            metrics,
+            shutdown.clone(),
+            callback,
+            is_ready,
+        );
+
+        // Advance past initial sleep (2s) in small steps to let spawned task run
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let count_before = source
+            .fetch_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count_before >= 1,
+            "should have at least 1 fetch after 10s with 2s interval, got {count_before}"
+        );
+
+        // Hot-reload: change interval to 100s (effectively stop fetching)
+        let mut new_cfg = crate::config::Config::default();
+        new_cfg.scheduler.default_interval_secs = 100;
+        new_cfg.scheduler.jitter_percent = 0;
+        shared.update(new_cfg);
+
+        // Advance 10s in steps — should NOT trigger many more fetches (interval is now 100s)
+        let count_snapshot = source
+            .fetch_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let count_after = source
+            .fetch_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // At most 1 more fetch could sneak in from the previous cycle
+        assert!(
+            count_after <= count_snapshot + 1,
+            "hot-reload should slow fetches: before={count_snapshot}, after={count_after}"
+        );
+
+        shutdown.cancel();
+    }
 }

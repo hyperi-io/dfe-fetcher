@@ -132,7 +132,12 @@ impl PipelineState {
     /// Deliver a batch of fetch results to output transports.
     pub async fn deliver(&self, results: Vec<FetchResult>) -> Result<()> {
         let config = self.shared_config.get();
-        let topic_suffix = &config.kafka.topic_suffix;
+        // Prefer output.topic_suffix (new); fall back to legacy kafka.topic_suffix
+        let topic_suffix = config
+            .output
+            .topic_suffix
+            .as_deref()
+            .unwrap_or(&config.kafka.topic_suffix);
 
         for result in results {
             let topic = format!("{}{}", result.topic, topic_suffix);
