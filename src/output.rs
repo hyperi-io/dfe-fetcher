@@ -35,11 +35,24 @@ pub enum OutputTransport {
 
 impl OutputTransport {
     /// Send a message through this transport.
+    ///
+    /// Records per-transport send duration as
+    /// `dfe_fetcher_transport_send_duration_seconds{transport="kafka"|"grpc"}`.
     async fn send(&self, key: &str, payload: &[u8]) -> Result<()> {
+        let start = std::time::Instant::now();
+
         let result = match self {
             Self::Kafka(t) => t.send(key, payload).await,
             Self::Grpc(t) => t.send(key, payload).await,
         };
+
+        // Emit per-transport send latency histogram
+        let elapsed = start.elapsed();
+        metrics::histogram!(
+            "dfe_fetcher_transport_send_duration_seconds",
+            "transport" => self.name()
+        )
+        .record(elapsed.as_secs_f64());
 
         match result {
             SendResult::Ok => Ok(()),

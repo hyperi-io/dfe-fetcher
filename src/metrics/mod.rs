@@ -77,6 +77,8 @@ pub struct Metrics {
 
     // Rate tracking (rustlib RateWindow has internal RwLock)
     rate_window: RateWindow,
+    /// Records-per-second rate window (EPS — events per second).
+    records_rate_window: RateWindow,
 }
 
 impl Metrics {
@@ -111,6 +113,7 @@ impl Metrics {
             memory_used_bytes: AtomicU64::new(0),
             memory_limit_bytes: AtomicU64::new(0),
             rate_window: RateWindow::new(Duration::from_secs(60)),
+            records_rate_window: RateWindow::new(Duration::from_secs(60)),
         }
     }
 
@@ -183,6 +186,15 @@ impl Metrics {
             "dfe_fetcher_ingest_duration_seconds",
             metrics::Unit::Seconds,
             "Ingest request processing latency"
+        );
+        metrics::describe_histogram!(
+            "dfe_fetcher_transport_send_duration_seconds",
+            metrics::Unit::Seconds,
+            "Per-transport send latency (Kafka, gRPC)"
+        );
+        metrics::describe_gauge!(
+            "dfe_fetcher_events_per_second",
+            "Current records-per-second throughput (EPS)"
         );
 
         Self {
@@ -265,13 +277,19 @@ impl Metrics {
         }
     }
 
-    /// Add records fetched.
+    /// Add records fetched. Also updates the records-per-second rate window (EPS).
     #[inline]
     pub fn add_records_fetched(&self, count: u64) {
-        self.records_fetched.fetch_add(count, Ordering::Relaxed);
+        let total = self.records_fetched.fetch_add(count, Ordering::Relaxed) + count;
+        self.records_rate_window.record(total);
         if let Some(ref dfe) = self.dfe {
             dfe.records_received(count);
         }
+    }
+
+    /// Get the current events per second (records/sec) rate.
+    pub fn events_per_second(&self) -> f64 {
+        self.records_rate_window.rate_per_second()
     }
 
     /// Add bytes fetched.
@@ -576,6 +594,7 @@ impl Metrics {
     pub fn update_rate_gauge(&self) {
         if self.dfe.is_some() {
             metrics::gauge!("dfe_fetcher_fetch_rate").set(self.fetch_rate());
+            metrics::gauge!("dfe_fetcher_events_per_second").set(self.events_per_second());
         }
     }
 
@@ -794,11 +813,21 @@ impl Metrics {
         ));
 
         // Rate
-        output.push_str("# HELP dfe_fetcher_fetch_rate Current fetch rate\n");
+        output.push_str("# HELP dfe_fetcher_fetch_rate Current fetch rate (fetches/sec)\n");
         output.push_str("# TYPE dfe_fetcher_fetch_rate gauge\n");
         output.push_str(&format!(
             "dfe_fetcher_fetch_rate {:.2}\n",
             self.fetch_rate()
+        ));
+
+        // EPS (events per second)
+        output.push_str(
+            "# HELP dfe_fetcher_events_per_second Current records-per-second throughput (EPS)\n",
+        );
+        output.push_str("# TYPE dfe_fetcher_events_per_second gauge\n");
+        output.push_str(&format!(
+            "dfe_fetcher_events_per_second {:.2}\n",
+            self.events_per_second()
         ));
 
         output
