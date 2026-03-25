@@ -98,7 +98,8 @@ impl M365Source {
         }
         self.config
             .client_secret
-            .clone()
+            .as_ref()
+            .map(|s| s.expose().to_string())
             .ok_or_else(|| Error::Credential("m365.client_secret is required".into()))
     }
 

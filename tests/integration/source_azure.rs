@@ -78,7 +78,7 @@ fn make_wiremock_config(server_uri: &str, services: Vec<AzureService>) -> AzureS
         enabled: true,
         tenant_id: Some("test-tenant".to_string()),
         client_id: Some("test-client-id".to_string()),
-        client_secret: Some("test-client-secret".to_string()),
+        client_secret: Some("test-client-secret".into()),
         subscription_id: Some("test-sub-id".to_string()),
         management_url_override: Some(server_uri.to_string()),
         graph_url_override: Some(server_uri.to_string()),
