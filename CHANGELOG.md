@@ -1,3 +1,10 @@
+## [1.1.3-dev.6](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.5...v1.1.3-dev.6) (2026-03-25)
+
+
+### Bug Fixes
+
+* align with rustlib 1.19.6 — config registry, SensitiveString, MetricsManager server, version-check ([f2132f3](https://github.com/hyperi-io/dfe-fetcher/commit/f2132f345f29e24fc3ea000ef12bf9e916f720bb))
+
 ## [1.1.3-dev.5](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.4...v1.1.3-dev.5) (2026-03-24)
 
 
