@@ -23,11 +23,12 @@ doctest = false
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=1.18.0", features = [
+hyperi-rustlib = { version = ">=1.19.6", features = [
     "config",
     "config-reload",
     "logger",
     "metrics",
+    "metrics-dfe",
     "http-server",
     "transport-kafka",
     "transport-grpc",
@@ -44,6 +45,7 @@ hyperi-rustlib = { version = ">=1.18.0", features = [
     "expression",
     "scaling",
     "memory",
+    "version-check",
 ] }
 
 # Async runtime

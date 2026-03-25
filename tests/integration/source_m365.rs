@@ -76,7 +76,7 @@ fn make_wiremock_config(server_uri: &str, services: Vec<M365Service>) -> M365Sou
         enabled: true,
         tenant_id: Some("test-tenant".to_string()),
         client_id: Some("test-client-id".to_string()),
-        client_secret: Some("test-client-secret".to_string()),
+        client_secret: Some("test-client-secret".into()),
         management_url_override: Some(server_uri.to_string()),
         graph_url_override: Some(server_uri.to_string()),
         token_url_override: Some(format!("{server_uri}/oauth2/v2.0/token")),

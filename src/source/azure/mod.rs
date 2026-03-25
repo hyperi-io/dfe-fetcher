@@ -99,7 +99,8 @@ impl AzureSource {
         }
         self.config
             .client_secret
-            .clone()
+            .as_ref()
+            .map(|s| s.expose().to_string())
             .ok_or_else(|| Error::Credential("azure.client_secret is required".into()))
     }
 

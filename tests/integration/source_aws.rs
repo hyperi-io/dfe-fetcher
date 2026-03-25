@@ -67,7 +67,7 @@ fn make_wiremock_config(server_uri: &str, services: Vec<AwsService>) -> AwsSourc
         enabled: true,
         region: "us-east-1".to_string(),
         access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
-        secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
+        secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into()),
         endpoint_override: Some(server_uri.to_string()),
         services,
         topic: "test-aws".to_string(),
@@ -260,7 +260,7 @@ async fn test_aws_health_check_with_credentials() {
     let config = AwsSourceConfig {
         enabled: true,
         access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
-        secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
+        secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into()),
         ..Default::default()
     };
     let source = AwsSource::new(config);
