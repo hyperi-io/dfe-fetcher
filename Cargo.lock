@@ -1656,9 +1656,9 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "1.18.0"
+version = "1.19.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "377def3725b50b182f6b8af0364439be6f2f3e5efb957ed2dbd17c796fe298bd"
+checksum = "acb8754cd4fee6c3abd0411728078648403a17a346c2b1f928a8ace530affb10"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1681,6 +1681,7 @@ dependencies = [
  "prost-types",
  "ratatui",
  "rdkafka",
+ "reqwest",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -1699,6 +1700,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-throttle",
+ "uuid",
  "yaque",
  "zstd",
 ]

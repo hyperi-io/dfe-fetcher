@@ -199,7 +199,7 @@ pub fn build_rustlib_kafka_config(legacy: &LegacyKafkaConfig) -> RustlibKafkaCon
         if sasl.enabled {
             config.sasl_mechanism = Some(sasl.mechanism.clone());
             config.sasl_username = Some(sasl.username.clone());
-            config.sasl_password = Some(sasl.password.clone());
+            config.sasl_password = Some(sasl.password.expose().to_string());
 
             config.security_protocol = if legacy.tls.enabled {
                 "sasl_ssl".to_string()

@@ -129,7 +129,8 @@ impl AwsSource {
         let secret_key = self
             .config
             .secret_access_key
-            .clone()
+            .as_ref()
+            .map(|s| s.expose().to_string())
             .ok_or_else(|| Error::Credential("aws.secret_access_key is required".into()))?;
 
         // Resolve each individually (may be env: or vault: prefixed)

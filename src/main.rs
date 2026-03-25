@@ -225,9 +225,22 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         );
     }
 
+    // Register config in the global config registry (enables /config debug endpoint)
+    config.register_in_registry();
+
+    // Fire-and-forget version check against crates.io
+    {
+        use hyperi_rustlib::version_check::{VersionCheck, VersionCheckConfig};
+        let checker = VersionCheck::new(VersionCheckConfig::from_cascade(
+            "dfe-fetcher",
+            env!("CARGO_PKG_VERSION"),
+        ));
+        checker.check_on_startup();
+    }
+
     // Install MetricsManager (Prometheus recorder) BEFORE creating Metrics::with_dfe()
     // so that all subsequent metrics::counter!/gauge! calls go through the recorder.
-    let metrics_manager = Arc::new(MetricsManager::new("dfe_fetcher"));
+    let mut metrics_manager = MetricsManager::new("dfe_fetcher");
 
     // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
     let metrics = Arc::new(Metrics::with_dfe());
@@ -326,7 +339,8 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
                 cfg.validate()
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
             },
-        );
+        )
+        .with_registry_update("dfe_fetcher");
 
         let handle = reloader.start();
 
@@ -365,24 +379,19 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         });
     }
 
-    // Spawn metrics server
-    let metrics_token = shutdown_token.clone();
-    let metrics_clone = metrics.clone();
-    let scaling_clone = Arc::clone(&scaling_pressure);
-    let mm_clone = Arc::clone(&metrics_manager);
-    tokio::spawn(async move {
-        if let Err(e) = run_metrics_server(
-            metrics_addr,
-            metrics_clone,
-            scaling_clone,
-            mm_clone,
-            metrics_token,
-        )
-        .await
-        {
-            error!(error = %e, "Metrics server error");
+    // Wire readiness and scaling into MetricsManager, then start its HTTP server
+    {
+        let ready_state = Arc::clone(&pipeline_state);
+        metrics_manager.set_readiness_check(move || ready_state.is_ready());
+        metrics_manager.set_scaling_pressure(Arc::clone(&scaling_pressure));
+
+        let metrics_addr_str = metrics_addr.to_string();
+        if let Err(e) = metrics_manager.start_server(&metrics_addr_str).await {
+            error!(error = %e, addr = %metrics_addr_str, "Failed to start metrics server");
+        } else {
+            info!(addr = %metrics_addr, "Metrics/health server listening");
         }
-    });
+    }
 
     // Derive instance identity for cursor isolation
     let instance_id = derive_instance_id(&config);
@@ -541,57 +550,4 @@ fn reload_config_from_path(
 
     security::config_changed("config_reload", "system", "configuration reloaded");
     Ok(config)
-}
-
-/// Run the Prometheus metrics HTTP server.
-///
-/// Uses [`MetricsManager::render()`] to serve all metrics registered via the
-/// `metrics` crate (both fetcher-specific and standard DFE metrics). The
-/// hand-rolled `Metrics::render()` is kept only for test assertions.
-async fn run_metrics_server(
-    addr: SocketAddr,
-    metrics: Arc<Metrics>,
-    scaling: Arc<ScalingPressure>,
-    metrics_manager: Arc<MetricsManager>,
-    shutdown: CancellationToken,
-) -> anyhow::Result<()> {
-    use axum::Router;
-    use axum::routing::get;
-    use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
-
-    let app = Router::new().route(
-        "/metrics",
-        get(move || {
-            let m = metrics.clone();
-            let s = scaling.clone();
-            let mm = metrics_manager.clone();
-            async move {
-                // Update rate gauge before rendering (rate is computed, not event-driven)
-                m.update_rate_gauge();
-
-                // Render all metrics via the MetricsManager Prometheus recorder
-                let mut output = mm.render();
-
-                // Append scaling pressure (computed metric, not registered via metrics crate)
-                output.push_str(
-                    "# HELP dfe_scaling_pressure Composite scaling pressure for KEDA (0-100)\n",
-                );
-                output.push_str("# TYPE dfe_scaling_pressure gauge\n");
-                output.push_str(&format!("dfe_scaling_pressure {:.2}\n", s.calculate()));
-                output
-            }
-        }),
-    );
-
-    let config = HttpServerConfig::new(addr.to_string());
-
-    info!(addr = %addr, "Metrics server listening");
-
-    let server = HttpServer::new(config);
-    server
-        .serve_with_shutdown(app, shutdown.cancelled_owned())
-        .await
-        .map_err(|e| anyhow::anyhow!("Metrics server error: {e}"))?;
-
-    Ok(())
 }

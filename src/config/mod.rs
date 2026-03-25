@@ -24,6 +24,7 @@ pub use shared::SharedConfig;
 use std::collections::HashMap;
 
 use hyperi_rustlib::config::flat_env::{self, ApplyFlatEnv};
+use hyperi_rustlib::config::sensitive::SensitiveString;
 use hyperi_rustlib::config::{self, ConfigOptions};
 use hyperi_rustlib::dlq::DlqConfig;
 use serde::{Deserialize, Serialize};
@@ -177,6 +178,23 @@ impl Config {
         config.config_path = Some(path.to_string());
         config.apply_flat_env("DFE_FETCHER");
         Ok(config)
+    }
+
+    /// Register all config sections in the global config registry.
+    /// Enables the /config debug endpoint and change notifications.
+    pub fn register_in_registry(&self) {
+        use hyperi_rustlib::config::registry;
+        registry::register("scheduler", &self.scheduler);
+        registry::register("sources", &self.sources);
+        registry::register("extractors", &self.extractors);
+        registry::register("ingest", &self.ingest);
+        registry::register("kafka", &self.kafka);
+        registry::register("buffer", &self.buffer);
+        registry::register("metrics", &self.metrics);
+        registry::register("dlq", &self.dlq);
+        registry::register("output", &self.output);
+        registry::register("cursor", &self.cursor);
+        registry::register("scaling", &self.scaling);
     }
 
     /// Validate the configuration.
@@ -387,7 +405,7 @@ impl ApplyFlatEnv for Config {
                 enabled: true,
                 mechanism: String::new(),
                 username: String::new(),
-                password: String::new(),
+                password: SensitiveString::default(),
             });
             sasl.mechanism = v;
             sasl.enabled = true;
@@ -400,7 +418,7 @@ impl ApplyFlatEnv for Config {
                 enabled: true,
                 mechanism: String::new(),
                 username: String::new(),
-                password: String::new(),
+                password: SensitiveString::default(),
             });
             sasl.username = v;
         }
@@ -409,9 +427,9 @@ impl ApplyFlatEnv for Config {
                 enabled: true,
                 mechanism: String::new(),
                 username: String::new(),
-                password: String::new(),
+                password: SensitiveString::default(),
             });
-            sasl.password = v;
+            sasl.password = SensitiveString::from(v);
         }
 
         // Scheduler
@@ -525,8 +543,8 @@ pub struct AwsSourceConfig {
     /// Access key ID (prefer secrets manager in production).
     pub access_key_id: Option<String>,
 
-    /// Secret access key (prefer secrets manager in production).
-    pub secret_access_key: Option<String>,
+    /// Secret access key (prefer secrets manager in production; always redacted in serialisation).
+    pub secret_access_key: Option<SensitiveString>,
 
     /// Assume role ARN for cross-account access.
     pub assume_role_arn: Option<String>,
@@ -595,8 +613,8 @@ pub struct AzureSourceConfig {
     /// Client (application) ID.
     pub client_id: Option<String>,
 
-    /// Client secret (prefer secrets manager in production).
-    pub client_secret: Option<String>,
+    /// Client secret (prefer secrets manager in production; always redacted in serialisation).
+    pub client_secret: Option<SensitiveString>,
 
     /// Secret source for credentials.
     pub credential_secret: Option<String>,
@@ -674,8 +692,8 @@ pub struct M365SourceConfig {
     /// Client (application) ID.
     pub client_id: Option<String>,
 
-    /// Client secret (prefer secrets manager in production).
-    pub client_secret: Option<String>,
+    /// Client secret (prefer secrets manager in production; always redacted in serialisation).
+    pub client_secret: Option<SensitiveString>,
 
     /// Secret source for credentials.
     pub credential_secret: Option<String>,
@@ -1082,8 +1100,8 @@ pub struct SaslConfig {
     /// Username.
     pub username: String,
 
-    /// Password.
-    pub password: String,
+    /// Password (always redacted in serialisation/debug output).
+    pub password: SensitiveString,
 }
 
 /// Kafka TLS configuration.
