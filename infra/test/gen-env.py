@@ -35,6 +35,11 @@ def main():
         f'AZURE_CLIENT_SECRET="{val("azure_client_secret")}"',
         f'AZURE_SUBSCRIPTION_ID="{val("azure_subscription_id")}"',
         "",
+        "# M365",
+        f'M365_TENANT_ID="{val("m365_tenant_id")}"',
+        f'M365_CLIENT_ID="{val("m365_client_id")}"',
+        f'M365_CLIENT_SECRET="{val("m365_client_secret")}"',
+        "",
         "# GCP",
         f'GCP_PROJECT_ID="{val("gcp_project_id")}"',
     ]
@@ -52,8 +57,13 @@ def main():
         lines.append('GCP_SERVICE_ACCOUNT_KEY=".tmp/gcp-sa-key.json"')
         print(f"# GCP key written to {key_path}", file=sys.stderr)
     else:
-        lines.append('# GCP_SERVICE_ACCOUNT_KEY not yet provisioned — re-run after GCP auth')
-        print("# GCP key not available (GCP resources not yet provisioned)", file=sys.stderr)
+        lines.append(
+            "# GCP_SERVICE_ACCOUNT_KEY not yet provisioned — re-run after GCP auth"
+        )
+        print(
+            "# GCP key not available (GCP resources not yet provisioned)",
+            file=sys.stderr,
+        )
 
     print("\n".join(lines))
 
