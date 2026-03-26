@@ -371,9 +371,8 @@ async fn test_cursor_store_file_creation() {
     use dfe_fetcher::cursor::file::FileCursorStore;
 
     let tmp = tempfile::TempDir::new().unwrap();
-    let path = tmp.path().join("cursors.json");
 
-    let store = FileCursorStore::new(path.to_str().unwrap());
+    let store = FileCursorStore::new(tmp.path().to_str().unwrap());
     assert!(store.is_ok(), "file cursor store should initialise");
 
     let store = store.unwrap();
@@ -390,7 +389,7 @@ async fn test_cursor_store_file_creation() {
 async fn test_cursor_store_readonly_fallback() {
     use dfe_fetcher::cursor::file::FileCursorStore;
 
-    let store = FileCursorStore::new("/proc/nonexistent/cursors.json");
+    let store = FileCursorStore::new("/proc/nonexistent/cursors");
     assert!(
         store.is_ok(),
         "should fall back to read-only mode, not error"
