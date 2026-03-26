@@ -38,9 +38,10 @@ This is the **single source of truth** for all tasks and progress.
 - [ ] **Adopt metrics-dfe groups** — BLOCKED: `metrics-dfe` feature not yet published. Adopt when rustlib ships AppMetrics/SinkMetrics/BackpressureMetrics.
 - [ ] **Deprecate legacy KafkaConfig** — target removal in next major version
 - [x] **M365 test credentials** — App registration `dfe-fetcher-m365-test` (cb1e86cc) created in HyperSec tenant with ActivityFeed.Read, SecurityAlert.Read.All, Reports.Read.All. Smoke tests passing.
-- [ ] **Add M365 to Terraform** — `infra/test/main.tf` has AWS/Azure/GCP but M365 app was created manually. Add azuread_application resource for reproducibility.
-- [ ] **Cloud admin setup guides** — Create `docs/{aws,azure,m365,gcp}.md` describing what a cloud admin needs to configure for each service, with links to the Terraform files in `infra/test/`. Covers IAM roles, app registrations, API permissions, service accounts.
+- [x] **Add M365 to Terraform** — azuread_application + service_principal + password in `infra/test/main.tf`. Plan verified clean.
+- [x] **Cloud admin setup guides** — `docs/cloud-setup/{aws,azure,m365,gcp}.md` with permissions, TF links, manual CLI, config examples.
 - [ ] **Save M365 creds to OpenBao** — `secret/dfe-fetcher/m365` (blocked: need fresh bao token)
+- [ ] **Re-auth AWS SSO + GCP** — `aws sso login` and `gcloud auth login` expired. Needed for full `terraform plan/apply`.
 
 ---
 
