@@ -21,11 +21,12 @@
 use std::collections::HashMap;
 
 use dfe_fetcher::config::{AwsService, AwsSourceConfig, AzureService, AzureSourceConfig};
-use dfe_fetcher::config::{GcpService, GcpSourceConfig};
+use dfe_fetcher::config::{GcpService, GcpSourceConfig, M365Service, M365SourceConfig};
 use dfe_fetcher::source::Source;
 use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::azure::AzureSource;
 use dfe_fetcher::source::gcp::GcpSource;
+use dfe_fetcher::source::m365::M365Source;
 
 /// Load .env file, overriding any existing env vars (e.g. stale credentials
 /// from previous sessions). Panics if .env is missing (test requires credentials).
@@ -302,6 +303,75 @@ async fn gcp_fetch_cloud_logging() {
     let results = source.fetch(None).await.expect("fetch failed");
     eprintln!(
         "GCP Cloud Logging: {} result(s), {} total records",
+        results.len(),
+        results.iter().map(|r| r.records.len()).sum::<usize>()
+    );
+}
+
+// =============================================================================
+// M365 — Office 365 Management Activity API + Microsoft Graph Security
+// =============================================================================
+
+fn make_m365_config() -> Option<M365SourceConfig> {
+    let tenant_id = env("M365_TENANT_ID")?;
+    let client_id = env("M365_CLIENT_ID")?;
+    let client_secret = env("M365_CLIENT_SECRET")?;
+
+    Some(M365SourceConfig {
+        enabled: true,
+        tenant_id: Some(tenant_id),
+        client_id: Some(client_id),
+        client_secret: Some(client_secret.into()),
+        credential_secret: None,
+        interval_secs: None,
+        services: vec![
+            M365Service {
+                name: "audit_log".to_string(),
+                config: HashMap::new(),
+            },
+            M365Service {
+                name: "alerts".to_string(),
+                config: HashMap::new(),
+            },
+        ],
+        topic: "test-m365".to_string(),
+        filter: None,
+        management_url_override: None,
+        graph_url_override: None,
+        token_url_override: None,
+    })
+}
+
+#[tokio::test]
+#[ignore = "requires live cloud credentials"]
+async fn m365_health_check() {
+    load_env();
+    let Some(config) = make_m365_config() else {
+        eprintln!("Skipping M365: credentials not available");
+        return;
+    };
+    let source = M365Source::new(config);
+
+    let healthy = source.health_check().await.expect("health_check failed");
+    assert!(
+        healthy,
+        "M365 health check should pass with valid credentials"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live cloud credentials"]
+async fn m365_fetch_alerts() {
+    load_env();
+    let Some(config) = make_m365_config() else {
+        eprintln!("Skipping M365: credentials not available");
+        return;
+    };
+    let source = M365Source::new(config);
+
+    let results = source.fetch(None).await.expect("fetch failed");
+    eprintln!(
+        "M365: {} result(s), {} total records",
         results.len(),
         results.iter().map(|r| r.records.len()).sum::<usize>()
     );
