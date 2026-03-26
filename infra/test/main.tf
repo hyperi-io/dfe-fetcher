@@ -176,6 +176,67 @@ resource "azurerm_role_assignment" "fetcher_reader" {
 }
 
 # =============================================================================
+# M365 — App registration for Office 365 Management Activity API + Graph Security
+# =============================================================================
+# Cost: Free (app registrations and API reads are free)
+#
+# Permissions (application, not delegated):
+#   Office 365 Management API (c5393580-f805-4401-95e8-94b7a6ef2fc2):
+#     - ActivityFeed.Read (594c1fb6-4f81-4475-ae41-0c394909246c)
+#   Microsoft Graph (00000003-0000-0000-c000-000000000000):
+#     - SecurityEvents.Read.All (bf394140-e372-4bf9-a898-299cfc7564e5)
+#     - SecurityAlert.Read.All  (472e4a4d-bb4a-4026-98d1-0b0d74cb74a5)
+#     - Reports.Read.All        (230c1aed-a721-4c5d-9cb4-a90514e508ef)
+#
+# Admin consent is required after apply:
+#   az ad app permission admin-consent --id <m365_client_id>
+
+resource "azuread_application" "m365_fetcher_test" {
+  display_name = "dfe-fetcher-m365-test"
+  owners       = [data.azuread_client_config.current.object_id]
+
+  # Office 365 Management API — ActivityFeed.Read
+  required_resource_access {
+    resource_app_id = "c5393580-f805-4401-95e8-94b7a6ef2fc2"
+    resource_access {
+      id   = "594c1fb6-4f81-4475-ae41-0c394909246c"
+      type = "Role"
+    }
+  }
+
+  # Microsoft Graph — SecurityEvents, SecurityAlert, Reports
+  required_resource_access {
+    resource_app_id = "00000003-0000-0000-c000-000000000000"
+    resource_access {
+      id   = "bf394140-e372-4bf9-a898-299cfc7564e5" # SecurityEvents.Read.All
+      type = "Role"
+    }
+    resource_access {
+      id   = "472e4a4d-bb4a-4026-98d1-0b0d74cb74a5" # SecurityAlert.Read.All
+      type = "Role"
+    }
+    resource_access {
+      id   = "230c1aed-a721-4c5d-9cb4-a90514e508ef" # Reports.Read.All
+      type = "Role"
+    }
+  }
+}
+
+resource "azuread_service_principal" "m365_fetcher_test" {
+  client_id = azuread_application.m365_fetcher_test.client_id
+  owners    = [data.azuread_client_config.current.object_id]
+}
+
+resource "azuread_application_password" "m365_fetcher_test" {
+  application_id = azuread_application.m365_fetcher_test.id
+  display_name   = "dfe-fetcher-m365-test-secret"
+  end_date       = timeadd(timestamp(), "8760h") # 1 year
+  lifecycle {
+    ignore_changes = [end_date]
+  }
+}
+
+# =============================================================================
 # GCP — Service account with Logs Viewer role
 # =============================================================================
 # Cost: Free (service accounts and Cloud Logging reads are free)
@@ -230,6 +291,20 @@ output "azure_client_secret" {
 
 output "azure_subscription_id" {
   value = var.azure_subscription_id
+}
+
+output "m365_tenant_id" {
+  value = data.azuread_client_config.current.tenant_id
+}
+
+output "m365_client_id" {
+  value     = azuread_application.m365_fetcher_test.client_id
+  sensitive = true
+}
+
+output "m365_client_secret" {
+  value     = azuread_application_password.m365_fetcher_test.value
+  sensitive = true
 }
 
 output "gcp_project_id" {
