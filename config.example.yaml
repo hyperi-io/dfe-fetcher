@@ -274,10 +274,9 @@ metrics:
 # =============================================================================
 # Tracks the last successful fetch window per source so restarts resume
 # from where they left off instead of re-fetching the same time range.
-# store/file_path/kafka_topic REQUIRE RESTART (cursor store created at startup).
+# Single JSON file on a PVC-backed path. Persists across pod restarts.
+# file_path REQUIRES RESTART (cursor store created at startup).
 # default_window_hours is HOT-RELOADED (re-read when no cursor exists).
 # cursor:
-#   store: auto            # "auto" | "kafka" | "file" — REQUIRES RESTART
-#   file_path: "/var/lib/dfe-fetcher/cursors"  # REQUIRES RESTART
-#   kafka_topic: "dfe-fetcher-cursors"         # REQUIRES RESTART
-#   default_window_hours: 1                    # hot-reloaded
+#   file_path: "/var/lib/dfe-fetcher/cursors.json"  # REQUIRES RESTART
+#   default_window_hours: 1                          # hot-reloaded

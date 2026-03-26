@@ -399,7 +399,8 @@ mod tests {
         use crate::cursor::{CursorStore, CursorValue};
 
         let dir = tempfile::TempDir::new().unwrap();
-        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let cursor_path = dir.path().join("cursors.json");
+        let store = FileCursorStore::new(cursor_path.to_str().unwrap()).unwrap();
 
         let last_end = Utc::now() - chrono::Duration::minutes(10);
         let cursor = CursorValue {

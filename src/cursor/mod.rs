@@ -12,20 +12,16 @@
 //! window, enabling sources to resume from where they left off rather than
 //! re-fetching the same time range.
 //!
-//! Two backends are available:
-//! - **File**: One JSON file per cursor key (default for non-Kafka outputs)
-//! - **Kafka**: Compacted topic shared across all fetcher instances
+//! A single JSON file persists all cursor state. In-memory cache provides
+//! fast reads; atomic write-then-rename ensures durability on crash.
 
 pub mod file;
-pub mod kafka;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
-use crate::config::{CursorConfig, OutputConfig};
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Value stored for each cursor, representing the last fetch state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,62 +63,6 @@ pub trait CursorStore: Send + Sync {
 #[must_use]
 pub fn normalize_cursor_key(key: &str) -> String {
     key.to_lowercase()
-}
-
-/// Create the appropriate cursor store based on configuration.
-///
-/// Resolution logic for `store = "auto"`:
-/// - If output includes Kafka, use `KafkaCursorStore`
-/// - Otherwise, use `FileCursorStore`
-pub async fn create_cursor_store(
-    cursor_config: &CursorConfig,
-    output_config: &OutputConfig,
-    legacy_kafka: &crate::config::KafkaConfig,
-) -> Result<Box<dyn CursorStore>> {
-    let has_kafka = output_config.includes_kafka()
-        || output_config
-            .kafka
-            .as_ref()
-            .is_some_and(|k| !k.brokers.is_empty())
-        || !legacy_kafka.brokers.is_empty();
-
-    let backend = match cursor_config.store.as_str() {
-        "auto" => {
-            if has_kafka {
-                "kafka"
-            } else {
-                "file"
-            }
-        }
-        other => other,
-    };
-
-    debug!(backend, "Creating cursor store");
-
-    match backend {
-        "kafka" => {
-            // Prefer output.kafka, fall back to legacy kafka config
-            let kafka_config = if let Some(ref kc) = output_config.kafka {
-                kc.clone()
-            } else if !legacy_kafka.brokers.is_empty() {
-                // Build rustlib KafkaConfig from legacy config (same mapping as OutputManager)
-                crate::output::build_rustlib_kafka_config(legacy_kafka)
-            } else {
-                return Err(Error::Cursor(
-                    "cursor store is 'kafka' but no Kafka config is present".into(),
-                ));
-            };
-            let store = kafka::KafkaCursorStore::new(cursor_config, &kafka_config).await?;
-            Ok(Box::new(store))
-        }
-        "file" => {
-            let store = file::FileCursorStore::new(&cursor_config.file_path)?;
-            Ok(Box::new(store))
-        }
-        other => Err(Error::Cursor(format!(
-            "unknown cursor store backend: '{other}' (valid: auto, kafka, file)"
-        ))),
-    }
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ graph TB
         end
 
         Scheduler[Scheduler<br>Timing + Concurrency]
-        CursorStore[Cursor Store<br>File / Kafka]
+        CursorStore[Cursor Store<br>File JSON]
         Pipeline[Pipeline<br>Enrich + Filter + Route]
         Ingest[Ingest Server<br>HTTP :8080]
         GRPC[gRPC Receiver<br>Vector Protocol :6000]
@@ -259,7 +259,7 @@ graph TD
     output[output.rs<br>Kafka / gRPC / Both] --> config
     output --> error
 
-    cursor[cursor/<br>File / Kafka] --> config
+    cursor[cursor/<br>File JSON] --> config
     cursor --> error
 
     credential[credential.rs<br>vault/env/literal<br>OAuth2 TokenManager] --> error

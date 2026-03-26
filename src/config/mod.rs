@@ -56,7 +56,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `extractors.*` — containers and Vector instances spawned at startup
 /// - `metrics.*` — metrics server binds at startup
 /// - `instance_id` — cursor key prefix set at startup
-/// - `cursor.store` / `cursor.file_path` / `cursor.kafka_topic` — cursor store created at startup
+/// - `cursor.file_path` — cursor store created at startup
 /// - `sources.*.enabled` — source registration at startup
 /// - `sources.*.credential_secret` / `tenant_id` / `client_id` etc. — credentials resolved once
 /// - `scheduler.max_concurrent_fetches` — semaphore created at startup
@@ -1277,14 +1277,8 @@ impl OutputConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CursorConfig {
-    /// Store backend: "auto", "kafka", or "file".
-    pub store: String,
-
-    /// File-based cursor directory.
+    /// Path to the single JSON cursor file.
     pub file_path: String,
-
-    /// Kafka topic for cursor state (compacted).
-    pub kafka_topic: String,
 
     /// Default lookback window in hours when no cursor exists.
     pub default_window_hours: u64,
@@ -1293,9 +1287,7 @@ pub struct CursorConfig {
 impl Default for CursorConfig {
     fn default() -> Self {
         Self {
-            store: "auto".to_string(),
-            file_path: "/var/lib/dfe-fetcher/cursors".to_string(),
-            kafka_topic: "dfe-fetcher-cursors".to_string(),
+            file_path: "/var/lib/dfe-fetcher/cursors.json".to_string(),
             default_window_hours: 1,
         }
     }
