@@ -37,6 +37,7 @@ This is the **single source of truth** for all tasks and progress.
 - [ ] **Wire FetchWindow into sources** — all 4 sources currently ignore the `_window` parameter. Each source's time-window logic needs updating to use `window.start`/`window.end` instead of hardcoded lookbacks. Cursors don't actually work end-to-end until this is done.
 - [ ] **Adopt metrics-dfe groups** — BLOCKED: `metrics-dfe` feature not yet published. Adopt when rustlib ships AppMetrics/SinkMetrics/BackpressureMetrics.
 - [ ] **Deprecate legacy KafkaConfig** — target removal in next major version
+- [ ] **M365 test credentials** — Derek to setup and provide M365 app registration creds for live smoke tests (currently only AWS/Azure/GCP have creds in `.env`)
 
 ---
 
