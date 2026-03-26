@@ -404,22 +404,17 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     }
 
     // Create cursor store for incremental fetching
-    let cursor_store: Option<Arc<dyn cursor::CursorStore>> = match cursor::create_cursor_store(
-        &config.cursor,
-        &config.output,
-        &config.kafka,
-    )
-    .await
-    {
-        Ok(store) => {
-            info!("Cursor store initialised");
-            Some(Arc::from(store))
-        }
-        Err(e) => {
-            warn!(error = %e, "Cursor store unavailable, fetches will use default lookback window");
-            None
-        }
-    };
+    let cursor_store: Option<Arc<dyn cursor::CursorStore>> =
+        match cursor::file::FileCursorStore::new(&config.cursor.file_path) {
+            Ok(store) => {
+                info!(path = %config.cursor.file_path, "Cursor store initialised");
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                warn!(error = %e, "Cursor store unavailable, fetches will use default lookback window");
+                None
+            }
+        };
 
     // Create scheduler (reads interval/jitter/window_hours from shared_config per tick)
     let scheduler = Scheduler::new(

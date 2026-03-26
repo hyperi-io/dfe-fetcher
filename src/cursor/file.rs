@@ -1,118 +1,124 @@
 // Project:   dfe-fetcher
 // File:      src/cursor/file.rs
-// Purpose:   File-based cursor store (one JSON file per cursor key)
+// Purpose:   Single-file JSON cursor store with in-memory cache
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
-//! File-based cursor store using one JSON file per cursor key.
+//! Single-file JSON cursor store.
 //!
-//! Each cursor is persisted as `{dir}/{normalized_key}.json`. Writes use
-//! atomic rename (`write .tmp` then `rename`) to prevent corruption on crash.
-//! If the directory is not writable at startup, the store operates in
-//! degraded read-only mode — sets are silently skipped with a warning.
+//! All cursors are persisted as a single JSON map in `file_path`. An
+//! in-memory `RwLock<HashMap>` cache serves reads without file I/O.
+//! Writes update the cache then atomically persist the entire map
+//! (write to `.tmp`, rename). If the path is not writable at startup,
+//! the store operates in degraded read-only mode — sets are silently
+//! skipped with a warning (cache still works for the current process).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use tracing::{debug, warn};
 
 use super::{CursorStore, CursorValue, normalize_cursor_key};
 use crate::error::{Error, Result};
 
-/// File-based cursor store.
+/// File-based cursor store backed by a single JSON file.
 pub struct FileCursorStore {
-    dir: PathBuf,
+    file_path: PathBuf,
+    cache: RwLock<HashMap<String, CursorValue>>,
     read_only: bool,
 }
 
 impl FileCursorStore {
-    /// Create a new file cursor store at the given directory path.
+    /// Create a new file cursor store at the given file path.
     ///
-    /// Creates the directory if it does not exist. If the directory cannot
-    /// be created or is not writable, the store falls back to read-only mode.
-    pub fn new(dir_path: &str) -> Result<Self> {
-        let dir = PathBuf::from(dir_path);
+    /// Creates the parent directory if it does not exist. If the file already
+    /// exists, loads its contents into the in-memory cache. If the path is
+    /// not writable, falls back to read-only mode.
+    pub fn new(path: &str) -> Result<Self> {
+        let file_path = PathBuf::from(path);
 
-        // Try to create the directory
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+        // Create parent directory if needed
+        if let Some(parent) = file_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
             warn!(
-                path = dir_path,
+                path,
                 error = %e,
-                "Cursor directory not writable, operating in read-only mode"
+                "Cursor file parent directory not writable, operating in read-only mode"
             );
             return Ok(Self {
-                dir,
+                file_path,
+                cache: RwLock::new(HashMap::new()),
                 read_only: true,
             });
         }
 
-        // Verify writability with a probe file
-        let probe = dir.join(".cursor_probe");
-        let read_only = if std::fs::write(&probe, b"ok").is_ok() {
-            let _ = std::fs::remove_file(&probe);
-            false
+        // Load existing data if the file exists
+        let cache = match std::fs::read_to_string(&file_path) {
+            Ok(content) => {
+                let map: HashMap<String, CursorValue> =
+                    serde_json::from_str(&content).map_err(|e| {
+                        Error::Cursor(format!(
+                            "failed to parse cursor file '{}': {e}",
+                            file_path.display()
+                        ))
+                    })?;
+                debug!(path, count = map.len(), "Loaded cursors from file");
+                map
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug!(path, "Cursor file does not exist yet, starting empty");
+                HashMap::new()
+            }
+            Err(e) => {
+                warn!(
+                    path,
+                    error = %e,
+                    "Failed to read cursor file, starting with empty cache"
+                );
+                HashMap::new()
+            }
+        };
+
+        // Probe writability with a temp file in the same directory
+        let read_only = if let Some(parent) = file_path.parent() {
+            let probe = parent.join(".cursor_probe");
+            if std::fs::write(&probe, b"ok").is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                false
+            } else {
+                warn!(
+                    path,
+                    "Cursor file path is not writable, operating in read-only mode"
+                );
+                true
+            }
         } else {
-            warn!(
-                path = dir_path,
-                "Cursor directory exists but is not writable, operating in read-only mode"
-            );
             true
         };
 
-        debug!(path = dir_path, read_only, "File cursor store initialised");
+        debug!(path, read_only, "File cursor store initialised");
 
-        Ok(Self { dir, read_only })
+        Ok(Self {
+            file_path,
+            cache: RwLock::new(cache),
+            read_only,
+        })
     }
 
-    /// Build the file path for a cursor key.
-    fn key_path(&self, key: &str) -> PathBuf {
-        let normalised = normalize_cursor_key(key);
-        self.dir.join(format!("{normalised}.json"))
-    }
-}
+    /// Persist the entire cache to the file atomically (write .tmp then rename).
+    fn persist(&self) -> Result<()> {
+        let cache = self.cache.read();
+        let json = serde_json::to_string_pretty(&*cache)
+            .map_err(|e| Error::Cursor(format!("failed to serialise cursor cache: {e}")))?;
+        drop(cache);
 
-#[async_trait]
-impl CursorStore for FileCursorStore {
-    async fn get(&self, key: &str) -> Result<Option<CursorValue>> {
-        let path = self.key_path(key);
+        let tmp_path = self.file_path.with_extension("json.tmp");
 
-        match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                let value: CursorValue = serde_json::from_str(&content).map_err(|e| {
-                    Error::Cursor(format!(
-                        "failed to parse cursor file '{}': {e}",
-                        path.display()
-                    ))
-                })?;
-                Ok(Some(value))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(Error::Cursor(format!(
-                "failed to read cursor file '{}': {e}",
-                path.display()
-            ))),
-        }
-    }
-
-    async fn set(&self, key: &str, value: &CursorValue) -> Result<()> {
-        if self.read_only {
-            warn!(
-                key,
-                "Cursor store is read-only, skipping cursor persistence"
-            );
-            return Ok(());
-        }
-
-        let path = self.key_path(key);
-        let tmp_path = path.with_extension("json.tmp");
-
-        let json = serde_json::to_string_pretty(value).map_err(|e| {
-            Error::Cursor(format!("failed to serialise cursor for key '{key}': {e}"))
-        })?;
-
-        // Write to temp file first
         std::fs::write(&tmp_path, json.as_bytes()).map_err(|e| {
             Error::Cursor(format!(
                 "failed to write cursor temp file '{}': {e}",
@@ -120,43 +126,67 @@ impl CursorStore for FileCursorStore {
             ))
         })?;
 
-        // Atomic rename
-        std::fs::rename(&tmp_path, &path).map_err(|e| {
-            // Clean up temp file on rename failure
+        std::fs::rename(&tmp_path, &self.file_path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp_path);
             Error::Cursor(format!(
                 "failed to rename cursor file '{}' -> '{}': {e}",
                 tmp_path.display(),
-                path.display()
+                self.file_path.display()
             ))
         })?;
 
-        debug!(key, path = %path.display(), "Cursor persisted");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl CursorStore for FileCursorStore {
+    async fn get(&self, key: &str) -> Result<Option<CursorValue>> {
+        let normalised = normalize_cursor_key(key);
+        let cache = self.cache.read();
+        Ok(cache.get(&normalised).cloned())
+    }
+
+    async fn set(&self, key: &str, value: &CursorValue) -> Result<()> {
+        let normalised = normalize_cursor_key(key);
+
+        {
+            let mut cache = self.cache.write();
+            cache.insert(normalised.clone(), value.clone());
+        }
+
+        if self.read_only {
+            warn!(
+                key,
+                "Cursor store is read-only, cache updated but not persisted to disk"
+            );
+            return Ok(());
+        }
+
+        self.persist()?;
+        debug!(key = normalised, path = %self.file_path.display(), "Cursor persisted");
         Ok(())
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
+        let normalised = normalize_cursor_key(key);
+
+        {
+            let mut cache = self.cache.write();
+            cache.remove(&normalised);
+        }
+
         if self.read_only {
-            warn!(key, "Cursor store is read-only, skipping cursor deletion");
+            warn!(
+                key,
+                "Cursor store is read-only, cache updated but not persisted to disk"
+            );
             return Ok(());
         }
 
-        let path = self.key_path(key);
-
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
-                debug!(key, "Cursor deleted");
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Already gone — not an error
-                Ok(())
-            }
-            Err(e) => Err(Error::Cursor(format!(
-                "failed to delete cursor file '{}': {e}",
-                path.display()
-            ))),
-        }
+        self.persist()?;
+        debug!(key = normalised, "Cursor deleted");
+        Ok(())
     }
 }
 
@@ -178,10 +208,18 @@ mod tests {
         }
     }
 
+    fn store_path(dir: &TempDir) -> String {
+        dir.path()
+            .join("cursors.json")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[tokio::test]
     async fn test_file_cursor_set_and_get() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let store = FileCursorStore::new(&store_path(&tmp)).unwrap();
 
         let cursor = make_cursor("aws.cloudtrail");
         store.set("aws.cloudtrail", &cursor).await.unwrap();
@@ -196,7 +234,7 @@ mod tests {
     #[tokio::test]
     async fn test_file_cursor_get_nonexistent() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let store = FileCursorStore::new(&store_path(&tmp)).unwrap();
 
         let result = store.get("nonexistent.key").await.unwrap();
         assert!(result.is_none());
@@ -205,25 +243,22 @@ mod tests {
     #[tokio::test]
     async fn test_file_cursor_delete() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let store = FileCursorStore::new(&store_path(&tmp)).unwrap();
 
         let cursor = make_cursor("azure.sentinel");
         store.set("azure.sentinel", &cursor).await.unwrap();
 
-        // Verify it exists
         assert!(store.get("azure.sentinel").await.unwrap().is_some());
 
-        // Delete it
         store.delete("azure.sentinel").await.unwrap();
 
-        // Verify it is gone
         assert!(store.get("azure.sentinel").await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn test_file_cursor_delete_nonexistent() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let store = FileCursorStore::new(&store_path(&tmp)).unwrap();
 
         // Deleting a non-existent key should not error
         store.delete("does.not.exist").await.unwrap();
@@ -232,24 +267,24 @@ mod tests {
     #[tokio::test]
     async fn test_file_cursor_atomic_write() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let path = store_path(&tmp);
+        let store = FileCursorStore::new(&path).unwrap();
 
         let cursor = make_cursor("gcp.audit");
         store.set("gcp.audit", &cursor).await.unwrap();
 
         // The .tmp file should NOT persist after a successful write
-        let tmp_path = tmp.path().join("gcp.audit.json.tmp");
+        let tmp_path = PathBuf::from(&path).with_extension("json.tmp");
         assert!(!tmp_path.exists(), ".tmp file should not persist");
 
         // The actual file should exist
-        let final_path = tmp.path().join("gcp.audit.json");
-        assert!(final_path.exists(), "Final cursor file should exist");
+        assert!(PathBuf::from(&path).exists(), "Cursor file should exist");
     }
 
     #[tokio::test]
     async fn test_file_cursor_key_normalisation() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let store = FileCursorStore::new(&store_path(&tmp)).unwrap();
 
         let cursor = make_cursor("AWS.CloudTrail");
         store.set("AWS.CloudTrail", &cursor).await.unwrap();
@@ -266,27 +301,26 @@ mod tests {
     #[tokio::test]
     async fn test_file_cursor_readonly_fallback() {
         // Use a path that should not be writable
-        let store = FileCursorStore::new("/proc/nonexistent/cursors");
+        let store = FileCursorStore::new("/proc/nonexistent/cursors.json");
 
         // Should succeed (degraded mode), not panic
         assert!(store.is_ok());
         let store = store.unwrap();
 
-        // set() should not panic in read-only mode
+        // set() should not panic in read-only mode (updates cache only)
         let cursor = make_cursor("test.key");
         let result = store.set("test.key", &cursor).await;
         assert!(result.is_ok());
 
-        // get() returns None (nothing was written)
-        let loaded = store.get("test.key").await;
-        // Either Ok(None) or an error is acceptable for a non-writable path
-        assert!(loaded.is_ok() || loaded.is_err());
+        // get() returns from cache (was set above even in read-only mode)
+        let loaded = store.get("test.key").await.unwrap();
+        assert!(loaded.is_some(), "cache should work even in read-only mode");
     }
 
     #[tokio::test]
     async fn test_file_cursor_overwrite() {
         let tmp = TempDir::new().unwrap();
-        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let store = FileCursorStore::new(&store_path(&tmp)).unwrap();
 
         let cursor1 = CursorValue {
             cursor_key: "m365.audit".to_string(),
@@ -311,5 +345,67 @@ mod tests {
         let loaded = store.get("m365.audit").await.unwrap().unwrap();
         assert_eq!(loaded.last_fetch_records, 99);
         assert_eq!(loaded.api_cursor.as_deref(), Some("page2"));
+    }
+
+    #[tokio::test]
+    async fn test_file_cursor_persistence_across_instances() {
+        let tmp = TempDir::new().unwrap();
+        let path = store_path(&tmp);
+
+        // First instance writes cursors
+        {
+            let store = FileCursorStore::new(&path).unwrap();
+            let cursor = make_cursor("aws.cloudtrail");
+            store.set("aws.cloudtrail", &cursor).await.unwrap();
+
+            let cursor2 = make_cursor("azure.sentinel");
+            store.set("azure.sentinel", &cursor2).await.unwrap();
+        }
+
+        // Second instance loads from the same file
+        {
+            let store = FileCursorStore::new(&path).unwrap();
+            let loaded = store.get("aws.cloudtrail").await.unwrap();
+            assert!(loaded.is_some(), "cursor should survive across instances");
+            assert_eq!(loaded.unwrap().cursor_key, "aws.cloudtrail");
+
+            let loaded2 = store.get("azure.sentinel").await.unwrap();
+            assert!(loaded2.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_file_cursor_multiple_keys_in_single_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = store_path(&tmp);
+        let store = FileCursorStore::new(&path).unwrap();
+
+        store
+            .set("source.a", &make_cursor("source.a"))
+            .await
+            .unwrap();
+        store
+            .set("source.b", &make_cursor("source.b"))
+            .await
+            .unwrap();
+        store
+            .set("source.c", &make_cursor("source.c"))
+            .await
+            .unwrap();
+
+        // Verify the file contains all three as a JSON map
+        let content = std::fs::read_to_string(&path).unwrap();
+        let map: HashMap<String, CursorValue> = serde_json::from_str(&content).unwrap();
+        assert_eq!(map.len(), 3);
+        assert!(map.contains_key("source.a"));
+        assert!(map.contains_key("source.b"));
+        assert!(map.contains_key("source.c"));
+
+        // Delete one and verify file is updated
+        store.delete("source.b").await.unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let map: HashMap<String, CursorValue> = serde_json::from_str(&content).unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(!map.contains_key("source.b"));
     }
 }

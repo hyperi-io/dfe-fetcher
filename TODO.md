@@ -35,7 +35,6 @@ This is the **single source of truth** for all tasks and progress.
 - [ ] **Documentation review** — run full doco review skill against codebase, fix stale content
 - [ ] **Rebuild CI with updated hyperi-ci** — hyperi-ci has significant updates (prod/test change separation). Re-run full CI pipeline, verify test/build/release workflow still works end-to-end.
 - [ ] **Wire FetchWindow into sources** — all 4 sources currently ignore the `_window` parameter. Each source's time-window logic needs updating to use `window.start`/`window.end` instead of hardcoded lookbacks. Cursors don't actually work end-to-end until this is done.
-- [ ] **Cursor store fallback for legacy Kafka config** — `create_cursor_store` doesn't fall back to the legacy `kafka:` section when `output.kafka` is `None`. Needs the same legacy mapping as `OutputManager`.
 - [ ] **Adopt metrics-dfe groups** — BLOCKED: `metrics-dfe` feature not yet published. Adopt when rustlib ships AppMetrics/SinkMetrics/BackpressureMetrics.
 - [ ] **Deprecate legacy KafkaConfig** — target removal in next major version
 

@@ -81,7 +81,7 @@ impl KafkaTestConfig {
             .unwrap_or(false)
     }
 
-    /// Convert to rustlib KafkaConfig for use with KafkaTransport / KafkaCursorStore.
+    /// Convert to rustlib KafkaConfig for use with KafkaTransport.
     pub fn to_rustlib_config(&self) -> hyperi_rustlib::transport::KafkaConfig {
         let mut config = hyperi_rustlib::transport::KafkaConfig {
             brokers: self

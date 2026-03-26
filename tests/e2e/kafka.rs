@@ -23,7 +23,8 @@ use serde_json::json;
 
 use hyperi_rustlib::transport::Transport;
 
-use dfe_fetcher::config::{Config, CursorConfig, OutputConfig, SharedConfig};
+use dfe_fetcher::config::{Config, OutputConfig, SharedConfig};
+use dfe_fetcher::cursor::file::FileCursorStore;
 use dfe_fetcher::cursor::{CursorStore, CursorValue};
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::PipelineState;
@@ -187,22 +188,13 @@ async fn test_e2e_enriched_record_in_kafka() {
 /// Cursor store -> FetchWindow integration: write cursor, verify next window starts
 /// from cursor.last_fetch_end.
 #[tokio::test]
-#[ignore = "requires Kafka (TEST_MODE=remote or docker)"]
+#[ignore = "requires filesystem (always available, marked ignore for e2e consistency)"]
 async fn test_e2e_cursor_drives_fetch_window() {
-    skip_if_no_kafka!();
+    let tmp = tempfile::TempDir::new().expect("create temp dir");
+    let cursor_path = tmp.path().join("cursors.json");
 
-    let kf = common::kafka_test_config();
-
-    // Use Kafka cursor store
-    let cursor_config = CursorConfig {
-        kafka_topic: common::test_topic("e2e-cursor"),
-        ..Default::default()
-    };
-
-    let store =
-        dfe_fetcher::cursor::kafka::KafkaCursorStore::new(&cursor_config, &kf.to_rustlib_config())
-            .await
-            .expect("cursor store should initialise");
+    let store = FileCursorStore::new(cursor_path.to_str().unwrap())
+        .expect("cursor store should initialise");
 
     let key = "e2e-instance.aws.cloudtrail";
 

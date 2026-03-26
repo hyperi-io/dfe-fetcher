@@ -361,48 +361,38 @@ fn test_topic_suffix_resolution() {
 }
 
 // =============================================================================
-// Cursor store auto-selection
+// Cursor store creation
 // =============================================================================
 
-/// Verify cursor store selection logic based on output mode.
+/// Verify file cursor store can be created and used.
 #[tokio::test]
-async fn test_cursor_store_auto_selection() {
-    use dfe_fetcher::config::{CursorConfig, OutputConfig};
+async fn test_cursor_store_file_creation() {
+    use dfe_fetcher::cursor::CursorStore;
+    use dfe_fetcher::cursor::file::FileCursorStore;
 
-    // gRPC-only -> should select file store (no Kafka available)
-    let cursor_config = CursorConfig {
-        store: "auto".to_string(),
-        file_path: "/tmp/dfe-test-cursor-auto".to_string(),
-        ..Default::default()
-    };
-    let grpc_output = OutputConfig {
-        output_type: "grpc".to_string(),
-        ..Default::default()
-    };
-    let store = dfe_fetcher::cursor::create_cursor_store(
-        &cursor_config,
-        &grpc_output,
-        &dfe_fetcher::config::KafkaConfig::default(),
-    )
-    .await;
-    // Should succeed (file store) — directory will be created or degraded mode
-    assert!(store.is_ok(), "auto + grpc should resolve to file store");
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("cursors.json");
 
-    // Explicit "file" -> file store regardless of output mode
-    let file_config = CursorConfig {
-        store: "file".to_string(),
-        file_path: "/tmp/dfe-test-cursor-explicit".to_string(),
-        ..Default::default()
-    };
-    let kafka_output = OutputConfig {
-        output_type: "kafka".to_string(),
-        ..Default::default()
-    };
-    let store = dfe_fetcher::cursor::create_cursor_store(
-        &file_config,
-        &kafka_output,
-        &dfe_fetcher::config::KafkaConfig::default(),
-    )
-    .await;
-    assert!(store.is_ok(), "explicit file should always succeed");
+    let store = FileCursorStore::new(path.to_str().unwrap());
+    assert!(store.is_ok(), "file cursor store should initialise");
+
+    let store = store.unwrap();
+    let result = store.get("test.key").await;
+    assert!(result.is_ok(), "get on empty store should succeed");
+    assert!(
+        result.unwrap().is_none(),
+        "should return None for missing key"
+    );
+}
+
+/// Verify file cursor store handles non-writable paths gracefully.
+#[tokio::test]
+async fn test_cursor_store_readonly_fallback() {
+    use dfe_fetcher::cursor::file::FileCursorStore;
+
+    let store = FileCursorStore::new("/proc/nonexistent/cursors.json");
+    assert!(
+        store.is_ok(),
+        "should fall back to read-only mode, not error"
+    );
 }
