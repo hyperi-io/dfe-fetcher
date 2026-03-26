@@ -40,7 +40,7 @@ Native Rust fetcher that:
 2. Manages container-based extractors for third-party tools (any language)
 3. Integrates with Vector.dev via native gRPC protocol
 4. Delivers all fetched data to Kafka and/or gRPC for the DFE pipeline
-5. Tracks incremental fetch state via cursor store (file or Kafka)
+5. Tracks incremental fetch state via file-based cursor store (PVC-backed)
 6. Filters records per-source using CEL expressions before delivery
 
 ### Three Extraction Modes
@@ -66,7 +66,7 @@ Native Rust fetcher that:
 6. **Vector Manager** — Native gRPC Vector protocol integration via rustlib GrpcTransport
 7. **Pipeline** — Enrichment (`_timestamp_fetcher`, `_source_fetcher`, `_timestamp_received` fields) + CEL filtering + output delivery
 8. **Output Transport** — Unified transport layer via rustlib Transport trait (Kafka, gRPC, or both)
-9. **Cursor Store** — Incremental fetch state persistence (file or Kafka backend, auto-selected)
+9. **Cursor Store** — Incremental fetch state persistence (single JSON file, PVC-backed)
 10. **MemoryGuard** — Cgroup-aware memory pressure detection (from rustlib)
 11. **Ingest Server** — axum HTTP server for container extractors with bearer token auth
 12. **Metrics** — DfeMetrics dual-emit (`dfe_fetcher_*` prefix) + MetricsManager Prometheus endpoint
@@ -91,10 +91,20 @@ Native Rust fetcher that:
 **Rationale:** Stdout is simplest for one-shot tools, HTTP for continuous processes, gRPC for Vector-native sources.
 **Alternatives considered:** Unix sockets (too platform-specific), shared volumes (complex lifecycle).
 
-### No Horizontal Scaling
+### No Horizontal Scaling (BY DESIGN)
 
-**Decision:** Each fetcher instance handles one set of sources. Scale by deploying multiple instances.
-**Rationale:** Cloud API rate limits are per-credential, not per-instance. No benefit to fan-out.
+**Decision:** Each fetcher instance handles one set of sources. Scale by deploying multiple instances with different configs. Never run multiple pods with the same source config.
+
+**Rationale:**
+- Cloud API rate limits are per-credential, not per-instance — two pods with the same AWS credentials hit the same rate limit, halving effective throughput while doubling API calls
+- Two pods fetching the same source would both fetch the same time window, producing duplicate data
+- Cursor contention: concurrent writers to the same cursor key cause lost updates
+- True scale-out would require distributed locking, work partitioning, cursor CAS, and leader election — essentially a distributed scheduler for zero throughput gain
+- The fetcher is I/O bound (waiting for API responses), not CPU bound — one pod easily saturates a cloud API's rate limit
+
+**Scaling pattern:** 50 M365 tenants → 50 pods, each with unique `instance_id` and config. K8s handles scheduling and restarts. Each pod is fully independent — no coordination needed.
+
+**Alternatives rejected:** Active/passive failover (K8s leader election lease) — adds complexity for marginal availability gain since K8s already restarts crashed pods.
 
 ### Native vs Container Decision
 
@@ -105,6 +115,17 @@ Native Rust fetcher that:
 
 **Decision:** `unsafe_code = "deny"` in Cargo.toml lints. No plugin system — removed in favour of container/sidecar approach.
 **Rationale:** Safety guarantee for the entire codebase. Three extraction modes (native, container, vector) cover all use cases.
+
+### Cursor Store (File-Based, Not Kafka)
+
+**Decision:** Single JSON file at a configurable path (`cursor.file_path`), PVC-backed for pod restart persistence. No Kafka cursor backend.
+**Rationale:**
+- Fetchers are single-writer-per-config by design — no shared state needed between pods
+- Kafka cursor topic was over-engineered: each pod writes its own cursors, never reads another pod's
+- File-based is simpler, debuggable (kubectl exec + cat), and has no external service dependency
+- Config cascade specifies WHERE the file lives; the cursor store writes independently
+- Read-only fallback: if PVC is unavailable, runs degraded (re-fetches default window, logs warning)
+**Alternatives rejected:** Kafka compacted topic (unnecessary for single-writer), K8s ConfigMap API (extra RBAC), OpenBao KV (adds latency + availability coupling)
 
 ### Credential Resolution
 
@@ -141,9 +162,8 @@ src/
 │   └── shared.rs     # SharedConfig (Arc<RwLock<Config>>)
 ├── credential.rs     # Credential resolver (vault/env/literal), OAuth2 TokenManager, HTTP client factory
 ├── cursor/           # Incremental fetch state persistence
-│   ├── mod.rs        # CursorStore trait, CursorValue, auto-select backend
-│   ├── file.rs       # File-based cursor backend (one JSON file per key)
-│   └── kafka.rs      # Kafka compacted topic cursor backend
+│   ├── mod.rs        # CursorStore trait, CursorValue types
+│   └── file.rs       # File-based cursor store (single JSON file, PVC-backed)
 ├── error.rs          # Centralised error types (Config, Source, Credential, Output, Extractor)
 ├── extractor/        # External extractors
 │   ├── mod.rs        # Extractor trait
@@ -184,7 +204,7 @@ tests/
 │   ├── main.rs       # Test binary entry point
 │   ├── container.rs  # Docker container extractor tests (3 tests)
 │   ├── kafka.rs      # Kafka produce/consume roundtrip + enrichment (3 tests)
-│   ├── kafka_cursor.rs # Kafka cursor store + transport tests (2 tests)
+│   ├── kafka_cursor.rs # Kafka transport output tests (1 test)
 │   └── smoke_cloud.rs # Live cloud API tests (8 tests, requires credentials)
 ├── fixtures/         # Test data files (empty — fixtures inline for now)
 └── smoke.rs          # Mandatory startup smoke test (config, metrics, pipeline init)
