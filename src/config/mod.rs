@@ -56,7 +56,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `extractors.*` — containers and Vector instances spawned at startup
 /// - `metrics.*` — metrics server binds at startup
 /// - `instance_id` — cursor key prefix set at startup
-/// - `cursor.file_path` — cursor store created at startup
+/// - `cursor.directory` — cursor store created at startup
 /// - `sources.*.enabled` — source registration at startup
 /// - `sources.*.credential_secret` / `tenant_id` / `client_id` etc. — credentials resolved once
 /// - `scheduler.max_concurrent_fetches` — semaphore created at startup
@@ -1274,11 +1274,20 @@ impl OutputConfig {
 // =============================================================================
 
 /// Cursor store configuration for incremental fetching.
+///
+/// Cursors are stored as individual JSON files in `directory`, one per
+/// source service (e.g., `aws.cloudtrail.cursor.json`). The directory
+/// should be PVC-backed for pod restart persistence.
+///
+/// If `directory` is empty, the cursor store falls back to the config
+/// file's parent directory with a warning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CursorConfig {
-    /// Path to the single JSON cursor file.
-    pub file_path: String,
+    /// Directory for cursor files. Each source gets its own file
+    /// named `{instance_id}.{source}.{service}.cursor.json`.
+    /// Empty = fall back to config file directory (with warning).
+    pub directory: String,
 
     /// Default lookback window in hours when no cursor exists.
     pub default_window_hours: u64,
@@ -1287,7 +1296,7 @@ pub struct CursorConfig {
 impl Default for CursorConfig {
     fn default() -> Self {
         Self {
-            file_path: "/var/lib/dfe-fetcher/cursors.json".to_string(),
+            directory: String::new(), // empty = auto-resolve from config path
             default_window_hours: 1,
         }
     }

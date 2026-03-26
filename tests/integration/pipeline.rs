@@ -140,8 +140,7 @@ async fn test_cursor_file_store_incremental_window() {
     use dfe_fetcher::cursor::{CursorStore, CursorValue};
 
     let dir = tempfile::TempDir::new().unwrap();
-    let cursor_path = dir.path().join("cursors.json");
-    let store = FileCursorStore::new(cursor_path.to_str().unwrap()).unwrap();
+    let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
 
     // No cursor: should return None
     let key = "test-instance.aws.cloudtrail";

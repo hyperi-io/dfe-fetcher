@@ -191,10 +191,9 @@ async fn test_e2e_enriched_record_in_kafka() {
 #[ignore = "requires filesystem (always available, marked ignore for e2e consistency)"]
 async fn test_e2e_cursor_drives_fetch_window() {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
-    let cursor_path = tmp.path().join("cursors.json");
 
-    let store = FileCursorStore::new(cursor_path.to_str().unwrap())
-        .expect("cursor store should initialise");
+    let store =
+        FileCursorStore::new(tmp.path().to_str().unwrap()).expect("cursor store should initialise");
 
     let key = "e2e-instance.aws.cloudtrail";
 

@@ -403,11 +403,32 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         );
     }
 
+    // Resolve cursor directory: explicit config > config file's parent > current dir
+    let cursor_dir = if config.cursor.directory.is_empty() {
+        let fallback = config
+            .config_path
+            .as_ref()
+            .and_then(|p| {
+                std::path::Path::new(p)
+                    .parent()
+                    .map(|d| d.to_string_lossy().to_string())
+            })
+            .unwrap_or_else(|| ".".to_string());
+        warn!(
+            fallback_dir = %fallback,
+            "cursor.directory not set — falling back to config file directory. \
+             Set cursor.directory to a PVC-backed path for pod restart persistence."
+        );
+        fallback
+    } else {
+        config.cursor.directory.clone()
+    };
+
     // Create cursor store for incremental fetching
     let cursor_store: Option<Arc<dyn cursor::CursorStore>> =
-        match cursor::file::FileCursorStore::new(&config.cursor.file_path) {
+        match cursor::file::FileCursorStore::new(&cursor_dir) {
             Ok(store) => {
-                info!(path = %config.cursor.file_path, "Cursor store initialised");
+                info!(directory = %cursor_dir, "Cursor store initialised");
                 Some(Arc::new(store))
             }
             Err(e) => {
