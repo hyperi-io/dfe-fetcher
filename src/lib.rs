@@ -10,7 +10,7 @@
 //!
 //! Fetches security and operational data from cloud services (AWS, Azure,
 //! M365, GCP) and external extractors, delivering to the DFE pipeline
-//! via Kafka.
+//! via Kafka and/or gRPC.
 //!
 //! ## Architecture
 //!
