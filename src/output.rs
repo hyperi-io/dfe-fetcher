@@ -14,7 +14,7 @@
 //! All Kafka access via rustlib's `KafkaTransport` — no direct rdkafka dependency.
 
 use hyperi_rustlib::transport::{
-    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, Transport,
+    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, TransportBase, TransportSender,
 };
 use tracing::{debug, error, info};
 

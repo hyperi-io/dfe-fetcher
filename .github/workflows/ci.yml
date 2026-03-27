@@ -18,8 +18,13 @@ on:
       - "docs/**"
       - "**.md"
   pull_request:
-    branches: [main, release]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+        description: "Tag to publish (e.g. v1.1.7)"
 
 permissions:
   contents: write
@@ -32,4 +37,5 @@ jobs:
     uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@main
     with:
       publish-target: both
+      tag: ${{ inputs.tag || '' }}
     secrets: inherit
