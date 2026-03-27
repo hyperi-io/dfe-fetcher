@@ -49,7 +49,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use hyperi_rustlib::transport::{GrpcConfig, GrpcTransport, Transport};
+use hyperi_rustlib::transport::{GrpcConfig, GrpcTransport, TransportBase, TransportReceiver};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 

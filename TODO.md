@@ -6,6 +6,33 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
+### Single Versioning Migration + rustlib 1.20 + Release
+
+**Part A: Single Versioning (from MIGRATION-GUIDE.md)**
+
+- [x] A1. Convert `.releaserc.json` → `.releaserc.yaml` (branches: [main], remove @semantic-release/github, add all commit types)
+- [x] A2. Update `.github/workflows/ci.yml` (add `tag` input to workflow_dispatch, pass to reusable workflow, remove `release` from PR branches)
+- [x] A3. Fix VERSION (`1.1.6`) + Cargo.toml version (`1.1.6`)
+- [x] A4. Create `.githooks/commit-msg` hook
+
+**Part B: rustlib >= 1.20.0 Compilation**
+
+- [x] B1. Fix transport imports for trait split (`TransportBase`/`TransportSender`/`TransportReceiver`)
+- [x] B2. Verify `cargo check` compiles clean
+- [x] B3. Run `cargo clippy` + `cargo test` — 164 passing, 17 ignored (e2e)
+
+**Part C: Code Review**
+
+- [x] C1. Code review passed — all changes correct
+
+**Part D: Commit, Push, Release**
+
+- [ ] D1. Commit: `fix: migrate to single versioning and bump rustlib to 1.20`
+- [ ] D2. Push to main, force-tag `v1.1.6` to HEAD, push tag
+- [ ] D3. Wait for CI green
+- [ ] D4. Delete release branch: `gh api -X DELETE repos/hyperi-io/dfe-fetcher/git/refs/heads/release`
+- [ ] D5. Verify semantic-release creates clean GA version (no `-dev.N`)
+
 ### Metrics Standard Migration (DFE-METRICS-MIGRATION-FETCHER.md)
 
 - [x] Bump rustlib to >=1.18.0

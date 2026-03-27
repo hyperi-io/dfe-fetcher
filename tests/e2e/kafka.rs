@@ -21,7 +21,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use serde_json::json;
 
-use hyperi_rustlib::transport::Transport;
+use hyperi_rustlib::transport::{TransportBase, TransportReceiver};
 
 use dfe_fetcher::config::{Config, OutputConfig, SharedConfig};
 use dfe_fetcher::cursor::file::FileCursorStore;
