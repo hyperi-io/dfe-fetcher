@@ -1,3 +1,11 @@
+## [1.1.7](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.6...v1.1.7) (2026-03-27)
+
+
+### Bug Fixes
+
+* correct lib.rs doc comment to mention gRPC output ([28e4f41](https://github.com/hyperi-io/dfe-fetcher/commit/28e4f41ce4bc979d253642d294531c504750175c))
+* trigger release after single versioning migration ([007633f](https://github.com/hyperi-io/dfe-fetcher/commit/007633f087045ea42ed1c020c9bf52db587d0a16))
+
 ## [1.1.3-dev.6](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.3-dev.5...v1.1.3-dev.6) (2026-03-25)
 
 
