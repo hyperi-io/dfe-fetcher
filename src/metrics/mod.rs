@@ -25,7 +25,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use hyperi_rustlib::metrics::DfeMetrics;
+use hyperi_rustlib::metrics::{DfeMetrics, MetricsManager};
 use hyperi_rustlib::scaling::RateWindow;
 
 /// Metrics collector for dfe-fetcher.
@@ -123,7 +123,7 @@ impl Metrics {
     /// metric descriptions with the global `metrics` recorder. Use in
     /// production where [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager)
     /// is (or will be) installed.
-    pub fn with_dfe() -> Self {
+    pub fn with_dfe(manager: &MetricsManager) -> Self {
         // Register fetcher-specific metrics with the global recorder.
         // These are NOT part of DfeMetrics (which covers standard DFE metrics
         // shared across receiver/loader/engine) — they are fetcher-only.
@@ -198,7 +198,7 @@ impl Metrics {
         );
 
         Self {
-            dfe: Some(DfeMetrics::register()),
+            dfe: Some(DfeMetrics::register(manager)),
             ..Self::new()
         }
     }
