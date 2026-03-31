@@ -243,7 +243,7 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     let mut metrics_manager = MetricsManager::new("dfe_fetcher");
 
     // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
-    let metrics = Arc::new(Metrics::with_dfe());
+    let metrics = Arc::new(Metrics::with_dfe(&metrics_manager));
 
     // Create cancellation token for coordinated shutdown
     let shutdown_token = CancellationToken::new();
