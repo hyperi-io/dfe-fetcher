@@ -237,22 +237,33 @@ impl Source for AwsSource {
             None => (now - chrono::Duration::hours(1), now),
         };
 
+        // Fetch all services sequentially for now.
+        // Each service is an independent API call. When service count is > 1,
+        // the scheduler already runs sources in parallel. Within-source
+        // parallelism via JoinSet requires Arc<Self> which changes the trait.
+        // TODO: convert to concurrent fetching when Source trait supports it.
         let mut results = Vec::new();
         for service in &self.config.services {
             let fetch_result = match service.name.as_str() {
-                "cloudtrail" => self.fetch_cloudtrail(service, start, end).await?,
-                "guardduty" => self.fetch_guardduty(service).await?,
-                "securityhub" => self.fetch_securityhub(service).await?,
-                "config" => self.fetch_config(service).await?,
-                "cloudwatch_logs" => self.fetch_cloudwatch_logs(service, start, end).await?,
-                "cloudwatch_metrics" => self.fetch_cloudwatch_metrics(service, start, end).await?,
+                "cloudtrail" => self.fetch_cloudtrail(service, start, end).await,
+                "guardduty" => self.fetch_guardduty(service).await,
+                "securityhub" => self.fetch_securityhub(service).await,
+                "config" => self.fetch_config(service).await,
+                "cloudwatch_logs" => self.fetch_cloudwatch_logs(service, start, end).await,
+                "cloudwatch_metrics" => {
+                    self.fetch_cloudwatch_metrics(service, start, end).await
+                }
                 other => {
                     warn!(service = other, "Unknown AWS service, skipping");
                     continue;
                 }
             };
-            if let Some(result) = fetch_result {
-                results.push(result);
+            match fetch_result {
+                Ok(Some(r)) => results.push(r),
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(error = %e, service = %service.name, "AWS service fetch failed, continuing with others");
+                }
             }
         }
         Ok(results)
