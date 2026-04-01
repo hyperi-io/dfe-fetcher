@@ -1680,6 +1680,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "ratatui",
+ "rayon",
  "rdkafka",
  "reqwest",
  "rmp-serde",
