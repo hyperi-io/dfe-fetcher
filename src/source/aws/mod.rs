@@ -250,9 +250,7 @@ impl Source for AwsSource {
                 "securityhub" => self.fetch_securityhub(service).await,
                 "config" => self.fetch_config(service).await,
                 "cloudwatch_logs" => self.fetch_cloudwatch_logs(service, start, end).await,
-                "cloudwatch_metrics" => {
-                    self.fetch_cloudwatch_metrics(service, start, end).await
-                }
+                "cloudwatch_metrics" => self.fetch_cloudwatch_metrics(service, start, end).await,
                 other => {
                     warn!(service = other, "Unknown AWS service, skipping");
                     continue;

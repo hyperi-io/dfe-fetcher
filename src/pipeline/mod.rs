@@ -142,9 +142,7 @@ impl PipelineState {
         let total_records: usize = results.iter().map(|r| r.records.len()).sum();
         debug!(
             batch_size = results.len(),
-            total_records,
-            topic_suffix,
-            "Delivering fetch results batch"
+            total_records, topic_suffix, "Delivering fetch results batch"
         );
 
         for result in results {

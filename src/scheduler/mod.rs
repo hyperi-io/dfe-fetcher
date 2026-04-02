@@ -125,7 +125,10 @@ impl Scheduler {
                             );
                         }
                     }
-                    debug!(source = source.name(), "Backpressure stall — delaying fetch");
+                    debug!(
+                        source = source.name(),
+                        "Backpressure stall — delaying fetch"
+                    );
                     metrics.inc_transport_backpressured();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
@@ -325,8 +328,7 @@ async fn build_fetch_window(
             Ok(None) => {
                 debug!(
                     cursor_key,
-                    default_window_hours,
-                    "No cursor found, using default lookback window"
+                    default_window_hours, "No cursor found, using default lookback window"
                 );
             }
             Err(e) => {
