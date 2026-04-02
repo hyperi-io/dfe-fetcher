@@ -154,12 +154,11 @@ async fn test_aws_fetch_error_500() {
         }],
     );
     let source = AwsSource::new(config);
-    let err = source.fetch(None).await.unwrap_err();
-
-    let msg = err.to_string();
+    // AWS fetch continues on service errors (commit 723af3f) — returns Ok([]) instead of Err
+    let results = source.fetch(None).await.unwrap();
     assert!(
-        msg.contains("500"),
-        "Error should contain status code: {msg}"
+        results.is_empty(),
+        "500 error should return empty results (continue on failure), got: {results:?}"
     );
 }
 

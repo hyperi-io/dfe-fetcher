@@ -101,7 +101,7 @@ impl KafkaTestConfig {
             config.sasl_username = Some(user.clone());
         }
         if let Some(ref password) = self.sasl_password {
-            config.sasl_password = Some(password.clone());
+            config.sasl_password = Some(password.clone().into());
         }
         config
     }

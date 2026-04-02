@@ -21,22 +21,18 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL_MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, StandardCommand, TopArgs, VersionInfo};
+use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, ServiceRuntime, StandardCommand, TopArgs, VersionInfo};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
 use hyperi_rustlib::logger::security;
-use hyperi_rustlib::metrics::MetricsManager;
-use hyperi_rustlib::scaling::{ScalingComponent, ScalingPressure};
+use hyperi_rustlib::scaling::ScalingComponent;
 use hyperi_rustlib::top::{TopConfig, run_top};
-use tokio::signal;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
 use dfe_fetcher::cursor;
@@ -155,8 +151,8 @@ impl DfeApp for App {
         Ok(config)
     }
 
-    async fn run_service(&self, config: Config, runtime: hyperi_rustlib::cli::ServiceRuntime) -> Result<(), CliError> {
-        run_fetcher_service(&self.common, config)
+    async fn run_service(&self, config: Config, runtime: ServiceRuntime) -> Result<(), CliError> {
+        run_fetcher_service(&self.common, config, runtime)
             .await
             .map_err(|e| CliError::Service(e.to_string()))
     }
@@ -207,14 +203,19 @@ async fn main() {
     }
 
     // Delegate to standard DfeApp lifecycle (logging → config → run_service)
-    if let Err(e) = hyperi_rustlib::cli::run_app(app).await {
+    // Box::pin avoids a large-future clippy lint on the run_app async fn.
+    if let Err(e) = Box::pin(hyperi_rustlib::cli::run_app(app)).await {
         eprintln!("fatal: {e}");
         std::process::exit(1);
     }
 }
 
 /// Main service loop — called by the DfeApp lifecycle after logging and config.
-async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Result<()> {
+async fn run_fetcher_service(
+    _common: &CommonArgs,
+    config: Config,
+    mut runtime: ServiceRuntime,
+) -> anyhow::Result<()> {
     // Warn if deprecated plugin config is present
     config.extractors.plugins.warn_if_configured();
 
@@ -228,6 +229,64 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
     // Register config in the global config registry (enables /config debug endpoint)
     config.register_in_registry();
 
+    // Log startup configuration at debug level for observability
+    debug!(
+        sources_aws = config.sources.aws.enabled,
+        sources_azure = config.sources.azure.enabled,
+        sources_m365 = config.sources.m365.enabled,
+        sources_gcp = config.sources.gcp.enabled,
+        scheduler_interval_secs = config.scheduler.default_interval_secs,
+        scheduler_jitter_pct = config.scheduler.jitter_percent,
+        scheduler_max_concurrent = config.scheduler.max_concurrent_fetches,
+        output_type = %config.output.output_type,
+        output_topic_suffix = config.output.topic_suffix.as_deref().unwrap_or(&config.kafka.topic_suffix),
+        cursor_dir = %config.cursor.directory,
+        cursor_window_hours = config.cursor.default_window_hours,
+        dlq_enabled = config.dlq.enabled,
+        config_reload_secs = config.config_reload_secs,
+        "Startup configuration"
+    );
+    if config.sources.aws.enabled {
+        debug!(
+            region = %config.sources.aws.region,
+            services = ?config.sources.aws.services.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            topic = %config.sources.aws.topic,
+            filter = config.sources.aws.filter.as_deref().unwrap_or("none"),
+            interval_secs = config.sources.aws.interval_secs,
+            "AWS source config"
+        );
+    }
+    if config.sources.azure.enabled {
+        debug!(
+            tenant_id = config.sources.azure.tenant_id.as_deref().unwrap_or("unset"),
+            services = ?config.sources.azure.services.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            topic = %config.sources.azure.topic,
+            filter = config.sources.azure.filter.as_deref().unwrap_or("none"),
+            interval_secs = config.sources.azure.interval_secs,
+            "Azure source config"
+        );
+    }
+    if config.sources.m365.enabled {
+        debug!(
+            tenant_id = config.sources.m365.tenant_id.as_deref().unwrap_or("unset"),
+            services = ?config.sources.m365.services.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            topic = %config.sources.m365.topic,
+            filter = config.sources.m365.filter.as_deref().unwrap_or("none"),
+            interval_secs = config.sources.m365.interval_secs,
+            "M365 source config"
+        );
+    }
+    if config.sources.gcp.enabled {
+        debug!(
+            project_id = config.sources.gcp.project_id.as_deref().unwrap_or("unset"),
+            services = ?config.sources.gcp.services.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            topic = %config.sources.gcp.topic,
+            filter = config.sources.gcp.filter.as_deref().unwrap_or("none"),
+            interval_secs = config.sources.gcp.interval_secs,
+            "GCP source config"
+        );
+    }
+
     // Fire-and-forget version check against crates.io
     {
         use hyperi_rustlib::version_check::{VersionCheck, VersionCheckConfig};
@@ -238,69 +297,24 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         checker.check_on_startup();
     }
 
-    // Install MetricsManager (Prometheus recorder) BEFORE creating Metrics::with_dfe()
-    // so that all subsequent metrics::counter!/gauge! calls go through the recorder.
-    let mut metrics_manager = MetricsManager::new("dfe_fetcher");
+    // Use ServiceRuntime's pre-wired MetricsManager (already started, serving /metrics)
+    // and shutdown token (signal handler already installed with K8s pre-stop delay).
+    let shutdown_token = runtime.shutdown.clone();
 
-    // Initialise metrics (with DfeMetrics dual-emit for standard DFE metric names)
-    let metrics = Arc::new(Metrics::with_dfe(&metrics_manager));
-
-    // Create cancellation token for coordinated shutdown
-    let shutdown_token = CancellationToken::new();
-
-    // Spawn signal handler for graceful shutdown (SIGINT + SIGTERM)
-    let signal_token = shutdown_token.clone();
-    tokio::spawn(async move {
-        let ctrl_c = signal::ctrl_c();
-
-        #[cfg(unix)]
-        {
-            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
-                .unwrap_or_else(|e| {
-                    warn!(error = %e, "Failed to register SIGTERM handler");
-                    panic!("SIGTERM handler registration failed: {e}");
-                });
-
-            tokio::select! {
-                result = ctrl_c => {
-                    if let Err(e) = result {
-                        warn!(error = %e, "Failed to listen for SIGINT");
-                        return;
-                    }
-                    info!("Received SIGINT, initiating shutdown");
-                }
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM, initiating shutdown");
-                }
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            if let Err(e) = ctrl_c.await {
-                warn!(error = %e, "Failed to listen for SIGINT");
-                return;
-            }
-            info!("Received SIGINT, initiating shutdown");
-        }
-
-        signal_token.cancel();
-    });
-
-    // Parse metrics server address
-    let default_metrics_addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], 9090));
-    let metrics_addr: SocketAddr = common.metrics_addr.parse().unwrap_or_else(|_| {
-        warn!(addr = %common.metrics_addr, "Invalid metrics address, using default");
-        default_metrics_addr
-    });
+    // Initialise fetcher metrics (with DfeMetrics dual-emit for standard DFE metric names).
+    // runtime.dfe is the DfeMetrics already registered by ServiceRuntime; we also register
+    // fetcher-specific metric descriptions by constructing Metrics::with_dfe().
+    let metrics = Arc::new(Metrics::with_dfe(&runtime.metrics));
 
     // Create and run the pipeline orchestrator
     let orchestrator =
         Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
     let pipeline_state = orchestrator.state();
 
-    // Create scaling pressure calculator for KEDA autoscaling
-    let scaling_pressure = Arc::new(ScalingPressure::new(
+    // Build scaling pressure calculator for KEDA autoscaling with fetcher-specific components.
+    // The ServiceRuntime's scaling field (if any) uses generic components; we create one
+    // with fetcher-specific weights for buffer depth, transport errors, and memory.
+    let scaling_pressure = Arc::new(hyperi_rustlib::scaling::ScalingPressure::new(
         config.scaling.clone(),
         vec![
             ScalingComponent::new(
@@ -379,18 +393,14 @@ async fn run_fetcher_service(common: &CommonArgs, config: Config) -> anyhow::Res
         });
     }
 
-    // Wire readiness and scaling into MetricsManager, then start its HTTP server
+    // Wire readiness and scaling into ServiceRuntime's MetricsManager.
+    // The server is already started by run_app() — we only add the readiness
+    // check and scaling pressure callbacks here.
     {
         let ready_state = Arc::clone(&pipeline_state);
-        metrics_manager.set_readiness_check(move || ready_state.is_ready());
-        metrics_manager.set_scaling_pressure(Arc::clone(&scaling_pressure));
-
-        let metrics_addr_str = metrics_addr.to_string();
-        if let Err(e) = metrics_manager.start_server(&metrics_addr_str).await {
-            error!(error = %e, addr = %metrics_addr_str, "Failed to start metrics server");
-        } else {
-            info!(addr = %metrics_addr, "Metrics/health server listening");
-        }
+        runtime.metrics.set_readiness_check(move || ready_state.is_ready());
+        runtime.metrics.set_scaling_pressure(Arc::clone(&scaling_pressure));
+        debug!("Metrics readiness and scaling pressure wired");
     }
 
     // Derive instance identity for cursor isolation

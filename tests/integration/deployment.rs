@@ -159,7 +159,7 @@ fn test_output_legacy_kafka_config_mapping() {
             enabled: true,
             mechanism: "SCRAM-SHA-256".into(),
             username: "user".into(),
-            password: "pass".into(),
+            password: hyperi_rustlib::config::sensitive::SensitiveString::from("pass"),
         }),
         tls: KafkaTlsConfig {
             enabled: true,
@@ -186,7 +186,10 @@ fn test_output_legacy_kafka_config_mapping() {
     // SASL
     assert_eq!(rustlib.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
     assert_eq!(rustlib.sasl_username.as_deref(), Some("user"));
-    assert_eq!(rustlib.sasl_password.as_deref(), Some("pass"));
+    assert_eq!(
+        rustlib.sasl_password.as_ref().map(hyperi_rustlib::SensitiveString::expose),
+        Some("pass")
+    );
     assert_eq!(rustlib.security_protocol, "sasl_ssl");
 
     // TLS
