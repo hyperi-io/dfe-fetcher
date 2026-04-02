@@ -26,7 +26,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use hyperi_rustlib::cli::{CliError, CommonArgs, DfeApp, ServiceRuntime, StandardCommand, TopArgs, VersionInfo};
+use hyperi_rustlib::cli::{
+    CliError, CommonArgs, DfeApp, ServiceRuntime, StandardCommand, TopArgs, VersionInfo,
+};
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
 use hyperi_rustlib::logger::security;
@@ -398,8 +400,12 @@ async fn run_fetcher_service(
     // check and scaling pressure callbacks here.
     {
         let ready_state = Arc::clone(&pipeline_state);
-        runtime.metrics.set_readiness_check(move || ready_state.is_ready());
-        runtime.metrics.set_scaling_pressure(Arc::clone(&scaling_pressure));
+        runtime
+            .metrics
+            .set_readiness_check(move || ready_state.is_ready());
+        runtime
+            .metrics
+            .set_scaling_pressure(Arc::clone(&scaling_pressure));
         debug!("Metrics readiness and scaling pressure wired");
     }
 

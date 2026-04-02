@@ -187,7 +187,10 @@ fn test_output_legacy_kafka_config_mapping() {
     assert_eq!(rustlib.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
     assert_eq!(rustlib.sasl_username.as_deref(), Some("user"));
     assert_eq!(
-        rustlib.sasl_password.as_ref().map(hyperi_rustlib::SensitiveString::expose),
+        rustlib
+            .sasl_password
+            .as_ref()
+            .map(hyperi_rustlib::SensitiveString::expose),
         Some("pass")
     );
     assert_eq!(rustlib.security_protocol, "sasl_ssl");
