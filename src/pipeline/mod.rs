@@ -139,23 +139,62 @@ impl PipelineState {
             .as_deref()
             .unwrap_or(&config.kafka.topic_suffix);
 
+        let total_records: usize = results.iter().map(|r| r.records.len()).sum();
+        debug!(
+            batch_size = results.len(),
+            total_records,
+            topic_suffix,
+            "Delivering fetch results batch"
+        );
+
         for result in results {
             let topic = format!("{}{}", result.topic, topic_suffix);
             let filter_expr = self.get_filter_for_source(&result.source, &config);
+            let record_count = result.records.len();
+
+            debug!(
+                source = %result.source,
+                topic,
+                records = record_count,
+                has_filter = filter_expr.is_some(),
+                "Processing fetch result"
+            );
+
+            let mut passed = 0usize;
+            let mut filtered = 0usize;
 
             for record in result.records {
                 let enriched = self.enrich_record(record, &result.source);
 
                 // Apply CEL filter if configured — drop records that don't match
-                if let Some(ref expr) = filter_expr
-                    && !Self::evaluate_filter(expr, &enriched)
-                {
-                    self.metrics.inc_records_filtered();
-                    debug!(source = %result.source, "Record dropped by filter");
-                    continue;
+                if let Some(ref expr) = filter_expr {
+                    let keep = Self::evaluate_filter(expr, &enriched);
+                    tracing::trace!(
+                        source = %result.source,
+                        expr,
+                        keep,
+                        payload_bytes = enriched.len(),
+                        "CEL filter decision"
+                    );
+                    if !keep {
+                        self.metrics.inc_records_filtered();
+                        filtered += 1;
+                        continue;
+                    }
                 }
 
                 self.send_to_transports(&topic, enriched).await?;
+                passed += 1;
+            }
+
+            if filter_expr.is_some() {
+                debug!(
+                    source = %result.source,
+                    topic,
+                    passed,
+                    filtered,
+                    "Filter applied to batch"
+                );
             }
         }
 
@@ -176,6 +215,11 @@ impl PipelineState {
 
         let raw = payload.as_ref();
         let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') else {
+            tracing::trace!(
+                source,
+                payload_bytes = raw.len(),
+                "Enrich skipped — payload is not a JSON object"
+            );
             return payload;
         };
 
@@ -194,7 +238,16 @@ impl PipelineState {
             format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
         );
         buf.extend_from_slice(&raw[insert_pos..]);
-        Bytes::from(buf)
+
+        let enriched = Bytes::from(buf);
+        tracing::trace!(
+            source,
+            original_bytes = raw.len(),
+            enriched_bytes = enriched.len(),
+            timestamp_fetcher = now_ms,
+            "Record enriched with fetcher metadata"
+        );
+        enriched
     }
 
     /// Get the CEL filter expression for a source, if configured.
@@ -239,11 +292,27 @@ impl PipelineState {
         };
 
         let payload_size = payload.len() as u64;
+        tracing::trace!(
+            topic,
+            payload_bytes = payload_size,
+            "Sending record to output transport"
+        );
         self.memory_guard.add_bytes(payload_size);
 
+        let send_start = std::time::Instant::now();
         let result = output.send_all(topic, payload.as_ref()).await;
+        let send_duration_ms = send_start.elapsed().as_millis();
 
         self.memory_guard.release(payload_size);
+
+        if result.is_ok() {
+            tracing::trace!(
+                topic,
+                payload_bytes = payload_size,
+                duration_ms = send_duration_ms,
+                "Record sent successfully"
+            );
+        }
 
         if let Err(ref transport_err) = result {
             // Track transport health metrics

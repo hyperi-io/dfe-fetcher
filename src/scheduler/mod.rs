@@ -125,6 +125,7 @@ impl Scheduler {
                             );
                         }
                     }
+                    debug!(source = source.name(), "Backpressure stall — delaying fetch");
                     metrics.inc_transport_backpressured();
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(5)) => {}
@@ -164,23 +165,52 @@ impl Scheduler {
                     "Fetch window computed"
                 );
 
+                debug!(
+                    source = source.name(),
+                    window_start = %window.start,
+                    window_end = %window.end,
+                    window_hours = (window.end - window.start).num_seconds() as f64 / 3600.0,
+                    "Fetch started"
+                );
+
                 let fetch_start = std::time::Instant::now();
                 match source.fetch(Some(&window)).await {
                     Ok(results) => {
                         let fetch_duration = fetch_start.elapsed();
+                        let fetch_duration_ms = fetch_duration.as_millis();
                         metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
 
                         let total_records: usize = results.iter().map(|r| r.records.len()).sum();
+                        let total_bytes: usize = results
+                            .iter()
+                            .flat_map(|r| r.records.iter())
+                            .map(|b| b.len())
+                            .sum();
                         metrics.inc_fetches_success_for(&source.cursor_prefix());
                         metrics.add_records_fetched(total_records as u64);
+
+                        debug!(
+                            source = source.name(),
+                            records = total_records,
+                            bytes = total_bytes,
+                            duration_ms = fetch_duration_ms,
+                            "Fetch complete"
+                        );
 
                         if total_records > 0 {
                             info!(
                                 source = source.name(),
                                 records = total_records,
-                                "Fetch completed"
+                                duration_ms = fetch_duration_ms,
+                                "Fetch completed with records"
                             );
                             callback(results);
+                        } else {
+                            debug!(
+                                source = source.name(),
+                                duration_ms = fetch_duration_ms,
+                                "Fetch completed — no new records in window"
+                            );
                         }
 
                         // Write cursor after successful fetch + delivery
@@ -205,6 +235,7 @@ impl Scheduler {
                             source = source.name(),
                             error = %e,
                             error_code = code,
+                            duration_ms = fetch_duration.as_millis(),
                             "Fetch failed"
                         );
                     }
@@ -269,8 +300,22 @@ async fn build_fetch_window(
     if let Some(store) = store {
         match store.get(cursor_key).await {
             Ok(Some(cursor)) => {
-                debug!(cursor_key, last_end = %cursor.last_fetch_end, "Cursor found, resuming");
                 let age_secs = (now - cursor.last_fetch_end).num_seconds().max(0) as f64;
+                debug!(
+                    cursor_key,
+                    last_end = %cursor.last_fetch_end,
+                    age_secs,
+                    last_records = cursor.last_fetch_records,
+                    "Cursor found, resuming from last position"
+                );
+                tracing::trace!(
+                    cursor_key,
+                    last_end = %cursor.last_fetch_end,
+                    updated_at = %cursor.updated_at,
+                    api_cursor = cursor.api_cursor.as_deref().unwrap_or("none"),
+                    version = cursor.version,
+                    "Cursor details"
+                );
                 metrics.set_cursor_age(source_prefix, age_secs);
                 return FetchWindow {
                     start: cursor.last_fetch_end,
@@ -278,7 +323,11 @@ async fn build_fetch_window(
                 };
             }
             Ok(None) => {
-                debug!(cursor_key, "No cursor found, using default lookback");
+                debug!(
+                    cursor_key,
+                    default_window_hours,
+                    "No cursor found, using default lookback window"
+                );
             }
             Err(e) => {
                 warn!(cursor_key, error = %e, "Cursor read failed, using default lookback");
@@ -314,11 +363,23 @@ async fn write_cursor(
     match store.set(cursor_key, &value).await {
         Ok(()) => {
             metrics.inc_cursor_writes();
-            debug!(cursor_key, end = %window.end, "Cursor updated");
+            debug!(
+                cursor_key,
+                end = %window.end,
+                records,
+                "Cursor position written"
+            );
+            tracing::trace!(
+                cursor_key,
+                window_start = %window.start,
+                window_end = %window.end,
+                records,
+                "Cursor write details"
+            );
         }
         Err(e) => {
             metrics.inc_cursor_write_failures();
-            warn!(cursor_key, error = %e, "Cursor write failed");
+            warn!(cursor_key, error = %e, end = %window.end, "Cursor write failed — position not persisted");
         }
     }
 }
