@@ -1,3 +1,16 @@
+## [1.1.8](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.7...v1.1.8) (2026-04-02)
+
+
+### Bug Fixes
+
+* add comprehensive debug/trace logging across scheduler, pipeline, output ([900f944](https://github.com/hyperi-io/dfe-fetcher/commit/900f944266be5fa336ebe1de9eb24058b40466f1))
+* bump hyperi-rustlib to 2.4.3, adopt ServiceRuntime, fix SensitiveString API ([1553246](https://github.com/hyperi-io/dfe-fetcher/commit/1553246954164a4c0f48bd2e3bcc5026846d8652))
+* cargo fmt — wrap long import line ([144d0f2](https://github.com/hyperi-io/dfe-fetcher/commit/144d0f2aea790c151044b3b96cc36edff51054c4))
+* improve AWS service fetch error handling (continue on failure) ([723af3f](https://github.com/hyperi-io/dfe-fetcher/commit/723af3f2b49139c1fd903f06d32371fa97434cad))
+* remove tracked target symlink — breaks CI runners ([85bfbcb](https://github.com/hyperi-io/dfe-fetcher/commit/85bfbcba2479dd3b2d88f847a3d5c39361e5d0b5))
+* update DfeMetrics::register() to pass &MetricsManager for manifest ([171c4c5](https://github.com/hyperi-io/dfe-fetcher/commit/171c4c54e0872035c986777235cfeecbf3bfb50c))
+* update to rustlib v2.x ServiceRuntime + deployment contract fields ([98f4b67](https://github.com/hyperi-io/dfe-fetcher/commit/98f4b67f12ae79940189c57ee9e119aaa54eafb3))
+
 ## [1.1.7](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.6...v1.1.7) (2026-03-27)
 
 
