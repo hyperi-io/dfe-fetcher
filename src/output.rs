@@ -17,7 +17,7 @@ use hyperi_rustlib::transport::{
     GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, TransportBase,
     TransportSender,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::config::{KafkaConfig as LegacyKafkaConfig, OutputConfig};
 use crate::error::{Error, Result};
@@ -42,6 +42,13 @@ impl OutputTransport {
     async fn send(&self, key: &str, payload: &[u8]) -> Result<()> {
         let start = std::time::Instant::now();
 
+        trace!(
+            transport = self.name(),
+            topic = key,
+            payload_bytes = payload.len(),
+            "Producing record to transport"
+        );
+
         let result = match self {
             Self::Kafka(t) => t.send(key, payload).await,
             Self::Grpc(t) => t.send(key, payload).await,
@@ -56,8 +63,23 @@ impl OutputTransport {
         .record(elapsed.as_secs_f64());
 
         match result {
-            SendResult::Ok => Ok(()),
-            SendResult::Backpressured => Err(Error::Transport("transport backpressured".into())),
+            SendResult::Ok => {
+                trace!(
+                    transport = self.name(),
+                    topic = key,
+                    duration_ms = elapsed.as_millis(),
+                    "Record produced successfully"
+                );
+                Ok(())
+            }
+            SendResult::Backpressured => {
+                debug!(
+                    transport = self.name(),
+                    topic = key,
+                    "Transport backpressured — caller will route to DLQ"
+                );
+                Err(Error::Transport("transport backpressured".into()))
+            }
             SendResult::Fatal(e) => Err(Error::Transport(format!("transport fatal: {e}"))),
         }
     }
