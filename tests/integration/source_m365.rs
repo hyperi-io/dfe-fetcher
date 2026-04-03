@@ -340,13 +340,8 @@ async fn test_m365_fetch_error_500() {
         }],
     );
     let source = M365Source::new(config);
-    let err = source.fetch(None).await.unwrap_err();
-
-    let msg = err.to_string();
-    assert!(
-        msg.contains("500"),
-        "Error should contain status code: {msg}"
-    );
+    let results = source.fetch(None).await.unwrap();
+    assert!(results.is_empty(), "Failed service should produce no results");
 }
 
 #[tokio::test]

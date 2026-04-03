@@ -184,20 +184,25 @@ impl Source for AzureSource {
             None => (now - chrono::Duration::hours(24), now),
         };
 
+        // Concurrent service fetching via join_all (no spawn, borrows &self)
+        let service_futures: Vec<_> = self.config.services.iter().filter_map(|service| {
+            let fut: std::pin::Pin<Box<dyn std::future::Future<Output = (&str, Result<Option<FetchResult>>)> + Send + '_>> =
+                match service.name.as_str() {
+                    "activity_log" => Box::pin(async move { (&*service.name, self.fetch_activity_log(service, start, end).await) }),
+                    "defender" => Box::pin(async move { (&*service.name, self.fetch_defender(service).await) }),
+                    "sentinel" => Box::pin(async move { (&*service.name, self.fetch_sentinel(service).await) }),
+                    "entra_id" => Box::pin(async move { (&*service.name, self.fetch_entra_id(service).await) }),
+                    other => { warn!(service = other, "Unknown Azure service, skipping"); return None; }
+                };
+            Some(fut)
+        }).collect();
+
         let mut results = Vec::new();
-        for service in &self.config.services {
-            let fetch_result = match service.name.as_str() {
-                "activity_log" => self.fetch_activity_log(service, start, end).await?,
-                "defender" => self.fetch_defender(service).await?,
-                "sentinel" => self.fetch_sentinel(service).await?,
-                "entra_id" => self.fetch_entra_id(service).await?,
-                other => {
-                    warn!(service = other, "Unknown Azure service, skipping");
-                    continue;
-                }
-            };
-            if let Some(result) = fetch_result {
-                results.push(result);
+        for (name, fetch_result) in futures::future::join_all(service_futures).await {
+            match fetch_result {
+                Ok(Some(r)) => results.push(r),
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, service = name, "Azure service fetch failed, continuing"),
             }
         }
         Ok(results)

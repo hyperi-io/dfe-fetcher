@@ -27,12 +27,11 @@ This is the **single source of truth** for all tasks and progress.
 
 **Part D: Commit, Push, Release**
 
-- [x] D1. Committed: `fix: migrate to single versioning and bump rustlib to 1.20`
-- [x] D2. Pushed, force-tagged `v1.1.6` to HEAD
-- [x] D3. CI green (Quality + Test + Build + Release all passed)
-- [x] D4. Deleted release branch + stale `chore/merge-to-release`
-- [x] D5. Semantic-release created `v1.1.7` (clean GA, no `-dev.N`)
-- [x] D6. Published `v1.1.7` — GH Release (GA) + R2 + amd64/arm64 binaries
+- [x] D1. Commit: `fix: migrate to single versioning and bump rustlib to 1.20`
+- [x] D2. Push to main, force-tag `v1.1.6` to HEAD, push tag
+- [x] D3. CI Quality + Test passed (Build queued for runner)
+- [x] D4. Delete release branch + stale `chore/merge-to-release`
+- [ ] D5. Verify semantic-release creates clean GA version after Build + Release complete
 
 ### Metrics Standard Migration (DFE-METRICS-MIGRATION-FETCHER.md)
 
