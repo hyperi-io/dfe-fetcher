@@ -254,7 +254,10 @@ async fn test_gcp_fetch_error_500() {
     );
     let source = GcpSource::new(config);
     let results = source.fetch(None).await.unwrap();
-    assert!(results.is_empty(), "Failed service should produce no results");
+    assert!(
+        results.is_empty(),
+        "Failed service should produce no results"
+    );
 }
 
 #[tokio::test]

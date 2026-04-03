@@ -240,40 +240,54 @@ impl Source for AwsSource {
         // Concurrent service fetching — each service is an independent API call.
         // futures::join_all runs them concurrently on the same task (no spawn,
         // no 'static requirement, borrows &self safely).
-        let service_futures: Vec<_> = self
-            .config
-            .services
-            .iter()
-            .filter_map(|service| {
-                let fut: std::pin::Pin<
-                    Box<dyn std::future::Future<Output = (&str, Result<Option<FetchResult>>)> + Send + '_>,
-                > = match service.name.as_str() {
-                    "cloudtrail" => {
-                        Box::pin(async move { (&*service.name, self.fetch_cloudtrail(service, start, end).await) })
-                    }
-                    "guardduty" => {
-                        Box::pin(async move { (&*service.name, self.fetch_guardduty(service).await) })
-                    }
-                    "securityhub" => {
-                        Box::pin(async move { (&*service.name, self.fetch_securityhub(service).await) })
-                    }
-                    "config" => {
-                        Box::pin(async move { (&*service.name, self.fetch_config(service).await) })
-                    }
-                    "cloudwatch_logs" => {
-                        Box::pin(async move { (&*service.name, self.fetch_cloudwatch_logs(service, start, end).await) })
-                    }
-                    "cloudwatch_metrics" => {
-                        Box::pin(async move { (&*service.name, self.fetch_cloudwatch_metrics(service, start, end).await) })
-                    }
-                    other => {
-                        warn!(service = other, "Unknown AWS service, skipping");
-                        return None;
-                    }
-                };
-                Some(fut)
-            })
-            .collect();
+        let service_futures: Vec<_> =
+            self.config
+                .services
+                .iter()
+                .filter_map(|service| {
+                    let fut: std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = (&str, Result<Option<FetchResult>>)>
+                                + Send
+                                + '_,
+                        >,
+                    > =
+                        match service.name.as_str() {
+                            "cloudtrail" => Box::pin(async move {
+                                (
+                                    &*service.name,
+                                    self.fetch_cloudtrail(service, start, end).await,
+                                )
+                            }),
+                            "guardduty" => Box::pin(async move {
+                                (&*service.name, self.fetch_guardduty(service).await)
+                            }),
+                            "securityhub" => Box::pin(async move {
+                                (&*service.name, self.fetch_securityhub(service).await)
+                            }),
+                            "config" => Box::pin(async move {
+                                (&*service.name, self.fetch_config(service).await)
+                            }),
+                            "cloudwatch_logs" => Box::pin(async move {
+                                (
+                                    &*service.name,
+                                    self.fetch_cloudwatch_logs(service, start, end).await,
+                                )
+                            }),
+                            "cloudwatch_metrics" => Box::pin(async move {
+                                (
+                                    &*service.name,
+                                    self.fetch_cloudwatch_metrics(service, start, end).await,
+                                )
+                            }),
+                            other => {
+                                warn!(service = other, "Unknown AWS service, skipping");
+                                return None;
+                            }
+                        };
+                    Some(fut)
+                })
+                .collect();
 
         let service_results = futures::future::join_all(service_futures).await;
 
