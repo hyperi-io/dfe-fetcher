@@ -1,3 +1,12 @@
+## [1.1.9](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.8...v1.1.9) (2026-04-03)
+
+
+### Bug Fixes
+
+* add missing semicolons on warn! macro calls (clippy) ([b6e96e4](https://github.com/hyperi-io/dfe-fetcher/commit/b6e96e4240d82bdc29fca03d1ab97383068621ce))
+* cargo fmt — reformat concurrent fetch code ([c25ff0f](https://github.com/hyperi-io/dfe-fetcher/commit/c25ff0fa7b2ef8d632a477cfd14d8dae5a00526a))
+* concurrent within-source service fetching via join_all ([d79cde6](https://github.com/hyperi-io/dfe-fetcher/commit/d79cde65cdf990a078f25bf81791a0d3f111da3f))
+
 ## [1.1.8](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.7...v1.1.8) (2026-04-02)
 
 
