@@ -303,16 +303,41 @@ impl Source for GcpSource {
         };
 
         // Concurrent service fetching via join_all (no spawn, borrows &self)
-        let service_futures: Vec<_> = self.config.services.iter().filter_map(|service| {
-            let fut: std::pin::Pin<Box<dyn std::future::Future<Output = (&str, Result<Option<FetchResult>>)> + Send + '_>> =
-                match service.name.as_str() {
-                    "audit_logs" => Box::pin(async move { (&*service.name, self.fetch_audit_logs(service, start, end).await) }),
-                    "scc" => Box::pin(async move { (&*service.name, self.fetch_scc(service).await) }),
-                    "cloud_logging" => Box::pin(async move { (&*service.name, self.fetch_cloud_logging(service, start, end).await) }),
-                    other => { warn!(service = other, "Unknown GCP service, skipping"); return None; }
+        let service_futures: Vec<_> = self
+            .config
+            .services
+            .iter()
+            .filter_map(|service| {
+                let fut: std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = (&str, Result<Option<FetchResult>>)>
+                            + Send
+                            + '_,
+                    >,
+                > = match service.name.as_str() {
+                    "audit_logs" => Box::pin(async move {
+                        (
+                            &*service.name,
+                            self.fetch_audit_logs(service, start, end).await,
+                        )
+                    }),
+                    "scc" => {
+                        Box::pin(async move { (&*service.name, self.fetch_scc(service).await) })
+                    }
+                    "cloud_logging" => Box::pin(async move {
+                        (
+                            &*service.name,
+                            self.fetch_cloud_logging(service, start, end).await,
+                        )
+                    }),
+                    other => {
+                        warn!(service = other, "Unknown GCP service, skipping");
+                        return None;
+                    }
                 };
-            Some(fut)
-        }).collect();
+                Some(fut)
+            })
+            .collect();
 
         let mut results = Vec::new();
         for (name, fetch_result) in futures::future::join_all(service_futures).await {
