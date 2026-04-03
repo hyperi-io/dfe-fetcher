@@ -248,7 +248,7 @@ impl Source for M365Source {
                 Ok(Some(r)) => results.push(r),
                 Ok(None) => {}
                 Err(e) => {
-                    warn!(error = %e, service = name, "M365 service fetch failed, continuing")
+                    warn!(error = %e, service = name, "M365 service fetch failed, continuing");
                 }
             }
         }

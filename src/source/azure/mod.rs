@@ -228,7 +228,7 @@ impl Source for AzureSource {
                 Ok(Some(r)) => results.push(r),
                 Ok(None) => {}
                 Err(e) => {
-                    warn!(error = %e, service = name, "Azure service fetch failed, continuing")
+                    warn!(error = %e, service = name, "Azure service fetch failed, continuing");
                 }
             }
         }
