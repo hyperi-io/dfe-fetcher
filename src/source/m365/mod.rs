@@ -206,20 +206,25 @@ impl Source for M365Source {
 
         info!(services = self.config.services.len(), "Fetching M365 data");
 
+        // Concurrent service fetching via join_all (no spawn, borrows &self)
+        let service_futures: Vec<_> = self.config.services.iter().filter_map(|service| {
+            let fut: std::pin::Pin<Box<dyn std::future::Future<Output = (&str, Result<Option<FetchResult>>)> + Send + '_>> =
+                match service.name.as_str() {
+                    "audit_log" => Box::pin(async move { (&*service.name, self.fetch_audit_log(service).await) }),
+                    "message_trace" => Box::pin(async move { (&*service.name, self.fetch_message_trace(service).await) }),
+                    "dlp" => Box::pin(async move { (&*service.name, self.fetch_dlp(service).await) }),
+                    "alerts" => Box::pin(async move { (&*service.name, self.fetch_alerts(service).await) }),
+                    other => { warn!(service = other, "Unknown M365 service, skipping"); return None; }
+                };
+            Some(fut)
+        }).collect();
+
         let mut results = Vec::new();
-        for service in &self.config.services {
-            let fetch_result = match service.name.as_str() {
-                "audit_log" => self.fetch_audit_log(service).await?,
-                "message_trace" => self.fetch_message_trace(service).await?,
-                "dlp" => self.fetch_dlp(service).await?,
-                "alerts" => self.fetch_alerts(service).await?,
-                other => {
-                    warn!(service = other, "Unknown M365 service, skipping");
-                    continue;
-                }
-            };
-            if let Some(result) = fetch_result {
-                results.push(result);
+        for (name, fetch_result) in futures::future::join_all(service_futures).await {
+            match fetch_result {
+                Ok(Some(r)) => results.push(r),
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, service = name, "M365 service fetch failed, continuing"),
             }
         }
         Ok(results)
