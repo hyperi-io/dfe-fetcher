@@ -1,3 +1,15 @@
+## [1.1.10](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.9...v1.1.10) (2026-04-09)
+
+
+### Bug Fixes
+
+* standardise config path to /etc/dfe/fetcher.yaml ([e4a1d61](https://github.com/hyperi-io/dfe-fetcher/commit/e4a1d61e3bc8b94e9bf20644909d285d2f249585)), closes [#16](https://github.com/hyperi-io/dfe-fetcher/issues/16)
+
+
+### Performance Improvements
+
+* zero-copy and parallelism improvements across fetch pipeline ([9b96c86](https://github.com/hyperi-io/dfe-fetcher/commit/9b96c866430743bdbd872d58f7cbd5f53b4afd99))
+
 ## [1.1.9](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.8...v1.1.9) (2026-04-03)
 
 
