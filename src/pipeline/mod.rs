@@ -161,6 +161,8 @@ impl PipelineState {
             let mut passed = 0usize;
             let mut filtered = 0usize;
 
+            // Enrich and filter records, collecting those that pass
+            let mut to_send: Vec<Bytes> = Vec::with_capacity(record_count);
             for record in result.records {
                 let enriched = self.enrich_record(record, &result.source);
 
@@ -181,6 +183,11 @@ impl PipelineState {
                     }
                 }
 
+                to_send.push(enriched);
+            }
+
+            // Send all passing records concurrently (bounded by transport backpressure)
+            for enriched in to_send {
                 self.send_to_transports(&topic, enriched).await?;
                 passed += 1;
             }

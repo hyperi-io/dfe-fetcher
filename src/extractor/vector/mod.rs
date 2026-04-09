@@ -158,24 +158,29 @@ impl VectorManager {
                             batch_count += 1;
                             let msg_count = messages.len() as u64;
 
-                            for msg in messages {
-                                // Determine topic from message key or default
-                                let topic = msg.key
-                                    .as_ref()
-                                    .and_then(|k| topic_map.get(k.as_ref()).cloned())
-                                    .or_else(|| msg.key.as_ref().map(|k| k.to_string()))
-                                    .unwrap_or_else(|| default_topic.clone());
-
-                                let payload = Bytes::from(msg.payload);
-
-                                if let Err(e) = pipeline.deliver_ingest(&topic, payload).await {
-                                    error!(
-                                        topic = %topic,
-                                        error = %e,
-                                        "Failed to deliver Vector message"
-                                    );
-                                }
-                            }
+                            // Deliver messages concurrently within the batch
+                            let delivery_futures: Vec<_> = messages
+                                .into_iter()
+                                .map(|msg| {
+                                    let topic = msg.key
+                                        .as_ref()
+                                        .and_then(|k| topic_map.get(k.as_ref()).cloned())
+                                        .or_else(|| msg.key.as_ref().map(|k| k.to_string()))
+                                        .unwrap_or_else(|| default_topic.clone());
+                                    let payload = Bytes::from(msg.payload);
+                                    let pipeline = Arc::clone(&pipeline);
+                                    async move {
+                                        if let Err(e) = pipeline.deliver_ingest(&topic, payload).await {
+                                            error!(
+                                                topic = %topic,
+                                                error = %e,
+                                                "Failed to deliver Vector message"
+                                            );
+                                        }
+                                    }
+                                })
+                                .collect();
+                            futures::future::join_all(delivery_futures).await;
 
                             metrics.add_extractor_records(msg_count);
 

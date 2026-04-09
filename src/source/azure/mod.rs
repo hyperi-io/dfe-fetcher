@@ -136,8 +136,8 @@ impl AzureSource {
                 .await
                 .map_err(|e| Error::Source(format!("failed to parse Azure response: {e}")))?;
 
-            if let Some(items) = body["value"].as_array() {
-                all_items.extend(items.iter().cloned());
+            if let Some(items) = body["value"].as_array().cloned() {
+                all_items.extend(items);
             }
 
             let next_link = body["@odata.nextLink"]

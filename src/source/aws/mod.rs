@@ -391,53 +391,66 @@ impl AwsSource {
             .cloned()
             .unwrap_or_default();
 
-        let mut all_records = Vec::new();
-
-        for detector_id in detector_ids {
-            let detector_id = detector_id.as_str().unwrap_or_default();
-            if detector_id.is_empty() {
-                continue;
-            }
-
-            let findings_resp = self
-                .aws_json_request(
-                    "guardduty",
-                    "com.amazonaws.guardduty.v20170811.GuardDuty_20170811.ListFindings",
-                    &serde_json::json!({
-                        "DetectorId": detector_id,
-                        "MaxResults": 50
-                    }),
-                    "1.1",
-                )
-                .await?;
-
-            let finding_ids = findings_resp["FindingIds"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-
-            if finding_ids.is_empty() {
-                continue;
-            }
-
-            let details_resp = self
-                .aws_json_request(
-                    "guardduty",
-                    "com.amazonaws.guardduty.v20170811.GuardDuty_20170811.GetFindings",
-                    &serde_json::json!({
-                        "DetectorId": detector_id,
-                        "FindingIds": finding_ids
-                    }),
-                    "1.1",
-                )
-                .await?;
-
-            if let Some(findings) = details_resp["Findings"].as_array() {
-                for finding in findings {
-                    if let Ok(json) = serde_json::to_vec(finding) {
-                        all_records.push(Bytes::from(json));
-                    }
+        // Fetch findings from all detectors concurrently
+        let detector_futures: Vec<_> = detector_ids
+            .into_iter()
+            .filter_map(|id| {
+                let detector_id = id.as_str().unwrap_or_default().to_string();
+                if detector_id.is_empty() {
+                    return None;
                 }
+                Some(async move {
+                    let findings_resp = self
+                        .aws_json_request(
+                            "guardduty",
+                            "com.amazonaws.guardduty.v20170811.GuardDuty_20170811.ListFindings",
+                            &serde_json::json!({
+                                "DetectorId": detector_id,
+                                "MaxResults": 50
+                            }),
+                            "1.1",
+                        )
+                        .await?;
+
+                    let finding_ids = findings_resp["FindingIds"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+
+                    if finding_ids.is_empty() {
+                        return Ok(Vec::new());
+                    }
+
+                    let details_resp = self
+                        .aws_json_request(
+                            "guardduty",
+                            "com.amazonaws.guardduty.v20170811.GuardDuty_20170811.GetFindings",
+                            &serde_json::json!({
+                                "DetectorId": detector_id,
+                                "FindingIds": finding_ids
+                            }),
+                            "1.1",
+                        )
+                        .await?;
+
+                    let mut records = Vec::new();
+                    if let Some(findings) = details_resp["Findings"].as_array() {
+                        for finding in findings {
+                            if let Ok(json) = serde_json::to_vec(finding) {
+                                records.push(Bytes::from(json));
+                            }
+                        }
+                    }
+                    Ok::<Vec<Bytes>, Error>(records)
+                })
+            })
+            .collect();
+
+        let mut all_records = Vec::new();
+        for result in futures::future::join_all(detector_futures).await {
+            match result {
+                Ok(records) => all_records.extend(records),
+                Err(e) => warn!(error = %e, "Failed to fetch GuardDuty detector findings"),
             }
         }
 
