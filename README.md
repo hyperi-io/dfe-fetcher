@@ -47,7 +47,7 @@ cargo build --release
 
 # Docker
 docker build -t dfe-fetcher .
-docker run -v ./config.yaml:/etc/dfe-fetcher/config.yaml dfe-fetcher
+docker run -v ./config.yaml:/etc/dfe/fetcher.yaml dfe-fetcher
 ```
 
 ## Configuration

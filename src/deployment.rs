@@ -57,7 +57,7 @@ pub fn contract() -> DeploymentContract {
         },
         env_prefix: "DFE_FETCHER".into(),
         metric_prefix: "fetcher".into(),
-        config_mount_path: "/etc/dfe-fetcher/config.yaml".into(),
+        config_mount_path: "/etc/dfe/fetcher.yaml".into(),
         image_registry: "ghcr.io/hyperi-io".into(),
         extra_ports: vec![
             PortContract {
@@ -71,7 +71,7 @@ pub fn contract() -> DeploymentContract {
                 protocol: "TCP".into(),
             },
         ],
-        entrypoint_args: vec!["--config".into(), "/etc/dfe-fetcher/config.yaml".into()],
+        entrypoint_args: vec!["--config".into(), "/etc/dfe/fetcher.yaml".into()],
         secrets: vec![
             SecretGroupContract {
                 group_name: "kafka".into(),

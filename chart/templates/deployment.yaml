@@ -35,7 +35,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - "--config"
-            - "/etc/dfe-fetcher/config.yaml"
+            - "/etc/dfe/fetcher.yaml"
           ports:
             - name: metrics
               containerPort: {{ .Values.service.port }}
@@ -119,7 +119,7 @@ spec:
             periodSeconds: 5
           volumeMounts:
             - name: config
-              mountPath: /etc/dfe-fetcher
+              mountPath: /etc/dfe
               readOnly: true
           {{- with .Values.resources }}
           resources:
