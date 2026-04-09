@@ -133,8 +133,8 @@ impl M365Source {
                 .await
                 .map_err(|e| Error::Source(format!("failed to parse M365 response: {e}")))?;
 
-            if let Some(items) = body["value"].as_array() {
-                all_items.extend(items.iter().cloned());
+            if let Some(items) = body["value"].as_array().cloned() {
+                all_items.extend(items);
             }
 
             let next_link = body["@odata.nextLink"]
@@ -323,27 +323,35 @@ impl M365Source {
             return Ok(None);
         }
 
-        let mut records = Vec::new();
-        for item in &content_items {
-            if let Some(content_uri) = item["contentUri"].as_str() {
-                let content_resp = self
-                    .client
-                    .get(content_uri)
-                    .bearer_auth(&token)
-                    .send()
-                    .await;
-                if let Ok(r) = content_resp
-                    && r.status().is_success()
-                {
-                    let events: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
-                    for event in events {
-                        if let Ok(json) = serde_json::to_vec(&event) {
-                            records.push(Bytes::from(json));
+        // Fetch content blobs concurrently (bounded by content_items count)
+        let content_futures: Vec<_> = content_items
+            .iter()
+            .filter_map(|item| {
+                item["contentUri"].as_str().map(|uri| {
+                    let client = self.client.clone();
+                    let token = token.clone();
+                    let uri = uri.to_string();
+                    async move {
+                        let resp = client.get(&uri).bearer_auth(&token).send().await;
+                        match resp {
+                            Ok(r) if r.status().is_success() => {
+                                let events: Vec<serde_json::Value> =
+                                    r.json().await.unwrap_or_default();
+                                events
+                                    .into_iter()
+                                    .filter_map(|event| serde_json::to_vec(&event).ok())
+                                    .map(Bytes::from)
+                                    .collect::<Vec<_>>()
+                            }
+                            _ => Vec::new(),
                         }
                     }
-                }
-            }
-        }
+                })
+            })
+            .collect();
+
+        let results = futures::future::join_all(content_futures).await;
+        let records: Vec<Bytes> = results.into_iter().flatten().collect();
 
         if records.is_empty() {
             return Ok(None);

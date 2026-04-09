@@ -205,8 +205,8 @@ impl GcpSource {
                 .or_else(|| body["listFindingsResults"].as_array())
                 .or_else(|| body["results"].as_array());
 
-            if let Some(arr) = items {
-                all_items.extend(arr.iter().cloned());
+            if let Some(arr) = items.cloned() {
+                all_items.extend(arr);
             }
 
             page_token = body["nextPageToken"].as_str().map(String::from);
@@ -258,8 +258,8 @@ impl GcpSource {
                 .await
                 .map_err(|e| Error::Source(format!("failed to parse GCP response: {e}")))?;
 
-            if let Some(entries) = resp_json["entries"].as_array() {
-                all_items.extend(entries.iter().cloned());
+            if let Some(entries) = resp_json["entries"].as_array().cloned() {
+                all_items.extend(entries);
             }
 
             match resp_json["nextPageToken"].as_str() {
