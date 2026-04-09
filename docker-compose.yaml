@@ -10,11 +10,11 @@ services:
       - "8080:8080"
       - "6000:6000"
     volumes:
-      - ./config/config.yaml:/etc/dfe-fetcher/config.yaml:ro
+      - ./config/config.yaml:/etc/dfe/fetcher.yaml:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9090/health/live"]
       interval: 10s
       timeout: 3s
       retries: 5
-    command: ["dfe-fetcher", "--config", "/etc/dfe-fetcher/config.yaml"]
+    command: ["dfe-fetcher", "--config", "/etc/dfe/fetcher.yaml"]
 

@@ -22,5 +22,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -sf http://localhost:9090/health/live > /dev/null || exit 1
 
 ENTRYPOINT ["dfe-fetcher"]
-CMD ["--config", "/etc/dfe-fetcher/config.yaml"]
+CMD ["--config", "/etc/dfe/fetcher.yaml"]
 
