@@ -81,6 +81,14 @@ impl OutputTransport {
                 Err(Error::Transport("transport backpressured".into()))
             }
             SendResult::Fatal(e) => Err(Error::Transport(format!("transport fatal: {e}"))),
+            SendResult::FilteredDlq => {
+                debug!(
+                    transport = self.name(),
+                    topic = key,
+                    "Message matched outbound filter — routing to DLQ"
+                );
+                Err(Error::Transport("filtered to DLQ".into()))
+            }
         }
     }
 
