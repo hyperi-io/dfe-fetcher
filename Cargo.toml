@@ -67,7 +67,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli"
 # Performance
 fastrand = "2"
 rustc-hash = "2"
-compact_str = "0.8"
+compact_str = "0.9"
 parking_lot = "0.12"
 
 # Error handling
@@ -97,26 +97,26 @@ jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
 # AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
 reqsign = { version = "0.16", default-features = false, features = ["services-aws"] }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # OpenTelemetry proto types (for OTLP metric output)
-opentelemetry-proto = { version = "0.28", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.13"
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.14"
 
 # Optional allocators
 tikv-jemallocator = { version = "0.6", optional = true }
 mimalloc = { version = "0.1", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
 tokio-test = "0.4"
 dotenvy = "0.15"
 wiremock = "0.6"
 tower = "0.5"
-opentelemetry-proto = { version = "0.28", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.13"
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.14"
 
 [features]
 default = []

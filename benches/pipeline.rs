@@ -9,10 +9,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 use dfe_fetcher::config::{Config, SharedConfig};
 use dfe_fetcher::cursor::file::FileCursorStore;

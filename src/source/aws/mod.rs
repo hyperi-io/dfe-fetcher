@@ -940,6 +940,7 @@ impl AwsSource {
                 otel_kv("service.name", "dfe-fetcher"),
             ],
             dropped_attributes_count: 0,
+            entity_refs: vec![],
         };
 
         let request = ExportMetricsServiceRequest {
