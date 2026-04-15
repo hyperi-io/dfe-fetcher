@@ -1,3 +1,10 @@
+## [1.1.11](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.10...v1.1.11) (2026-04-15)
+
+
+### Bug Fixes
+
+* deserialise double-serialised JSON string fields before delivery ([2d75e15](https://github.com/hyperi-io/dfe-fetcher/commit/2d75e153c754e2266a0f43ccabc793fd647a25d8)), closes [#17](https://github.com/hyperi-io/dfe-fetcher/issues/17)
+
 ## [1.1.10](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.9...v1.1.10) (2026-04-09)
 
 
