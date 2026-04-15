@@ -65,6 +65,7 @@ pub mod deployment;
 pub mod error;
 pub mod extractor;
 pub mod ingest;
+pub mod json_unwrap;
 pub mod metrics;
 pub mod output;
 pub mod pipeline;
