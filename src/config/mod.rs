@@ -111,9 +111,24 @@ pub struct Config {
     #[serde(default)]
     pub scaling: hyperi_rustlib::scaling::ScalingPressureConfig,
 
+    /// Recursively unwrap double-serialised JSON string fields before delivery.
+    ///
+    /// When enabled (default), any string field whose value parses as a JSON
+    /// object or array is replaced with the parsed value. This makes fields
+    /// like AWS CloudTrail's `CloudTrailEvent` queryable as nested JSON in
+    /// downstream systems like ClickHouse.
+    ///
+    /// Set to `false` for sources that intentionally store JSON as strings.
+    #[serde(default = "default_unwrap_nested_json")]
+    pub unwrap_nested_json: bool,
+
     /// Path to the config file (set by loader, not deserialized).
     #[serde(skip)]
     pub config_path: Option<String>,
+}
+
+const fn default_unwrap_nested_json() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -132,6 +147,7 @@ impl Default for Config {
             output: OutputConfig::default(),
             cursor: CursorConfig::default(),
             scaling: hyperi_rustlib::scaling::ScalingPressureConfig::default(),
+            unwrap_nested_json: default_unwrap_nested_json(),
             config_path: None,
         }
     }

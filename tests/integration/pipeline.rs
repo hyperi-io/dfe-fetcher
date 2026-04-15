@@ -202,3 +202,26 @@ fn make_pipeline_state(
     dfe_fetcher::pipeline::PipelineState::new(shared, metrics, None)
         .expect("pipeline state creation")
 }
+
+#[test]
+fn test_unwrap_nested_json_default_enabled() {
+    // Config::default() should have unwrap_nested_json enabled
+    let config = Config::default();
+    assert!(
+        config.unwrap_nested_json,
+        "unwrap_nested_json should be enabled by default"
+    );
+}
+
+#[test]
+fn test_unwrap_nested_json_cloudtrail_shape() {
+    // Verify the pipeline unwrap module handles the realistic CloudTrail shape
+    let raw = Bytes::from(
+        r#"{"EventId":"abc","CloudTrailEvent":"{\"eventVersion\":\"1.11\",\"sourceIPAddress\":\"10.0.0.1\"}"}"#,
+    );
+    let unwrapped = dfe_fetcher::json_unwrap::unwrap_nested_json(&raw);
+    let parsed: serde_json::Value = serde_json::from_slice(&unwrapped).unwrap();
+    assert_eq!(parsed["EventId"], "abc");
+    assert_eq!(parsed["CloudTrailEvent"]["eventVersion"], "1.11");
+    assert_eq!(parsed["CloudTrailEvent"]["sourceIPAddress"], "10.0.0.1");
+}

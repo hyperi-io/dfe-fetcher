@@ -36,6 +36,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{Config, SharedConfig};
 use crate::error::{Error, Result};
+use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::Metrics;
 use crate::output::OutputManager;
 use crate::source::FetchResult;
@@ -163,7 +164,13 @@ impl PipelineState {
 
             // Enrich and filter records, collecting those that pass
             let mut to_send: Vec<Bytes> = Vec::with_capacity(record_count);
+            let unwrap_json = config.unwrap_nested_json;
             for record in result.records {
+                let record = if unwrap_json {
+                    unwrap_nested_json(&record)
+                } else {
+                    record
+                };
                 let enriched = self.enrich_record(record, &result.source);
 
                 // Apply CEL filter if configured — drop records that don't match
