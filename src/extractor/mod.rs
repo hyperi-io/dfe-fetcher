@@ -92,3 +92,65 @@ impl IngestMessage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ingest_message_into_fetch_result() {
+        let msg = IngestMessage {
+            payload: Bytes::from(r#"{"event":"test","severity":"high"}"#),
+            source: "container.my-tool".to_string(),
+            topic: "security_events".to_string(),
+        };
+
+        let result = msg.into_fetch_result();
+        assert_eq!(result.records.len(), 1);
+        assert_eq!(result.source, "container.my-tool");
+        assert_eq!(result.topic, "security_events");
+        assert_eq!(
+            result.records[0].as_ref(),
+            br#"{"event":"test","severity":"high"}"#
+        );
+    }
+
+    #[test]
+    fn test_ingest_message_preserves_binary_payload() {
+        let binary = vec![0u8, 1, 2, 255, 254, 253];
+        let msg = IngestMessage {
+            payload: Bytes::from(binary.clone()),
+            source: "raw".to_string(),
+            topic: "raw_land".to_string(),
+        };
+
+        let result = msg.into_fetch_result();
+        assert_eq!(result.records[0].as_ref(), &binary[..]);
+    }
+
+    #[test]
+    fn test_ingest_message_empty_payload() {
+        let msg = IngestMessage {
+            payload: Bytes::new(),
+            source: "empty".to_string(),
+            topic: "empty_land".to_string(),
+        };
+
+        let result = msg.into_fetch_result();
+        assert_eq!(result.records.len(), 1);
+        assert!(result.records[0].is_empty());
+    }
+
+    #[test]
+    fn test_ingest_message_large_payload() {
+        let large = Bytes::from(vec![b'x'; 10 * 1024 * 1024]); // 10MB
+        let msg = IngestMessage {
+            payload: large.clone(),
+            source: "bulk".to_string(),
+            topic: "bulk_land".to_string(),
+        };
+
+        let result = msg.into_fetch_result();
+        assert_eq!(result.records[0].len(), 10 * 1024 * 1024);
+    }
+}

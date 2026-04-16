@@ -401,3 +401,27 @@ async fn test_cursor_store_readonly_fallback() {
         "should fall back to read-only mode, not error"
     );
 }
+
+// =============================================================================
+// Deployment contract → test config derivation
+// =============================================================================
+
+use crate::common;
+
+/// The test contract helper must reflect the live deployment contract.
+/// If deployment.rs changes, these assertions catch the drift in tests
+/// before it becomes a deploy-time surprise.
+#[test]
+fn test_app_test_contract_mirrors_deployment_contract() {
+    let app = common::AppTestContract::from_app();
+
+    assert_eq!(app.app_name, "dfe-fetcher");
+    assert_eq!(app.env_prefix, "DFE_FETCHER");
+    assert_eq!(app.metrics_port, 9090);
+    assert_eq!(app.liveness_path, "/health/live");
+    assert_eq!(app.readiness_path, "/health/ready");
+    assert_eq!(app.metrics_path, "/metrics");
+    assert_eq!(app.ingest_port, Some(8080));
+    assert_eq!(app.vector_grpc_port, Some(6000));
+    assert_eq!(app.config_mount_path, "/etc/dfe/fetcher.yaml");
+}

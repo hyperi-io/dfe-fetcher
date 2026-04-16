@@ -880,4 +880,700 @@ mod tests {
         assert!(output.contains("dfe_fetcher_memory_used_bytes 500000"));
         assert!(output.contains("dfe_fetcher_memory_limit_bytes 1000000"));
     }
+
+    #[test]
+    fn test_metrics_default_creates_valid_instance() {
+        let metrics = Metrics::default();
+        let output = metrics.render();
+        // Default instance should render with all zeroes and healthy defaults
+        assert!(output.contains("dfe_fetcher_fetches_total{status=\"success\"} 0"));
+        assert!(output.contains("dfe_fetcher_fetches_total{status=\"error\"} 0"));
+        assert!(output.contains("dfe_records_received_total 0"));
+        // transport_healthy defaults to 1
+        assert!(output.contains("dfe_transport_healthy 1"));
+        // pipeline_ready defaults to 1
+        assert!(output.contains("dfe_pipeline_ready 1"));
+    }
+
+    #[test]
+    fn test_inc_transport_backpressured() {
+        let metrics = Metrics::new();
+        metrics.inc_transport_backpressured();
+        metrics.inc_transport_backpressured();
+        let output = metrics.render();
+        assert!(output.contains("dfe_transport_backpressured_total 2"));
+    }
+
+    #[test]
+    fn test_inc_transport_send_errors() {
+        let metrics = Metrics::new();
+        metrics.inc_transport_send_errors();
+        metrics.inc_transport_send_errors();
+        metrics.inc_transport_send_errors();
+        let output = metrics.render();
+        assert!(output.contains("dfe_transport_send_errors_total 3"));
+    }
+
+    #[test]
+    fn test_inc_records_filtered() {
+        let metrics = Metrics::new();
+        for _ in 0..7 {
+            metrics.inc_records_filtered();
+        }
+        let output = metrics.render();
+        assert!(output.contains("dfe_records_filtered_total 7"));
+    }
+
+    #[test]
+    fn test_inc_extractor_restart_exhausted() {
+        let metrics = Metrics::new();
+        metrics.inc_extractor_restart_exhausted();
+        let output = metrics.render();
+        assert!(output.contains("dfe_fetcher_extractor_restart_exhausted_total 1"));
+    }
+
+    #[test]
+    fn test_inc_cursor_writes() {
+        let metrics = Metrics::new();
+        metrics.inc_cursor_writes();
+        metrics.inc_cursor_writes();
+        let output = metrics.render();
+        assert!(output.contains("dfe_fetcher_cursor_writes_total 2"));
+    }
+
+    #[test]
+    fn test_inc_cursor_write_failures() {
+        let metrics = Metrics::new();
+        metrics.inc_cursor_write_failures();
+        let output = metrics.render();
+        assert!(output.contains("dfe_fetcher_cursor_write_failures_total 1"));
+    }
+
+    #[test]
+    fn test_inc_records_delivered() {
+        let metrics = Metrics::new();
+        for _ in 0..15 {
+            metrics.inc_records_delivered();
+        }
+        let output = metrics.render();
+        assert!(output.contains("dfe_records_delivered_total 15"));
+    }
+
+    #[test]
+    fn test_set_transport_healthy_true() {
+        let metrics = Metrics::new();
+        metrics.set_transport_healthy(true);
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_transport_healthy 1"),
+            "Expected healthy=1, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_set_transport_healthy_false() {
+        let metrics = Metrics::new();
+        metrics.set_transport_healthy(false);
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_transport_healthy 0"),
+            "Expected healthy=0, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_set_pipeline_ready_true() {
+        let metrics = Metrics::new();
+        metrics.set_pipeline_ready(true);
+        let output = metrics.render();
+        assert!(output.contains("dfe_pipeline_ready 1"));
+    }
+
+    #[test]
+    fn test_set_pipeline_ready_false() {
+        let metrics = Metrics::new();
+        metrics.set_pipeline_ready(false);
+        let output = metrics.render();
+        assert!(output.contains("dfe_pipeline_ready 0"));
+    }
+
+    #[test]
+    fn test_active_fetches_inc_dec() {
+        let metrics = Metrics::new();
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_active_fetches 3"),
+            "Expected 3 active fetches, got:\n{output}"
+        );
+
+        metrics.dec_active_fetches();
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_active_fetches 2"),
+            "Expected 2 active fetches after dec, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_dec_active_fetches_saturating_at_zero() {
+        let metrics = Metrics::new();
+        // Start at 0, decrement should not underflow
+        metrics.dec_active_fetches();
+        metrics.dec_active_fetches();
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_active_fetches 0"),
+            "Expected 0 (saturating), got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_active_extractors_inc_dec() {
+        let metrics = Metrics::new();
+        metrics.inc_active_extractors();
+        metrics.inc_active_extractors();
+        let output = metrics.render();
+        assert!(output.contains("dfe_fetcher_active_extractors 2"));
+
+        metrics.dec_active_extractors();
+        let output = metrics.render();
+        assert!(output.contains("dfe_fetcher_active_extractors 1"));
+    }
+
+    #[test]
+    fn test_dec_active_extractors_saturating_at_zero() {
+        let metrics = Metrics::new();
+        metrics.dec_active_extractors();
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_active_extractors 0"),
+            "Expected 0 (saturating), got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_add_records_fetched() {
+        let metrics = Metrics::new();
+        metrics.add_records_fetched(100);
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_records_received_total 100"),
+            "Expected 100 records, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_add_bytes_fetched() {
+        let metrics = Metrics::new();
+        metrics.add_bytes_fetched(5000);
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_bytes_received_total 5000"),
+            "Expected 5000 bytes, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_add_messages_sent_kafka() {
+        let metrics = Metrics::new();
+        metrics.add_messages_sent_kafka(50);
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_transport_sent_total 50"),
+            "Expected 50 sent, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_inc_messages_dlq_multiple() {
+        let metrics = Metrics::new();
+        metrics.inc_messages_dlq();
+        metrics.inc_messages_dlq();
+        metrics.inc_messages_dlq();
+        metrics.inc_messages_dlq();
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_records_dlq_total 4"),
+            "Expected 4 DLQ messages, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_render_contains_help_and_type_lines() {
+        let metrics = Metrics::new();
+        let output = metrics.render();
+
+        // Verify HELP lines for key metrics
+        assert!(output.contains("# HELP dfe_fetcher_fetches_total"));
+        assert!(output.contains("# HELP dfe_records_received_total"));
+        assert!(output.contains("# HELP dfe_transport_sent_total"));
+        assert!(output.contains("# HELP dfe_records_dlq_total"));
+        assert!(output.contains("# HELP dfe_transport_healthy"));
+        assert!(output.contains("# HELP dfe_pipeline_ready"));
+        assert!(output.contains("# HELP dfe_fetcher_active_fetches"));
+        assert!(output.contains("# HELP dfe_fetcher_memory_used_bytes"));
+
+        // Verify TYPE lines
+        assert!(output.contains("# TYPE dfe_fetcher_fetches_total counter"));
+        assert!(output.contains("# TYPE dfe_records_received_total counter"));
+        assert!(output.contains("# TYPE dfe_transport_healthy gauge"));
+        assert!(output.contains("# TYPE dfe_pipeline_ready gauge"));
+        assert!(output.contains("# TYPE dfe_fetcher_active_fetches gauge"));
+    }
+
+    #[test]
+    fn test_render_contains_all_metric_families() {
+        let metrics = Metrics::new();
+        let output = metrics.render();
+
+        // Count distinct metric families (lines starting with a metric name, not # HELP/TYPE)
+        let metric_names: std::collections::HashSet<&str> = output
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .map(|l| {
+                // Extract metric name (before first space or brace)
+                let name_end = l.find([' ', '{']).unwrap_or(l.len());
+                &l[..name_end]
+            })
+            .collect();
+
+        assert!(
+            metric_names.len() >= 20,
+            "Expected at least 20 distinct metrics, found {}: {:?}",
+            metric_names.len(),
+            metric_names
+        );
+    }
+
+    #[test]
+    fn test_fetch_rate_initially_zero() {
+        let metrics = Metrics::new();
+        assert!(
+            (metrics.fetch_rate() - 0.0).abs() < f64::EPSILON,
+            "fetch_rate should be 0.0 initially"
+        );
+    }
+
+    #[test]
+    fn test_events_per_second_initially_zero() {
+        let metrics = Metrics::new();
+        assert!(
+            (metrics.events_per_second() - 0.0).abs() < f64::EPSILON,
+            "events_per_second should be 0.0 initially"
+        );
+    }
+
+    #[test]
+    fn test_inc_fetches_success_and_error_for_sources() {
+        let metrics = Metrics::new();
+        metrics.inc_fetches_success_for("aws");
+        metrics.inc_fetches_success_for("aws");
+        metrics.inc_fetches_error_for("azure");
+        let output = metrics.render();
+
+        // success = 2, error = 1
+        assert!(
+            output.contains("dfe_fetcher_fetches_total{status=\"success\"} 2"),
+            "Expected 2 successes, got:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_fetches_total{status=\"error\"} 1"),
+            "Expected 1 error, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_extractor_runs_error_getter() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.extractor_runs_error(), 0);
+
+        metrics.inc_extractor_runs_error();
+        metrics.inc_extractor_runs_error();
+        metrics.inc_extractor_runs_error();
+        assert_eq!(metrics.extractor_runs_error(), 3);
+    }
+
+    #[test]
+    fn test_inc_extractor_run_for_success() {
+        let metrics = Metrics::new();
+        metrics.inc_extractor_run_for("my-tool", "success");
+        metrics.inc_extractor_run_for("my-tool", "success");
+
+        // Should increment both total and success
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_total 2"),
+            "Expected 2 total runs, got:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_success_total 2"),
+            "Expected 2 success runs, got:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_error_total 0"),
+            "Expected 0 error runs, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_inc_extractor_run_for_error() {
+        let metrics = Metrics::new();
+        metrics.inc_extractor_run_for("my-tool", "error");
+
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_total 1"),
+            "Expected 1 total run, got:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_error_total 1"),
+            "Expected 1 error run, got:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_success_total 0"),
+            "Expected 0 success runs, got:\n{output}"
+        );
+    }
+
+    // ==========================================================================
+    // Comprehensive render() coverage with non-zero counter values
+    // ==========================================================================
+
+    #[test]
+    fn test_render_all_counters_with_nonzero_values() {
+        let metrics = Metrics::new();
+
+        // Exercise every counter and gauge the render() path touches, so the
+        // full rendered output contains non-default values for each family.
+        metrics.add_messages_sent_kafka(50);
+        for _ in 0..3 {
+            metrics.inc_messages_dlq();
+        }
+        for _ in 0..7 {
+            metrics.inc_records_delivered();
+        }
+        for _ in 0..5 {
+            metrics.inc_extractor_runs_total();
+        }
+        for _ in 0..2 {
+            metrics.inc_transport_backpressured();
+        }
+        for _ in 0..4 {
+            metrics.inc_transport_send_errors();
+        }
+        metrics.set_transport_healthy(true);
+        for _ in 0..10 {
+            metrics.inc_records_filtered();
+        }
+        metrics.inc_extractor_restart_exhausted();
+        for _ in 0..8 {
+            metrics.inc_cursor_writes();
+        }
+        for _ in 0..2 {
+            metrics.inc_cursor_write_failures();
+        }
+        metrics.set_pipeline_ready(false);
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        metrics.inc_active_extractors();
+        metrics.inc_active_extractors();
+        metrics.inc_active_extractors();
+        metrics.set_memory_usage(123_456, 789_012);
+        metrics.add_records_fetched(42);
+
+        let output = metrics.render();
+
+        // All expected non-zero values
+        assert!(
+            output.contains("dfe_transport_sent_total 50"),
+            "missing dfe_transport_sent_total 50:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_records_dlq_total 3"),
+            "missing dfe_records_dlq_total 3:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_records_delivered_total 7"),
+            "missing dfe_records_delivered_total 7:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_extractor_runs_total 5"),
+            "missing dfe_fetcher_extractor_runs_total 5:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_transport_backpressured_total 2"),
+            "missing dfe_transport_backpressured_total 2:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_transport_send_errors_total 4"),
+            "missing dfe_transport_send_errors_total 4:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_transport_healthy 1"),
+            "missing dfe_transport_healthy 1:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_records_filtered_total 10"),
+            "missing dfe_records_filtered_total 10:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_extractor_restart_exhausted_total 1"),
+            "missing dfe_fetcher_extractor_restart_exhausted_total 1:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_cursor_writes_total 8"),
+            "missing dfe_fetcher_cursor_writes_total 8:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_cursor_write_failures_total 2"),
+            "missing dfe_fetcher_cursor_write_failures_total 2:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_pipeline_ready 0"),
+            "missing dfe_pipeline_ready 0:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_active_fetches 2"),
+            "missing dfe_fetcher_active_fetches 2:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_active_extractors 3"),
+            "missing dfe_fetcher_active_extractors 3:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_memory_used_bytes 123456"),
+            "missing dfe_fetcher_memory_used_bytes 123456:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_memory_limit_bytes 789012"),
+            "missing dfe_fetcher_memory_limit_bytes 789012:\n{output}"
+        );
+
+        // Rate gauges are present (values may be 0.0 if the rate window hasn't
+        // produced a non-zero derivative, but the metric family must exist).
+        assert!(
+            output.contains("dfe_fetcher_fetch_rate "),
+            "missing dfe_fetcher_fetch_rate gauge:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_events_per_second "),
+            "missing dfe_fetcher_events_per_second gauge:\n{output}"
+        );
+    }
+
+    // ==========================================================================
+    // Methods that are no-ops without DfeMetrics must not panic
+    // ==========================================================================
+
+    #[test]
+    fn test_record_fetch_duration_without_dfe_is_noop() {
+        let metrics = Metrics::new();
+        // Must not panic when no global recorder / DfeMetrics is configured.
+        metrics.record_fetch_duration("aws", Duration::from_millis(250));
+        metrics.record_fetch_duration("azure", Duration::from_secs(2));
+    }
+
+    #[test]
+    fn test_set_cursor_age_without_dfe_is_noop() {
+        let metrics = Metrics::new();
+        metrics.set_cursor_age("aws", 3600.0);
+        metrics.set_cursor_age("m365", 0.0);
+    }
+
+    #[test]
+    fn test_inc_api_error_without_dfe_is_noop() {
+        let metrics = Metrics::new();
+        metrics.inc_api_error("aws", "5xx");
+        metrics.inc_api_error("azure", "timeout");
+        metrics.inc_api_error("m365", "4xx");
+        metrics.inc_api_error("gcp", "network");
+    }
+
+    #[test]
+    fn test_inc_ingest_request_without_dfe_is_noop() {
+        let metrics = Metrics::new();
+        metrics.inc_ingest_request("success");
+        metrics.inc_ingest_request("error");
+        metrics.inc_ingest_request("unauthorized");
+    }
+
+    #[test]
+    fn test_record_ingest_duration_without_dfe_is_noop() {
+        let metrics = Metrics::new();
+        metrics.record_ingest_duration(Duration::from_millis(5));
+        metrics.record_ingest_duration(Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_update_rate_gauge_without_dfe_is_noop() {
+        let metrics = Metrics::new();
+        // Should silently return without a DfeMetrics registered.
+        metrics.update_rate_gauge();
+        // Feeding the rate window first still shouldn't panic.
+        metrics.inc_fetches_success();
+        metrics.add_records_fetched(100);
+        metrics.update_rate_gauge();
+    }
+
+    // ==========================================================================
+    // Multi-source labelling keeps aggregate counters consistent
+    // ==========================================================================
+
+    #[test]
+    fn test_multiple_source_labels_aggregate_correctly() {
+        let metrics = Metrics::new();
+        metrics.inc_fetches_success_for("aws");
+        metrics.inc_fetches_success_for("azure");
+        metrics.inc_fetches_error_for("m365");
+
+        let output = metrics.render();
+        // Aggregate success = 2, error = 1. Labels aren't emitted by render(),
+        // but the atomic aggregates must reflect all calls.
+        assert!(
+            output.contains("dfe_fetcher_fetches_total{status=\"success\"} 2"),
+            "expected aggregate success=2, got:\n{output}"
+        );
+        assert!(
+            output.contains("dfe_fetcher_fetches_total{status=\"error\"} 1"),
+            "expected aggregate error=1, got:\n{output}"
+        );
+    }
+
+    // ==========================================================================
+    // add_records_fetched edge cases
+    // ==========================================================================
+
+    #[test]
+    fn test_add_records_fetched_with_zero_is_noop() {
+        let metrics = Metrics::new();
+        // add_records_fetched(0) must not panic and must leave the counter at 0.
+        metrics.add_records_fetched(0);
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_records_received_total 0"),
+            "expected 0 records after zero-add, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_events_per_second_after_many_records() {
+        let metrics = Metrics::new();
+        // Push a large batch through the records rate window. We don't assert
+        // a specific rate (timing-dependent), but the accessor must not panic
+        // and must return a finite non-negative value.
+        for _ in 0..100 {
+            metrics.add_records_fetched(1_000);
+        }
+        let eps = metrics.events_per_second();
+        assert!(
+            eps.is_finite(),
+            "events_per_second must be finite, got {eps}"
+        );
+        assert!(eps >= 0.0, "events_per_second must be >= 0, got {eps}");
+    }
+
+    /// Exercise the `Metrics::with_dfe()` constructor end-to-end so the
+    /// describe_* + DfeMetrics::register path is covered, and so every
+    /// `if self.dfe.is_some()` branch across the hot-path recording
+    /// methods gets executed. A `MetricsManager` is installed as the
+    /// global recorder for the duration of this test.
+    #[test]
+    fn test_with_dfe_exercises_all_dual_emit_paths() {
+        use hyperi_rustlib::metrics::MetricsManager;
+
+        // Install a MetricsManager (it registers the global metrics recorder).
+        // Use a distinct namespace so this test doesn't collide with any other
+        // test trying to install a recorder in a serial run.
+        let manager = MetricsManager::new("dfe_fetcher_test_with_dfe");
+
+        let metrics = Metrics::with_dfe(&manager);
+
+        // Fetch counters (source-labelled)
+        metrics.inc_fetches_success_for("aws");
+        metrics.inc_fetches_error_for("azure");
+        metrics.inc_api_error("aws", "5xx");
+
+        // Bytes / records
+        metrics.add_records_fetched(17);
+        metrics.add_bytes_fetched(4096);
+
+        // Delivery / DLQ
+        metrics.add_messages_sent_kafka(3);
+        metrics.inc_messages_dlq();
+
+        // Extractor counters
+        metrics.inc_extractor_runs_total();
+        metrics.inc_extractor_runs_success();
+        metrics.inc_extractor_runs_error();
+        metrics.add_extractor_records(7);
+        metrics.inc_extractor_run_for("my-tool", "success");
+        metrics.inc_extractor_run_for("my-tool", "error");
+        metrics.inc_extractor_run_for("my-tool", "other"); // unknown status branch
+        metrics.inc_extractor_restart_exhausted();
+
+        // Ingest
+        metrics.inc_ingest_request("success");
+        metrics.record_ingest_duration(Duration::from_millis(5));
+
+        // Backpressure / transport health
+        metrics.inc_transport_backpressured();
+        metrics.inc_transport_send_errors();
+        metrics.set_transport_healthy(true);
+        metrics.set_transport_healthy(false);
+
+        // Filtering / cursors / pipeline
+        metrics.inc_records_filtered();
+        metrics.inc_cursor_writes();
+        metrics.inc_cursor_write_failures();
+        metrics.set_pipeline_ready(true);
+        metrics.set_pipeline_ready(false);
+        metrics.inc_records_delivered();
+
+        // Gauges (active fetches/extractors)
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        metrics.dec_active_fetches();
+        metrics.inc_active_extractors();
+        metrics.dec_active_extractors();
+        metrics.dec_active_extractors(); // saturates at 0
+
+        // Memory + rate gauges
+        metrics.set_memory_usage(10_000, 100_000);
+        metrics.update_rate_gauge();
+
+        // Duration histograms
+        metrics.record_fetch_duration("aws", Duration::from_millis(42));
+        metrics.set_cursor_age("aws.cloudtrail", 120.0);
+
+        // Verify the local atomics are in sync (render path doesn't depend
+        // on the global recorder, so this confirms the hot-path arms ran)
+        let output = metrics.render();
+        assert!(
+            output.contains("dfe_fetcher_fetches_total{status=\"success\"} 1"),
+            "render must show 1 success fetch"
+        );
+        assert!(
+            output.contains("dfe_fetcher_fetches_total{status=\"error\"} 1"),
+            "render must show 1 error fetch"
+        );
+        assert!(
+            output.contains("dfe_records_received_total 17"),
+            "render must show 17 records received"
+        );
+        assert!(
+            output.contains("dfe_fetcher_bytes_received_total 4096"),
+            "render must show 4096 bytes"
+        );
+        assert!(
+            output.contains("dfe_transport_sent_total 3"),
+            "render must show 3 messages sent"
+        );
+        assert!(
+            output.contains("dfe_records_dlq_total 1"),
+            "render must show 1 DLQ record"
+        );
+    }
 }

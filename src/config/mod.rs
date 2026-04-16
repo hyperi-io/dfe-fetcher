@@ -1319,7 +1319,12 @@ impl Default for CursorConfig {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)]
 mod tests {
     use super::*;
 
@@ -1472,5 +1477,628 @@ mod tests {
             original.scheduler.default_interval_secs
         );
         assert_eq!(config.config_reload_secs, original.config_reload_secs);
+    }
+
+    // =========================================================================
+    // Helper: build a valid baseline config (kafka brokers populated)
+    // =========================================================================
+
+    fn valid_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.kafka.brokers = vec!["localhost:9092".to_string()];
+        cfg
+    }
+
+    // =========================================================================
+    // 1. Config validation edge cases (expected failures)
+    // =========================================================================
+
+    #[test]
+    fn test_validate_grpc_output_without_endpoint() {
+        let mut cfg = valid_config();
+        cfg.output.output_type = "grpc".to_string();
+        cfg.output.grpc = None;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("grpc.endpoint required"),
+            "Expected 'grpc.endpoint required', got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_both_output_kafka_ok_grpc_missing() {
+        let mut cfg = valid_config();
+        cfg.output.output_type = "both".to_string();
+        // kafka brokers are set via valid_config(), but no grpc endpoint
+        cfg.output.grpc = None;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("grpc.endpoint required"),
+            "Expected grpc endpoint error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_negative_pressure_threshold() {
+        let mut cfg = valid_config();
+        cfg.buffer.pressure_threshold = -0.1;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("pressure_threshold"),
+            "Expected pressure_threshold error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_duplicate_container_extractor_names() {
+        let mut cfg = valid_config();
+        let container = ContainerExtractorConfig {
+            name: "dup-name".to_string(),
+            image: "img:latest".to_string(),
+            runtime: None,
+            mode: "scheduled".to_string(),
+            communication: "stdout".to_string(),
+            topic: "topic-a".to_string(),
+            interval_secs: None,
+            env: HashMap::new(),
+            volumes: vec![],
+            network: None,
+            memory_limit: None,
+            cpu_limit: None,
+            command: None,
+            timeout_secs: None,
+            pull_policy: "if-not-present".to_string(),
+            max_restart_attempts: 0,
+            max_restart_backoff_secs: 60,
+            stable_after_secs: 300,
+        };
+        cfg.extractors.containers = vec![container.clone(), container];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate container extractor name"),
+            "Expected duplicate name error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_container_extractor_empty_topic() {
+        let mut cfg = valid_config();
+        cfg.extractors.containers = vec![ContainerExtractorConfig {
+            name: "empty-topic-test".to_string(),
+            image: "img:latest".to_string(),
+            runtime: None,
+            mode: "scheduled".to_string(),
+            communication: "stdout".to_string(),
+            topic: String::new(), // empty
+            interval_secs: None,
+            env: HashMap::new(),
+            volumes: vec![],
+            network: None,
+            memory_limit: None,
+            cpu_limit: None,
+            command: None,
+            timeout_secs: None,
+            pull_policy: "if-not-present".to_string(),
+            max_restart_attempts: 0,
+            max_restart_backoff_secs: 60,
+            stable_after_secs: 300,
+        }];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("empty topic"),
+            "Expected empty topic error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_ingest_bind_address() {
+        let mut cfg = valid_config();
+        cfg.ingest.enabled = true;
+        cfg.ingest.bind_address = "not-an-address".to_string();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid ingest bind address"),
+            "Expected invalid ingest bind address error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_azure_filter() {
+        let mut cfg = valid_config();
+        cfg.sources.azure.filter = Some("invalid @@@ expression".to_string());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("filter invalid"),
+            "Expected azure filter invalid error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_m365_filter() {
+        let mut cfg = valid_config();
+        cfg.sources.m365.filter = Some("((( broken".to_string());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("filter invalid"),
+            "Expected m365 filter invalid error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_gcp_filter() {
+        let mut cfg = valid_config();
+        cfg.sources.gcp.filter = Some("not_a_valid @@".to_string());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("filter invalid"),
+            "Expected gcp filter invalid error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_invalid_vector_grpc_bind_address() {
+        let mut cfg = valid_config();
+        cfg.extractors.vector.enabled = true;
+        cfg.extractors.vector.grpc_bind_address = "not-valid".to_string();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid vector gRPC bind address"),
+            "Expected invalid vector gRPC bind address error, got: {err}"
+        );
+    }
+
+    // =========================================================================
+    // 2. Config YAML loading
+    // =========================================================================
+
+    #[test]
+    fn test_load_from_valid_yaml_file() {
+        let yaml = r#"
+scheduler:
+  default_interval_secs: 120
+  max_concurrent_fetches: 5
+  jitter_percent: 20
+kafka:
+  brokers:
+    - "broker1:9092"
+  client_id: "test-client"
+  topic_suffix: "_raw"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let cfg = Config::load_from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(cfg.scheduler.default_interval_secs, 120);
+        assert_eq!(cfg.scheduler.max_concurrent_fetches, 5);
+        assert_eq!(cfg.scheduler.jitter_percent, 20);
+        assert_eq!(cfg.kafka.brokers, vec!["broker1:9092"]);
+        assert_eq!(cfg.kafka.client_id, "test-client");
+        assert_eq!(cfg.kafka.topic_suffix, "_raw");
+        assert!(cfg.config_path.is_some());
+    }
+
+    #[test]
+    fn test_load_from_nonexistent_path() {
+        let result = Config::load_from_file("/nonexistent/path/config.yaml");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to read config file"),
+            "Expected file read error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_load_from_invalid_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "{{{{not valid yaml!!!!").unwrap();
+
+        let result = Config::load_from_file(path.to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_yaml_with_all_sources_and_services() {
+        let yaml = r#"
+scheduler:
+  default_interval_secs: 60
+kafka:
+  brokers: ["localhost:9092"]
+sources:
+  aws:
+    enabled: true
+    region: ap-southeast-2
+    services:
+      - name: cloudtrail
+      - name: guardduty
+  azure:
+    enabled: true
+    tenant_id: "tenant-1"
+    services:
+      - name: activity_log
+      - name: defender
+  m365:
+    enabled: true
+    tenant_id: "m365-tenant"
+    services:
+      - name: audit_log
+  gcp:
+    enabled: true
+    project_id: "my-project"
+    services:
+      - name: audit_logs
+      - name: scc
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("full.yaml");
+        std::fs::write(&path, yaml).unwrap();
+
+        let cfg = Config::load_from_file(path.to_str().unwrap()).unwrap();
+        assert!(cfg.sources.aws.enabled);
+        assert_eq!(cfg.sources.aws.region, "ap-southeast-2");
+        assert_eq!(cfg.sources.aws.services.len(), 2);
+        assert!(cfg.sources.azure.enabled);
+        assert_eq!(cfg.sources.azure.services.len(), 2);
+        assert!(cfg.sources.m365.enabled);
+        assert_eq!(cfg.sources.m365.services.len(), 1);
+        assert!(cfg.sources.gcp.enabled);
+        assert_eq!(cfg.sources.gcp.services.len(), 2);
+    }
+
+    // =========================================================================
+    // 3. Instance ID derivation
+    // =========================================================================
+
+    #[test]
+    fn test_instance_id_explicit_lowercased() {
+        let mut cfg = Config::default();
+        cfg.instance_id = Some("My-Custom-ID".to_string());
+        assert_eq!(derive_instance_id(&cfg), "my-custom-id");
+    }
+
+    #[test]
+    fn test_instance_id_aws_enabled() {
+        let mut cfg = Config::default();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.region = "us-west-2".to_string();
+        cfg.sources.aws.access_key_id = Some("AKIATEST".to_string());
+        let id = derive_instance_id(&cfg);
+        assert!(id.starts_with("aws-"), "Expected aws- prefix, got: {id}");
+        assert_eq!(id.len(), "aws-".len() + 8); // 4 bytes = 8 hex chars
+    }
+
+    #[test]
+    fn test_instance_id_azure_enabled() {
+        let mut cfg = Config::default();
+        cfg.sources.azure.enabled = true;
+        cfg.sources.azure.tenant_id = Some("tenant-abc".to_string());
+        cfg.sources.azure.subscription_id = Some("sub-123".to_string());
+        let id = derive_instance_id(&cfg);
+        assert!(
+            id.starts_with("azure-"),
+            "Expected azure- prefix, got: {id}"
+        );
+        assert_eq!(id.len(), "azure-".len() + 8);
+    }
+
+    #[test]
+    fn test_instance_id_m365_enabled() {
+        let mut cfg = Config::default();
+        cfg.sources.m365.enabled = true;
+        cfg.sources.m365.tenant_id = Some("m365-tenant".to_string());
+        let id = derive_instance_id(&cfg);
+        assert!(id.starts_with("m365-"), "Expected m365- prefix, got: {id}");
+        assert_eq!(id.len(), "m365-".len() + 8);
+    }
+
+    #[test]
+    fn test_instance_id_gcp_enabled() {
+        let mut cfg = Config::default();
+        cfg.sources.gcp.enabled = true;
+        cfg.sources.gcp.project_id = Some("gcp-project-42".to_string());
+        let id = derive_instance_id(&cfg);
+        assert!(id.starts_with("gcp-"), "Expected gcp- prefix, got: {id}");
+        assert_eq!(id.len(), "gcp-".len() + 8);
+    }
+
+    #[test]
+    fn test_instance_id_no_sources_enabled() {
+        let cfg = Config::default();
+        assert_eq!(derive_instance_id(&cfg), "dfe-fetcher");
+    }
+
+    #[test]
+    fn test_instance_id_priority_aws_wins_over_azure() {
+        let mut cfg = Config::default();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.azure.enabled = true;
+        cfg.sources.m365.enabled = true;
+        cfg.sources.gcp.enabled = true;
+        let id = derive_instance_id(&cfg);
+        assert!(id.starts_with("aws-"), "AWS should win priority, got: {id}");
+    }
+
+    #[test]
+    fn test_instance_id_priority_azure_when_aws_disabled() {
+        let mut cfg = Config::default();
+        cfg.sources.azure.enabled = true;
+        cfg.sources.m365.enabled = true;
+        cfg.sources.gcp.enabled = true;
+        let id = derive_instance_id(&cfg);
+        assert!(
+            id.starts_with("azure-"),
+            "Azure should win when AWS disabled, got: {id}"
+        );
+    }
+
+    #[test]
+    fn test_instance_id_deterministic() {
+        let mut cfg = Config::default();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.region = "eu-west-1".to_string();
+        cfg.sources.aws.access_key_id = Some("AKIAEXAMPLE".to_string());
+        let id1 = derive_instance_id(&cfg);
+        let id2 = derive_instance_id(&cfg);
+        assert_eq!(id1, id2, "Same config must produce same instance ID");
+    }
+
+    #[test]
+    fn test_instance_id_different_config_different_hash() {
+        let mut cfg1 = Config::default();
+        cfg1.sources.aws.enabled = true;
+        cfg1.sources.aws.region = "us-east-1".to_string();
+        cfg1.sources.aws.access_key_id = Some("AKIAONE".to_string());
+
+        let mut cfg2 = Config::default();
+        cfg2.sources.aws.enabled = true;
+        cfg2.sources.aws.region = "eu-west-1".to_string();
+        cfg2.sources.aws.access_key_id = Some("AKIATWO".to_string());
+
+        let id1 = derive_instance_id(&cfg1);
+        let id2 = derive_instance_id(&cfg2);
+        assert_ne!(id1, id2, "Different configs must produce different IDs");
+    }
+
+    // =========================================================================
+    // 4. Env var overrides (SASL, TLS, config_reload, DLQ, pressure)
+    // =========================================================================
+
+    #[test]
+    fn test_env_override_sasl_mechanism_username_password() {
+        with_env(
+            &[
+                ("DFE_FETCHER_KAFKA_SASL_MECHANISM", "scram_sha_256"),
+                ("DFE_FETCHER_KAFKA_SASL_USER", "admin"),
+                ("DFE_FETCHER_KAFKA_SASL_PASSWORD", "s3cret"),
+            ],
+            || {
+                let mut cfg = Config::default();
+                cfg.apply_flat_env("DFE_FETCHER");
+                let sasl = cfg.kafka.sasl.as_ref().expect("SASL should be set");
+                assert!(sasl.enabled);
+                assert_eq!(sasl.mechanism, "scram_sha_256");
+                assert_eq!(sasl.username, "admin");
+                assert_eq!(sasl.password.expose(), "s3cret");
+            },
+        );
+    }
+
+    #[test]
+    fn test_env_override_security_protocol_ssl_enables_tls() {
+        with_env(
+            &[("DFE_FETCHER_KAFKA_SECURITY_PROTOCOL", "SASL_SSL")],
+            || {
+                let mut cfg = Config::default();
+                assert!(!cfg.kafka.tls.enabled);
+                cfg.apply_flat_env("DFE_FETCHER");
+                assert!(
+                    cfg.kafka.tls.enabled,
+                    "TLS should be enabled when protocol contains SSL"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_env_override_security_protocol_plaintext_no_tls() {
+        with_env(
+            &[("DFE_FETCHER_KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")],
+            || {
+                let mut cfg = Config::default();
+                cfg.apply_flat_env("DFE_FETCHER");
+                assert!(
+                    !cfg.kafka.tls.enabled,
+                    "TLS should remain disabled for PLAINTEXT"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_env_override_config_reload_secs() {
+        with_env(&[("DFE_FETCHER_CONFIG_RELOAD_SECS", "30")], || {
+            let mut cfg = Config::default();
+            assert_eq!(cfg.config_reload_secs, 0);
+            cfg.apply_flat_env("DFE_FETCHER");
+            assert_eq!(cfg.config_reload_secs, 30);
+        });
+    }
+
+    #[test]
+    fn test_env_override_dlq_enabled_and_path() {
+        with_env(
+            &[
+                ("DFE_FETCHER_DLQ_ENABLED", "true"),
+                ("DFE_FETCHER_DLQ_PATH", "/data/dlq"),
+            ],
+            || {
+                let mut cfg = Config::default();
+                cfg.apply_flat_env("DFE_FETCHER");
+                assert!(cfg.dlq.enabled);
+                assert_eq!(cfg.dlq.file.path.to_str().unwrap(), "/data/dlq");
+            },
+        );
+    }
+
+    #[test]
+    fn test_env_override_pressure_threshold() {
+        with_env(&[("DFE_FETCHER_PRESSURE_THRESHOLD", "0.65")], || {
+            let mut cfg = Config::default();
+            cfg.apply_flat_env("DFE_FETCHER");
+            assert!(
+                (cfg.buffer.pressure_threshold - 0.65).abs() < f64::EPSILON,
+                "Expected 0.65, got: {}",
+                cfg.buffer.pressure_threshold
+            );
+        });
+    }
+
+    #[test]
+    fn test_env_override_multiple_vars_simultaneously() {
+        with_env(
+            &[
+                ("DFE_FETCHER_KAFKA_BROKERS", "b1:9092,b2:9092"),
+                ("DFE_FETCHER_DEFAULT_INTERVAL_SECS", "45"),
+                ("DFE_FETCHER_METRICS_ADDRESS", "127.0.0.1:9999"),
+                ("DFE_FETCHER_CONFIG_RELOAD_SECS", "15"),
+                ("DFE_FETCHER_TOPIC_SUFFIX", "_ingest"),
+            ],
+            || {
+                let mut cfg = Config::default();
+                cfg.apply_flat_env("DFE_FETCHER");
+                assert_eq!(cfg.kafka.brokers, vec!["b1:9092", "b2:9092"]);
+                assert_eq!(cfg.scheduler.default_interval_secs, 45);
+                assert_eq!(cfg.metrics.address, "127.0.0.1:9999");
+                assert_eq!(cfg.config_reload_secs, 15);
+                assert_eq!(cfg.kafka.topic_suffix, "_ingest");
+            },
+        );
+    }
+
+    // =========================================================================
+    // 5. OutputConfig methods
+    // =========================================================================
+
+    #[test]
+    fn test_output_config_includes_kafka() {
+        let mut oc = OutputConfig::default();
+        oc.output_type = "kafka".to_string();
+        assert!(oc.includes_kafka());
+        assert!(!oc.includes_grpc());
+
+        oc.output_type = "grpc".to_string();
+        assert!(!oc.includes_kafka());
+        assert!(oc.includes_grpc());
+
+        oc.output_type = "both".to_string();
+        assert!(oc.includes_kafka());
+        assert!(oc.includes_grpc());
+    }
+
+    #[test]
+    fn test_output_config_unknown_type_includes_neither() {
+        let mut oc = OutputConfig::default();
+        oc.output_type = "file".to_string();
+        assert!(!oc.includes_kafka());
+        assert!(!oc.includes_grpc());
+    }
+
+    // =========================================================================
+    // 6. PluginsConfig.warn_if_configured()
+    // =========================================================================
+
+    #[test]
+    fn test_plugins_warn_empty_no_panic() {
+        let plugins = PluginsConfig::default();
+        // Should not panic when no directory or extra fields set
+        plugins.warn_if_configured();
+    }
+
+    #[test]
+    fn test_plugins_warn_with_directory_no_panic() {
+        let plugins = PluginsConfig {
+            directory: Some("/old/plugins".to_string()),
+            _rest: serde_json::Map::new(),
+        };
+        // Should log a warning but not panic
+        plugins.warn_if_configured();
+    }
+
+    #[test]
+    fn test_plugins_warn_with_extra_fields_no_panic() {
+        let mut rest = serde_json::Map::new();
+        rest.insert("extra_field".to_string(), serde_json::Value::Bool(true));
+        let plugins = PluginsConfig {
+            directory: None,
+            _rest: rest,
+        };
+        plugins.warn_if_configured();
+    }
+
+    // =========================================================================
+    // 7. Config serialization roundtrip
+    // =========================================================================
+
+    #[test]
+    fn test_config_yaml_roundtrip() {
+        let mut cfg = valid_config();
+        cfg.scheduler.default_interval_secs = 180;
+        cfg.scheduler.jitter_percent = 15;
+        cfg.scheduler.max_concurrent_fetches = 8;
+        cfg.kafka.client_id = "roundtrip-test".to_string();
+        cfg.kafka.topic_suffix = "_test".to_string();
+        cfg.buffer.pressure_threshold = 0.75;
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.region = "ap-southeast-2".to_string();
+        cfg.cursor.default_window_hours = 4;
+        cfg.config_reload_secs = 60;
+
+        let yaml = serde_yaml_ng::to_string(&cfg).expect("serialize to YAML");
+        let restored: Config = serde_yaml_ng::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(
+            restored.scheduler.default_interval_secs,
+            cfg.scheduler.default_interval_secs
+        );
+        assert_eq!(
+            restored.scheduler.jitter_percent,
+            cfg.scheduler.jitter_percent
+        );
+        assert_eq!(
+            restored.scheduler.max_concurrent_fetches,
+            cfg.scheduler.max_concurrent_fetches
+        );
+        assert_eq!(restored.kafka.client_id, cfg.kafka.client_id);
+        assert_eq!(restored.kafka.topic_suffix, cfg.kafka.topic_suffix);
+        assert_eq!(restored.kafka.brokers, cfg.kafka.brokers);
+        assert!(
+            (restored.buffer.pressure_threshold - cfg.buffer.pressure_threshold).abs()
+                < f64::EPSILON
+        );
+        assert_eq!(restored.sources.aws.enabled, cfg.sources.aws.enabled);
+        assert_eq!(restored.sources.aws.region, cfg.sources.aws.region);
+        assert_eq!(
+            restored.cursor.default_window_hours,
+            cfg.cursor.default_window_hours
+        );
+        assert_eq!(restored.config_reload_secs, cfg.config_reload_secs);
+    }
+
+    #[test]
+    fn test_config_roundtrip_preserves_output_type() {
+        let mut cfg = valid_config();
+        cfg.output.output_type = "grpc".to_string();
+        cfg.output.grpc = Some(hyperi_rustlib::transport::GrpcConfig {
+            endpoint: Some("http://receiver:6000".to_string()),
+            ..Default::default()
+        });
+
+        let yaml = serde_yaml_ng::to_string(&cfg).expect("serialize");
+        let restored: Config = serde_yaml_ng::from_str(&yaml).expect("deserialize");
+        assert_eq!(restored.output.output_type, "grpc");
+        assert!(restored.output.includes_grpc());
+        assert!(!restored.output.includes_kafka());
     }
 }

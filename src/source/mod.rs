@@ -131,4 +131,90 @@ mod tests {
         assert_eq!(result.records.len(), 1);
         assert_eq!(result.source, "aws.cloudtrail");
     }
+
+    // --- classify_api_error tests ---
+
+    #[test]
+    fn test_classify_timed_out() {
+        let err = crate::error::Error::Source("request timed out".to_string());
+        assert_eq!(classify_api_error(&err), "timeout");
+    }
+
+    #[test]
+    fn test_classify_timeout_keyword() {
+        let err = crate::error::Error::Source("connection timeout reached".to_string());
+        assert_eq!(classify_api_error(&err), "timeout");
+    }
+
+    #[test]
+    fn test_classify_status_4xx_prefix() {
+        let err = crate::error::Error::Source("HTTP status: 422 Unprocessable".to_string());
+        assert_eq!(classify_api_error(&err), "4xx");
+    }
+
+    #[test]
+    fn test_classify_401() {
+        let err = crate::error::Error::Source("received 401 Unauthorized".to_string());
+        assert_eq!(classify_api_error(&err), "4xx");
+    }
+
+    #[test]
+    fn test_classify_403() {
+        let err = crate::error::Error::Source("responded with 403 Forbidden".to_string());
+        assert_eq!(classify_api_error(&err), "4xx");
+    }
+
+    #[test]
+    fn test_classify_404() {
+        let err = crate::error::Error::Source("endpoint returned 404".to_string());
+        assert_eq!(classify_api_error(&err), "4xx");
+    }
+
+    #[test]
+    fn test_classify_429() {
+        let err = crate::error::Error::Source("rate limited with 429".to_string());
+        assert_eq!(classify_api_error(&err), "4xx");
+    }
+
+    #[test]
+    fn test_classify_status_5xx_prefix() {
+        let err = crate::error::Error::Source("server status: 504 Gateway Timeout".to_string());
+        assert_eq!(classify_api_error(&err), "5xx");
+    }
+
+    #[test]
+    fn test_classify_500() {
+        let err = crate::error::Error::Source("internal 500 error".to_string());
+        assert_eq!(classify_api_error(&err), "5xx");
+    }
+
+    #[test]
+    fn test_classify_502() {
+        let err = crate::error::Error::Source("bad gateway 502".to_string());
+        assert_eq!(classify_api_error(&err), "5xx");
+    }
+
+    #[test]
+    fn test_classify_503() {
+        let err = crate::error::Error::Source("service unavailable 503".to_string());
+        assert_eq!(classify_api_error(&err), "5xx");
+    }
+
+    #[test]
+    fn test_classify_connection_refused() {
+        let err = crate::error::Error::Source("connection refused".to_string());
+        assert_eq!(classify_api_error(&err), "network");
+    }
+
+    #[test]
+    fn test_classify_dns_failure() {
+        let err = crate::error::Error::Source("DNS resolution failed".to_string());
+        assert_eq!(classify_api_error(&err), "network");
+    }
+
+    #[test]
+    fn test_classify_empty_message() {
+        let err = crate::error::Error::Source(String::new());
+        assert_eq!(classify_api_error(&err), "network");
+    }
 }

@@ -146,4 +146,223 @@ mod tests {
         let err: Error = "test error".into();
         assert!(matches!(err, Error::Config(_)));
     }
+
+    // --- Display tests for all variants ---
+
+    #[test]
+    fn test_display_config() {
+        let err = Error::Config("bad yaml".to_string());
+        assert_eq!(err.to_string(), "configuration error: bad yaml");
+    }
+
+    #[test]
+    fn test_display_source() {
+        let err = Error::Source("API down".to_string());
+        assert_eq!(err.to_string(), "source error: API down");
+    }
+
+    #[test]
+    fn test_display_credential() {
+        let err = Error::Credential("expired token".to_string());
+        assert_eq!(err.to_string(), "credential error: expired token");
+    }
+
+    #[test]
+    fn test_display_kafka() {
+        let err = Error::Kafka("broker unreachable".to_string());
+        assert_eq!(err.to_string(), "Kafka error: broker unreachable");
+    }
+
+    #[test]
+    fn test_display_transport() {
+        let err = Error::Transport("gRPC channel closed".to_string());
+        assert_eq!(err.to_string(), "transport error: gRPC channel closed");
+    }
+
+    #[test]
+    fn test_display_cursor() {
+        let err = Error::Cursor("file locked".to_string());
+        assert_eq!(err.to_string(), "cursor error: file locked");
+    }
+
+    #[test]
+    fn test_display_filter() {
+        let err = Error::Filter("invalid CEL".to_string());
+        assert_eq!(err.to_string(), "filter error: invalid CEL");
+    }
+
+    #[test]
+    fn test_display_shutdown() {
+        let err = Error::Shutdown;
+        assert_eq!(err.to_string(), "shutdown requested");
+    }
+
+    #[test]
+    fn test_display_pipeline() {
+        let err = Error::Pipeline("enrichment failed".to_string());
+        assert_eq!(err.to_string(), "pipeline error: enrichment failed");
+    }
+
+    #[test]
+    fn test_display_scheduler() {
+        let err = Error::Scheduler("tick overflow".to_string());
+        assert_eq!(err.to_string(), "scheduler error: tick overflow");
+    }
+
+    #[test]
+    fn test_display_io() {
+        let err = Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert_eq!(err.to_string(), "I/O error: gone");
+    }
+
+    // --- From conversions ---
+
+    #[test]
+    fn test_from_serde_yaml_error() {
+        let yaml_err = serde_yaml_ng::from_str::<serde_json::Value>("{{{{").unwrap_err();
+        let err: Error = yaml_err.into();
+        match &err {
+            Error::Config(msg) => assert!(
+                msg.starts_with("YAML parse error"),
+                "expected YAML parse error prefix, got: {msg}"
+            ),
+            other => panic!("expected Error::Config, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_serde_json_error() {
+        let json_err = serde_json::from_str::<serde_json::Value>("{bad}").unwrap_err();
+        let err: Error = json_err.into();
+        match &err {
+            Error::Source(msg) => assert!(
+                msg.starts_with("JSON error"),
+                "expected JSON error prefix, got: {msg}"
+            ),
+            other => panic!("expected Error::Source, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn test_from_str_ref() {
+        let err: Error = "some config issue".into();
+        assert!(matches!(err, Error::Config(ref s) if s == "some config issue"));
+    }
+
+    #[test]
+    fn test_from_owned_string() {
+        let err: Error = String::from("owned error").into();
+        assert!(matches!(err, Error::Config(ref s) if s == "owned error"));
+    }
+
+    // --- IntoResponse status code tests ---
+
+    fn extract_status_and_body(err: Error) -> (StatusCode, serde_json::Value) {
+        let response = err.into_response();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX);
+        // Use a blocking approach since these are sync tests — build a mini runtime.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build runtime");
+        let bytes = rt.block_on(body).expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("parse response JSON");
+        (status, json)
+    }
+
+    #[test]
+    fn test_into_response_config() {
+        let (status, body) = extract_status_and_body(Error::Config("bad".into()));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "bad");
+    }
+
+    #[test]
+    fn test_into_response_source() {
+        let (status, body) = extract_status_and_body(Error::Source("api fail".into()));
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "api fail");
+    }
+
+    #[test]
+    fn test_into_response_credential() {
+        let (status, body) = extract_status_and_body(Error::Credential("bad token".into()));
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "bad token");
+    }
+
+    #[test]
+    fn test_into_response_kafka() {
+        let (status, body) = extract_status_and_body(Error::Kafka("down".into()));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "kafka unavailable");
+    }
+
+    #[test]
+    fn test_into_response_transport() {
+        let (status, body) = extract_status_and_body(Error::Transport("broken".into()));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "broken");
+    }
+
+    #[test]
+    fn test_into_response_cursor() {
+        let (status, body) = extract_status_and_body(Error::Cursor("corrupt".into()));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "corrupt");
+    }
+
+    #[test]
+    fn test_into_response_filter() {
+        let (status, body) = extract_status_and_body(Error::Filter("bad CEL".into()));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "bad CEL");
+    }
+
+    #[test]
+    fn test_into_response_shutdown() {
+        let (status, body) = extract_status_and_body(Error::Shutdown);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "shutting down");
+    }
+
+    #[test]
+    fn test_into_response_io_wildcard() {
+        let io_err = std::io::Error::other("disk full");
+        let (status, body) = extract_status_and_body(Error::Io(io_err));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "internal error");
+    }
+
+    #[test]
+    fn test_into_response_pipeline() {
+        let (status, body) = extract_status_and_body(Error::Pipeline("broken pipe".into()));
+        // Pipeline falls through to the wildcard arm
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "internal error");
+    }
+
+    #[test]
+    fn test_into_response_scheduler() {
+        let (status, body) = extract_status_and_body(Error::Scheduler("overrun".into()));
+        // Scheduler falls through to the wildcard arm
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "internal error");
+    }
+
+    #[test]
+    fn test_into_response_body_has_error_key() {
+        let (_, body) = extract_status_and_body(Error::Config("test".into()));
+        assert!(
+            body.get("error").is_some(),
+            "response must contain 'error' key"
+        );
+    }
 }

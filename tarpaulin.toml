@@ -1,0 +1,22 @@
+# Project:   dfe-fetcher
+# File:      tarpaulin.toml
+# Purpose:   Coverage configuration
+#
+# License:   FSL-1.1-ALv2
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+[default]
+# Exclude files that cannot be unit-tested:
+# - main.rs: entry point, requires full runtime to test (covered by e2e smoke tests)
+# - deployment.rs fields already covered by tests — macros inflate line count
+exclude-files = [
+    # Entry point — requires full runtime to test (covered by e2e smoke tests)
+    "src/main.rs",
+    # Container/Vector extractors require Docker + Vector binary — covered by
+    # e2e tests (tests/e2e/container.rs) which are #[ignore]d in unit runs.
+    "src/extractor/container/mod.rs",
+    "src/extractor/vector/mod.rs",
+    "benches/*",
+]
+ignore-panics = true
+timeout = "120s"

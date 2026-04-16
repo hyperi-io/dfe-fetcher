@@ -187,3 +187,233 @@ pub fn contract() -> DeploymentContract {
         oci_labels: hyperi_rustlib::deployment::OciLabels::default(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_contract_app_name() {
+        let c = contract();
+        assert_eq!(c.app_name, "dfe-fetcher");
+    }
+
+    #[test]
+    fn test_contract_binary_name() {
+        let c = contract();
+        assert_eq!(c.binary_name, "dfe-fetcher");
+    }
+
+    #[test]
+    fn test_contract_base_image() {
+        let c = contract();
+        assert_eq!(c.base_image, "ubuntu:24.04");
+    }
+
+    #[test]
+    fn test_contract_metrics_port() {
+        let c = contract();
+        assert_eq!(c.metrics_port, 9090);
+    }
+
+    #[test]
+    fn test_contract_health_liveness_path() {
+        let c = contract();
+        assert_eq!(c.health.liveness_path, "/health/live");
+    }
+
+    #[test]
+    fn test_contract_health_readiness_path() {
+        let c = contract();
+        assert_eq!(c.health.readiness_path, "/health/ready");
+    }
+
+    #[test]
+    fn test_contract_health_metrics_path() {
+        let c = contract();
+        assert_eq!(c.health.metrics_path, "/metrics");
+    }
+
+    #[test]
+    fn test_contract_env_prefix() {
+        let c = contract();
+        assert_eq!(c.env_prefix, "DFE_FETCHER");
+    }
+
+    #[test]
+    fn test_contract_config_mount_path() {
+        let c = contract();
+        assert_eq!(c.config_mount_path, "/etc/dfe/fetcher.yaml");
+    }
+
+    #[test]
+    fn test_contract_extra_ports_count() {
+        let c = contract();
+        assert_eq!(c.extra_ports.len(), 2);
+    }
+
+    #[test]
+    fn test_contract_ingest_port() {
+        let c = contract();
+        let ingest = c
+            .extra_ports
+            .iter()
+            .find(|p| p.name == "ingest")
+            .expect("ingest port must exist");
+        assert_eq!(ingest.port, 8080);
+        assert_eq!(ingest.protocol, "TCP");
+    }
+
+    #[test]
+    fn test_contract_vector_grpc_port() {
+        let c = contract();
+        let vector = c
+            .extra_ports
+            .iter()
+            .find(|p| p.name == "vector-grpc")
+            .expect("vector-grpc port must exist");
+        assert_eq!(vector.port, 6000);
+        assert_eq!(vector.protocol, "TCP");
+    }
+
+    #[test]
+    fn test_contract_secret_groups_count() {
+        let c = contract();
+        assert_eq!(c.secrets.len(), 5);
+    }
+
+    #[test]
+    fn test_contract_secret_group_kafka() {
+        let c = contract();
+        let group = c
+            .secrets
+            .iter()
+            .find(|g| g.group_name == "kafka")
+            .expect("kafka secret group must exist");
+        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
+        assert!(env_vars.contains(&"DFE_FETCHER__KAFKA__SASL__USERNAME"));
+        assert!(env_vars.contains(&"DFE_FETCHER__KAFKA__SASL__PASSWORD"));
+    }
+
+    #[test]
+    fn test_contract_secret_group_aws() {
+        let c = contract();
+        let group = c
+            .secrets
+            .iter()
+            .find(|g| g.group_name == "aws")
+            .expect("aws secret group must exist");
+        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
+        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID"));
+        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AWS__SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn test_contract_secret_group_azure() {
+        let c = contract();
+        let group = c
+            .secrets
+            .iter()
+            .find(|g| g.group_name == "azure")
+            .expect("azure secret group must exist");
+        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
+        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AZURE__CLIENT_ID"));
+        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AZURE__CLIENT_SECRET"));
+    }
+
+    #[test]
+    fn test_contract_secret_group_m365() {
+        let c = contract();
+        let group = c
+            .secrets
+            .iter()
+            .find(|g| g.group_name == "m365")
+            .expect("m365 secret group must exist");
+        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
+        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__M365__CLIENT_ID"));
+        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__M365__CLIENT_SECRET"));
+    }
+
+    #[test]
+    fn test_contract_secret_group_gcp() {
+        let c = contract();
+        let group = c
+            .secrets
+            .iter()
+            .find(|g| g.group_name == "gcp")
+            .expect("gcp secret group must exist");
+        assert_eq!(group.env_vars.len(), 1);
+        assert_eq!(
+            group.env_vars[0].env_var,
+            "DFE_FETCHER__SOURCES__GCP__SERVICE_ACCOUNT_KEY"
+        );
+    }
+
+    #[test]
+    fn test_contract_default_config_is_some() {
+        let c = contract();
+        assert!(c.default_config.is_some());
+    }
+
+    #[test]
+    fn test_contract_default_config_scheduler_defaults() {
+        let c = contract();
+        let cfg = c
+            .default_config
+            .as_ref()
+            .expect("default_config must exist");
+        assert_eq!(cfg["scheduler"]["default_interval_secs"], 300);
+        assert_eq!(cfg["scheduler"]["max_concurrent_fetches"], 10);
+        assert_eq!(cfg["scheduler"]["jitter_percent"], 10);
+    }
+
+    #[test]
+    fn test_contract_keda_present() {
+        let c = contract();
+        assert!(c.keda.is_some());
+    }
+
+    #[test]
+    fn test_contract_keda_defaults() {
+        let c = contract();
+        let keda = c.keda.as_ref().expect("keda must exist");
+        assert_eq!(keda.min_replicas, 1);
+        assert_eq!(keda.max_replicas, 5);
+        assert_eq!(keda.polling_interval, 30);
+        assert_eq!(keda.cooldown_period, 300);
+        assert_eq!(keda.kafka_lag_threshold, 5000);
+    }
+
+    #[test]
+    fn test_contract_schema_version() {
+        let c = contract();
+        assert_eq!(c.schema_version, 2);
+    }
+
+    #[test]
+    fn test_contract_to_json_valid() {
+        let c = contract();
+        let json = serde_json::to_string(&c).expect("contract must serialise to JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("serialised JSON must parse");
+        assert_eq!(parsed["app_name"], "dfe-fetcher");
+    }
+
+    #[test]
+    fn test_contract_entrypoint_args_contain_config() {
+        let c = contract();
+        assert!(
+            c.entrypoint_args.contains(&"--config".into()),
+            "entrypoint_args must contain --config"
+        );
+    }
+
+    #[test]
+    fn test_contract_entrypoint_args_contain_config_path() {
+        let c = contract();
+        assert!(
+            c.entrypoint_args.contains(&"/etc/dfe/fetcher.yaml".into()),
+            "entrypoint_args must contain the config mount path"
+        );
+    }
+}

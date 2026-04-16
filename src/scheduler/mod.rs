@@ -701,4 +701,177 @@ mod tests {
 
         shutdown.cancel();
     }
+
+    // -- write_cursor tests --
+
+    #[tokio::test]
+    async fn test_write_cursor_no_store_is_noop() {
+        let metrics = Metrics::new();
+        let window = FetchWindow {
+            start: Utc::now() - chrono::Duration::hours(1),
+            end: Utc::now(),
+        };
+        // Must not panic, must not touch metrics
+        write_cursor(None, "some.key", &window, 42, &metrics).await;
+
+        // Verify no cursor write counters were incremented
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("dfe_fetcher_cursor_writes_total 0"),
+            "write with no store must not increment success counter: \n{rendered}"
+        );
+        assert!(
+            rendered.contains("dfe_fetcher_cursor_write_failures_total 0"),
+            "write with no store must not increment failure counter: \n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_cursor_with_store_increments_metric() {
+        use crate::cursor::file::FileCursorStore;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+        let window = FetchWindow {
+            start: Utc::now() - chrono::Duration::hours(1),
+            end: Utc::now(),
+        };
+        write_cursor(Some(&store), "source.test", &window, 7, &metrics).await;
+
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("dfe_fetcher_cursor_writes_total 1"),
+            "successful write must increment success counter: \n{rendered}"
+        );
+
+        // And the cursor is readable back with the written values
+        let stored = store
+            .get("source.test")
+            .await
+            .unwrap()
+            .expect("cursor persisted");
+        assert_eq!(stored.last_fetch_records, 7);
+    }
+
+    // -- build_fetch_window with corrupt cursor --
+
+    #[tokio::test]
+    async fn test_build_fetch_window_with_corrupt_cursor_falls_back() {
+        use crate::cursor::file::FileCursorStore;
+
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Write an invalid cursor file before creating the store. FileCursorStore
+        // skips malformed files on load, so the cache will be empty and the
+        // scheduler falls back to the default lookback window.
+        std::fs::write(
+            dir.path().join("corrupt.key.cursor.json"),
+            b"THIS IS NOT VALID JSON {{{",
+        )
+        .unwrap();
+
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+
+        let window = build_fetch_window(Some(&store), "corrupt.key", 3, &metrics, "test").await;
+        let expected_start = Utc::now() - chrono::Duration::hours(3);
+        assert!(
+            (window.start - expected_start).num_seconds().abs() < 2,
+            "corrupt cursor should fall back to default lookback (3h)"
+        );
+        assert!(
+            window.end > window.start,
+            "window end must be after window start"
+        );
+    }
+
+    // -- effective_interval with source override --
+
+    #[test]
+    fn test_effective_interval_source_override_60_seconds() {
+        let config = SchedulerConfig {
+            default_interval_secs: 300,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let scheduler = Scheduler::new(&config, shared, None, "test".into());
+
+        let interval = scheduler.effective_interval(Some(60));
+        assert_eq!(
+            interval.as_secs(),
+            60,
+            "source override should take precedence over default"
+        );
+    }
+
+    // -- calculate_jitter edge cases --
+
+    #[test]
+    fn test_calculate_jitter_100_percent_bounded() {
+        // 100% jitter on base=100 => max_jitter=100, fastrand in [0, 100)
+        let j = calculate_jitter(100, 100);
+        assert!(j < 100, "100% jitter on 100 should be < 100, got {j}");
+    }
+
+    #[test]
+    fn test_calculate_jitter_rounds_down_to_zero() {
+        // base=10, jitter_percent=1 => 10 * 1 / 100 = 0 (integer division)
+        // max_jitter==0 path returns 0
+        let j = calculate_jitter(10, 1);
+        assert_eq!(
+            j, 0,
+            "tiny jitter that rounds to 0 must return 0, not panic"
+        );
+    }
+
+    #[test]
+    fn test_calculate_jitter_large_values_no_overflow() {
+        // Large base with 50% jitter must compute without panicking on overflow.
+        // u64::MAX / 200 * 50 / 100 fits easily in u64.
+        let base = u64::MAX / 200;
+        let j = calculate_jitter(base, 50);
+        let expected_max = base * 50 / 100;
+        assert!(
+            j < expected_max,
+            "jitter {j} must be < expected max {expected_max}"
+        );
+    }
+
+    #[test]
+    fn test_calculate_jitter_repeated_within_bound() {
+        // Call many times to get coverage of the fastrand path, all must be in range.
+        for _ in 0..50 {
+            let j = calculate_jitter(1000, 25);
+            assert!(j < 250, "25% of 1000 must yield < 250, got {j}");
+        }
+    }
+
+    // -- Scheduler concurrency configuration --
+
+    #[test]
+    fn test_scheduler_with_max_concurrent_one() {
+        // Semaphore is constructed internally — verify the scheduler still
+        // reports a sensible effective interval when configured for
+        // single-flight concurrency.
+        let config = SchedulerConfig {
+            default_interval_secs: 120,
+            max_concurrent_fetches: 1,
+            jitter_percent: 0,
+        };
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let scheduler = Scheduler::new(&config, shared, None, "singleton".into());
+
+        let interval = scheduler.effective_interval(None);
+        assert_eq!(
+            interval.as_secs(),
+            300,
+            "effective_interval reads from shared config default (300s), not SchedulerConfig"
+        );
+
+        // A source-level override is still honoured
+        let overridden = scheduler.effective_interval(Some(45));
+        assert_eq!(overridden.as_secs(), 45);
+    }
 }
