@@ -1,3 +1,10 @@
+## [1.1.12](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.11...v1.1.12) (2026-04-16)
+
+
+### Bug Fixes
+
+* bump rustlib to >=2.5.4 and add deny.toml ([bd435d7](https://github.com/hyperi-io/dfe-fetcher/commit/bd435d73c3272f831e36650c7b92837f2be287d6))
+
 ## [1.1.11](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.10...v1.1.11) (2026-04-15)
 
 
