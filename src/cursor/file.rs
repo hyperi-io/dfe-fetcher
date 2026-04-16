@@ -491,4 +491,182 @@ mod tests {
             // Expected — directory is gone
         }
     }
+
+    // ==========================================================================
+    // Round-trip equality: a value written must come back exactly the same
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_write_then_read_cycle_returns_equal_value() {
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+
+        let mut cursor = make_cursor("aws.guardduty");
+        cursor.last_fetch_records = 4_242;
+        cursor.api_cursor = Some("opaque-token-xyz".to_string());
+        cursor.version = 3;
+
+        store.set("aws.guardduty", &cursor).await.unwrap();
+        let loaded = store.get("aws.guardduty").await.unwrap().unwrap();
+
+        // CursorValue derives PartialEq — full-value comparison
+        assert_eq!(loaded, cursor);
+    }
+
+    // ==========================================================================
+    // delete() clears the key so subsequent get() returns None
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_delete_removes_key_from_store() {
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+
+        store
+            .set("gcp.logging", &make_cursor("gcp.logging"))
+            .await
+            .unwrap();
+        assert!(store.get("gcp.logging").await.unwrap().is_some());
+
+        store.delete("gcp.logging").await.unwrap();
+        assert!(
+            store.get("gcp.logging").await.unwrap().is_none(),
+            "expected None after delete"
+        );
+    }
+
+    // ==========================================================================
+    // get() on a fresh store (no prior writes) returns Ok(None)
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_get_on_fresh_store_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let result = store.get("never.written").await;
+        assert!(result.is_ok(), "get() must return Ok on fresh store");
+        assert!(result.unwrap().is_none(), "fresh store has no cursors");
+    }
+
+    // ==========================================================================
+    // Many keys written and read back
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_write_and_read_many_keys() {
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+
+        let mut keys = Vec::new();
+        for i in 0..20 {
+            let key = format!("source-{i}.stream-{i}");
+            store.set(&key, &make_cursor(&key)).await.unwrap();
+            keys.push(key);
+        }
+
+        // Read each one back and verify the cursor_key matches (normalised)
+        for key in &keys {
+            let loaded = store.get(key).await.unwrap();
+            assert!(loaded.is_some(), "missing cursor for key {key}");
+            assert_eq!(loaded.unwrap().cursor_key, *key);
+        }
+    }
+
+    // ==========================================================================
+    // Persistence across instances — values survive a fresh constructor
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_persistence_new_instance_sees_prior_writes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap().to_string();
+
+        // Write with first instance, then drop it
+        {
+            let store = FileCursorStore::new(&dir).unwrap();
+            let mut cursor = make_cursor("aws.config");
+            cursor.last_fetch_records = 999;
+            cursor.api_cursor = Some("persist-me".to_string());
+            store.set("aws.config", &cursor).await.unwrap();
+        }
+
+        // Second instance reads from the same directory
+        {
+            let store = FileCursorStore::new(&dir).unwrap();
+            let loaded = store.get("aws.config").await.unwrap().unwrap();
+            assert_eq!(loaded.cursor_key, "aws.config");
+            assert_eq!(loaded.last_fetch_records, 999);
+            assert_eq!(loaded.api_cursor.as_deref(), Some("persist-me"));
+        }
+    }
+
+    // ==========================================================================
+    // Nested directory creation — FileCursorStore::new() calls create_dir_all
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_new_creates_nested_parent_directories() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp
+            .path()
+            .join("deeply")
+            .join("nested")
+            .join("cursor-store");
+        assert!(
+            !nested.exists(),
+            "pre-condition: nested path does not exist"
+        );
+
+        let store = FileCursorStore::new(nested.to_str().unwrap()).unwrap();
+        assert!(nested.exists(), "new() must create the nested directory");
+        assert!(nested.is_dir(), "created path must be a directory");
+
+        // Store must be usable for writes
+        store
+            .set("nested.source", &make_cursor("nested.source"))
+            .await
+            .unwrap();
+        assert!(
+            nested.join("nested.source.cursor.json").exists(),
+            "cursor file must be written under the created directory"
+        );
+    }
+
+    // ==========================================================================
+    // Special characters in keys: dots, hyphens, underscores
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_keys_with_dots_hyphens_underscores() {
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+
+        let keys = [
+            "simple",
+            "with.dots.in.key",
+            "with-hyphens-in-key",
+            "with_underscores_in_key",
+            "mix.of-all_three.chars",
+            "contoso-m365.m365.audit_log",
+        ];
+
+        for key in &keys {
+            store.set(key, &make_cursor(key)).await.unwrap();
+        }
+
+        for key in &keys {
+            let loaded = store.get(key).await.unwrap();
+            assert!(
+                loaded.is_some(),
+                "cursor with key '{key}' should be retrievable"
+            );
+            // Filename must have been created for each
+            let expected_file = tmp.path().join(format!("{key}.cursor.json"));
+            assert!(
+                expected_file.exists(),
+                "expected cursor file {} to exist",
+                expected_file.display()
+            );
+        }
+    }
 }

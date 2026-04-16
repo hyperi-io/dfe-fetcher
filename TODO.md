@@ -199,7 +199,7 @@ Plugin system was removed. Three extraction modes remain: native, container, and
 ```
 cargo fmt --check    — verify before push
 cargo clippy -D warn — verify before push
-cargo test           — 141 tests passing (run `cargo test` for count)
+cargo test           — 179 tests passing (run `cargo nextest run` for count)
 cargo test --test smoke -- --ignored                 — startup smoke test
 cargo test --test e2e -- --ignored                   — 5 Kafka e2e + 3 container tests (Docker)
 cargo test --test integration -- --ignored           — 8 smoke_cloud tests (live cloud APIs)
