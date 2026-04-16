@@ -6,6 +6,16 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
+### Performance Review
+
+Audit applicable optimisations from [dfe-loader/docs/PERFORMANCE.md](/projects/dfe-loader/docs/PERFORMANCE.md).
+
+- [ ] Allocator: enable `jemalloc` or `mimalloc` feature, benchmark vs system glibc on representative workload
+- [ ] Build profile: confirm `lto = "thin"`, `codegen-units = 1`, `panic = "abort"`, `strip = true` in release
+- [ ] Profile under load (perf, flamegraph, jeprof) — record baseline for regression detection
+- [ ] PGO + BOLT: evaluate ROI for production binary (10-20% + 5-15% gain)
+- [ ] Batch tuning: validate buffer/flush thresholds align with rustlib Kafka transport (10K recv / 20K prefetch)
+
 ### Submodule Update + Code Review + Release
 
 - [x] A. Single versioning migration — COMPLETE (branches: [main], workflow_dispatch with tag, .githooks/commit-msg, release branch deleted)
@@ -222,3 +232,92 @@ This file is the **single source of truth** for tasks and progress.
 - `[ ]` - Not started
 - `[BLOCKED]` - Waiting on something (note what)
 - `[x]` - Completed
+
+---
+
+## Rust Release-Track Optimisation (hyperi-ci Tier 1/2)
+
+**Context:** hyperi-ci is shipping channel-gated build optimisations for Rust
+binaries (see `hyperi-ai/standards/languages/RUST.md` — *Release-Track Build
+Optimisation*). Local `cargo build` is unaffected.
+
+### Tier 1 prep (automatic at beta+/release once hyperi-ci ships)
+
+Current state: **✅ READY — no source changes required.**
+
+- [x] `Cargo.toml` has `[features] jemalloc` + `mimalloc` declared
+- [x] `main.rs` wires `#[global_allocator]` under `#[cfg(feature = "jemalloc")]`
+- [x] `default = []` — clean
+- [x] `[profile.release] lto = "thin"` — CI overrides to `fat` on beta+
+
+No action required. Next release-channel build picks up jemalloc + fat LTO
+automatically once hyperi-ci ships the feature.
+
+### Tier 2 opt-in (PGO + BOLT — release channel only)
+
+Current state: **⚠️ NOT CONFIGURED — opt-in required.**
+
+- [ ] Decide whether PGO is worth +30-60 min release build time
+- [ ] If yes: write `scripts/pgo-workload.sh` that performs **actual API fetches
+      against real-or-mock upstream sources** — drive the extractor loop with
+      representative cursor state, response sizes, and source variety for at
+      least 5 minutes of sustained activity
+- [ ] **PGO workload MUST NOT be a port check, health probe, or "service
+      starts up" test** — that profile data teaches the compiler about the
+      startup path (which isn't the hot path) and causes NEGATIVE PGO gains
+- [ ] Add to `.hyperi-ci.yaml`:
+  ```yaml
+  build:
+    rust:
+      optimize:
+        pgo:
+          enabled: true
+          workload_cmd: "bash scripts/pgo-workload.sh"
+          duration_secs: 300
+        bolt:
+          enabled: true    # Linux only, +5-15% on top of PGO
+  ```
+
+---
+
+## Rust Release-Track Optimisation (hyperi-ci Tier 1/2)
+
+**Context:** hyperi-ci is shipping channel-gated build optimisations for Rust
+binaries (see `hyperi-ai/standards/languages/RUST.md` — *Release-Track Build
+Optimisation*). Local `cargo build` is unaffected.
+
+### Tier 1 prep (automatic at beta+/release once hyperi-ci ships)
+
+Current state: **✅ READY — no source changes required.**
+
+- [x] `Cargo.toml` has `[features] jemalloc` + `mimalloc` declared
+- [x] `main.rs` wires `#[global_allocator]` under `#[cfg(feature = "jemalloc")]`
+- [x] `default = []` — allocators opt-in via `--features`
+- [x] `[profile.release] lto = "thin"` — CI overrides to `fat` on beta+
+
+No project changes needed. Next release-channel build picks up jemalloc + fat
+LTO automatically.
+
+### Tier 2 opt-in (PGO + BOLT — release channel only)
+
+Current state: **⚠️ NOT CONFIGURED — opt-in required.**
+
+- [ ] Decide whether PGO is worth +30-60 min release build time
+- [ ] If yes: write `scripts/pgo-workload.sh` that performs **actual fetch
+      operations** against realistic upstream sources — at least 5 min
+      sustained throughput with representative source mix (HTTP/API pulls,
+      cursor-based iteration, transform + forward paths)
+- [ ] **PGO workload MUST NOT be a port check, health probe, or startup test** —
+      profile data from those paths is misleading and causes NEGATIVE PGO gains
+- [ ] Add to `.hyperi-ci.yaml`:
+  ```yaml
+  build:
+    rust:
+      optimize:
+        pgo:
+          enabled: true
+          workload_cmd: "bash scripts/pgo-workload.sh"
+          duration_secs: 300
+        bolt:
+          enabled: true    # Linux only, +5-15% on top of PGO
+  ```

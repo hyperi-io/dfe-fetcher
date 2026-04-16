@@ -249,3 +249,40 @@ This file contains **static project context only**.
 - How things work (not what's happening)
 
 When in doubt, ask: "Will this be true next week?" If no, it doesn't belong here.
+
+---
+
+## Rust Release-Track Optimisation Readiness
+
+**Tier 1 (allocator + fat LTO on beta+):** ✅ **READY**
+- `jemalloc` / `mimalloc` features declared
+- `#[global_allocator]` wired in `src/main.rs`
+- `default = []` — clean
+- `[profile.release] lto = "thin"` — CI overrides to `fat`
+
+No changes needed. Next release-channel build picks up optimisations once
+hyperi-ci ships the feature.
+
+**Tier 2 (PGO + BOLT on release):** ⚠️ **NOT CONFIGURED**
+
+Opt-in via `build.rust.optimize.pgo` in `.hyperi-ci.yaml`. Requires workload
+script that drives real API fetches (representative cursor + response sizes)
+for 5+ minutes. Port checks / startup tests do NOT qualify as PGO workloads.
+
+See TODO.md → *Rust Release-Track Optimisation* for detailed action items.
+
+---
+
+## Rust Release-Track Optimisation Readiness
+
+**Tier 1 (allocator + fat LTO on beta+):** ✅ **READY**
+- Features declared, allocator wired, `default = []`, `lto = "thin"`.
+- No project changes required. Next release-channel build applies Tier 1.
+
+**Tier 2 (PGO + BOLT on release):** ⚠️ **NOT CONFIGURED**
+
+Opt-in via `build.rust.optimize.pgo` in `.hyperi-ci.yaml`. Workload must
+drive actual fetch operations (HTTP/API pulls, cursor iteration, transforms)
+for 5+ min. Port checks / startup probes are NOT a valid PGO workload.
+
+See TODO.md → *Rust Release-Track Optimisation* for detailed action items.
