@@ -6,32 +6,15 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
-### Single Versioning Migration + rustlib 1.20 + Release
+### Submodule Update + Code Review + Release
 
-**Part A: Single Versioning (from MIGRATION-GUIDE.md)**
-
-- [x] A1. Convert `.releaserc.json` → `.releaserc.yaml` (branches: [main], remove @semantic-release/github, add all commit types)
-- [x] A2. Update `.github/workflows/ci.yml` (add `tag` input to workflow_dispatch, pass to reusable workflow, remove `release` from PR branches)
-- [x] A3. Fix VERSION (`1.1.6`) + Cargo.toml version (`1.1.6`)
-- [x] A4. Create `.githooks/commit-msg` hook
-
-**Part B: rustlib >= 1.20.0 Compilation**
-
-- [x] B1. Fix transport imports for trait split (`TransportBase`/`TransportSender`/`TransportReceiver`)
-- [x] B2. Verify `cargo check` compiles clean
-- [x] B3. Run `cargo clippy` + `cargo test` — 164 passing, 17 ignored (e2e)
-
-**Part C: Code Review**
-
-- [x] C1. Code review passed — all changes correct
-
-**Part D: Commit, Push, Release**
-
-- [x] D1. Commit: `fix: migrate to single versioning and bump rustlib to 1.20`
-- [x] D2. Push to main, force-tag `v1.1.6` to HEAD, push tag
-- [x] D3. CI Quality + Test passed (Build queued for runner)
-- [x] D4. Delete release branch + stale `chore/merge-to-release`
-- [ ] D5. Verify semantic-release creates clean GA version after Build + Release complete
+- [x] A. Single versioning migration — COMPLETE (branches: [main], workflow_dispatch with tag, .githooks/commit-msg, release branch deleted)
+- [x] B. rustlib >= 2.0.0 migration — COMPLETE (Transport trait split, 84 tests passing, compiles clean)
+- [ ] C1. Code review (/review skill)
+- [ ] C2. Security review (/security-review skill)
+- [ ] D1. Commit submodule update + any review fixes
+- [ ] D2. Push via hyperi-ci push
+- [ ] D3. Release via hyperi-ci release
 
 ### Metrics Standard Migration (DFE-METRICS-MIGRATION-FETCHER.md)
 
@@ -46,8 +29,8 @@ This is the **single source of truth** for all tasks and progress.
 - [x] Add `dfe_fetcher_ingest_requests_total` + `dfe_fetcher_ingest_duration_seconds`
 - [x] Add `dfe_fetcher_extractor_runs_total` with `name` + `status` labels
 - [x] Wire all DfeMetrics methods (records, transport, pipeline, scaling, auth)
-- [ ] **Adopt metrics-dfe groups** (AppMetrics, SinkMetrics, BackpressureMetrics) — BLOCKED: `metrics-dfe` feature not yet published on crates.io. Adopt when rustlib ships it.
-- [ ] **Configure histogram buckets** — Using defaults. Will configure tuned buckets when metrics-dfe groups land.
+- [ ] **Adopt metrics-dfe groups** (AppMetrics, SinkMetrics, BackpressureMetrics) — BLOCKED: `metrics-dfe` feature not yet published on crates.io
+- [ ] **Configure histogram buckets** — Using defaults. Will configure tuned buckets when metrics-dfe groups land
 
 ### Remaining rustlib Migration
 
