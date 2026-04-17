@@ -1,3 +1,10 @@
+## [1.1.13](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.12...v1.1.13) (2026-04-17)
+
+
+### Bug Fixes
+
+* lift test coverage to 82% with testcontainer-backed integration tests ([f4c6735](https://github.com/hyperi-io/dfe-fetcher/commit/f4c6735d4cd7c5a7719410a6b4290079b52f4462)), closes [#18](https://github.com/hyperi-io/dfe-fetcher/issues/18)
+
 ## [1.1.12](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.11...v1.1.12) (2026-04-16)
 
 
