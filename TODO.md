@@ -321,3 +321,31 @@ Current state: **⚠️ NOT CONFIGURED — opt-in required.**
         bolt:
           enabled: true    # Linux only, +5-15% on top of PGO
   ```
+
+---
+
+## POLICY UPDATE 2026-04-17 — Jemalloc at every channel, drop mimalloc
+
+**Allocator policy changed:** DFE binaries now standardise on jemalloc at
+**every** channel. mimalloc is no longer a supported option. See
+`hyperi-ai/standards/languages/RUST.md` → *Allocator Policy* and
+`hyperi-ci/docs/RUST-RELEASE-TRACK-OPTIMISATION.md`.
+
+### Action items
+
+- [ ] Remove `mimalloc = ["dep:mimalloc"]` from `[features]` in `Cargo.toml`
+- [ ] Remove `mimalloc = { version = "0.1", optional = true }` from
+      `[dependencies]`
+- [ ] Remove mimalloc `#[cfg]` fallback block from `src/main.rs`
+- [ ] `cargo build --release --features jemalloc` to verify
+
+### Verification on next release
+
+```bash
+strings target/<target>/release/dfe-fetcher | grep -ciE 'jemalloc|je_mallctl'
+```
+
+### CI behaviour change
+
+- Spike/alpha: was system allocator → now jemalloc. +10s compile, cached.
+- Beta/release: unchanged.

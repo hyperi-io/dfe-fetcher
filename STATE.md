@@ -286,3 +286,15 @@ drive actual fetch operations (HTTP/API pulls, cursor iteration, transforms)
 for 5+ min. Port checks / startup probes are NOT a valid PGO workload.
 
 See TODO.md → *Rust Release-Track Optimisation* for detailed action items.
+
+---
+
+## POLICY UPDATE 2026-04-17 — jemalloc-only
+
+DFE allocator policy standardised on jemalloc. Source:
+`hyperi-ai/standards/languages/RUST.md` → *Allocator Policy*.
+
+This project has mimalloc feature + dep + main.rs fallback that need
+removal. No functional change to the published binary (jemalloc has
+always won; CI only passes `--features jemalloc`). Tracked in TODO.md
+→ *POLICY UPDATE 2026-04-17*.
