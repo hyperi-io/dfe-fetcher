@@ -349,3 +349,66 @@ strings target/<target>/release/dfe-fetcher | grep -ciE 'jemalloc|je_mallctl'
 
 - Spike/alpha: was system allocator → now jemalloc. +10s compile, cached.
 - Beta/release: unchanged.
+
+---
+
+## Lessons from dfe-receiver Tier 2 canary (2026-04-17)
+
+**Context:** dfe-receiver was the first DFE binary to ship the full
+hyperi-ci release-track build optimisation feature (Tier 1 jemalloc +
+fat LTO on beta+; Tier 2 PGO + BOLT opt-in on release). Findings from
+that work are now baked into the shared docs — this section is the
+signal to apply the same pattern here.
+
+### Canary findings
+
+- **Binary size impact (jemalloc static link, stripped release)**:
+  +491 KB (+3.5%) on a 14 MB baseline. mimalloc was +131 KB (+1.0%)
+  but is no longer an allowed allocator per 2026-04-17 policy.
+- **Micro-bench allocator delta**: jemalloc wins −7.2% on
+  `json_validation/large`, −4.4% on small; within noise elsewhere.
+  Micro-benchmarks understate the real production win — Kafka
+  producer + async task allocations are where the gains materialise.
+- **Detection on stripped binaries**: `nm` won't see symbols because
+  release profile has `strip = true`. Use
+  `strings <binary> | grep -ciE 'jemalloc|je_mallctl'` — should
+  return > 0 on a jemalloc build.
+- **PGO workload shape that actually works**: a Rust driver linked to
+  the project's own lib (to reuse proto types) plus a bash orchestrator
+  that spins up testcontainers dependencies, starts the instrumented
+  binary, drives realistic multi-protocol traffic for ≥ 60s
+  (300s default), and cleans up on EXIT. See dfe-receiver's
+  `scripts/pgo-workload.sh` + `src/bin/pgo-driver.rs` for the
+  reference implementation.
+- **PGO workload anti-patterns confirmed**: single-request curls,
+  `curl /healthz` loops, and port-probe scripts all produce negative
+  PGO gains — the compiler mis-optimises startup paths over hot paths.
+
+### Where to read
+
+- hyperi-ci `docs/RUST-RELEASE-TRACK-OPTIMISATION.md` — opt-in guide,
+  verification, troubleshooting
+- hyperi-ci `docs/PGO-WORKLOAD-GUIDE.md` — four rules, anti-patterns,
+  profile quality metrics
+- hyperi-ci `templates/pgo-workload/` — five template shapes to copy
+  (`http-server.sh`, `grpc-server.sh`, `kafka-producer.sh`,
+  `kafka-consumer.sh`, `multi-protocol.sh`)
+- dfe-receiver `docs/PERFORMANCE.md` — concrete binary-size numbers,
+  bench deltas, reproduction commands
+- hyperi-ai standards `rules/rust.md` — the channel matrix +
+  jemalloc-only policy
+
+### Applies to this project
+
+(Each consumer project owns the per-project status below — update as
+Tier 1 preconditions are met and when Tier 2 opt-in lands.)
+
+- [ ] Tier 1 preconditions met (`jemalloc` feature declared in
+      `Cargo.toml`, `#[global_allocator]` wired in `main.rs` under
+      `#[cfg(feature = "jemalloc")]`)
+- [ ] Workload script exists and passes local `cargo pgo build →
+      workload → cargo pgo optimize` round-trip
+- [ ] `.hyperi-ci.yaml` has `build.rust.optimize.pgo.enabled: true`
+      with `workload_cmd` configured
+- [ ] Next release-channel build verified: `strings <binary> | grep
+      jemalloc` non-empty; build log shows cargo pgo invocations
