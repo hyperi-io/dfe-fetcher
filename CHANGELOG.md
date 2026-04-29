@@ -1,3 +1,16 @@
+# [1.2.0](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.13...v1.2.0) (2026-04-29)
+
+
+### Bug Fixes
+
+* drop openssl chain via rustlib 2.5.5 + reqwest defaults ([91d34de](https://github.com/hyperi-io/dfe-fetcher/commit/91d34decea6f3bee343fb021b543296a201ff5a8))
+* rustfmt + non-AKIA mock access key for pgo workload ([0a6561a](https://github.com/hyperi-io/dfe-fetcher/commit/0a6561ad952a030cb5c15cf1202947a2c6dcdc36))
+
+
+### Features
+
+* tier 2 PGO+BOLT workload (pgo-driver + workload script) ([6f1ac1e](https://github.com/hyperi-io/dfe-fetcher/commit/6f1ac1e35894d66df1fc0bca21ded7f4cbd1bdd7))
+
 ## [1.1.13](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.12...v1.1.13) (2026-04-17)
 
 
