@@ -32,7 +32,7 @@ required-features = ["pgo-driver"]
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=2.5.5", features = [
+hyperi-rustlib = { version = ">=2.6.1", features = [
     "config",
     "config-reload",
     "logger",
@@ -49,13 +49,13 @@ hyperi-rustlib = { version = ">=2.5.5", features = [
     "secrets",
     "dlq",
     "deployment",
-    "cli",
+    "cli-service",
     "top",
     "expression",
     "scaling",
     "memory",
     "version-check",
-    "worker",
+    "worker-pool",
 ] }
 
 # Async runtime
