@@ -21,6 +21,15 @@ name = "dfe_fetcher"
 path = "src/lib.rs"
 doctest = false
 
+# PGO workload driver — long-running mock-API server that drives the fetcher's
+# hot path (HTTP fetch → JSON parse → enrichment → CEL filter → output produce
+# → cursor advance) during hyperi-ci Tier 2 PGO/BOLT builds.
+# Default builds skip this binary because of `required-features`.
+[[bin]]
+name = "pgo-driver"
+path = "src/bin/pgo-driver.rs"
+required-features = ["pgo-driver"]
+
 [dependencies]
 # HyperI shared library
 hyperi-rustlib = { version = ">=2.5.5", features = [
@@ -135,6 +144,8 @@ testcontainers-modules = { version = "0.15", features = ["localstack", "kafka"] 
 [features]
 default = []
 jemalloc = ["dep:tikv-jemallocator"]
+# Build the PGO workload driver bin (off by default — adds no transitive deps).
+pgo-driver = []
 
 [profile.release]
 lto = "thin"
