@@ -44,11 +44,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
 use axum::routing::{any, get, post};
-use axum::Router;
 use serde_json::{Value, json};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -271,10 +271,7 @@ async fn gcp_entries_list(State(state): State<Arc<DriverState>>) -> Json<Value> 
     }))
 }
 
-async fn aws_dispatch(
-    State(state): State<Arc<DriverState>>,
-    headers: HeaderMap,
-) -> Json<Value> {
+async fn aws_dispatch(State(state): State<Arc<DriverState>>, headers: HeaderMap) -> Json<Value> {
     state.record();
     let page = state.next_page();
     let target = headers
@@ -328,7 +325,10 @@ fn pagination_link(state: &DriverState, page: u64, base_path: &str) -> Option<St
         // Final page in the cycle — no nextLink.
         None
     } else {
-        Some(format!("http://{}{}/{}", state.config.bind, base_path, page))
+        Some(format!(
+            "http://{}{}/{}",
+            state.config.bind, base_path, page
+        ))
     }
 }
 
