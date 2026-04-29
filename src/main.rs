@@ -11,15 +11,10 @@
 //! Uses hyperi-rustlib CLI module for standard arguments and subcommands.
 //! Implements the [`DfeApp`] trait for the standard DFE service lifecycle.
 
-// Jemalloc takes priority when enabled
+// Jemalloc — DFE allocator policy 2026-04-17 (jemalloc only at every channel).
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-// Mimalloc only when jemalloc is not enabled
-#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
-#[global_allocator]
-static GLOBAL_MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::path::PathBuf;
 use std::sync::Arc;

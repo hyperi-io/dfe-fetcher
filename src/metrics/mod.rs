@@ -112,8 +112,8 @@ impl Metrics {
             active_extractors: AtomicU64::new(0),
             memory_used_bytes: AtomicU64::new(0),
             memory_limit_bytes: AtomicU64::new(0),
-            rate_window: RateWindow::new(Duration::from_secs(60)),
-            records_rate_window: RateWindow::new(Duration::from_secs(60)),
+            rate_window: RateWindow::new(Duration::from_mins(1)),
+            records_rate_window: RateWindow::new(Duration::from_mins(1)),
         }
     }
 
