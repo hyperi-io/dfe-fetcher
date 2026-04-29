@@ -255,46 +255,72 @@ When in doubt, ask: "Will this be true next week?" If no, it doesn't belong here
 ## Rust Release-Track Optimisation Readiness
 
 **Tier 1 (allocator + fat LTO on beta+):** ✅ **READY**
-- `jemalloc` / `mimalloc` features declared
-- `#[global_allocator]` wired in `src/main.rs`
+- `jemalloc` feature only (mimalloc removed per 2026-04-17 policy)
+- `#[global_allocator]` wired in `src/main.rs` under `cfg(feature = "jemalloc")`
 - `default = []` — clean
 - `[profile.release] lto = "thin"` — CI overrides to `fat`
 
-No changes needed. Next release-channel build picks up optimisations once
-hyperi-ci ships the feature.
+**Tier 2 (PGO + BOLT on release):** ✅ **CONFIGURED**
 
-**Tier 2 (PGO + BOLT on release):** ⚠️ **NOT CONFIGURED**
+Opt-in via `build.rust.optimize.pgo` in `.hyperi-ci.yaml` (enabled).
+Workload contract:
 
-Opt-in via `build.rust.optimize.pgo` in `.hyperi-ci.yaml`. Requires workload
-script that drives real API fetches (representative cursor + response sizes)
-for 5+ minutes. Port checks / startup tests do NOT qualify as PGO workloads.
+- `scripts/pgo-workload.sh` — orchestrator: starts mock cloud-API server
+  + Kafka container + fetcher with all 4 sources @ 1-second intervals
+- `src/bin/pgo-driver.rs` (gated by `pgo-driver` feature) — long-running
+  axum mock that serves Azure/M365/AWS/GCP response shapes (paginated,
+  500 records/page by default)
+- Hot path exercised: HTTP fetch → JSON parse → enrichment → CEL filter
+  → output produce → cursor advance
+- Duration floor 60s, default 300s
+- Linux-only (BOLT requirement)
 
-See TODO.md → *Rust Release-Track Optimisation* for detailed action items.
-
----
-
-## Rust Release-Track Optimisation Readiness
-
-**Tier 1 (allocator + fat LTO on beta+):** ✅ **READY**
-- Features declared, allocator wired, `default = []`, `lto = "thin"`.
-- No project changes required. Next release-channel build applies Tier 1.
-
-**Tier 2 (PGO + BOLT on release):** ⚠️ **NOT CONFIGURED**
-
-Opt-in via `build.rust.optimize.pgo` in `.hyperi-ci.yaml`. Workload must
-drive actual fetch operations (HTTP/API pulls, cursor iteration, transforms)
-for 5+ min. Port checks / startup probes are NOT a valid PGO workload.
-
-See TODO.md → *Rust Release-Track Optimisation* for detailed action items.
+Reference implementations: dfe-loader v1.17.5, dfe-receiver. Channel
+gating: spike/alpha → jemalloc + thin LTO; beta → jemalloc + fat LTO;
+release → jemalloc + fat LTO + PGO + BOLT.
 
 ---
 
-## POLICY UPDATE 2026-04-17 — jemalloc-only
+## POLICY UPDATE 2026-04-17 — jemalloc-only ✅ DONE
 
 DFE allocator policy standardised on jemalloc. Source:
 `hyperi-ai/standards/languages/RUST.md` → *Allocator Policy*.
 
-This project has mimalloc feature + dep + main.rs fallback that need
-removal. No functional change to the published binary (jemalloc has
-always won; CI only passes `--features jemalloc`). Tracked in TODO.md
-→ *POLICY UPDATE 2026-04-17*.
+mimalloc feature, dep, and main.rs fallback removed (2026-04-29). No
+functional change to the published binary (jemalloc was always
+selected; CI only passes `--features jemalloc`).
+
+---
+
+## CI workflow contract (post dfe-loader Canary 2) ✅ READY
+
+`.github/workflows/ci.yml` MUST satisfy these for Tier 2 PGO/BOLT to
+actually run on tagged releases:
+
+| Setting | Required | Status |
+|---|---|---|
+| `uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@<ref>` | `ba03ff0` (v1.12.1+) or `@main` | ✅ `@main` |
+| `with: publish-target` | `both` | ✅ `both` |
+| `.hyperi-ci.yaml` `build.rust.targets` | explicit linux targets | ✅ `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` |
+
+Reference implementation: dfe-loader v1.17.5 — full Tier 2 verified
+live on R2, build log signature
+`channel=release, allocator=jemalloc, lto=fat, pgo=on, bolt=on`.
+
+---
+
+## Operational Status — Live Cloud Test Tenants (2026-04-29)
+
+⚠️ **AWS, Azure, M365 test environments are being rebuilt.**
+`tests/e2e/smoke_cloud.rs` cannot be run end-to-end against live
+cloud APIs until those tenants are back online. Mock-backed
+integration tests (`tests/integration/source_*.rs` via wiremock /
+LocalStack) continue to work. Re-check tenant readiness before
+attempting any of:
+
+- `cargo test --test integration -- --ignored` (smoke_cloud)
+- AWS SigV4 / Azure OAuth / M365 Graph live verification
+- Terraform `plan/apply` in `infra/test/`
+
+Ask the user to confirm tenant rebuild status before running these.
+GCP smoke is unaffected.

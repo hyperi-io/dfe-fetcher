@@ -6,14 +6,88 @@ This is the **single source of truth** for all tasks and progress.
 
 ## Active Tasks
 
+### Dependency Refresh — 2026-04-29
+
+`/deps` Phase 1 run on 2026-04-29. Lockfile bumped, all clippy warnings
+cleared, **405 tests passing** (311 unit + 91 integration + 3 smoke).
+
+- [x] `cargo update` — security-relevant lockfile bumps applied:
+      `rustls 0.23.40`, `rustls-webpki 0.103.13`, `openssl 0.10.78`,
+      `rand 0.8.6`, `tokio 1.52.1`, `metrics 0.24.4`, plus 30+ others
+- [x] Clippy `duration_suboptimal_units` (Rust 1.95 lint) — three call
+      sites in `src/credential.rs` and `src/metrics/mod.rs` migrated
+      from `Duration::from_secs(60)` → `Duration::from_mins(1)`
+- [x] `reqwest` direct dep set to `default-features = false` with
+      explicit `charset`/`http2`/`system-proxy` to drop our contribution
+      to `default-tls`. Net openssl chain remains because hyperi-rustlib
+      itself enables reqwest defaults — see upstream item below.
+- [x] `hyperi-rustlib >=2.5.4` confirmed as latest stable on crates.io
+
+Deferred bumps (require code review, **not safe for cargo update**):
+- [ ] `reqwest 0.12 → 0.13` — blocked by `hyperi-rustlib` pin
+      (`>=0.12, <0.13` until vaultrs and opentelemetry-otlp support 0.13).
+      Track upstream and coordinate with rustlib bump.
+- [ ] `reqsign 0.16 → 0.20` — major API change (signing surface
+      reorganised). Migrate when AWS SigV4 callsites in
+      `src/source/aws/` are touched next; verify against live
+      CloudTrail / SecurityHub before shipping.
+
+Upstream items (file against the right repo):
+- [ ] `hyperi-rustlib` Cargo.toml: set `default-features = false` on
+      its optional `reqwest` dep + add an explicit feature for
+      `default-tls` (or just `rustls-tls`) so consumers can drop the
+      `native-tls`/`openssl` chain entirely. As long as rustlib enables
+      reqwest defaults, our local `default-features = false` is a no-op
+      under feature unification. Worth a small PR upstream — we use
+      rustls everywhere.
+
+### Dependabot scope
+
+State as of 2026-04-29 (after `cargo update`):
+
+| # | Severity | Package | Status |
+|---|---|---|---|
+| 9-13, 15 | high | `openssl 0.10.77 → 0.10.78` | ✅ resolved by `cargo update` |
+| 12 | low | `openssl` PEM oversized length | ✅ resolved by `cargo update` |
+| 14 | low | `rand 0.8.5 → 0.8.6` | ✅ resolved by `cargo update` |
+| 15 | high | `rustls-webpki 0.103.12 → 0.103.13` | ✅ resolved by `cargo update` |
+
+All open Dependabot alerts now have a fix in `Cargo.lock`. Will be
+formally closed when next push lands. Renovate: **0 open PRs** as of
+2026-04-29.
+
+Structural follow-up: the `openssl` chain is *only* present because
+hyper-tls is pulled via reqwest defaults. Once the upstream rustlib
+fix above lands, `cargo tree -i openssl` should return empty and these
+alerts won't re-appear.
+
+### New source: runzero asset inventory
+
+[runzero API docs](https://help.runzero.com/docs/leveraging-the-api/)
+
+- [ ] Add `src/source/runzero/` native source mirroring the existing
+      AWS/Azure/M365/GCP shape (HTTP client + bearer auth + paginated
+      fetch + cursor advance)
+- [ ] Pull state dumps (full asset/inventory snapshots) **timestamped
+      per record** so consumers can detect drift between fetches
+- [ ] Cursor key per `instance_id + organization_id` — runzero is
+      multi-tenant per account, mirror the M365 multi-tenant pattern
+- [ ] Wire into `src/source/mod.rs` source registry + Helm chart
+      contract + `config.example.yaml`
+- [ ] Wiremock integration tests under `tests/integration/source_runzero.rs`
+- [ ] Live smoke test under `tests/e2e/smoke_cloud.rs` (gated on
+      `RUNZERO_TOKEN` env var; mark `#[ignore]`)
+
 ### Performance Review
 
 Audit applicable optimisations from [dfe-loader/docs/PERFORMANCE.md](/projects/dfe-loader/docs/PERFORMANCE.md).
 
-- [ ] Allocator: enable `jemalloc` or `mimalloc` feature, benchmark vs system glibc on representative workload
-- [ ] Build profile: confirm `lto = "thin"`, `codegen-units = 1`, `panic = "abort"`, `strip = true` in release
+- [x] Allocator: `jemalloc` feature wired (mimalloc removed per
+      2026-04-17 policy). Benchmarks deferred until Tier 2 PGO canary.
+- [x] Build profile: `lto = "thin"` (CI overrides to `fat` at beta+),
+      `codegen-units = 1`, `panic = "abort"`, `strip = true` confirmed
 - [ ] Profile under load (perf, flamegraph, jeprof) — record baseline for regression detection
-- [ ] PGO + BOLT: evaluate ROI for production binary (10-20% + 5-15% gain)
+- [ ] PGO + BOLT: evaluate ROI for production binary (10-20% + 5-15% gain) — see Tier 2 section
 - [ ] Batch tuning: validate buffer/flush thresholds align with rustlib Kafka transport (10K recv / 20K prefetch)
 
 ### Submodule Update + Code Review + Release
@@ -253,91 +327,70 @@ Current state: **✅ READY — no source changes required.**
 No action required. Next release-channel build picks up jemalloc + fat LTO
 automatically once hyperi-ci ships the feature.
 
-### Tier 2 opt-in (PGO + BOLT — release channel only)
+### Tier 2 opt-in (PGO + BOLT — release channel only) ✅ DONE 2026-04-29
 
-Current state: **⚠️ NOT CONFIGURED — opt-in required.**
+- [x] **Workload script** — [scripts/pgo-workload.sh](scripts/pgo-workload.sh)
+      orchestrates: start `pgo-driver` (mock cloud-API server) → start
+      single-node Kafka (KRaft) → write ephemeral fetcher config with
+      all 4 sources at 1s intervals + URL overrides → start fetcher →
+      sleep `duration_secs` → cleanup. Shellcheck-clean. Floor 60s,
+      default 300s. Linux only (BOLT requirement).
+- [x] **`[[bin]] pgo-driver`** added to [Cargo.toml](Cargo.toml) with
+      `required-features = ["pgo-driver"]`. Feature gate adds NO new
+      transitive deps (axum, tokio, serde_json already present). Default
+      builds skip the binary entirely.
+- [x] **Mock cloud-API server** —
+      [src/bin/pgo-driver.rs](src/bin/pgo-driver.rs). axum HTTP server
+      listening on `127.0.0.1:19090` with realistic shapes for:
+      - `POST /oauth/token` → OAuth2 client_credentials (Azure/M365/GCP)
+      - `GET /azure/activity/*` → Activity Log (`value` + `@odata.nextLink`)
+      - `GET /azure/graph/*` → Graph sign-ins
+      - `GET /m365/management/*` → Audit Log
+      - `GET /m365/graph/*` → security alerts
+      - `POST /aws` → AWS JSON dispatch via `X-Amz-Target` header
+        (CloudTrail Events, GuardDuty findings, Config items)
+      - `POST /gcp/v2/entries:list` → Cloud Logging entries
+      Default page size 500 records; pagination cycles every 3 pages so
+      the `@odata.nextLink` follow-on path is also exercised.
+- [x] **`.hyperi-ci.yaml`** has `build.rust.optimize.pgo.enabled: true`
+      with `workload_cmd` + `duration_secs: 300`, plus
+      `build.rust.optimize.bolt.enabled: true`.
+- [x] **Hot path coverage** — fetcher polls 4 sources at 1s intervals
+      against a 500-records/page mock. Net throughput at steady state:
+      ~2000 records/sec through HTTP fetch → JSON parse → enrichment →
+      CEL filter → Kafka produce → cursor advance. Substantially exceeds
+      the loader v1.17.4 floor that produced negative PGO gains.
 
-- [ ] Decide whether PGO is worth +30-60 min release build time
-- [ ] If yes: write `scripts/pgo-workload.sh` that performs **actual API fetches
-      against real-or-mock upstream sources** — drive the extractor loop with
-      representative cursor state, response sizes, and source variety for at
-      least 5 minutes of sustained activity
-- [ ] **PGO workload MUST NOT be a port check, health probe, or "service
-      starts up" test** — that profile data teaches the compiler about the
-      startup path (which isn't the hot path) and causes NEGATIVE PGO gains
-- [ ] Add to `.hyperi-ci.yaml`:
-  ```yaml
-  build:
-    rust:
-      optimize:
-        pgo:
-          enabled: true
-          workload_cmd: "bash scripts/pgo-workload.sh"
-          duration_secs: 300
-        bolt:
-          enabled: true    # Linux only, +5-15% on top of PGO
-  ```
+### Tier 2 next steps (require live CI run + canary)
 
----
-
-## Rust Release-Track Optimisation (hyperi-ci Tier 1/2)
-
-**Context:** hyperi-ci is shipping channel-gated build optimisations for Rust
-binaries (see `hyperi-ai/standards/languages/RUST.md` — *Release-Track Build
-Optimisation*). Local `cargo build` is unaffected.
-
-### Tier 1 prep (automatic at beta+/release once hyperi-ci ships)
-
-Current state: **✅ READY — no source changes required.**
-
-- [x] `Cargo.toml` has `[features] jemalloc` + `mimalloc` declared
-- [x] `main.rs` wires `#[global_allocator]` under `#[cfg(feature = "jemalloc")]`
-- [x] `default = []` — allocators opt-in via `--features`
-- [x] `[profile.release] lto = "thin"` — CI overrides to `fat` on beta+
-
-No project changes needed. Next release-channel build picks up jemalloc + fat
-LTO automatically.
-
-### Tier 2 opt-in (PGO + BOLT — release channel only)
-
-Current state: **⚠️ NOT CONFIGURED — opt-in required.**
-
-- [ ] Decide whether PGO is worth +30-60 min release build time
-- [ ] If yes: write `scripts/pgo-workload.sh` that performs **actual fetch
-      operations** against realistic upstream sources — at least 5 min
-      sustained throughput with representative source mix (HTTP/API pulls,
-      cursor-based iteration, transform + forward paths)
-- [ ] **PGO workload MUST NOT be a port check, health probe, or startup test** —
-      profile data from those paths is misleading and causes NEGATIVE PGO gains
-- [ ] Add to `.hyperi-ci.yaml`:
-  ```yaml
-  build:
-    rust:
-      optimize:
-        pgo:
-          enabled: true
-          workload_cmd: "bash scripts/pgo-workload.sh"
-          duration_secs: 300
-        bolt:
-          enabled: true    # Linux only, +5-15% on top of PGO
-  ```
+- [ ] Trigger first release-channel publish to confirm Tier 2 actually
+      runs end-to-end. Verify post-build:
+      - Build log shows `channel=release, allocator=jemalloc, lto=fat,
+        pgo=on, bolt=on`
+      - `strings dfe-fetcher | grep -ciE 'jemalloc|je_mallctl'` non-zero
+      - PGO profile artifacts uploaded
+- [ ] Compare release vs Tier 1 baseline once both binaries on R2:
+      `hyperfine` against the wiremock workload, record delta.
+- [ ] Document binary-size delta in `docs/PERFORMANCE.md` (mirroring
+      loader/receiver pattern — currently no such doc, create on first
+      canary).
 
 ---
 
-## POLICY UPDATE 2026-04-17 — Jemalloc at every channel, drop mimalloc
+## POLICY UPDATE 2026-04-17 — Jemalloc at every channel, drop mimalloc ✅ DONE
 
 **Allocator policy changed:** DFE binaries now standardise on jemalloc at
 **every** channel. mimalloc is no longer a supported option. See
 `hyperi-ai/standards/languages/RUST.md` → *Allocator Policy* and
 `hyperi-ci/docs/RUST-RELEASE-TRACK-OPTIMISATION.md`.
 
-### Action items
+### Action items (all done 2026-04-29)
 
-- [ ] Remove `mimalloc = ["dep:mimalloc"]` from `[features]` in `Cargo.toml`
-- [ ] Remove `mimalloc = { version = "0.1", optional = true }` from
+- [x] Remove `mimalloc = ["dep:mimalloc"]` from `[features]` in `Cargo.toml`
+- [x] Remove `mimalloc = { version = "0.1", optional = true }` from
       `[dependencies]`
-- [ ] Remove mimalloc `#[cfg]` fallback block from `src/main.rs`
-- [ ] `cargo build --release --features jemalloc` to verify
+- [x] Remove mimalloc `#[cfg]` fallback block from `src/main.rs`
+- [x] `cargo check` clean with `--no-default-features --features jemalloc`
 
 ### Verification on next release
 
@@ -404,11 +457,122 @@ signal to apply the same pattern here.
 Tier 1 preconditions are met and when Tier 2 opt-in lands.)
 
 - [ ] Tier 1 preconditions met (`jemalloc` feature declared in
-      `Cargo.toml`, `#[global_allocator]` wired in `main.rs` under
-      `#[cfg(feature = "jemalloc")]`)
+      `Cargo.toml`, `#[global_allocator]` wired in `src/main.rs` under
+      `#[cfg(feature = "jemalloc")]`, mimalloc removed)
 - [ ] Workload script exists and passes local `cargo pgo build →
       workload → cargo pgo optimize` round-trip
 - [ ] `.hyperi-ci.yaml` has `build.rust.optimize.pgo.enabled: true`
       with `workload_cmd` configured
 - [ ] Next release-channel build verified: `strings <binary> | grep
       jemalloc` non-empty; build log shows cargo pgo invocations
+
+---
+
+## Lessons from dfe-loader Tier 2 canary (2026-04-23)
+
+**Context:** dfe-loader was Canary 2 for hyperi-ci Tier 2. Released
+v1.17.5 to R2 with full `channel=release, allocator=jemalloc, lto=fat,
+pgo=on, bolt=on` on both archs after two real bugs surfaced and were
+fixed mid-canary. These are infrastructure-level gotchas every DFE
+Rust project needs to check before triggering its own canary — both
+caused dfe-loader v1.17.4 to publish *successfully* but as the wrong
+build type (spike-channel = Tier 1 only, no PGO/BOLT).
+
+### Two CI-level gotchas every consumer project must verify
+
+1. **`.github/workflows/ci.yml` `uses:` pin must be hyperi-ci ≥ v1.12.1
+   (commit `ba03ff0` or newer).** Older pins (e.g. `1d4fb19d` = v1.8.0)
+   predate the `HYPERCI_CHANNEL` resolver, so tagged dispatches resolve
+   to `channel=spike` regardless of `.hyperi-ci.yaml` config — meaning
+   PGO/BOLT never run even when `optimize.pgo.enabled: true` is set.
+
+   Verify in this repo:
+   ```bash
+   grep "uses: hyperi-io/hyperi-ci" .github/workflows/ci.yml
+   ```
+   **This project currently pins
+   `1d4fb19d5f16c4c46df84ed7a2f983170fa854b0` = hyperi-ci v1.8.0 —
+   MUST bump to `ba03ff0da0dbc4c56f9b06ee3a65a2c5f418e092` (v1.12.1+)
+   or `@main` before the canary or release will silently ship as
+   spike-channel.**
+
+2. **`ci.yml` `with: publish-target` must be `both` (not `internal`).**
+   This workflow input *overrides* `publish.target` from
+   `.hyperi-ci.yaml`. `internal` resolves to spike channel = Tier 1
+   only. `both` = release channel = Tier 2 unlocked.
+
+   This project: ✅ `publish-target: both` already set in
+   [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+### Workload-shape lesson for fetcher
+
+dfe-loader's workload (Kafka producer driving messages into a running
+loader against testcontainers Kafka + ClickHouse) is the closest
+*structure* to copy, but the protocol is wrong for fetcher. Fetcher's
+hot path is **HTTP fetch → JSON unwrap → cursor advance → forward**,
+not Kafka consume.
+
+Adapt the loader pattern as follows:
+- Bash orchestrator: spin up wiremock (or a tiny Rust mock-API binary
+  built from the lib) responding with realistic JSON payload mixes
+  (paginated cursor responses, varied page sizes, occasional 429/500
+  for retry-path coverage). Add the destination ingest sink (httpbin
+  or a simple sink mock) on a second port.
+- Rust pgo-driver bin: drive the fetcher under test via either its
+  CLI (point it at the wiremock URL) OR by exercising public lib
+  entry points if there's a `run_extractor()`-type API. Either way,
+  loop the extract→cursor cycle for the full duration.
+- Reference:
+  [/projects/dfe-loader/scripts/pgo-workload.sh](/projects/dfe-loader/scripts/pgo-workload.sh)
+  + [/projects/dfe-loader/src/bin/pgo-driver.rs](/projects/dfe-loader/src/bin/pgo-driver.rs)
+  for the orchestration shape (signal trapping, readiness polling,
+  duration floor of 60s, ephemeral config dir).
+
+### Verification artefacts (loader v1.17.5)
+
+For comparison after fetcher canary:
+- amd64 binary: 18.2 MB stripped, 39 jemalloc symbol strings, BOLT
+  marker present
+- Build log signature: `Rust build optimisation: channel=release,
+  allocator=jemalloc, lto=fat, pgo=on, bolt=on`
+- Build duration jumped from ~4 min (Tier 1) to ~26 min (Tier 2 PGO+BOLT)
+- R2: `https://downloads.hyperi.io/dfe-loader/v1.17.5/{dfe-loader-linux-{amd64,arm64},checksums.sha256}`
+
+### Pre-flight checklist for fetcher canary
+
+Before triggering the first release-channel publish:
+
+- [x] **Bump `.github/workflows/ci.yml` pin** from `1d4fb19d` (v1.8.0)
+      to `@main` (2026-04-29). Tier 2 will now run on tagged dispatch.
+- [x] **Set explicit `build.rust.targets`** in `.hyperi-ci.yaml`
+      (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`).
+- [x] **Verify rustlib is at latest stable on crates.io.** Floor is
+      `>=2.5.4`, latest stable is 2.5.4 (verified 2026-04-29 via
+      `curl https://crates.io/api/v1/crates/hyperi-rustlib`).
+- [ ] **Local hyperi-ci CLI matches PyPI latest** (currently v1.12.1).
+      `uv tool upgrade hyperi-ci`.
+- [ ] **Run `hyperi-ci check` locally** — must pass clippy + fmt +
+      cargo deny. Confirmed clippy clean as of 2026-04-29 (3 Rust
+      1.95 `duration_suboptimal_units` lints fixed).
+- [ ] **Audit blind sleeps in tests** —
+      `grep -rn "tokio::time::sleep(Duration::from_millis" tests/`
+      and replace with port-poll / readiness assertions.
+
+### Trigger sequence (verbatim from loader Canary 2)
+
+Branch CI alone is insufficient — publish + release jobs are skipped
+on non-main pushes. The path that actually reaches R2:
+
+1. Real `fix:` (or `feat:`/`perf:`) commit on main → semantic-release
+   bumps version + creates tag.
+2. `git pull --rebase origin main` to pull the version-commit + tag.
+3. `hyperi-ci release vX.Y.Z` → dispatches publish workflow (full
+   PGO+BOLT build for both archs + R2 upload).
+4. `hyperi-ci watch` (warning: 30 min default timeout — Tier 2 builds
+   easily exceed that, re-watch as needed).
+5. Verify R2 with `curl -I` on each artefact + `strings | grep jemalloc`
+   on the downloaded binary.
+
+For a canary commit, something real + small is better than chore-only
+noise. Do NOT delete the GH Release first and try to re-publish the
+same tag — the release handler refuses.
