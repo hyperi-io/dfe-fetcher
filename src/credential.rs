@@ -238,7 +238,7 @@ pub fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(format!("dfe-fetcher/{}", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_mins(1))
         .pool_max_idle_per_host(10)
         .build()
         .map_err(|e| Error::Source(format!("failed to build HTTP client: {e}")))

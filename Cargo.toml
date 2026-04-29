@@ -23,7 +23,7 @@ doctest = false
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=2.5.4", features = [
+hyperi-rustlib = { version = ">=2.5.5", features = [
     "config",
     "config-reload",
     "logger",
@@ -61,8 +61,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 
-# HTTP client (for API calls to external services)
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip", "brotli", "stream"] }
+# HTTP client (for API calls to external services).
+# `default-features = false` drops the `default-tls` feature (which pulls
+# native-tls + openssl). We use rustls exclusively. Re-enable charset/http2/
+# system-proxy explicitly to preserve previous behaviour.
+reqwest = { version = "0.12", default-features = false, features = [
+    "charset",
+    "http2",
+    "system-proxy",
+    "json",
+    "rustls-tls",
+    "gzip",
+    "brotli",
+    "stream",
+] }
 
 # Performance
 fastrand = "2"
@@ -104,9 +116,8 @@ hex = "0.4"
 opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
 prost = "0.14"
 
-# Optional allocators
+# Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
 tikv-jemallocator = { version = "0.6", optional = true }
-mimalloc = { version = "0.1", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -124,7 +135,6 @@ testcontainers-modules = { version = "0.15", features = ["localstack", "kafka"] 
 [features]
 default = []
 jemalloc = ["dep:tikv-jemallocator"]
-mimalloc = ["dep:mimalloc"]
 
 [profile.release]
 lto = "thin"
