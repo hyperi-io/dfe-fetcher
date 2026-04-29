@@ -273,7 +273,10 @@ sources:
   aws:
     enabled: true
     region: "ap-southeast-2"
-    access_key_id: "AKIA0000000000000000"
+    # Placeholder credentials — fetcher SigV4-signs requests but the
+    # destination is the local mock, which ignores signatures. Use a
+    # non-AKIA prefix so static-analysis secret scanners don't flag it.
+    access_key_id: "PGOMOCK000000000000A"
     secret_access_key: "pgo-mock-secret-key-zzzzzzzzzzzzzzzzzzzzzzzz"
     interval_secs: 1
     topic: "aws"
