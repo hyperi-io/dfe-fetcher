@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.0...v1.2.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* add rust-toolchain.toml with llvm-tools-preview for Tier 2 PGO ([1dad301](https://github.com/hyperi-io/dfe-fetcher/commit/1dad301add36102719909565c2748a505b4d9597))
+
 # [1.2.0](https://github.com/hyperi-io/dfe-fetcher/compare/v1.1.13...v1.2.0) (2026-04-29)
 
 
