@@ -1834,9 +1834,9 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "2.6.1"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9eddfb9cd9cce4a66b65358ffc7f8a85502fc93c5dae98ff88536258e807ed1f"
+checksum = "d3c44a6fd82e4e10f811bc6d35216e70cef3b774831f8ff04a756077a0542d64"
 dependencies = [
  "async-trait",
  "axum",
