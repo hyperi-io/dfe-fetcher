@@ -32,7 +32,7 @@ required-features = ["pgo-driver"]
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=2.6.1", features = [
+hyperi-rustlib = { version = ">=2.7.0", features = [
     "config",
     "config-reload",
     "logger",
@@ -196,3 +196,4 @@ uninlined_format_args = "allow"
 [[bench]]
 name = "pipeline"
 harness = false
+
