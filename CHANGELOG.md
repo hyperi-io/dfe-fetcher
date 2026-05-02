@@ -1,3 +1,11 @@
+## [1.2.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.1...v1.2.2) (2026-05-02)
+
+
+### Bug Fixes
+
+* **deployment:** wire DfeApp::deployment_contract trait hook + bump rustlib to >=2.7.0 ([a75905a](https://github.com/hyperi-io/dfe-fetcher/commit/a75905a48481210aca50c6ba43d2008e53c9fd9e))
+* **deps:** track rustlib 2.6.1 (cli→cli-service, worker→worker-pool) ([f2e38e4](https://github.com/hyperi-io/dfe-fetcher/commit/f2e38e40e7639a35f71daa6cf456b6fa54bab1e2))
+
 ## [1.2.1](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.0...v1.2.1) (2026-04-29)
 
 
