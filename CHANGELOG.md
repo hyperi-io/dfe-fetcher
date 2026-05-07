@@ -1,3 +1,13 @@
+## [1.2.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.2...v1.2.3) (2026-05-07)
+
+
+### Bug Fixes
+
+* **cli:** flatten StandardCommand for generate-artefacts + metrics-manifest ([02a6c44](https://github.com/hyperi-io/dfe-fetcher/commit/02a6c447787b9e53eccaaeec6eb6a7d45bd96eaa))
+* **deploy:** regenerate Dockerfile with Ubuntu 24.04 userdel fix ([0a525c8](https://github.com/hyperi-io/dfe-fetcher/commit/0a525c84f9bd2a34c39395e43c75d217c3023af1))
+* **release:** retrigger publish under hyperi-ci v2.1.5 ([5c182cf](https://github.com/hyperi-io/dfe-fetcher/commit/5c182cff4cb9442b980e462764b5ebd248bdff1f))
+* **release:** retrigger publish under hyperi-ci v2.1.6 ([ec832ed](https://github.com/hyperi-io/dfe-fetcher/commit/ec832edffe9ba9f2670f79fe1ceeafa2e7b4946a))
+
 ## [1.2.2](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.1...v1.2.2) (2026-05-02)
 
 
