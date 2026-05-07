@@ -14,6 +14,7 @@ on:
       - ".claude/**"
       - ".cursor/**"
       - ".gemini/**"
+      - "hyperi-ai"
       - "hyperi-ai/**"
       - "docs/**"
       - "**.md"
