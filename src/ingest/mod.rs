@@ -274,12 +274,18 @@ mod tests {
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
         let pipeline = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new()).unwrap_or_else(|_| {
-                let config = Config::default();
-                let shared = SharedConfig::new(config);
-                PipelineState::new(shared, Arc::new(Metrics::new()), None, CancellationToken::new())
+            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
+                .unwrap_or_else(|_| {
+                    let config = Config::default();
+                    let shared = SharedConfig::new(config);
+                    PipelineState::new(
+                        shared,
+                        Arc::new(Metrics::new()),
+                        None,
+                        CancellationToken::new(),
+                    )
                     .expect("default config should work")
-            }),
+                }),
         );
         let state = Arc::new(IngestState {
             pipeline: pipeline.clone(),

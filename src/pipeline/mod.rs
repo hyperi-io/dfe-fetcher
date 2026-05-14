@@ -451,7 +451,12 @@ impl Orchestrator {
             None
         };
 
-        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output, shutdown.clone())?;
+        let state = PipelineState::new(
+            shared_config.clone(),
+            Arc::clone(&metrics),
+            output,
+            shutdown.clone(),
+        )?;
 
         Ok(Self {
             state: Arc::new(state),
@@ -519,24 +524,25 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap_or_else(|_| {
-            // No output configured, create minimal state
-            let config = Config::default();
-            let shared = SharedConfig::new(config);
-            PipelineState {
-                shared_config: shared,
-                output: None,
-                memory_guard: Arc::new(MemoryGuard::new(
-                    hyperi_rustlib::memory::MemoryGuardConfig {
-                        limit_bytes: 1_073_741_824, // 1 GiB for tests
-                        ..Default::default()
-                    },
-                )),
-                dlq: None,
-                metrics: Arc::new(Metrics::new()),
-                ready: AtomicBool::new(true),
-            }
-        });
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new())
+            .unwrap_or_else(|_| {
+                // No output configured, create minimal state
+                let config = Config::default();
+                let shared = SharedConfig::new(config);
+                PipelineState {
+                    shared_config: shared,
+                    output: None,
+                    memory_guard: Arc::new(MemoryGuard::new(
+                        hyperi_rustlib::memory::MemoryGuardConfig {
+                            limit_bytes: 1_073_741_824, // 1 GiB for tests
+                            ..Default::default()
+                        },
+                    )),
+                    dlq: None,
+                    metrics: Arc::new(Metrics::new()),
+                    ready: AtomicBool::new(true),
+                }
+            });
 
         let payload = Bytes::from(r#"{"key": "value"}"#);
         let enriched = state.enrich_record(payload, "aws.cloudtrail");
@@ -1075,7 +1081,8 @@ mod tests {
 
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).expect("state creation must succeed");
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new())
+            .expect("state creation must succeed");
 
         // Pipeline reports ready (DLQ init succeeded)
         assert!(state.is_ready(), "state should be ready");
@@ -1090,7 +1097,8 @@ mod tests {
         config.sources.aws.filter = Some(r#"severity == "high""#.to_string());
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).expect("state creation must succeed");
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new())
+            .expect("state creation must succeed");
 
         // 2 records: 1 matches filter (kept — send attempts fail with no output)
         //            1 doesn't match (filtered out)

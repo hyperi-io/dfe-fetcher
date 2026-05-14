@@ -562,7 +562,10 @@ mod tests {
         let shutdown = CancellationToken::new();
         let pipeline_config = crate::config::Config::default();
         let shared = crate::config::SharedConfig::new(pipeline_config);
-        let state = Arc::new(PipelineState::new(shared, metrics.clone(), None, CancellationToken::new()).expect("pipeline"));
+        let state = Arc::new(
+            PipelineState::new(shared, metrics.clone(), None, CancellationToken::new())
+                .expect("pipeline"),
+        );
         let ext = ContainerExtractor::new(config, state, metrics, shutdown);
         assert_eq!(ext.container_name(), "dfe-fetcher-my-tool");
     }
@@ -579,7 +582,10 @@ mod tests {
         let shutdown = CancellationToken::new();
         let pipeline_config = crate::config::Config::default();
         let shared = crate::config::SharedConfig::new(pipeline_config);
-        let state = Arc::new(PipelineState::new(shared, metrics.clone(), None, CancellationToken::new()).expect("pipeline"));
+        let state = Arc::new(
+            PipelineState::new(shared, metrics.clone(), None, CancellationToken::new())
+                .expect("pipeline"),
+        );
         let ext = ContainerExtractor::new(config, state, metrics, shutdown);
         let args = ext.build_run_args();
 
@@ -605,7 +611,10 @@ mod tests {
         let shutdown = CancellationToken::new();
         let pipeline_config = crate::config::Config::default();
         let shared = crate::config::SharedConfig::new(pipeline_config);
-        let state = Arc::new(PipelineState::new(shared, metrics.clone(), None, CancellationToken::new()).expect("pipeline"));
+        let state = Arc::new(
+            PipelineState::new(shared, metrics.clone(), None, CancellationToken::new())
+                .expect("pipeline"),
+        );
         let ext = ContainerExtractor::new(config, state, metrics, shutdown);
         let args = ext.build_run_args();
 

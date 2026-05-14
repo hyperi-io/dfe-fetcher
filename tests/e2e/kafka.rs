@@ -140,7 +140,13 @@ async fn test_e2e_enriched_record_in_kafka() {
         .await
         .expect("output should connect");
 
-    let state = PipelineState::new(shared, metrics, Some(output)).expect("pipeline state");
+    let state = PipelineState::new(
+        shared,
+        metrics,
+        Some(output),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("pipeline state");
 
     // Deliver a raw record through the pipeline (enrichment happens here)
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);

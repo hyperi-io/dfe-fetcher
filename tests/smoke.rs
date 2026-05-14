@@ -55,8 +55,13 @@ async fn test_startup_pipeline_state_no_output() {
     let shared = dfe_fetcher::config::SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
 
-    let state = dfe_fetcher::pipeline::PipelineState::new(shared, metrics, None)
-        .expect("PipelineState::new should succeed");
+    let state = dfe_fetcher::pipeline::PipelineState::new(
+        shared,
+        metrics,
+        None,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("PipelineState::new should succeed");
 
     // Enrichment should work without output
     let raw = Bytes::from(r#"{"test":true}"#);

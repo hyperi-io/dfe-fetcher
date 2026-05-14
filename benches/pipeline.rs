@@ -26,7 +26,13 @@ fn make_pipeline_state() -> PipelineState {
     let config = Config::default();
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
-    PipelineState::new(shared, metrics, None).expect("PipelineState creation should succeed")
+    PipelineState::new(
+        shared,
+        metrics,
+        None,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("PipelineState creation should succeed")
 }
 
 /// Generate a JSON payload of approximately the given byte size.
