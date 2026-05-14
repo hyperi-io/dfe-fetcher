@@ -81,7 +81,7 @@ impl PipelineState {
 
         // Initialise DLQ if enabled
         let dlq = if config.dlq.enabled {
-            match Dlq::spawn(&config.dlq, "dfe-fetcher", None, shutdown.clone()) {
+            match Dlq::spawn(&config.dlq, "dfe-fetcher", None, shutdown) {
                 Ok(d) => Some(d),
                 Err(e) => {
                     warn!(error = %e, "Failed to initialise DLQ, continuing without it");
