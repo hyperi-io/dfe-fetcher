@@ -84,8 +84,13 @@ async fn test_pipeline_deliver_enriches_and_filters() {
     let config = Config::default();
     let shared = dfe_fetcher::config::SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
-    let state = dfe_fetcher::pipeline::PipelineState::new(shared, metrics, None)
-        .expect("pipeline state creation");
+    let state = dfe_fetcher::pipeline::PipelineState::new(
+        shared,
+        metrics,
+        None,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("pipeline state creation");
 
     // 1. Enrich a record
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);
@@ -199,8 +204,13 @@ fn make_pipeline_state(
 ) -> dfe_fetcher::pipeline::PipelineState {
     // PipelineState::new with None output for tests (no Kafka/gRPC needed)
     let metrics = std::sync::Arc::new(Metrics::new());
-    dfe_fetcher::pipeline::PipelineState::new(shared, metrics, None)
-        .expect("pipeline state creation")
+    dfe_fetcher::pipeline::PipelineState::new(
+        shared,
+        metrics,
+        None,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("pipeline state creation")
 }
 
 #[test]

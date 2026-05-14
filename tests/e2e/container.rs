@@ -57,8 +57,13 @@ fn test_pipeline_state() -> Arc<PipelineState> {
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
     Arc::new(
-        PipelineState::new(shared, metrics, None)
-            .expect("PipelineState with no output should succeed"),
+        PipelineState::new(
+            shared,
+            metrics,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .expect("PipelineState with no output should succeed"),
     )
 }
 

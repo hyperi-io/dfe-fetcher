@@ -141,7 +141,13 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
             }
         };
 
-    let state = PipelineState::new(shared, metrics, Some(output)).expect("pipeline state");
+    let state = PipelineState::new(
+        shared,
+        metrics,
+        Some(output),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("pipeline state");
 
     // Enrich a record and deliver via the pipeline
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);
