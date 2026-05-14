@@ -63,6 +63,7 @@ impl PipelineState {
         shared_config: SharedConfig,
         metrics: Arc<Metrics>,
         output: Option<OutputManager>,
+        shutdown: CancellationToken,
     ) -> Result<Self> {
         let config = shared_config.get();
 
@@ -80,7 +81,7 @@ impl PipelineState {
 
         // Initialise DLQ if enabled
         let dlq = if config.dlq.enabled {
-            match Dlq::file_only(&config.dlq, "dfe-fetcher") {
+            match Dlq::spawn(&config.dlq, "dfe-fetcher", None, shutdown.clone()) {
                 Ok(d) => Some(d),
                 Err(e) => {
                     warn!(error = %e, "Failed to initialise DLQ, continuing without it");
@@ -450,7 +451,7 @@ impl Orchestrator {
             None
         };
 
-        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output)?;
+        let state = PipelineState::new(shared_config.clone(), Arc::clone(&metrics), output, shutdown.clone())?;
 
         Ok(Self {
             state: Arc::new(state),
@@ -518,7 +519,7 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).unwrap_or_else(|_| {
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap_or_else(|_| {
             // No output configured, create minimal state
             let config = Config::default();
             let shared = SharedConfig::new(config);
@@ -616,7 +617,7 @@ mod tests {
         config.sources.aws.filter = Some(r#"severity == "high""#.to_string());
         let shared = SharedConfig::new(config.clone());
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).unwrap();
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
 
         assert_eq!(
             state.get_filter_for_source("aws.cloudtrail", &config),
@@ -633,7 +634,7 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        PipelineState::new(shared, metrics, None).unwrap()
+        PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap()
     }
 
     #[test]
@@ -831,7 +832,7 @@ mod tests {
 
         let shared = SharedConfig::new(config.clone());
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).unwrap();
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
 
         assert_eq!(
             state.get_filter_for_source("aws.cloudtrail", &config),
@@ -911,7 +912,7 @@ mod tests {
         config.sources.aws.filter = Some(r#"severity == "never_matches""#.to_string());
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).unwrap();
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
 
         let result = FetchResult {
             records: vec![Bytes::from(r#"{"severity":"low"}"#)],
@@ -932,7 +933,7 @@ mod tests {
         let shared = SharedConfig::new(config);
         let initial_version = shared.version();
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).unwrap();
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
 
         let mut new_config = Config::default();
         new_config.scheduler.default_interval_secs = 999;
@@ -1074,7 +1075,7 @@ mod tests {
 
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).expect("state creation must succeed");
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).expect("state creation must succeed");
 
         // Pipeline reports ready (DLQ init succeeded)
         assert!(state.is_ready(), "state should be ready");
@@ -1089,7 +1090,7 @@ mod tests {
         config.sources.aws.filter = Some(r#"severity == "high""#.to_string());
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None).expect("state creation must succeed");
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).expect("state creation must succeed");
 
         // 2 records: 1 matches filter (kept — send attempts fail with no output)
         //            1 doesn't match (filtered out)
