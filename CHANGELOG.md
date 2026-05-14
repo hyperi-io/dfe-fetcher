@@ -1,3 +1,13 @@
+## [1.2.4](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.3...v1.2.4) (2026-05-14)
+
+
+### Bug Fixes
+
+* adopt v2.7.1 DLQ API (Dlq::spawn + queue-admission send semantics) ([ac08f13](https://github.com/hyperi-io/dfe-fetcher/commit/ac08f13ca73ff7cef7468d67d90d7625087bbb99))
+* avoid needless clone of shutdown token (clippy --all-features) ([d390457](https://github.com/hyperi-io/dfe-fetcher/commit/d390457895e6c366a5c1523aa35acb30855cf14e))
+* complete v2.7.1 DLQ API migration in fetcher test+bench sites ([d38b9c0](https://github.com/hyperi-io/dfe-fetcher/commit/d38b9c0ceb524bbf4aa0a52cff06a09ccf254429))
+* **release:** force patch bump v1.2.4 ([12b5ce1](https://github.com/hyperi-io/dfe-fetcher/commit/12b5ce1c1399cedb1898bcb95d1eac0217b5a858))
+
 ## [1.2.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.2...v1.2.3) (2026-05-07)
 
 
