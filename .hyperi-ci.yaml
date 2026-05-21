@@ -31,7 +31,7 @@ build:
     #   beta        → jemalloc + fat LTO
     #   release     → jemalloc + fat LTO + PGO/BOLT (opt-in below)
     # See hyperi-ci's docs/RUST-RELEASE-TRACK-OPTIMISATION.md for the full
-    # contract, and TODO.md → Tier 2 for the workload contract.
+    # contract.
     optimize:
       pgo:
         enabled: true
