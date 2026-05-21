@@ -8,6 +8,7 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+.env-cloud
 *.log
 target
 target/
@@ -40,5 +41,12 @@ coverage.lcov
 !.cargo/config.toml
 .tmp/
 
-# AI agent working files (not committed)
+# AI agent tooling and notes (local-only, never committed)
+.claude/
+.mcp.json
+.githooks/
+hyperi-ai/
+STATE.md
+CLAUDE.md
+TODO.md
 docs/superpowers/
