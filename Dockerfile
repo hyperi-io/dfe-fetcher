@@ -11,7 +11,7 @@
 # Source contract: dfe-fetcher::deployment::contract()
 # Regenerate with: `dfe-fetcher emit-dockerfile > Dockerfile`
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 LABEL io.hyperi.profile="production"
 
