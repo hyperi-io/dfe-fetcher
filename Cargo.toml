@@ -47,6 +47,7 @@ hyperi-rustlib = { version = ">=2.7.1", features = [
     "tiered-sink",
     "runtime",
     "secrets",
+    "credential",
     "dlq",
     "deployment",
     "cli-service",

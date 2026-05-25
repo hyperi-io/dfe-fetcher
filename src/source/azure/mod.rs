@@ -85,7 +85,7 @@ impl AzureSource {
 
     async fn resolve_client_id(&self) -> Result<String> {
         if let Some(ref spec) = self.config.credential_secret {
-            return credential::resolve(spec).await;
+            return credential::resolve(spec).await.map_err(Into::into);
         }
         self.config
             .client_id
@@ -95,7 +95,7 @@ impl AzureSource {
 
     async fn resolve_client_secret(&self) -> Result<String> {
         if let Some(ref spec) = self.config.credential_secret {
-            return credential::resolve(spec).await;
+            return credential::resolve(spec).await.map_err(Into::into);
         }
         self.config
             .client_secret

@@ -1,6 +1,6 @@
 // Project:   dfe-fetcher
 // File:      src/credential.rs
-// Purpose:   Credential resolution (vault, env, literal) and OAuth2 token management
+// Purpose:   Credential re-exports + OAuth2 token management + HTTP client factory
 // Language:  Rust
 //
 // License:   FSL-1.1-ALv2
@@ -8,12 +8,12 @@
 
 //! Credential resolution and OAuth2 token management.
 //!
-//! Resolves credential specifications in the format:
-//! - `vault:path:key` — Fetch from secrets manager (OpenBao/Vault)
-//! - `env:VAR_NAME` — Read from environment variable
-//! - Literal string — Use as-is
-//!
-//! Also provides an OAuth2 client_credentials token manager with caching.
+//! `resolve` / `resolve_optional` / `CredentialError` are re-exported from
+//! [`hyperi_rustlib::credential`]. This module additionally owns the
+//! fetcher-specific OAuth2 [`TokenManager`] and shared HTTP client
+//! factories.
+
+pub use hyperi_rustlib::credential::{resolve, resolve_optional, CredentialError};
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,82 +22,6 @@ use parking_lot::RwLock;
 use tracing::debug;
 
 use crate::error::{Error, Result};
-
-/// Resolve a credential specification to its plaintext value.
-///
-/// Supports three formats:
-/// - `vault:secret/path:key` — Resolve via secrets manager
-/// - `env:VARIABLE_NAME` — Read from environment
-/// - Any other string — Returned as-is (literal)
-pub async fn resolve(spec: &str) -> Result<String> {
-    if let Some(rest) = spec.strip_prefix("vault:") {
-        resolve_vault(rest).await
-    } else if let Some(var_name) = spec.strip_prefix("env:") {
-        resolve_env(var_name)
-    } else {
-        Ok(spec.to_string())
-    }
-}
-
-/// Resolve a vault secret in the format `path:key`.
-async fn resolve_vault(path_key: &str) -> Result<String> {
-    use hyperi_rustlib::secrets::{SecretSource, SecretsConfig};
-    use std::collections::HashMap;
-
-    let parts: Vec<&str> = path_key.splitn(2, ':').collect();
-    if parts.len() != 2 {
-        return Err(Error::Credential(format!(
-            "invalid vault spec '{path_key}', expected 'path:key'"
-        )));
-    }
-
-    let path = parts[0];
-    let key = parts[1];
-
-    // Build a SecretsConfig with the requested vault source
-    let mut sources = HashMap::new();
-    sources.insert(
-        "_vault_lookup".to_string(),
-        SecretSource::OpenBao {
-            path: path.to_string(),
-            key: key.to_string(),
-        },
-    );
-
-    let config = SecretsConfig {
-        sources,
-        ..Default::default()
-    };
-
-    let secrets = hyperi_rustlib::secrets::SecretsManager::new(config)
-        .map_err(|e| Error::Credential(format!("failed to initialise secrets manager: {e}")))?;
-
-    let secret_value = secrets
-        .get("_vault_lookup")
-        .await
-        .map_err(|e| Error::Credential(format!("vault lookup failed for {path}:{key}: {e}")))?;
-
-    let text = secret_value
-        .as_str()
-        .map_err(|e| Error::Credential(format!("vault secret not valid UTF-8: {e}")))?;
-
-    debug!(path = path, key = key, "Resolved vault credential");
-    Ok(text.to_string())
-}
-
-/// Resolve an environment variable.
-fn resolve_env(var_name: &str) -> Result<String> {
-    std::env::var(var_name)
-        .map_err(|_| Error::Credential(format!("environment variable '{var_name}' not set")))
-}
-
-/// Resolve an optional credential spec — returns `None` if the spec is `None`.
-pub async fn resolve_optional(spec: Option<&str>) -> Result<Option<String>> {
-    match spec {
-        Some("") | None => Ok(None),
-        Some(s) => Ok(Some(resolve(s).await?)),
-    }
-}
 
 // =============================================================================
 // OAuth2 Client Credentials Token Manager
@@ -259,45 +183,6 @@ pub fn http_client_with_timeout(timeout: Duration) -> Result<reqwest::Client> {
 #[allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_resolve_literal() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(resolve("my-secret-value"));
-        assert_eq!(result.unwrap(), "my-secret-value");
-    }
-
-    #[test]
-    fn test_resolve_env() {
-        // SAFETY: test-only, single-threaded test runner
-        unsafe { std::env::set_var("DFE_TEST_CRED_VAR", "test-value-123") };
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(resolve("env:DFE_TEST_CRED_VAR"));
-        assert_eq!(result.unwrap(), "test-value-123");
-        // SAFETY: test-only, single-threaded test runner
-        unsafe { std::env::remove_var("DFE_TEST_CRED_VAR") };
-    }
-
-    #[test]
-    fn test_resolve_env_missing() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(resolve("env:DFE_NONEXISTENT_VAR_XYZ"));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resolve_optional_none() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(resolve_optional(None));
-        assert!(result.unwrap().is_none());
-    }
-
-    #[test]
-    fn test_resolve_optional_empty() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(resolve_optional(Some("")));
-        assert!(result.unwrap().is_none());
-    }
 
     #[test]
     fn test_http_client_builds() {

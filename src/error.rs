@@ -102,6 +102,12 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<hyperi_rustlib::credential::CredentialError> for Error {
+    fn from(e: hyperi_rustlib::credential::CredentialError) -> Self {
+        Error::Credential(e.to_string())
+    }
+}
+
 /// Convert errors to HTTP responses for axum health/metrics handlers.
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
