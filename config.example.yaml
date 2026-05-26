@@ -33,6 +33,7 @@ scheduler:
 sources:
   aws:
     enabled: false              # REQUIRES RESTART
+    # region may be a literal value, env:VAR_NAME, or vault:path:key
     region: "us-east-1"
     # access_key_id: ""         # Prefer credential_secret in production
     # secret_access_key: ""

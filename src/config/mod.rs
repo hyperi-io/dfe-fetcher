@@ -18,6 +18,7 @@
 //! 7. Hard-coded defaults
 
 mod shared;
+pub mod resolve;
 
 pub use shared::SharedConfig;
 
