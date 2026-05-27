@@ -13,7 +13,7 @@
 //! fetcher-specific OAuth2 [`TokenManager`] and shared HTTP client
 //! factories.
 
-pub use hyperi_rustlib::credential::{resolve, resolve_optional, CredentialError};
+pub use hyperi_rustlib::credential::{CredentialError, resolve, resolve_optional};
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
