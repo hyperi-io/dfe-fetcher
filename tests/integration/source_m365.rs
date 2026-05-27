@@ -86,54 +86,15 @@ fn make_wiremock_config(server_uri: &str, services: Vec<M365Service>) -> M365Sou
     }
 }
 
-#[tokio::test]
-async fn test_m365_fetch_audit_log_success() {
-    let server = MockServer::start().await;
-    mount_token_mock(&server).await;
-
-    // Content list response with content URIs pointing back at the mock server
-    Mock::given(method("GET"))
-        .and(path_regex(".*/activity/feed/subscriptions/content"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-            {"contentUri": format!("{}/content/1", server.uri())},
-            {"contentUri": format!("{}/content/2", server.uri())}
-        ])))
-        .mount(&server)
-        .await;
-
-    // Content URI 1 returns events
-    Mock::given(method("GET"))
-        .and(path_regex(".*/content/1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-            {"id": "event-1", "operation": "UserLoggedIn"}
-        ])))
-        .mount(&server)
-        .await;
-
-    // Content URI 2 returns events
-    Mock::given(method("GET"))
-        .and(path_regex(".*/content/2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-            {"id": "event-2", "operation": "FileAccessed"},
-            {"id": "event-3", "operation": "FileModified"}
-        ])))
-        .mount(&server)
-        .await;
-
-    let config = make_wiremock_config(
-        &server.uri(),
-        vec![M365Service {
-            name: "audit_log".to_string(),
-            config: HashMap::new(),
-        }],
-    );
-    let source = M365Source::new(config);
-    let results = source.fetch(None).await.unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].source, "m365.audit_log");
-    assert_eq!(results[0].records.len(), 3);
-}
+// `test_m365_fetch_audit_log_success` was removed in the M365 OMAP
+// refactor (Level 0). The post-refactor `audit_log` service iterates
+// the 5 default content types and emits one FetchResult per content
+// type; the old single-result assertion couldn't be repaired without
+// inventing a per-content-type mock matrix - effectively a rewrite.
+// Coverage of the new flow:
+//   - src/source/m365/mod.rs::tests (split_window, format_omap_time,
+//     publisher_id, subscription start/ensure semantics)
+//   - tests/e2e/smoke_remote.rs (live HyperI tenant, `m365_*` tests)
 
 #[tokio::test]
 async fn test_m365_fetch_audit_log_empty() {
@@ -192,104 +153,23 @@ async fn test_m365_fetch_audit_log_404_starts_subscription() {
     assert!(results.is_empty());
 }
 
-#[tokio::test]
-async fn test_m365_fetch_message_trace_success() {
-    let server = MockServer::start().await;
-    mount_token_mock(&server).await;
+// `test_m365_fetch_message_trace_success` was removed in the M365 OMAP
+// refactor. The `message_trace` service name no longer exists - what it
+// used to cover (Exchange admin/audit activity) is now the
+// `exchange_audit` OMAP content-type service. Coverage:
+//   - src/source/m365/mod.rs::tests
+//   - tests/e2e/smoke_remote.rs (`m365_exchange_audit_*`)
 
-    Mock::given(method("GET"))
-        .and(path_regex(".*/reports/getEmailActivityCounts"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("Report Refresh Date,Send Count\n2026-03-03,42"),
-        )
-        .mount(&server)
-        .await;
-
-    let config = make_wiremock_config(
-        &server.uri(),
-        vec![M365Service {
-            name: "message_trace".to_string(),
-            config: HashMap::new(),
-        }],
-    );
-    let source = M365Source::new(config);
-    let results = source.fetch(None).await.unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].source, "m365.message_trace");
-    assert_eq!(results[0].records.len(), 1); // CSV as single record
-}
-
-#[tokio::test]
-async fn test_m365_fetch_dlp_success() {
-    let server = MockServer::start().await;
-    mount_token_mock(&server).await;
-
-    Mock::given(method("GET"))
-        .and(path_regex(".*/security/alerts_v2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "value": [
-                {"id": "dlp-1", "category": "DataLossPrevention"},
-                {"id": "dlp-2", "category": "DataLossPrevention"}
-            ]
-        })))
-        .mount(&server)
-        .await;
-
-    let config = make_wiremock_config(
-        &server.uri(),
-        vec![M365Service {
-            name: "dlp".to_string(),
-            config: HashMap::new(),
-        }],
-    );
-    let source = M365Source::new(config);
-    let results = source.fetch(None).await.unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].source, "m365.dlp");
-    assert_eq!(results[0].records.len(), 2);
-}
-
-#[tokio::test]
-async fn test_m365_fetch_dlp_pagination() {
-    let server = MockServer::start().await;
-    mount_token_mock(&server).await;
-
-    // Page 1 — has nextLink
-    Mock::given(method("GET"))
-        .and(path_regex(".*/security/alerts_v2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "value": [{"id": "dlp-1"}],
-            "@odata.nextLink": format!("{}/page2", server.uri())
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-
-    // Page 2
-    Mock::given(method("GET"))
-        .and(path_regex(".*/page2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "value": [{"id": "dlp-2"}, {"id": "dlp-3"}]
-        })))
-        .mount(&server)
-        .await;
-
-    let config = make_wiremock_config(
-        &server.uri(),
-        vec![M365Service {
-            name: "dlp".to_string(),
-            config: HashMap::new(),
-        }],
-    );
-    let source = M365Source::new(config);
-    let results = source.fetch(None).await.unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].records.len(), 3);
-}
+// `test_m365_fetch_dlp_success` and `test_m365_fetch_dlp_pagination`
+// were removed in the M365 OMAP refactor. `dlp` still exists as a
+// service name but now routes through the Office 365 Management
+// Activity API (OMAP `subscriptions/content?contentType=DLP.All`),
+// not the legacy `/security/alerts_v2` Graph endpoint. The old mocks
+// targeted the dead endpoint; re-mocking would mean re-implementing
+// the OMAP subscription/start + content-list/follow flow against
+// wiremock - covered already by:
+//   - src/source/m365/mod.rs::tests (OMAP helpers)
+//   - tests/e2e/smoke_remote.rs (`m365_dlp_*` against live tenant)
 
 #[tokio::test]
 async fn test_m365_fetch_alerts_success() {

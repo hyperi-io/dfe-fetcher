@@ -18,4 +18,4 @@ mod common;
 mod container;
 mod kafka;
 mod kafka_cursor;
-mod smoke_cloud;
+mod smoke_remote;

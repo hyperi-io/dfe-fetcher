@@ -25,7 +25,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use hyperi_rustlib::metrics::{DfeMetrics, MetricsManager};
+use hyperi_rustlib::metrics::{DfeMetrics, MetricsManager, TransportKind};
 use hyperi_rustlib::scaling::RateWindow;
 
 /// Metrics collector for dfe-fetcher.
@@ -310,7 +310,7 @@ impl Metrics {
     pub fn add_messages_sent_kafka(&self, count: u64) {
         self.messages_sent_kafka.fetch_add(count, Ordering::Relaxed);
         if let Some(ref dfe) = self.dfe {
-            dfe.transport_sent("output", count);
+            dfe.transport_sent(TransportKind::Kafka, count);
         }
     }
 
@@ -442,7 +442,7 @@ impl Metrics {
         self.transport_send_errors_total
             .fetch_add(1, Ordering::Relaxed);
         if let Some(ref dfe) = self.dfe {
-            dfe.transport_send_errors("output", 1);
+            dfe.transport_send_errors(TransportKind::Kafka, 1);
         }
     }
 

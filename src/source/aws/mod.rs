@@ -151,8 +151,24 @@ impl AwsSource {
         payload: &serde_json::Value,
         json_version: &str,
     ) -> Result<serde_json::Value> {
+        let region = self.config.region.clone();
+        self.aws_json_request_in_region(service, target, payload, json_version, &region)
+            .await
+    }
+
+    /// Variant of [`aws_json_request`](Self::aws_json_request) that pins the
+    /// signing + endpoint region explicitly (rather than using
+    /// `self.config.region`). Needed for services that are region-locked
+    /// regardless of caller region - notably AWS Health (us-east-1 only).
+    async fn aws_json_request_in_region(
+        &self,
+        service: &str,
+        target: &str,
+        payload: &serde_json::Value,
+        json_version: &str,
+        region: &str,
+    ) -> Result<serde_json::Value> {
         let (access_key, secret_key) = self.resolve_credentials().await?;
-        let region = &self.config.region;
         let endpoint = match &self.config.endpoint_override {
             Some(url) => url.clone(),
             None => format!("https://{service}.{region}.amazonaws.com"),
@@ -179,6 +195,70 @@ impl AwsSource {
             .map_err(|e| Error::Source(format!("failed to build AWS request: {e}")))?;
 
         // Sign with SigV4 using reqsign — handles date, signature, and all canonical headers
+        let cred = AwsCredential {
+            access_key_id: access_key,
+            secret_access_key: secret_key,
+            session_token: None,
+            expires_in: None,
+        };
+        let signer = AwsV4Signer::new(service, region);
+        signer
+            .sign(&mut req, &cred)
+            .map_err(|e| Error::Source(format!("SigV4 signing failed: {e}")))?;
+
+        let resp = self
+            .client
+            .execute(req)
+            .await
+            .map_err(|e| Error::Source(format!("AWS {service} request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Source(format!(
+                "AWS {service} API returned {status}: {body}"
+            )));
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| Error::Source(format!("failed to parse AWS {service} response: {e}")))
+    }
+
+    /// SigV4-signed AWS REST-JSON POST for services that don't use the JSON-1.x
+    /// wire protocol (Inspector v2, EventBridge, etc).
+    ///
+    /// Differences from [`aws_json_request`](Self::aws_json_request):
+    /// - Caller supplies the URL path (e.g. `/findings/list`).
+    /// - No `X-Amz-Target` header.
+    /// - Content-Type is `application/json` (not `application/x-amz-json-*`).
+    async fn aws_rest_post(
+        &self,
+        service: &str,
+        path: &str,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let (access_key, secret_key) = self.resolve_credentials().await?;
+        let region = &self.config.region;
+        let endpoint = match &self.config.endpoint_override {
+            Some(url) => format!("{}{path}", url.trim_end_matches('/')),
+            None => format!("https://{service}.{region}.amazonaws.com{path}"),
+        };
+
+        let body = serde_json::to_string(payload)
+            .map_err(|e| Error::Source(format!("JSON serialise error: {e}")))?;
+        let body_hash = hex::encode(Sha256::digest(body.as_bytes()));
+
+        let mut req = self
+            .client
+            .post(&endpoint)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("x-amz-content-sha256", &body_hash)
+            .body(body)
+            .build()
+            .map_err(|e| Error::Source(format!("failed to build AWS request: {e}")))?;
+
         let cred = AwsCredential {
             access_key_id: access_key,
             secret_access_key: secret_key,
@@ -279,6 +359,15 @@ impl Source for AwsSource {
                                     &*service.name,
                                     self.fetch_cloudwatch_metrics(service, start, end).await,
                                 )
+                            }),
+                            "inspector" => Box::pin(async move {
+                                (
+                                    &*service.name,
+                                    self.fetch_inspector(service, start, end).await,
+                                )
+                            }),
+                            "health" => Box::pin(async move {
+                                (&*service.name, self.fetch_health(service, start, end).await)
                             }),
                             other => {
                                 warn!(service = other, "Unknown AWS service, skipping");
@@ -968,5 +1057,154 @@ impl AwsSource {
             warn!("Failed to encode OTLP metrics protobuf");
             Vec::new()
         }
+    }
+
+    /// AWS Inspector v2 - `POST /findings/list` via REST-JSON + SigV4.
+    ///
+    /// Filters findings by `lastObservedAt` within the supplied window.
+    /// Inspector v2 must be enabled tenant-side; without it the API returns
+    /// an empty result set.
+    async fn fetch_inspector(
+        &self,
+        service: &crate::config::AwsService,
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<FetchResult>> {
+        let max_results = service
+            .config
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.min(100) as u32)
+            .unwrap_or(100);
+
+        let mut next_token: Option<String> = None;
+        let mut all_findings: Vec<serde_json::Value> = Vec::new();
+
+        // Inspector v2 ListFindings caps at 100 per call; iterate pages.
+        for _ in 0..50_u32 {
+            let mut body = serde_json::json!({
+                "filterCriteria": {
+                    "lastObservedAt": [{
+                        "startInclusive": start.timestamp(),
+                        "endInclusive": end.timestamp(),
+                    }]
+                },
+                "maxResults": max_results,
+            });
+            if let Some(ref token) = next_token {
+                body["nextToken"] = serde_json::Value::String(token.clone());
+            }
+
+            let resp = self
+                .aws_rest_post("inspector2", "/findings/list", &body)
+                .await?;
+
+            if let Some(items) = resp["findings"].as_array().cloned() {
+                all_findings.extend(items);
+            }
+
+            next_token = resp["nextToken"].as_str().map(String::from);
+            if next_token.is_none() {
+                break;
+            }
+        }
+
+        if all_findings.is_empty() {
+            return Ok(None);
+        }
+
+        let records: Vec<Bytes> = all_findings
+            .into_iter()
+            .filter_map(|f| serde_json::to_vec(&f).ok().map(Bytes::from))
+            .collect();
+
+        if records.is_empty() {
+            return Ok(None);
+        }
+
+        info!(records = records.len(), "AWS Inspector v2 findings fetched");
+        Ok(Some(FetchResult {
+            records,
+            source: "aws.inspector".to_string(),
+            topic: self.config.topic.clone(),
+        }))
+    }
+
+    /// AWS Health `DescribeEvents` - JSON-1.1 against `health.us-east-1`.
+    ///
+    /// Health API is region-locked to `us-east-1` regardless of caller region.
+    /// Account must have Business, Enterprise On-Ramp, or Enterprise Support
+    /// tier; lesser tiers return AccessDeniedException.
+    async fn fetch_health(
+        &self,
+        service: &crate::config::AwsService,
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<FetchResult>> {
+        // Health API only lives in us-east-1.
+        let max_results = service
+            .config
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.min(100) as u32)
+            .unwrap_or(100);
+
+        let mut next_token: Option<String> = None;
+        let mut all_events: Vec<serde_json::Value> = Vec::new();
+
+        for _ in 0..50_u32 {
+            let mut payload = serde_json::json!({
+                "filter": {
+                    "lastUpdatedTimes": [{
+                        "from": start.to_rfc3339(),
+                        "to": end.to_rfc3339(),
+                    }]
+                },
+                "maxResults": max_results,
+            });
+            if let Some(ref t) = next_token {
+                payload["nextToken"] = serde_json::Value::String(t.clone());
+            }
+
+            // Health uses JSON-1.1 with the standard X-Amz-Target header.
+            // Service code is "health"; endpoint must be us-east-1.
+            let resp = self
+                .aws_json_request_in_region(
+                    "health",
+                    "AWSHealth_20160804.DescribeEvents",
+                    &payload,
+                    "1.1",
+                    "us-east-1",
+                )
+                .await?;
+
+            if let Some(items) = resp["events"].as_array().cloned() {
+                all_events.extend(items);
+            }
+            next_token = resp["nextToken"].as_str().map(String::from);
+            if next_token.is_none() {
+                break;
+            }
+        }
+
+        if all_events.is_empty() {
+            return Ok(None);
+        }
+
+        let records: Vec<Bytes> = all_events
+            .into_iter()
+            .filter_map(|e| serde_json::to_vec(&e).ok().map(Bytes::from))
+            .collect();
+
+        if records.is_empty() {
+            return Ok(None);
+        }
+
+        info!(records = records.len(), "AWS Health events fetched");
+        Ok(Some(FetchResult {
+            records,
+            source: "aws.health".to_string(),
+            topic: self.config.topic.clone(),
+        }))
     }
 }

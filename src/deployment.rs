@@ -13,7 +13,8 @@
 
 use hyperi_rustlib::deployment::{
     DeploymentContract, HealthContract, ImageProfile, KedaContract, NativeDepsContract,
-    PortContract, SecretEnvContract, SecretGroupContract,
+    PortContract, SecretEnvContract, SecretGroupContract, base_image_from_cascade,
+    image_registry_from_cascade,
 };
 
 /// Build the deployment contract for dfe-fetcher.
@@ -23,10 +24,14 @@ use hyperi_rustlib::deployment::{
 /// (`generate_dockerfile`, `generate_chart`, `generate_compose_fragment`)
 /// use this contract as their single source of truth.
 pub fn contract() -> DeploymentContract {
+    // Resolve base image + registry via the rustlib cascade helpers so
+    // org-wide overrides in deployment.* config keys (or env) win
+    // before we fall back to rustlib's DEFAULT_BASE_IMAGE / DEFAULT_IMAGE_REGISTRY.
+    let base_image = base_image_from_cascade();
+    let image_registry = image_registry_from_cascade();
     DeploymentContract {
         app_name: "dfe-fetcher".into(),
         binary_name: "dfe-fetcher".into(),
-        base_image: "ubuntu:24.04".into(),
         native_deps: NativeDepsContract::for_rustlib_features(
             &[
                 "config",
@@ -45,8 +50,9 @@ pub fn contract() -> DeploymentContract {
                 "deployment",
                 "cli",
             ],
-            "ubuntu:24.04",
+            &base_image,
         ),
+        base_image,
         image_profile: ImageProfile::Production,
         description: "Data fetcher for external services (AWS, Azure, M365, GCP)".into(),
         metrics_port: 9090,
@@ -58,7 +64,7 @@ pub fn contract() -> DeploymentContract {
         env_prefix: "DFE_FETCHER".into(),
         metric_prefix: "fetcher".into(),
         config_mount_path: "/etc/dfe/fetcher.yaml".into(),
-        image_registry: "ghcr.io/hyperi-io".into(),
+        image_registry,
         extra_ports: vec![
             PortContract {
                 name: "ingest".into(),
@@ -206,8 +212,17 @@ mod tests {
 
     #[test]
     fn test_contract_base_image() {
+        // The cascade helper resolves to the org-wide `deployment.base_image`
+        // override (config or env) when set, else falls back to rustlib's
+        // DEFAULT_BASE_IMAGE. In CI / local-dev with no overrides the
+        // default applies. Just assert the value is non-empty and well-formed.
         let c = contract();
-        assert_eq!(c.base_image, "ubuntu:24.04");
+        assert!(!c.base_image.is_empty());
+        assert!(
+            c.base_image.contains(':'),
+            "base_image must include an explicit tag: {}",
+            c.base_image
+        );
     }
 
     #[test]

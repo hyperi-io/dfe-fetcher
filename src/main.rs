@@ -22,13 +22,12 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use hyperi_rustlib::cli::{
-    CliError, CommonArgs, DfeApp, ServiceRuntime, StandardCommand, TopArgs, VersionInfo,
+    CliError, CommonArgs, DfeApp, ServiceRuntime, StandardCommand, VersionInfo,
 };
 use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
 use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
 use hyperi_rustlib::logger::security;
 use hyperi_rustlib::scaling::ScalingComponent;
-use hyperi_rustlib::top::{TopConfig, run_top};
 use tracing::{debug, error, info, warn};
 
 use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
@@ -43,8 +42,22 @@ use dfe_fetcher::scheduler::Scheduler;
 use dfe_fetcher::source::Source;
 use dfe_fetcher::source::aws::AwsSource;
 use dfe_fetcher::source::azure::AzureSource;
+use dfe_fetcher::source::bitwarden::BitwardenSource;
+use dfe_fetcher::source::cloudflare::CloudflareSource;
+use dfe_fetcher::source::crates_io::CratesIoSource;
+use dfe_fetcher::source::crowdstrike::CrowdstrikeSource;
+use dfe_fetcher::source::duo::DuoSource;
 use dfe_fetcher::source::gcp::GcpSource;
+use dfe_fetcher::source::gcp_pubsub::GcpPubsubSource;
+use dfe_fetcher::source::github::GithubSource;
+use dfe_fetcher::source::go_modules::GoModulesSource;
+use dfe_fetcher::source::google_workspace::GoogleWorkspaceSource;
 use dfe_fetcher::source::m365::M365Source;
+use dfe_fetcher::source::object_store::ObjectStoreSource;
+use dfe_fetcher::source::okta::OktaSource;
+use dfe_fetcher::source::onepassword::OnePasswordSource;
+use dfe_fetcher::source::pypi::PypiSource;
+use dfe_fetcher::source::slack::SlackSource;
 
 /// dfe-fetcher: Data fetcher for external services (AWS, Azure, M365, GCP).
 #[derive(Parser, Debug)]
@@ -63,8 +76,8 @@ struct App {
 /// Application subcommands.
 ///
 /// Standard commands (`run`, `version`, `config-check`, `generate-artefacts`,
-/// `metrics-manifest`) are flattened from rustlib's [`StandardCommand`].
-/// Local extensions handle the legacy emit-* shortcuts and the `top` TUI.
+/// `metrics-manifest`, `top`) are flattened from rustlib's [`StandardCommand`].
+/// Local extensions handle only the legacy emit-* shortcuts.
 #[derive(Subcommand, Clone, Debug)]
 enum AppCommand {
     /// Standard rustlib commands (run, version, config-check, generate-artefacts, metrics-manifest).
@@ -89,9 +102,6 @@ enum AppCommand {
     /// Print deployment contract as JSON to stdout (legacy shortcut; prefer `generate-artefacts`).
     #[command(name = "emit-contract")]
     EmitContract,
-
-    /// Live TUI metrics dashboard (connects to running instance's /metrics endpoint).
-    Top(TopArgs),
 }
 
 impl DfeApp for App {
@@ -132,7 +142,9 @@ impl DfeApp for App {
     }
 
     async fn run_service(&self, config: Config, runtime: ServiceRuntime) -> Result<(), CliError> {
-        run_fetcher_service(&self.common, config, runtime)
+        // Box::pin keeps the run_service future small (21KB+ otherwise);
+        // run_fetcher_service stack-allocates large state.
+        Box::pin(run_fetcher_service(&self.common, config, runtime))
             .await
             .map_err(|e| CliError::Service(e.to_string()))
     }
@@ -152,12 +164,16 @@ async fn main() {
         match cmd {
             AppCommand::EmitDockerfile => {
                 let contract = deployment::contract();
-                println!("{}", generate_dockerfile(&contract));
+                // Identity = None: stdout shortcut for local inspection
+                // intentionally omits Contract Identity Annotation labels.
+                // The full ci/ pipeline (`generate-artefacts`) is where
+                // identity gets stamped in once rustlib wires it.
+                println!("{}", generate_dockerfile(&contract, None));
                 return;
             }
             AppCommand::EmitChart { dir } => {
                 let contract = deployment::contract();
-                if let Err(e) = generate_chart(&contract, dir) {
+                if let Err(e) = generate_chart(&contract, dir, None) {
                     eprintln!("error: failed to generate Helm chart: {e}");
                     std::process::exit(1);
                 }
@@ -174,16 +190,9 @@ async fn main() {
                 println!("{}", contract.to_json());
                 return;
             }
-            AppCommand::Top(args) => {
-                let config = TopConfig::from_args(args);
-                if let Err(e) = run_top(&config) {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-                return;
-            }
             AppCommand::Standard(_) => {
-                // fall through to run_app
+                // fall through to run_app (handles run / version / config-check /
+                // generate-artefacts / metrics-manifest / top).
             }
         }
     }
@@ -451,6 +460,22 @@ async fn run_fetcher_service(
         Arc::new(AzureSource::new(config.sources.azure.clone())),
         Arc::new(M365Source::new(config.sources.m365.clone())),
         Arc::new(GcpSource::new(config.sources.gcp.clone())),
+        Arc::new(GithubSource::new(config.sources.github.clone())),
+        Arc::new(OktaSource::new(config.sources.okta.clone())),
+        Arc::new(CloudflareSource::new(config.sources.cloudflare.clone())),
+        Arc::new(OnePasswordSource::new(config.sources.onepassword.clone())),
+        Arc::new(CrowdstrikeSource::new(config.sources.crowdstrike.clone())),
+        Arc::new(SlackSource::new(config.sources.slack.clone())),
+        Arc::new(BitwardenSource::new(config.sources.bitwarden.clone())),
+        Arc::new(DuoSource::new(config.sources.duo.clone())),
+        Arc::new(PypiSource::new(config.sources.pypi.clone())),
+        Arc::new(CratesIoSource::new(config.sources.crates_io.clone())),
+        Arc::new(GoModulesSource::new(config.sources.go_modules.clone())),
+        Arc::new(GoogleWorkspaceSource::new(
+            config.sources.google_workspace.clone(),
+        )),
+        Arc::new(GcpPubsubSource::new(config.sources.gcp_pubsub.clone())),
+        Arc::new(ObjectStoreSource::new(config.sources.object_store.clone())),
     ];
 
     // Start fetch tasks for enabled sources

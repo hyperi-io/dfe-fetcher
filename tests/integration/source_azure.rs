@@ -225,11 +225,11 @@ async fn test_azure_fetch_defender_success() {
 }
 
 #[tokio::test]
-async fn test_azure_fetch_entra_id_success() {
+async fn test_azure_fetch_entra_split_services_success() {
     let server = MockServer::start().await;
     mount_token_mock(&server).await;
 
-    // Sign-in logs
+    // Sign-in logs -- the entra_signins service hits this.
     Mock::given(method("GET"))
         .and(path_regex(".*/auditLogs/signIns"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -238,7 +238,7 @@ async fn test_azure_fetch_entra_id_success() {
         .mount(&server)
         .await;
 
-    // Directory audits
+    // Directory audits -- the entra_directory_audits service hits this.
     Mock::given(method("GET"))
         .and(path_regex(".*/auditLogs/directoryAudits"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -247,19 +247,32 @@ async fn test_azure_fetch_entra_id_success() {
         .mount(&server)
         .await;
 
+    // Configure both split-out Entra services. The combined `entra_id`
+    // alias was removed in the Level 1.1 split; each subtype carries its
+    // own cursor and source tag.
     let config = make_wiremock_config(
         &server.uri(),
-        vec![AzureService {
-            name: "entra_id".to_string(),
-            config: HashMap::new(),
-        }],
+        vec![
+            AzureService {
+                name: "entra_signins".to_string(),
+                config: HashMap::new(),
+            },
+            AzureService {
+                name: "entra_directory_audits".to_string(),
+                config: HashMap::new(),
+            },
+        ],
     );
     let source = AzureSource::new(config);
     let results = source.fetch(None).await.unwrap();
 
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].source, "azure.entra_id");
-    assert_eq!(results[0].records.len(), 3); // 1 signin + 2 audits
+    assert_eq!(results.len(), 2, "one FetchResult per split-out service");
+    let by_source: std::collections::HashMap<&str, usize> = results
+        .iter()
+        .map(|r| (r.source.as_str(), r.records.len()))
+        .collect();
+    assert_eq!(by_source.get("azure.entra_signins"), Some(&1));
+    assert_eq!(by_source.get("azure.entra_directory_audits"), Some(&2));
 }
 
 #[tokio::test]

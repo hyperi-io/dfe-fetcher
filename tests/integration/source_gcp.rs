@@ -75,8 +75,15 @@ fn make_wiremock_config(server_uri: &str, services: Vec<GcpService>) -> GcpSourc
     }
 }
 
+// The combined `audit_logs` alias was removed in the Level 1.2 split;
+// each subtype (admin_activity / data_access / system_event /
+// policy_denied) is now its own service. The mock server can't tell the
+// per-subtype filter clause apart, so each configured subtype hits the
+// same `:list` mock - the test below configures one subtype and asserts
+// a single FetchResult tagged with that subtype.
+
 #[tokio::test]
-async fn test_gcp_fetch_audit_logs_success() {
+async fn test_gcp_fetch_admin_activity_success() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -93,7 +100,7 @@ async fn test_gcp_fetch_audit_logs_success() {
     let config = make_wiremock_config(
         &server.uri(),
         vec![GcpService {
-            name: "audit_logs".to_string(),
+            name: "admin_activity".to_string(),
             config: HashMap::new(),
         }],
     );
@@ -101,13 +108,13 @@ async fn test_gcp_fetch_audit_logs_success() {
     let results = source.fetch(None).await.unwrap();
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].source, "gcp.audit_logs");
+    assert_eq!(results[0].source, "gcp.admin_activity");
     assert_eq!(results[0].topic, "test-gcp");
     assert_eq!(results[0].records.len(), 2);
 }
 
 #[tokio::test]
-async fn test_gcp_fetch_audit_logs_pagination() {
+async fn test_gcp_fetch_admin_activity_pagination() {
     let server = MockServer::start().await;
 
     // Page 1 — has nextPageToken
@@ -133,7 +140,7 @@ async fn test_gcp_fetch_audit_logs_pagination() {
     let config = make_wiremock_config(
         &server.uri(),
         vec![GcpService {
-            name: "audit_logs".to_string(),
+            name: "admin_activity".to_string(),
             config: HashMap::new(),
         }],
     );

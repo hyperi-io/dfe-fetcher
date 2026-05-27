@@ -533,6 +533,58 @@ pub struct SourcesConfig {
 
     /// Google Cloud Platform source configuration.
     pub gcp: GcpSourceConfig,
+
+    /// GitHub audit-log source configuration.
+    pub github: GithubSourceConfig,
+
+    /// Okta System Log source configuration.
+    pub okta: OktaSourceConfig,
+
+    /// Cloudflare audit-log source configuration.
+    pub cloudflare: CloudflareSourceConfig,
+
+    /// 1Password Events Reporting source configuration.
+    pub onepassword: OnePasswordSourceConfig,
+
+    /// CrowdStrike Falcon source configuration.
+    pub crowdstrike: CrowdstrikeSourceConfig,
+
+    /// Slack audit-log source configuration.
+    pub slack: SlackSourceConfig,
+
+    /// Bitwarden Events API source configuration.
+    pub bitwarden: BitwardenSourceConfig,
+
+    /// Duo Admin API source configuration.
+    pub duo: DuoSourceConfig,
+
+    /// PyPI supply-chain audit source configuration.
+    pub pypi: PypiSourceConfig,
+
+    /// crates.io supply-chain audit source configuration.
+    pub crates_io: CratesIoSourceConfig,
+
+    /// Go module-proxy supply-chain audit source configuration.
+    pub go_modules: GoModulesSourceConfig,
+
+    /// Google Workspace Reports API source configuration.
+    ///
+    /// **SPECULATIVE - pending hyperi-infra#5** (domain-wide-delegation
+    /// service account + manual Admin-console scope grants).
+    pub google_workspace: GoogleWorkspaceSourceConfig,
+
+    /// GCP Pub/Sub pull source configuration.
+    ///
+    /// **SPECULATIVE - pending hyperi-infra issue (TBD)** for tenant-side
+    /// Log Sink + Pub/Sub topic + subscription provisioning.
+    pub gcp_pubsub: GcpPubsubSourceConfig,
+
+    /// Object-store source family configuration (S3 / GCS / Azure Blob).
+    ///
+    /// Phase 1: S3 backend is live; GCS and Azure Blob are stubs that
+    /// log-and-skip until Phase 2. See
+    /// `docs/superpowers/specs/2026-05-21-object-store-source-design.md`.
+    pub object_store: ObjectStoreSourceConfig,
 }
 
 impl Default for SourcesConfig {
@@ -542,6 +594,20 @@ impl Default for SourcesConfig {
             azure: AzureSourceConfig::default(),
             m365: M365SourceConfig::default(),
             gcp: GcpSourceConfig::default(),
+            github: GithubSourceConfig::default(),
+            okta: OktaSourceConfig::default(),
+            cloudflare: CloudflareSourceConfig::default(),
+            onepassword: OnePasswordSourceConfig::default(),
+            crowdstrike: CrowdstrikeSourceConfig::default(),
+            slack: SlackSourceConfig::default(),
+            bitwarden: BitwardenSourceConfig::default(),
+            duo: DuoSourceConfig::default(),
+            pypi: PypiSourceConfig::default(),
+            crates_io: CratesIoSourceConfig::default(),
+            go_modules: GoModulesSourceConfig::default(),
+            google_workspace: GoogleWorkspaceSourceConfig::default(),
+            gcp_pubsub: GcpPubsubSourceConfig::default(),
+            object_store: ObjectStoreSourceConfig::default(),
         }
     }
 }
@@ -834,6 +900,1176 @@ pub struct GcpService {
     /// Service-specific configuration.
     #[serde(default)]
     pub config: HashMap<String, serde_json::Value>,
+}
+
+/// GitHub source configuration.
+///
+/// Pulls audit-log events from either a GitHub organisation
+/// (`/orgs/{org}/audit-log`) or a GitHub Enterprise Cloud account
+/// (`/enterprises/{enterprise}/audit-log`). Set exactly one of `org` or
+/// `enterprise` per fetcher instance - scale to multiple by deploying multiple
+/// fetcher instances with different configs (per the no-horizontal-scaling rule
+/// in CLAUDE.md).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GithubSourceConfig {
+    /// Enable GitHub source.
+    pub enabled: bool,
+
+    /// Organisation slug for `/orgs/{org}/audit-log`. Exactly one of `org` /
+    /// `enterprise` must be set when enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+
+    /// Enterprise slug for `/enterprises/{enterprise}/audit-log`. Requires a
+    /// GitHub Enterprise Cloud plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise: Option<String>,
+
+    /// Personal Access Token, fine-grained PAT, or GitHub App installation
+    /// token. Required scope: `read:audit_log` (org) or `read:enterprise`
+    /// (enterprise). Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token (e.g. `vault:secret/github:token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base URL override for testing (e.g. wiremock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<GithubService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for GithubSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            org: None,
+            enterprise: None,
+            token: None,
+            credential_secret: None,
+            api_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "github".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// GitHub service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubService {
+    /// Service name (currently only "audit_log").
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys for `audit_log`:
+    /// - `include`: one of `"all"` (default), `"web"`, or `"git"`.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Okta source configuration.
+///
+/// Pulls events from the Okta System Log API
+/// (`{tenant_url}/api/v1/logs`). One Okta tenant per fetcher instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OktaSourceConfig {
+    /// Enable Okta source.
+    pub enabled: bool,
+
+    /// Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+    /// The OAuth-style preview API uses `oktapreview.com`; either is accepted
+    /// here verbatim. Override per environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_url: Option<String>,
+
+    /// SSWS API token (legacy auth) or bearer token from OAuth.
+    /// Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// If `true`, send the token as `Authorization: SSWS <token>` (Okta's
+    /// legacy API-token header). If `false`, send as `Authorization: Bearer
+    /// <token>` (OAuth access token). Default: `true`.
+    #[serde(default = "default_okta_use_ssws")]
+    pub use_ssws_header: bool,
+
+    /// Secret source spec for the token (e.g. `vault:secret/okta:token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<OktaService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+fn default_okta_use_ssws() -> bool {
+    true
+}
+
+impl Default for OktaSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tenant_url: None,
+            token: None,
+            use_ssws_header: true,
+            credential_secret: None,
+            api_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "okta".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Okta service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OktaService {
+    /// Service name (currently only "system_log").
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys for `system_log`:
+    /// - `filter`: OData-style filter applied server-side
+    ///   (e.g. `eventType eq "user.session.start"`).
+    /// - `limit`: per-page size (Okta caps at 1000).
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Cloudflare source configuration.
+///
+/// Pulls events from Cloudflare's REST API. One account per fetcher instance.
+/// Auth: scoped API token (read-only). Account ID required for audit logs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudflareSourceConfig {
+    /// Enable Cloudflare source.
+    pub enabled: bool,
+
+    /// Account ID (32-char hex) for account-level audit logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+
+    /// API token. Always redacted on serialisation.
+    /// Required token permissions:
+    /// - Account: Audit Logs:Read (for `audit_logs`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token (e.g. `vault:secret/cloudflare:token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<CloudflareService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for CloudflareSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            account_id: None,
+            token: None,
+            credential_secret: None,
+            api_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "cloudflare".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Cloudflare service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudflareService {
+    /// Service name (currently only "audit_logs").
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys for `audit_logs`:
+    /// - `actor_email`: filter by acting user (optional).
+    /// - `action_type`: filter by action category (optional).
+    /// - `per_page`: page size (default 100, max 1000).
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// 1Password Events Reporting source configuration.
+///
+/// Pulls events from the 1Password Events Reporting API
+/// (`events.1password.com/api/v2/*`). Requires a 1Password Business or
+/// Enterprise account with Events Reporting enabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnePasswordSourceConfig {
+    /// Enable 1Password source.
+    pub enabled: bool,
+
+    /// Events Reporting API token (Bearer token, generated from the
+    /// 1Password Business dashboard). Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token
+    /// (e.g. `vault:secret/onepassword:events_token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    /// Production default: `https://events.1password.com`.
+    /// EU-region tenants: `https://events.ent.1password.eu`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<OnePasswordService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for OnePasswordSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: None,
+            credential_secret: None,
+            api_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "onepassword".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// 1Password service to fetch data from. Each maps to one Events Reporting
+/// endpoint: `signinattempts`, `itemusages`, or `auditevents`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnePasswordService {
+    /// Service name: one of "signin_attempts", "item_usages", "audit_events".
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys:
+    /// - `limit`: page size (default 100, max 1000).
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// CrowdStrike Falcon source configuration.
+///
+/// Pulls detections, incidents, and host data from CrowdStrike Falcon's
+/// public API via OAuth2 client_credentials. Region-aware: each Falcon
+/// instance lives on a different cloud (US-1, US-2, EU-1, US-GOV-1) and
+/// the API host changes accordingly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrowdstrikeSourceConfig {
+    /// Enable CrowdStrike source.
+    pub enabled: bool,
+
+    /// API base URL for the region the tenant lives on.
+    /// Examples:
+    /// - US-1: `https://api.crowdstrike.com` (default)
+    /// - US-2: `https://api.us-2.crowdstrike.com`
+    /// - EU-1: `https://api.eu-1.crowdstrike.com`
+    /// - US-GOV-1: `https://api.laggar.gcw.crowdstrike.com`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// OAuth2 client ID (Falcon API client, created in Falcon admin console).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// OAuth2 client secret. Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source spec for the client_secret
+    /// (e.g. `vault:secret/crowdstrike:client_secret`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<CrowdstrikeService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for CrowdstrikeSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_url_override: None,
+            client_id: None,
+            client_secret: None,
+            credential_secret: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "crowdstrike".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// CrowdStrike service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrowdstrikeService {
+    /// Service name (currently only "detections" - returns enriched
+    /// EPP detection summaries).
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys for `detections`:
+    /// - `limit`: query page size (default 100, max 9999).
+    /// - `filter`: Falcon Query Language clause appended to the auto-built
+    ///   `created_timestamp:>'<start>'+created_timestamp:<'<end>'`.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Slack audit-log source configuration.
+///
+/// Pulls audit-log events from `https://api.slack.com/audit/v1/logs`.
+/// Enterprise Grid only - requires an Org Admin token with the
+/// `auditlogs:read` scope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlackSourceConfig {
+    /// Enable Slack source.
+    pub enabled: bool,
+
+    /// Org-admin user token (xoxa-... or xoxb-...) with `auditlogs:read`.
+    /// Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token
+    /// (e.g. `vault:secret/slack:audit_token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<SlackService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for SlackSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: None,
+            credential_secret: None,
+            api_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "slack".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Slack service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackService {
+    /// Service name (currently only "audit_logs").
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys for `audit_logs`:
+    /// - `action`: filter by action name (e.g. `user_login`).
+    /// - `entity`: filter by entity type (`user` / `workspace` / etc).
+    /// - `limit`: per-page size (default 200, max 1000).
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Bitwarden Events API source configuration.
+///
+/// Pulls events from a Bitwarden Teams/Enterprise organisation via
+/// `/public/events`. Auth: OAuth2 client_credentials against
+/// `/identity/connect/token` using organisation API credentials.
+///
+/// Supports both Bitwarden Cloud and self-hosted instances - set
+/// `api_url_override` and `identity_url_override` for self-hosted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BitwardenSourceConfig {
+    /// Enable Bitwarden source.
+    pub enabled: bool,
+
+    /// Organisation API client ID. Generated in Bitwarden admin:
+    /// Settings > Organization info > "View API Key".
+    /// Format is `organization.<uuid>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Organisation API client secret. Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source spec for the client_secret
+    /// (e.g. `vault:secret/bitwarden:client_secret`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override (default `https://api.bitwarden.com`).
+    /// Self-hosted: `https://your-host/api`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Identity/token endpoint override
+    /// (default `https://identity.bitwarden.com/connect/token`).
+    /// Self-hosted: `https://your-host/identity/connect/token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<BitwardenService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for BitwardenSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            client_id: None,
+            client_secret: None,
+            credential_secret: None,
+            api_url_override: None,
+            identity_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "bitwarden".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Bitwarden service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitwardenService {
+    /// Service name (currently only "events").
+    pub name: String,
+
+    /// Service-specific configuration. No recognised keys yet.
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// Duo Admin API source configuration.
+///
+/// Pulls authentication events from a Duo tenant's
+/// `api-XXXXXXXX.duosecurity.com/admin/v2/logs/authentication` endpoint.
+/// Auth uses Duo's proprietary scheme: HMAC-SHA1 over a canonical request
+/// signature, transported in a Basic auth header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DuoSourceConfig {
+    /// Enable Duo source.
+    pub enabled: bool,
+
+    /// API hostname (without scheme). Format: `api-XXXXXXXX.duosecurity.com`.
+    /// Available in the Duo Admin Panel under Applications > Admin API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_host: Option<String>,
+
+    /// Integration key (`ikey`). Identifies the Admin API integration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_key: Option<String>,
+
+    /// Secret key (`skey`). Used to compute the HMAC-SHA1 request signature.
+    /// Always redacted on serialisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<SensitiveString>,
+
+    /// Secret source spec for the secret_key
+    /// (e.g. `vault:secret/duo:skey`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing (full URL incl. scheme). Production
+    /// should use `api_host` only; this is for mock servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<DuoService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for DuoSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_host: None,
+            integration_key: None,
+            secret_key: None,
+            credential_secret: None,
+            api_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "duo".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Duo service to fetch data from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuoService {
+    /// Service name (currently only "authentication_logs").
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys for
+    /// `authentication_logs`:
+    /// - `limit`: per-page size (default 100, max 1000).
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+// -----------------------------------------------------------------------------
+// Public-registry supply-chain audit sources (no auth required)
+// -----------------------------------------------------------------------------
+
+/// PyPI source configuration.
+///
+/// Fetches metadata for a configured list of PyPI packages on each tick.
+/// Use case: supply-chain monitoring of HyperI-published Python packages -
+/// downstream tooling computes deltas against a known-good baseline and
+/// alerts on unexpected version, file, or maintainer changes.
+///
+/// No authentication required - all responses come from
+/// `https://pypi.org/pypi/<package>/json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PypiSourceConfig {
+    /// Enable PyPI source.
+    pub enabled: bool,
+
+    /// Package names to monitor. Each becomes one record per fetch tick.
+    pub packages: Vec<String>,
+
+    /// API base override for testing (default `https://pypi.org`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for PypiSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            packages: vec![],
+            api_url_override: None,
+            interval_secs: None,
+            topic: "pypi".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// crates.io source configuration.
+///
+/// Fetches metadata for a configured list of crates on each tick.
+/// No authentication required - all responses come from
+/// `https://crates.io/api/v1/crates/<name>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CratesIoSourceConfig {
+    /// Enable crates.io source.
+    pub enabled: bool,
+
+    /// Crate names to monitor.
+    pub crates: Vec<String>,
+
+    /// API base override for testing (default `https://crates.io`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for CratesIoSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            crates: vec![],
+            api_url_override: None,
+            interval_secs: None,
+            topic: "crates_io".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Google Workspace Reports API source configuration.
+///
+/// **SPECULATIVE - pending hyperi-infra#5.** The fetcher code is written
+/// against the documented Workspace Reports API but cannot be live-tested
+/// until the GCP service account is provisioned with domain-wide delegation
+/// and the manual Admin-console scope grants are completed.
+///
+/// Pulls per-application audit/activity reports from
+/// `admin.googleapis.com/admin/reports/v1/activity/users/all/applications/<app>`.
+/// Auth: OAuth2 service account using JWT-with-subject (RS256) - the SA
+/// impersonates a designated Workspace admin email so the Reports API
+/// returns data scoped to the tenant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GoogleWorkspaceSourceConfig {
+    /// Enable Google Workspace source.
+    pub enabled: bool,
+
+    /// Path to the service account JSON key file (same shape as the GCP
+    /// source). The SA must have domain-wide delegation enabled and the
+    /// required Reports API scopes granted in the Workspace Admin console.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_key: Option<String>,
+
+    /// Secret source spec for the SA key
+    /// (e.g. `vault:secret/google_workspace:sa_key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Admin email the SA impersonates (the `sub` claim of the signed JWT).
+    /// Must be a Workspace admin in the target tenant; without this the
+    /// Reports API returns 403.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_email: Option<String>,
+
+    /// Customer ID. Defaults to `my_customer` (the tenant the SA's
+    /// impersonated admin belongs to). Explicit C-prefixed IDs are only
+    /// needed for multi-tenant reseller scenarios.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<String>,
+
+    /// API base override for testing
+    /// (default `https://admin.googleapis.com`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Token endpoint override for testing
+    /// (default `https://oauth2.googleapis.com/token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<GoogleWorkspaceService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for GoogleWorkspaceSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            service_account_key: None,
+            credential_secret: None,
+            admin_email: None,
+            customer_id: None,
+            api_url_override: None,
+            token_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "google_workspace".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Google Workspace service. Each maps to one `applicationName` under the
+/// Reports API: `login`, `admin`, `drive`, `mobile`, `groups`, `calendar`,
+/// `chat`, `meet`, `token`, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleWorkspaceService {
+    /// Service name; passed directly as the `applicationName` URL segment.
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys:
+    /// - `event_name`: filter to a single event name (optional).
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+/// GCP Pub/Sub pull source configuration.
+///
+/// **SPECULATIVE - pending hyperi-infra issue (TBD).** The Pub/Sub pull
+/// source is written but cannot be exercised against the live HyperI GCP
+/// tenant until:
+///
+/// 1. A Cloud Logging Log Sink is provisioned to route the desired
+///    log entries (audit, VPC flow, DNS query, custom workloads) into
+///    a Pub/Sub topic.
+/// 2. A Pub/Sub subscription is created on that topic for the fetcher
+///    SA to pull from.
+/// 3. The fetcher's GCP SA is granted `roles/pubsub.subscriber` on the
+///    subscription.
+///
+/// Subscriptions are read via the REST `:pull` endpoint (synchronous
+/// pull); the fetcher acknowledges drained messages with `:acknowledge`
+/// after they have been emitted to Kafka. The gRPC StreamingPull variant
+/// is intentionally not used - fetcher volumes do not justify the extra
+/// dependency surface (tonic + protobuf). If a tenant's subscription
+/// ever sustains volumes that REST pull cannot keep up with, revisit
+/// with a v2 source.
+///
+/// Each subscription is one entry under `subscriptions`. The fetcher
+/// emits one record per Pub/Sub message; `message.data` is base64
+/// decoded and parsed as JSON if possible (typical for Log Sink
+/// payloads), otherwise emitted as a string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GcpPubsubSourceConfig {
+    /// Enable Pub/Sub pull source.
+    pub enabled: bool,
+
+    /// Path to a GCP service account JSON key file. The SA must have
+    /// `roles/pubsub.subscriber` on every configured subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_key: Option<String>,
+
+    /// Secret source spec for the SA key
+    /// (e.g. `vault:secret/gcp-pubsub:sa_key`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing
+    /// (default `https://pubsub.googleapis.com`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// OAuth2 token endpoint override for testing
+    /// (default `https://oauth2.googleapis.com/token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Subscriptions to pull from. Each becomes one `FetchResult`
+    /// tagged `gcp_pubsub.<subscription-id>`.
+    pub subscriptions: Vec<GcpPubsubSubscription>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for GcpPubsubSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            service_account_key: None,
+            credential_secret: None,
+            api_url_override: None,
+            token_url_override: None,
+            interval_secs: None,
+            subscriptions: vec![],
+            topic: "gcp_pubsub".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// A single Pub/Sub subscription configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcpPubsubSubscription {
+    /// GCP project ID owning the subscription.
+    pub project_id: String,
+
+    /// Subscription ID (the short name, not the fully-qualified path).
+    pub subscription_id: String,
+
+    /// Maximum messages to pull per tick. Default 1000 (the REST API cap).
+    #[serde(default = "default_pubsub_max_messages")]
+    pub max_messages: u32,
+
+    /// Whether to return immediately when the subscription is empty,
+    /// or block for `returnImmediately=false` server-side wait.
+    /// Default true (single-shot, fits the polling fetcher model).
+    #[serde(default = "default_pubsub_return_immediately")]
+    pub return_immediately: bool,
+}
+
+fn default_pubsub_max_messages() -> u32 {
+    1000
+}
+
+fn default_pubsub_return_immediately() -> bool {
+    true
+}
+
+/// Object-store source family configuration.
+///
+/// Polls one or more bucket prefixes across S3 / GCS / Azure Blob,
+/// emitting one record per line of every new object since the cursor.
+/// See `docs/superpowers/specs/2026-05-21-object-store-source-design.md`
+/// for the full design.
+///
+/// **Phase 1:** S3 backend is fully implemented. GCS and Azure Blob
+/// backends compile but their `list_new_objects` / `get_object` calls
+/// return a "not yet implemented" error - configuring them today is
+/// safe (the source skips them with a warning) but live use must wait
+/// for Phase 2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectStoreSourceConfig {
+    /// Enable object-store source.
+    pub enabled: bool,
+
+    /// One or more cloud-store backends to poll.
+    pub backends: Vec<ObjectStoreBackendConfig>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Default output topic. Each prefix may override it with its own
+    /// `topic:` field.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for ObjectStoreSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backends: vec![],
+            interval_secs: None,
+            topic: "object_store".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// One backend: provider + auth + buckets/containers to tail.
+///
+/// Provider is selected by the `provider` discriminator (serde-tagged
+/// enum). Each provider variant carries its own auth shape; only S3 is
+/// live in Phase 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum ObjectStoreBackendConfig {
+    /// Amazon S3 (or S3-compatible: MinIO, R2, B2 via endpoint_override).
+    S3(S3BackendConfig),
+
+    /// Google Cloud Storage. **Phase 2 - stub today.**
+    Gcs(GcsBackendConfig),
+
+    /// Azure Blob Storage. **Phase 2 - stub today.**
+    AzureBlob(AzureBlobBackendConfig),
+}
+
+/// S3 backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct S3BackendConfig {
+    /// AWS region for SigV4 signing + endpoint construction.
+    pub region: String,
+
+    /// Optional S3 endpoint override for S3-compatible stores
+    /// (MinIO, R2, B2) or for VPC endpoints. When unset, uses
+    /// `https://<bucket>.s3.<region>.amazonaws.com`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_override: Option<String>,
+
+    /// AWS access key ID. May be a `vault:` or `env:` spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+
+    /// AWS secret access key. May be a `vault:` or `env:` spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<SensitiveString>,
+
+    /// Vault secret spec containing both access_key_id +
+    /// secret_access_key as a JSON object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Buckets + prefixes to tail.
+    pub buckets: Vec<ObjectStoreBucket>,
+}
+
+/// GCS backend configuration. **Phase 2 stub.**
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcsBackendConfig {
+    /// Service account JSON key path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_key: Option<String>,
+
+    /// Vault secret spec for the SA key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Buckets + prefixes to tail.
+    pub buckets: Vec<ObjectStoreBucket>,
+}
+
+/// Azure Blob backend configuration. **Phase 2 stub.**
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AzureBlobBackendConfig {
+    /// Storage account name (the `<name>` in
+    /// `https://<name>.blob.core.windows.net`).
+    pub account: String,
+
+    /// Shared Key (account key). May be a `vault:` or `env:` spec.
+    /// Mutually exclusive with `sas_token` and `tenant_id`/`client_*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<SensitiveString>,
+
+    /// SAS token (without leading `?`). Mutually exclusive with
+    /// `account_key` and SP credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sas_token: Option<SensitiveString>,
+
+    /// Entra Service-Principal tenant ID (for OAuth2 bearer auth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+
+    /// Entra Service-Principal client ID (for OAuth2 bearer auth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Entra Service-Principal client secret (for OAuth2 bearer auth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Vault secret spec for whichever auth method is in use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Blob containers + prefixes to tail. The `bucket` field on each
+    /// entry is the container name.
+    pub buckets: Vec<ObjectStoreBucket>,
+}
+
+/// One bucket / container to tail, plus its prefixes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectStoreBucket {
+    /// Bucket (S3, GCS) or container (Azure Blob) name.
+    pub bucket: String,
+
+    /// Prefixes within the bucket to poll. At least one is required.
+    pub prefixes: Vec<ObjectStorePrefix>,
+}
+
+/// One prefix to tail, plus its format and routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectStorePrefix {
+    /// Object key prefix (may be empty to scan the whole bucket).
+    #[serde(default)]
+    pub prefix: String,
+
+    /// Object format. Drives parser dispatch and gzip handling.
+    pub format: ObjectStoreFormat,
+
+    /// Source tag attached to emitted records (e.g. `aws_cloudtrail`,
+    /// `aws_vpc_flow`, `gcp_audit_sink`). Becomes the `source` field on
+    /// the `FetchResult` as `object_store.<source_tag>`.
+    pub source_tag: String,
+
+    /// Per-prefix Kafka topic override. Falls back to the source-level
+    /// `topic` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+/// Object body format. Drives gzip handling + parser dispatch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectStoreFormat {
+    /// Gzipped JSON-lines (one JSON value per newline).
+    JsonGz,
+    /// Plain JSON-lines (one JSON value per newline).
+    Jsonl,
+    /// Single JSON document (array -> one record per element,
+    /// object -> one record).
+    Json,
+    /// Gzipped plain text. Phase 1 emits each non-empty line as
+    /// `{"line": "..."}`; Phase 2 will add ALB / CloudFront / S3
+    /// access-log parsers.
+    TextGz,
+    /// Plain text. Same Phase 1 behaviour as `text_gz` minus the
+    /// gunzip step.
+    Text,
+}
+
+/// Go module-proxy source configuration.
+///
+/// Fetches version list + per-version `.info` metadata for a configured list
+/// of Go modules. The default proxy is Google's at
+/// `https://proxy.golang.org` - free for everyone, GOPROXY-compatible.
+///
+/// No authentication required.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GoModulesSourceConfig {
+    /// Enable Go modules source.
+    pub enabled: bool,
+
+    /// Module paths to monitor (e.g. `github.com/hyperi-io/dfe-loader`).
+    pub modules: Vec<String>,
+
+    /// Module proxy base override (default `https://proxy.golang.org`).
+    /// Use an internal mirror if desired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for GoModulesSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            modules: vec![],
+            api_url_override: None,
+            interval_secs: None,
+            topic: "go_modules".to_string(),
+            filter: None,
+        }
+    }
 }
 
 // =============================================================================

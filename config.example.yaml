@@ -44,6 +44,14 @@ sources:
       - name: guardduty
       - name: securityhub
       - name: config
+      # Inspector v2 must be enabled tenant-side; returns empty otherwise.
+      # - name: inspector
+      #   config:
+      #     max_results: 100   # per-page, max 100
+      # Health API requires Business / Enterprise On-Ramp / Enterprise support.
+      # - name: health
+      #   config:
+      #     max_results: 100   # per-page, max 100
     topic: "aws"
     # filter: 'eventName != "ConsoleLogin"'  # hot-reloaded
 
@@ -58,7 +66,22 @@ sources:
       - name: activity_log
       - name: defender
       - name: sentinel
-      - name: entra_id
+      # Entra ID is split into three Graph audit endpoints, each with its own
+      # source tag and cursor. Configure the feeds you actually want.
+      - name: entra_signins             # graph.microsoft.com/v1.0/auditLogs/signIns
+      - name: entra_directory_audits    # graph.microsoft.com/v1.0/auditLogs/directoryAudits
+      - name: entra_provisioning        # graph.microsoft.com/v1.0/auditLogs/provisioning
+      # Log Analytics KQL queries. Each row of the result becomes one record
+      # tagged `azure.log_analytics`. Multiple log_analytics services with
+      # different queries can coexist (each gets its own cursor if cursor
+      # tracking is enabled at the orchestrator level).
+      # - name: log_analytics
+      #   config:
+      #     workspace_id: "00000000-0000-0000-0000-000000000000"  # GUID
+      #     kql: |
+      #       SecurityEvent
+      #       | where EventID == 4625
+      #       | project TimeGenerated, Account, IpAddress, FailureReason
     topic: "azure"
     # filter: 'level == "Critical" || level == "Error"'  # hot-reloaded
 
@@ -69,12 +92,303 @@ sources:
     # client_secret: ""
     # credential_secret: "vault:secret/m365:credentials"
     services:
+      # Office 365 Management Activity API. audit_log covers all 5 OMAP content
+      # types by default (Audit.General, Audit.AzureActiveDirectory,
+      # Audit.Exchange, Audit.SharePoint, DLP.All). Use service config
+      # `content_types: [...]` to opt out of specific feeds.
       - name: audit_log
-      - name: message_trace
+      # Office Mgmt API Audit.Exchange (per-message audit, not aggregate counts).
+      - name: exchange_audit
+      # Office Mgmt API DLP.All (raw DLP rule-match events).
       - name: dlp
+      # Microsoft Graph security/alerts_v2 (requires SecurityAlert.Read.All).
       - name: alerts
     topic: "m365"
     # filter: 'Workload != "Exchange"'  # hot-reloaded
+
+  github:
+    enabled: false
+    # Set exactly one of `org` or `enterprise` per fetcher instance.
+    # org: "your-github-org"
+    # enterprise: "your-enterprise-slug"
+    # token: ""                # Personal Access Token, fine-grained PAT,
+                               # or GitHub App installation token.
+                               # Scope: read:audit_log (org) or
+                               #        read:enterprise (enterprise).
+    # credential_secret: "vault:secret/github:token"
+    services:
+      # GitHub audit log. Optional `include` filter (web/git/all).
+      - name: audit_log
+        config:
+          include: "all"        # all | web | git
+    topic: "github"
+    # filter: 'action != "git.clone"'  # hot-reloaded
+
+  okta:
+    enabled: false
+    # tenant_url: "https://your-tenant.okta.com"
+    # token: ""                # SSWS API token (legacy) or OAuth access token.
+    # use_ssws_header: true    # true = Authorization: SSWS <token> (default);
+                               # false = Authorization: Bearer <token>.
+    # credential_secret: "vault:secret/okta:token"
+    services:
+      - name: system_log
+        # Optional service-side config:
+        # config:
+        #   filter: 'eventType eq "user.session.start"'   # OData filter
+        #   limit: 100                                    # per-page, max 1000
+    topic: "okta"
+    # filter: 'eventType != "user.session.access_token"'  # hot-reloaded
+
+  cloudflare:
+    enabled: false
+    # account_id: ""           # 32-char hex from Cloudflare dashboard.
+    # token: ""                # API token with Account:Audit Logs:Read.
+    # credential_secret: "vault:secret/cloudflare:token"
+    services:
+      - name: audit_logs
+        # Optional service-side filters:
+        # config:
+        #   actor_email: "ops@example.com"   # filter by acting user
+        #   action_type: "login"             # filter by action category
+        #   per_page: 100                    # default 100, max 1000
+    topic: "cloudflare"
+    # filter: 'action.type != "view"'  # hot-reloaded
+
+  onepassword:
+    enabled: false
+    # 1Password Events Reporting API. Requires 1Password Business or
+    # Enterprise plan with Events Reporting enabled on the tenant.
+    # token: ""                # Bearer token from 1Password Business dash:
+                               # Integrations > Directory > Events Reporting.
+    # credential_secret: "vault:secret/onepassword:events_token"
+    # api_url_override:        # Defaults to https://events.1password.com.
+    #                          # EU region: https://events.ent.1password.eu
+    services:
+      - name: signin_attempts     # /api/v2/signinattempts
+      - name: item_usages         # /api/v2/itemusages
+      - name: audit_events        # /api/v2/auditevents
+    topic: "onepassword"
+    # filter: 'category != "miss"'  # hot-reloaded
+
+  crowdstrike:
+    enabled: false
+    # CrowdStrike Falcon. Set api_url_override to your tenant region:
+    #   US-1: https://api.crowdstrike.com (default)
+    #   US-2: https://api.us-2.crowdstrike.com
+    #   EU-1: https://api.eu-1.crowdstrike.com
+    #   US-GOV-1: https://api.laggar.gcw.crowdstrike.com
+    # api_url_override: "https://api.crowdstrike.com"
+    # client_id: ""            # OAuth2 client ID (Falcon admin console).
+    # client_secret: ""        # OAuth2 client secret.
+    # credential_secret: "vault:secret/crowdstrike:client_secret"
+    services:
+      - name: detections
+        # Optional service-side config:
+        # config:
+        #   limit: 100                 # query page size, max 9999
+        #   filter: "severity:>=70"    # extra Falcon Query Language clause
+    topic: "crowdstrike"
+    # filter: 'severity >= 70'  # hot-reloaded
+
+  slack:
+    enabled: false
+    # Slack audit logs. Enterprise Grid only - the audit API isn't
+    # available on Pro/Business+.
+    # token: ""                # xoxa-... or xoxb-... org-admin token with
+                               # `auditlogs:read` scope.
+    # credential_secret: "vault:secret/slack:audit_token"
+    services:
+      - name: audit_logs
+        # Optional service-side filters:
+        # config:
+        #   action: "user_login"          # specific action
+        #   entity: "user"                # specific entity type
+        #   limit: 200                    # per-page, max 1000
+    topic: "slack"
+    # filter: 'action != "user_login"'  # hot-reloaded
+
+  bitwarden:
+    enabled: false
+    # Bitwarden Events API. Teams or Enterprise plan required.
+    # Cloud or self-hosted (set both URL overrides for self-hosted).
+    # client_id: "organization.<uuid>"   # Settings > Organization info > API Key
+    # client_secret: ""
+    # credential_secret: "vault:secret/bitwarden:client_secret"
+    # api_url_override: "https://api.bitwarden.com"
+    # identity_url_override: "https://identity.bitwarden.com/connect/token"
+    services:
+      - name: events
+    topic: "bitwarden"
+    # filter: 'type < 1500'  # hot-reloaded
+
+  duo:
+    enabled: false
+    # Duo Admin API. HMAC-SHA1 request signing (Duo's proprietary scheme).
+    # api_host: "api-XXXXXXXX.duosecurity.com"   # from Admin > Applications
+    # integration_key: ""                        # ikey
+    # secret_key: ""                             # skey
+    # credential_secret: "vault:secret/duo:skey"
+    services:
+      - name: authentication_logs
+        # config:
+        #   limit: 100                # per-page, max 1000
+    topic: "duo"
+    # filter: 'result == "FRAUD"'  # hot-reloaded
+
+  # ---------------------------------------------------------------------------
+  # Public-registry supply-chain audit (no auth required, free public APIs).
+  # For each tick the fetcher pulls full metadata for each configured package;
+  # downstream tooling computes deltas to detect unexpected publications.
+  # ---------------------------------------------------------------------------
+
+  pypi:
+    enabled: false
+    # packages:
+    #   - "hyperi-pylib"
+    #   - "hyperi-ci"
+    # api_url_override: "https://pypi.org"  # default
+    topic: "pypi"
+    # filter: 'info.yanked != false'  # hot-reloaded
+
+  crates_io:
+    enabled: false
+    # crates:
+    #   - "hyperi-rustlib"
+    #   - "dfe-loader"
+    #   - "dfe-fetcher"
+    # api_url_override: "https://crates.io"  # default
+    topic: "crates_io"
+    # filter: 'versions.size() > 0'  # hot-reloaded
+
+  go_modules:
+    enabled: false
+    # modules:
+    #   - "github.com/hyperi-io/some-go-tool"
+    # api_url_override: "https://proxy.golang.org"  # default
+    topic: "go_modules"
+    # filter: 'versions.size() > 0'  # hot-reloaded
+
+  # ---------------------------------------------------------------------------
+  # Google Workspace Reports API
+  # SPECULATIVE - pending hyperi-infra#5. The code is written but the live
+  # tenant integration cannot be tested until a domain-wide-delegation
+  # service account is provisioned AND the Admin-console operator manually
+  # grants the Reports API scope to that SA's numeric client ID under
+  # Security -> API controls -> Domain-wide delegation. Until then this
+  # stanza is documentation only. Leave `enabled: false`.
+  # ---------------------------------------------------------------------------
+
+  google_workspace:
+    enabled: false
+    # service_account_key: "/etc/workspace/sa-key.json"
+    # credential_secret: "vault:secret/google_workspace:sa_key"
+    # admin_email: "audit-admin@example.com"   # MUST be a Workspace admin
+    # customer_id: "my_customer"               # default - tenant of admin_email
+    # api_url_override: "https://admin.googleapis.com"   # default
+    # token_url_override: "https://oauth2.googleapis.com/token"  # default
+    services:
+      # Each entry is one applicationName under
+      # /admin/reports/v1/activity/users/all/applications/<name>.
+      # - name: login
+      # - name: admin
+      # - name: drive
+      # - name: mobile
+      # - name: groups
+      # - name: calendar
+      # - name: chat
+      # - name: meet
+      #   # Per-service config keys:
+      #   #   event_name: filter to a single event name (optional)
+      #   config:
+      #     event_name: "call_ended"
+    topic: "google_workspace"
+    # filter: 'id.applicationName == "login"'  # hot-reloaded
+
+  # ---------------------------------------------------------------------------
+  # GCP Pub/Sub pull
+  # SPECULATIVE - pending hyperi-infra issue (TBD). The fetcher pulls and
+  # acknowledges Pub/Sub messages via the REST `:pull` / `:acknowledge`
+  # endpoints. Each subscription requires:
+  #   1. A Cloud Logging Log Sink (or app publisher) populating a topic.
+  #   2. A Pub/Sub subscription on that topic.
+  #   3. The fetcher SA granted `roles/pubsub.subscriber` on the subscription.
+  # Leave `enabled: false` until the infra issue is closed.
+  # ---------------------------------------------------------------------------
+
+  gcp_pubsub:
+    enabled: false
+    # service_account_key: "/etc/gcp/pubsub-sa.json"
+    # credential_secret: "vault:secret/gcp-pubsub:sa_key"
+    # api_url_override: "https://pubsub.googleapis.com"  # default
+    # token_url_override: "https://oauth2.googleapis.com/token"  # default
+    subscriptions:
+      # - project_id: "my-gcp-project"
+      #   subscription_id: "audit-logs-fetcher"
+      #   max_messages: 1000           # default; REST cap is 1000
+      #   return_immediately: true     # default; single-shot per tick
+    topic: "gcp_pubsub"
+    # filter: '_dfe_fetcher_pubsub.subscription.contains("audit")'  # hot-reloaded
+
+  # ---------------------------------------------------------------------------
+  # Object-store source family (S3 / GCS / Azure Blob)
+  #
+  # Polls bucket prefixes for new objects, parses gzipped JSON-lines / JSON /
+  # plain text, and emits one record per line. Used for log feeds that only
+  # deliver via bucket (CloudTrail, VPC Flow Logs, WAF, Cloud Logging storage
+  # sinks, Azure diagnostic-to-blob).
+  #
+  # Phase 1: S3 backend is fully implemented. GCS and Azure Blob backends are
+  # stubs that log-and-skip; do not enable them today. See
+  # docs/superpowers/specs/2026-05-21-object-store-source-design.md for the
+  # Phase 2 plan.
+  #
+  # Formats: json_gz | jsonl | json | text_gz | text
+  # ---------------------------------------------------------------------------
+
+  object_store:
+    enabled: false
+    topic: "object_store"
+    # filter: '_dfe_fetcher_object.bucket == "my-cloudtrail-bucket"'
+    backends:
+      # --- S3 example (live) ---
+      # - provider: s3
+      #   region: ap-southeast-2
+      #   access_key_id: "env:AWS_ACCESS_KEY_ID"
+      #   secret_access_key: "env:AWS_SECRET_ACCESS_KEY"
+      #   # credential_secret: "vault:secret/aws-s3-reader:credentials"
+      #   # endpoint_override: "http://localhost:9000"  # for MinIO / R2 / B2
+      #   buckets:
+      #     - bucket: my-cloudtrail-bucket
+      #       prefixes:
+      #         - prefix: "AWSLogs/123456789012/CloudTrail/ap-southeast-2/"
+      #           format: json_gz
+      #           source_tag: "aws_cloudtrail"
+      #           # topic: "cloudtrail"   # override the source-level topic
+      #         - prefix: "AWSLogs/123456789012/vpcflowlogs/"
+      #           format: json_gz
+      #           source_tag: "aws_vpc_flow"
+      #
+      # --- GCS example (PHASE 2 STUB - do not enable today) ---
+      # - provider: gcs
+      #   service_account_key: "/etc/gcp/sa-key.json"
+      #   buckets:
+      #     - bucket: my-cloudaudit-export
+      #       prefixes:
+      #         - prefix: "cloudaudit.googleapis.com/activity/"
+      #           format: json_gz
+      #           source_tag: "gcp_audit_sink"
+      #
+      # --- Azure Blob example (PHASE 2 STUB - do not enable today) ---
+      # - provider: azure_blob
+      #   account: mydiagstorage
+      #   account_key: "vault:secret/azure-blob:account-key"
+      #   buckets:
+      #     - bucket: insights-activity-logs   # blob container
+      #       prefixes:
+      #         - prefix: "resourceId=.../y=2026/"
+      #           format: json_gz
+      #           source_tag: "azure_activity_sink"
 
   gcp:
     enabled: false
@@ -82,7 +396,22 @@ sources:
     # service_account_key: "/etc/gcp/sa-key.json"
     # credential_secret: "vault:secret/gcp:credentials"
     services:
-      - name: audit_logs
+      # Cloud Audit Logs split into the four subtypes GCP publishes under
+      # cloudaudit.googleapis.com. Each gets its own source tag and cursor.
+      # data_access is OFF by default at the GCP project level - enable via
+      # IAM audit-config before expecting records from that subtype.
+      - name: admin_activity            # log_id("cloudaudit.googleapis.com/activity")
+      - name: data_access               # log_id("cloudaudit.googleapis.com/data_access")
+      - name: system_event              # log_id("cloudaudit.googleapis.com/system_event")
+      - name: policy_denied             # log_id("cloudaudit.googleapis.com/policy")
+      # Additional Cloud Logging streams. Each requires tenant-side enablement:
+      # - vpc_flow_logs: enable VPC Flow Logs per subnet.
+      # - dns_queries:   attach a DNS server policy with logging enabled.
+      # - storage_access: gcs_bucket subset of data_access; same enablement
+      #                   as the data_access service.
+      - name: vpc_flow_logs
+      - name: dns_queries
+      - name: storage_access
       - name: scc
       - name: cloud_logging
     topic: "gcp"

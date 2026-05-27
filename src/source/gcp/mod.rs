@@ -26,6 +26,79 @@ use crate::credential;
 use crate::error::{Error, Result};
 use crate::source::{FetchResult, FetchWindow, Source};
 
+/// A Cloud Logging-backed GCP service.
+///
+/// Maps a fetcher service name to a Cloud Logging filter clause. The fetcher
+/// appends a timestamp range and posts to `logging.googleapis.com/v2/entries:list`.
+struct GcpLoggingService {
+    /// Service config name; also used as the source suffix
+    /// (becomes `gcp.<service_name>`).
+    service_name: &'static str,
+    /// Cloud Logging filter clause excluding timestamp range. The dispatcher
+    /// appends `AND timestamp >= "..." AND timestamp < "..."`.
+    ///
+    /// Reference: <https://cloud.google.com/logging/docs/view/logging-query-language>
+    filter_clause: &'static str,
+}
+
+/// Cloud Logging-backed GCP services.
+///
+/// Each entry becomes a distinct fetcher service with its own source tag and
+/// cursor. Some require tenant-side enablement (see the per-entry comments).
+const GCP_LOGGING_SERVICES: &[GcpLoggingService] = &[
+    // -- Cloud Audit Log subtypes (always on for `admin_activity` /
+    // `system_event` / `policy_denied`; tenant must enable Data Access audit
+    // logs in IAM policy for `data_access` to return records).
+    GcpLoggingService {
+        service_name: "admin_activity",
+        filter_clause: "log_id(\"cloudaudit.googleapis.com/activity\")",
+    },
+    GcpLoggingService {
+        service_name: "data_access",
+        filter_clause: "log_id(\"cloudaudit.googleapis.com/data_access\")",
+    },
+    GcpLoggingService {
+        service_name: "system_event",
+        filter_clause: "log_id(\"cloudaudit.googleapis.com/system_event\")",
+    },
+    GcpLoggingService {
+        service_name: "policy_denied",
+        filter_clause: "log_id(\"cloudaudit.googleapis.com/policy\")",
+    },
+    // -- Other Cloud Logging streams (tenant-side enablement listed).
+    // VPC Flow Logs: tenant enables per-subnet via
+    // `gcloud compute networks subnets update --enable-flow-logs`.
+    GcpLoggingService {
+        service_name: "vpc_flow_logs",
+        filter_clause: "log_id(\"compute.googleapis.com/vpc_flows\")",
+    },
+    // Cloud DNS query logs: tenant enables via a DNS server policy with
+    // `enable_logging = true` on the policy attached to the relevant network.
+    GcpLoggingService {
+        service_name: "dns_queries",
+        filter_clause: "log_id(\"dns.googleapis.com/dns_queries\")",
+    },
+    // Cloud Storage data-access events: subset of the `data_access` subtype
+    // narrowed to `gcs_bucket` resources. Useful when consumers want
+    // Storage-only audit without the wider data_access volume. Requires the
+    // same Data Access audit-log enablement as the `data_access` service.
+    GcpLoggingService {
+        service_name: "storage_access",
+        filter_clause: "resource.type=\"gcs_bucket\" AND log_id(\"cloudaudit.googleapis.com/data_access\")",
+    },
+];
+
+/// Service names dispatchable to the Cloud Logging path (for the match arm).
+const GCP_LOGGING_SERVICE_NAMES: &[&str] = &[
+    "admin_activity",
+    "data_access",
+    "system_event",
+    "policy_denied",
+    "vpc_flow_logs",
+    "dns_queries",
+    "storage_access",
+];
+
 /// GCP data source implementation.
 pub struct GcpSource {
     config: GcpSourceConfig,
@@ -315,10 +388,16 @@ impl Source for GcpSource {
                             + '_,
                     >,
                 > = match service.name.as_str() {
-                    "audit_logs" => Box::pin(async move {
+                    // Per-subtype audit services. Each emits its own FetchResult
+                    // tagged `gcp.admin_activity` / `gcp.data_access` /
+                    // `gcp.system_event` / `gcp.policy_denied`. There is
+                    // intentionally no combined `audit_logs` service - consumers
+                    // configure each subtype they want with its own cursor and
+                    // source tag.
+                    name if GCP_LOGGING_SERVICE_NAMES.contains(&name) => Box::pin(async move {
                         (
                             &*service.name,
-                            self.fetch_audit_logs(service, start, end).await,
+                            self.fetch_logging_service(name, start, end).await,
                         )
                     }),
                     "scc" => {
@@ -377,23 +456,29 @@ impl Source for GcpSource {
 }
 
 impl GcpSource {
-    async fn fetch_audit_logs(
+    /// Fetch a Cloud Logging-backed service entry with a fixed filter clause.
+    ///
+    /// Returns `Ok(None)` when no entries fall in the window. Tags the result
+    /// `gcp.<service_name>` (e.g. `gcp.admin_activity`, `gcp.vpc_flow_logs`).
+    async fn fetch_logging_entries(
         &self,
-        _service: &crate::config::GcpService,
+        token: &str,
+        svc: &GcpLoggingService,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Option<FetchResult>> {
-        let token = self.get_access_token().await?;
-        let project_id = self
-            .config
-            .project_id
-            .as_deref()
-            .ok_or_else(|| Error::Config("gcp.project_id is required for audit_logs".into()))?;
+        let project_id = self.config.project_id.as_deref().ok_or_else(|| {
+            Error::Config(format!(
+                "gcp.project_id is required for {}",
+                svc.service_name
+            ))
+        })?;
 
         let body = serde_json::json!({
             "resourceNames": [format!("projects/{project_id}")],
             "filter": format!(
-                "logName:\"cloudaudit.googleapis.com\" AND timestamp >= \"{}\" AND timestamp < \"{}\"",
+                "{} AND timestamp >= \"{}\" AND timestamp < \"{}\"",
+                svc.filter_clause,
                 start.to_rfc3339(),
                 end.to_rfc3339()
             ),
@@ -407,7 +492,7 @@ impl GcpSource {
             .as_deref()
             .unwrap_or("https://logging.googleapis.com");
         let url = format!("{api_base}/v2/entries:list");
-        let items = self.post_paginated_gcp(&token, &url, body, 10).await?;
+        let items = self.post_paginated_gcp(token, &url, body, 10).await?;
 
         if items.is_empty() {
             return Ok(None);
@@ -418,12 +503,37 @@ impl GcpSource {
             .filter_map(|item| serde_json::to_vec(&item).ok().map(Bytes::from))
             .collect();
 
-        info!(records = records.len(), "GCP audit logs fetched");
+        if records.is_empty() {
+            return Ok(None);
+        }
+
+        info!(
+            records = records.len(),
+            service = svc.service_name,
+            "GCP Cloud Logging service fetched"
+        );
         Ok(Some(FetchResult {
             records,
-            source: "gcp.audit_logs".to_string(),
+            source: format!("gcp.{}", svc.service_name),
             topic: self.config.topic.clone(),
         }))
+    }
+
+    /// Dispatch a Cloud Logging-backed service to its filter entry.
+    async fn fetch_logging_service(
+        &self,
+        service_name: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Option<FetchResult>> {
+        let svc = GCP_LOGGING_SERVICES
+            .iter()
+            .find(|s| s.service_name == service_name)
+            .ok_or_else(|| {
+                Error::Source(format!("unknown GCP Cloud Logging service: {service_name}"))
+            })?;
+        let token = self.get_access_token().await?;
+        self.fetch_logging_entries(&token, svc, start, end).await
     }
 
     async fn fetch_scc(&self, _service: &crate::config::GcpService) -> Result<Option<FetchResult>> {
@@ -521,5 +631,113 @@ impl GcpSource {
             source: "gcp.cloud_logging".to_string(),
             topic: self.config.topic.clone(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn svc(name: &str) -> &'static GcpLoggingService {
+        GCP_LOGGING_SERVICES
+            .iter()
+            .find(|s| s.service_name == name)
+            .expect("service must exist in GCP_LOGGING_SERVICES")
+    }
+
+    #[test]
+    fn logging_services_includes_four_audit_subtypes() {
+        let names: std::collections::HashSet<&str> = GCP_LOGGING_SERVICES
+            .iter()
+            .map(|s| s.service_name)
+            .collect();
+        for expected in [
+            "admin_activity",
+            "data_access",
+            "system_event",
+            "policy_denied",
+        ] {
+            assert!(
+                names.contains(expected),
+                "audit subtype {expected} missing from GCP_LOGGING_SERVICES"
+            );
+        }
+    }
+
+    #[test]
+    fn logging_services_includes_level_2_streams() {
+        let names: std::collections::HashSet<&str> = GCP_LOGGING_SERVICES
+            .iter()
+            .map(|s| s.service_name)
+            .collect();
+        for expected in ["vpc_flow_logs", "dns_queries", "storage_access"] {
+            assert!(
+                names.contains(expected),
+                "Level 2 service {expected} missing from GCP_LOGGING_SERVICES"
+            );
+        }
+    }
+
+    #[test]
+    fn logging_service_names_table_matches_struct_table() {
+        let struct_names: std::collections::HashSet<&str> = GCP_LOGGING_SERVICES
+            .iter()
+            .map(|s| s.service_name)
+            .collect();
+        let flat_names: std::collections::HashSet<&str> =
+            GCP_LOGGING_SERVICE_NAMES.iter().copied().collect();
+        assert_eq!(
+            struct_names, flat_names,
+            "GCP_LOGGING_SERVICES and GCP_LOGGING_SERVICE_NAMES must agree on service names"
+        );
+    }
+
+    #[test]
+    fn policy_denied_uses_policy_log_id() {
+        // Service is named `policy_denied` for clarity; underlying log id is `policy`.
+        assert_eq!(
+            svc("policy_denied").filter_clause,
+            "log_id(\"cloudaudit.googleapis.com/policy\")"
+        );
+    }
+
+    #[test]
+    fn vpc_flow_logs_filter_matches_official_log_id() {
+        assert_eq!(
+            svc("vpc_flow_logs").filter_clause,
+            "log_id(\"compute.googleapis.com/vpc_flows\")"
+        );
+    }
+
+    #[test]
+    fn dns_queries_filter_matches_official_log_id() {
+        assert_eq!(
+            svc("dns_queries").filter_clause,
+            "log_id(\"dns.googleapis.com/dns_queries\")"
+        );
+    }
+
+    #[test]
+    fn storage_access_filter_scopes_to_gcs_bucket_resource() {
+        assert_eq!(
+            svc("storage_access").filter_clause,
+            "resource.type=\"gcs_bucket\" AND log_id(\"cloudaudit.googleapis.com/data_access\")"
+        );
+    }
+
+    #[test]
+    fn no_duplicate_service_names() {
+        let mut names: Vec<&str> = GCP_LOGGING_SERVICES
+            .iter()
+            .map(|s| s.service_name)
+            .collect();
+        names.sort_unstable();
+        let len_before = names.len();
+        names.dedup();
+        assert_eq!(
+            len_before,
+            names.len(),
+            "GCP_LOGGING_SERVICES has duplicate service_name entries"
+        );
     }
 }

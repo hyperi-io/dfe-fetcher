@@ -330,3 +330,44 @@ Each sidecar runs as a container extractor with `mode: continuous` and
 communicates via stdout (JSON lines) or HTTP POST to the ingest endpoint.
 The fetcher manages the container lifecycle including restart-on-crash with
 exponential backoff.
+
+## Performance Sensitivity
+
+> **dfe-fetcher is less hot-path-sensitive than the rest of the DFE stack.**
+
+Typical fetcher volumes are orders of magnitude lower than the loader /
+receiver / transform / archiver tier. A single fetcher pod servicing one
+tenant's combined AWS / Azure / M365 / GCP / SaaS audit feeds normally
+moves tens to a few thousand records per minute. The downstream pipeline
+moves PB/hour. The fetcher is also I/O-bound waiting on remote cloud
+APIs, not CPU-bound parsing or routing.
+
+What this means in practice:
+
+| Concern | Rest of DFE stack | dfe-fetcher |
+|---|---|---|
+| Per-record allocation | Zero-allocation hot path; pre-allocated pools, arenas | Allocate freely - `Vec`, `String`, `serde_json::Value` are fine |
+| SIMD JSON parse | `sonic-rs` mandatory on hot paths | `serde_json` is sufficient |
+| Cloning / `Bytes` reuse | Aggressive `Bytes` reuse, `Cow`, arena lifetimes | `Bytes::from(serde_json::to_vec(&doc)?)` per record is fine |
+| Channel sizing | Backpressure-tuned bounded channels per stage | Default Tokio channels; per-source `for` loops are fine |
+| `regex` on hot path | Forbidden - use `memchr` / `memmem::Finder` | Acceptable if needed; volumes don't justify rewrite |
+| `async fn` granularity | Watch `.await` budget, yield_now hints | `await` per HTTP request is the unit of work |
+| Per-source concurrency | Lock-free, sharded, ArcSwap | `Arc<Mutex<>>` for an OAuth token cache is acceptable |
+
+We still care about correctness, cancellation safety, bounded retries,
+and not leaking tasks - those are correctness concerns, not perf
+concerns. We also still prefer the simple, idiomatic version of any
+pattern over the clever one. But the aggressive hot-path discipline
+documented in `hyperi-ai/standards/rules/rust.md` and applied across
+dfe-loader / dfe-receiver / dfe-archiver does **not** need to be
+applied symmetrically here.
+
+This trade-off is deliberate. It keeps the per-source code
+straightforward (one async function per HTTP endpoint, `Vec` of
+records out), keeps the cognitive load low for new sources, and
+reserves the harder optimisation work for the pipeline tiers where
+volumes actually demand it. When a fetcher source ever becomes a
+bottleneck (sustained high-cardinality tenants, very chatty audit
+feeds), revisit on a case-by-case basis - the rustlib hot-path
+patterns are available if needed, just not the default starting
+point here.
