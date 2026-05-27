@@ -24,12 +24,13 @@ paths = [
 ]
 
 # Regex patterns for known false positives
-# regexes = [
-#     '''YOUR_.*_TOKEN''',
-#     '''your-.*-token''',
-#     '''test-token''',
-#     '''example\.com''',
-# ]
+regexes = [
+    # Historical Duo HMAC-SHA1 test fixture (random 40-char string used as
+    # the `skey` input to verify sign_hex stability and length). Replaced
+    # in a later commit with a low-entropy placeholder, but git history
+    # still contains the high-entropy version which `generic-api-key` flags.
+    '''Zh5eGmUq9zpfQnyUIu5OL9iWoMMv5ZNmk3zLJ4Ep''',
+]
 
 # Stopwords - findings containing these are likely false positives
-# stopwords = ["example", "sample", "test", "mock", "fake", "dummy", "placeholder"]
+stopwords = ["example", "sample", "test", "mock", "fake", "dummy", "placeholder"]

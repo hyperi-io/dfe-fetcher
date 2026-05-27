@@ -493,7 +493,10 @@ mod tests {
     /// and that identical inputs produce identical outputs.
     #[test]
     fn sign_hex_is_stable_and_correct_length() {
-        let skey = "Zh5eGmUq9zpfQnyUIu5OL9iWoMMv5ZNmk3zLJ4Ep";
+        // Low-entropy test placeholder; the assertions below check only that
+        // identical inputs produce identical 40-char hex outputs, not against
+        // any published reference vector.
+        let skey = "test-skey-placeholder";
         let canonical = "GET\napi-x.duosecurity.com\n/admin/v2/logs/authentication\n";
         let a = DuoSource::sign_hex(skey, canonical).unwrap();
         let b = DuoSource::sign_hex(skey, canonical).unwrap();
