@@ -1,3 +1,20 @@
+# [1.3.0](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.3...v1.3.0) (2026-05-27)
+
+
+### Bug Fixes
+
+* adopt v2.7.1 DLQ API (Dlq::spawn + queue-admission send semantics) ([006960c](https://github.com/hyperi-io/dfe-fetcher/commit/006960ca71c569fb4e46d4cc4389b6eaa941d785))
+* avoid needless clone of shutdown token (clippy --all-features) ([c7b7161](https://github.com/hyperi-io/dfe-fetcher/commit/c7b7161863b357807ff0221b4a20e88fa162a2aa))
+* complete v2.7.1 DLQ API migration in fetcher test+bench sites ([a8771cc](https://github.com/hyperi-io/dfe-fetcher/commit/a8771cc76da1faf2e8412cb96034c72e944126f5))
+* **deps:** bump astral-tokio-tar 0.6.1 -> 0.6.2 + metrics-util 0.20.2 -> 0.20.4 ([b1cae36](https://github.com/hyperi-io/dfe-fetcher/commit/b1cae36ea5a780bdb8c40de6c57ba2157a2a1bfd))
+* **release:** force patch bump v1.2.4 ([de5e455](https://github.com/hyperi-io/dfe-fetcher/commit/de5e4559ac83c3af509ccc9c6b052b6e8ea0fe7a))
+* **security:** rotate Duo HMAC test fixture to low-entropy placeholder ([f336929](https://github.com/hyperi-io/dfe-fetcher/commit/f33692953dafecc267d06c1956c68f0428c94b2a)), closes [hi#entropy](https://github.com/hi/issues/entropy) [hi#entropy](https://github.com/hi/issues/entropy)
+
+
+### Features
+
+* expand source coverage to 16 source families + rustlib 2.8.0 ([6af52e4](https://github.com/hyperi-io/dfe-fetcher/commit/6af52e455eb538d436c0b3f2571d5c4e0e561422))
+
 ## [1.2.3](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.2...v1.2.3) (2026-05-07)
 
 
