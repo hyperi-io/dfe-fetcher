@@ -16,7 +16,7 @@
 //! - `sources.aws.region`
 
 use crate::config::Config;
-use crate::credential::{resolve, CredentialError};
+use crate::credential::{CredentialError, resolve};
 
 /// Resolve all `env:`/`vault:` spec strings on opted-in config fields.
 pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialError> {
