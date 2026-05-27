@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Project:   dfe-fetcher
 # File:      scripts/pgo-workload.sh
-# Purpose:   PGO workload orchestrator — mock cloud APIs + Kafka + fetcher
+# Purpose:   PGO workload orchestrator — mock cloud APIs + Redpanda + fetcher
 # Language:  Bash
 #
 # License:   FSL-1.1-ALv2
@@ -16,7 +16,9 @@
 #
 # Environment variables (all optional):
 #   PGO_WORKLOAD_DURATION_SECS   Duration of load (default 300, floor 60)
-#   PGO_WORKLOAD_KAFKA_IMAGE     Override Kafka image
+#   PGO_WORKLOAD_KAFKA_IMAGE     Override the Redpanda image (var keeps the
+#                                KAFKA_ prefix because the wire protocol is
+#                                still Kafka; downstream config is unchanged)
 #   PGO_WORKLOAD_KEEP            Set to 1 to skip cleanup (debug)
 #   PGO_DRIVER_PATH              Override pgo-driver binary path
 #   PGO_DRIVER_PAGE_SIZE         Records per mock response (default 500)
@@ -29,7 +31,7 @@
 #
 # Behaviour:
 #   - Starts mock cloud-API server (pgo-driver) on 127.0.0.1:19090
-#   - Starts single-node Kafka (KRaft) on 127.0.0.1:19092
+#   - Starts single-node Redpanda (Kafka-wire-protocol) on 127.0.0.1:19092
 #   - Writes ephemeral fetcher config (Azure + M365 + AWS + GCP via overrides)
 #   - Starts fetcher binary, waits for /readyz on 127.0.0.1:9090
 #   - Lets fetcher poll the mock for $PGO_WORKLOAD_DURATION_SECS
@@ -53,7 +55,7 @@ if [[ ! -x "$FETCHER_BIN" ]]; then
 fi
 
 DURATION="${PGO_WORKLOAD_DURATION_SECS:-300}"
-KAFKA_IMAGE="${PGO_WORKLOAD_KAFKA_IMAGE:-apache/kafka:3.8.0}"
+KAFKA_IMAGE="${PGO_WORKLOAD_KAFKA_IMAGE:-docker.redpanda.com/redpandadata/redpanda:v26.1.9}"
 KEEP="${PGO_WORKLOAD_KEEP:-0}"
 
 # Floor of 60s — shorter workloads produce bad PGO profiles
@@ -107,7 +109,7 @@ cleanup() {
         echo "PGO_WORKLOAD_KEEP=1 — skipping cleanup" >&2
         echo "  fetcher PID: $FETCHER_PID" >&2
         echo "  driver PID:  $DRIVER_PID" >&2
-        echo "  kafka CID:   $KAFKA_CID" >&2
+        echo "  broker CID:  $KAFKA_CID" >&2
         echo "  config dir:  $CONFIG_DIR" >&2
         return $rc
     fi
@@ -174,35 +176,42 @@ for attempt in $(seq 1 30); do
 done
 
 # ----------------------------------------------------------------------------
-# Start Kafka (KRaft mode, single-node, auto-create topics)
+# Start Redpanda (Kafka-wire-protocol compatible single-node broker)
+#
+# Why Redpanda, not Apache Kafka: the Kafka JVM needs 1.5-2 GB heap+metaspace
+# and won't co-exist with a PGO-instrumented binary on the 4 GB CI runners
+# (see hyperi-io/dfe-fetcher#28). Redpanda is a single C++/Seastar binary,
+# boots in ~1s, and fits comfortably under a 512 MiB cap. App config is
+# unchanged - same `localhost:19092` broker, same wire protocol.
+#
+# `--mode dev-container` bundles `--overprovisioned --reserve-memory 0M
+# --check=false --unsafe-bypass-fsync` and enables topic auto-create, which
+# replaces the Kafka env-var matrix above.
 # ----------------------------------------------------------------------------
 
-echo "pgo-workload: starting Kafka ($KAFKA_IMAGE)"
+echo "pgo-workload: starting Redpanda ($KAFKA_IMAGE)"
 KAFKA_CID=$(docker run -d --rm \
     -p 19092:9092 \
-    -e KAFKA_NODE_ID=1 \
-    -e KAFKA_PROCESS_ROLES=broker,controller \
-    -e KAFKA_LISTENERS='PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093' \
-    -e KAFKA_ADVERTISED_LISTENERS='PLAINTEXT://localhost:19092' \
-    -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP='CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT' \
-    -e KAFKA_CONTROLLER_QUORUM_VOTERS='1@localhost:9093' \
-    -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
-    -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
-    -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=true \
-    -e KAFKA_NUM_PARTITIONS=3 \
-    -e KAFKA_DEFAULT_REPLICATION_FACTOR=1 \
-    -e CLUSTER_ID="$(printf '%s' "pgo$(date +%s)$$" | base64 | head -c 22)" \
-    "$KAFKA_IMAGE")
-echo "pgo-workload: Kafka CID: $KAFKA_CID"
+    "$KAFKA_IMAGE" \
+    redpanda start \
+        --mode dev-container \
+        --smp 1 \
+        --memory 512M \
+        --kafka-addr PLAINTEXT://0.0.0.0:9092 \
+        --advertise-kafka-addr PLAINTEXT://localhost:19092)
+echo "pgo-workload: Redpanda CID: $KAFKA_CID"
 
-for attempt in $(seq 1 30); do
-    if (echo > /dev/tcp/127.0.0.1/19092) 2>/dev/null; then
-        sleep 2  # let RAFT bootstrap finish
-        echo "pgo-workload: Kafka ready (attempt $attempt)"
+# Real protocol readiness via the admin API (rpk), not a bare TCP-open probe.
+# TCP open != broker accepting Kafka protocol; the old loop slept 2s after
+# TCP open to paper over the RAFT bootstrap race. With rpk we wait for the
+# cluster to self-report Healthy.
+for attempt in $(seq 1 60); do
+    if docker exec "$KAFKA_CID" rpk cluster health 2>/dev/null | grep -q "Healthy:.*true"; then
+        echo "pgo-workload: Redpanda ready (attempt $attempt)"
         break
     fi
-    if [[ $attempt -eq 30 ]]; then
-        echo "error: Kafka did not become ready in 60s" >&2
+    if [[ $attempt -eq 60 ]]; then
+        echo "error: Redpanda did not become ready in 120s" >&2
         docker logs --tail 50 "$KAFKA_CID" >&2
         exit 1
     fi
