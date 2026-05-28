@@ -8,7 +8,8 @@
 
 //! GCP Pub/Sub pull source (REST synchronous pull).
 //!
-//! **SPECULATIVE - pending hyperi-infra issue (TBD).** This module is
+//! **Alpha** (code-complete, not production-validated) and additionally
+//! pending a hyperi-infra issue (TBD) before it can be exercised live. This module is
 //! fully written against the documented Pub/Sub REST API but cannot be
 //! exercised against the live HyperI tenant until:
 //!

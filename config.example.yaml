@@ -143,7 +143,7 @@ sources:
   cloudflare:
     enabled: false
     # account_id: ""           # 32-char hex from Cloudflare dashboard.
-    # token: ""                # API token with Account:Audit Logs:Read.
+    # token: ""                # API token with "Account Settings: Read" (v1 audit-logs endpoint).
     # credential_secret: "vault:secret/cloudflare:token"
     services:
       - name: audit_logs
@@ -183,10 +183,10 @@ sources:
     # client_secret: ""        # OAuth2 client secret.
     # credential_secret: "vault:secret/crowdstrike:client_secret"
     services:
-      - name: detections
+      - name: alerts
         # Optional service-side config:
         # config:
-        #   limit: 100                 # query page size, max 9999
+        #   limit: 100                 # query page size, max 1000
         #   filter: "severity:>=70"    # extra Falcon Query Language clause
     topic: "crowdstrike"
     # filter: 'severity >= 70'  # hot-reloaded
@@ -271,7 +271,8 @@ sources:
 
   # ---------------------------------------------------------------------------
   # Google Workspace Reports API
-  # SPECULATIVE - pending hyperi-infra#5. The code is written but the live
+  # ALPHA (code-complete, not production-validated) - additionally pending
+  # hyperi-infra#5. The code is written but the live
   # tenant integration cannot be tested until a domain-wide-delegation
   # service account is provisioned AND the Admin-console operator manually
   # grants the Reports API scope to that SA's numeric client ID under
@@ -307,7 +308,8 @@ sources:
 
   # ---------------------------------------------------------------------------
   # GCP Pub/Sub pull
-  # SPECULATIVE - pending hyperi-infra issue (TBD). The fetcher pulls and
+  # ALPHA (code-complete, not production-validated) - additionally pending a
+  # hyperi-infra issue (TBD). The fetcher pulls and
   # acknowledges Pub/Sub messages via the REST `:pull` / `:acknowledge`
   # endpoints. Each subscription requires:
   #   1. A Cloud Logging Log Sink (or app publisher) populating a topic.
@@ -389,6 +391,61 @@ sources:
       #         - prefix: "resourceId=.../y=2026/"
       #           format: json_gz
       #           source_tag: "azure_activity_sink"
+
+  # ---------------------------------------------------------------------------
+  # Salesforce audit (SetupAuditTrail, LoginHistory, EventLogFile)
+  #
+  # ALPHA (code-complete, not production-validated) - additionally pending a
+  # Salesforce connected app +
+  # integration user for live testing (same status as google_workspace and
+  # gcp_pubsub). The code is complete but unverified against a live org.
+  # Leave `enabled: false` until a connected app is provisioned.
+  #
+  # Auth is OAuth2 against <login_url>/services/oauth2/token via one of two
+  # server-to-server flows, picked by which fields are set:
+  #
+  #   JWT bearer (recommended): client_id + username + private_key
+  #     (or private_key_secret). Upload the matching X.509 cert to the
+  #     connected app; pre-authorise the integration user.
+  #   client credentials: client_id + client_secret (or credential_secret).
+  #     Enable the client-credentials flow on the connected app with a
+  #     run-as user.
+  #
+  # Surface availability:
+  #   setup_audit_trail, login_history - every org, no add-on.
+  #   event_log_file - 7 event types free (1-day retention); 70+ require the
+  #     Event Monitoring / Shield add-on. Two-stage: SOQL lists files, then
+  #     each LogFile body is downloaded as CSV.
+  #
+  # Required perms on the integration user: API Enabled, View Setup Audit
+  # Trail, and (for event_log_file) View Event Log Files.
+  # ---------------------------------------------------------------------------
+
+  salesforce:
+    enabled: false
+    # login_url: "https://login.salesforce.com"   # sandbox: https://test.salesforce.com
+    # api_version: "v60.0"
+    # client_id: "env:SALESFORCE_CLIENT_ID"       # connected app consumer key
+    #
+    # --- JWT bearer auth ---
+    # username: "integration@example.com"
+    # private_key_secret: "vault:secret/salesforce:private_key"
+    # # private_key: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+    #
+    # --- OR client-credentials auth ---
+    # client_secret: "env:SALESFORCE_CLIENT_SECRET"
+    # # credential_secret: "vault:secret/salesforce:client_secret"
+    #
+    # instance_url_override: "https://mydomain.my.salesforce.com"  # testing / custom domain
+    services:
+      # - name: setup_audit_trail
+      # - name: login_history
+      # - name: event_log_file
+      #   config:
+      #     interval: "Daily"          # or "Hourly"
+      #     event_types: ["Login", "Logout", "ApiTotalUsage", "ReportExport"]
+    topic: "salesforce"
+    # filter: 'EventType == "Login"'   # hot-reloaded
 
   gcp:
     enabled: false

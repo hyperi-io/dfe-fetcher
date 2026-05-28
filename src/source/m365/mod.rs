@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 use crate::config::{M365Service, M365SourceConfig};
 use crate::credential::{self, TokenManager};
 use crate::error::{Error, Result};
-use crate::source::{FetchResult, FetchWindow, Source};
+use crate::source::{FetchResult, FetchWindow, Source, SourceMaturity};
 
 /// Office 365 Management Activity API content types.
 ///
@@ -617,6 +617,10 @@ impl Source for M365Source {
 
     fn is_enabled(&self) -> bool {
         self.config.enabled
+    }
+
+    fn maturity(&self) -> SourceMaturity {
+        SourceMaturity::Stable
     }
 
     async fn fetch(&self, window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {

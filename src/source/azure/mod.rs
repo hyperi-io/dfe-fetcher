@@ -24,7 +24,7 @@ use tracing::{debug, info, warn};
 use crate::config::AzureSourceConfig;
 use crate::credential::{self, TokenManager};
 use crate::error::{Error, Result};
-use crate::source::{FetchResult, FetchWindow, Source};
+use crate::source::{FetchResult, FetchWindow, Source, SourceMaturity};
 
 /// Microsoft Graph audit-endpoint metadata.
 ///
@@ -210,6 +210,10 @@ impl Source for AzureSource {
 
     fn is_enabled(&self) -> bool {
         self.config.enabled
+    }
+
+    fn maturity(&self) -> SourceMaturity {
+        SourceMaturity::Stable
     }
 
     async fn fetch(&self, window: Option<&FetchWindow>) -> Result<Vec<FetchResult>> {

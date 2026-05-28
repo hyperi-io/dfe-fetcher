@@ -46,7 +46,8 @@ use dfe_fetcher::config::{
     GithubSourceConfig, GoModulesSourceConfig, GoogleWorkspaceService, GoogleWorkspaceSourceConfig,
     M365Service, M365SourceConfig, ObjectStoreBackendConfig, ObjectStoreBucket, ObjectStoreFormat,
     ObjectStorePrefix, ObjectStoreSourceConfig, OktaService, OktaSourceConfig, OnePasswordService,
-    OnePasswordSourceConfig, PypiSourceConfig, S3BackendConfig, SlackService, SlackSourceConfig,
+    OnePasswordSourceConfig, PypiSourceConfig, S3BackendConfig, SalesforceService,
+    SalesforceSourceConfig, SlackService, SlackSourceConfig,
 };
 use dfe_fetcher::source::Source;
 use dfe_fetcher::source::aws::AwsSource;
@@ -66,6 +67,7 @@ use dfe_fetcher::source::object_store::ObjectStoreSource;
 use dfe_fetcher::source::okta::OktaSource;
 use dfe_fetcher::source::onepassword::OnePasswordSource;
 use dfe_fetcher::source::pypi::PypiSource;
+use dfe_fetcher::source::salesforce::SalesforceSource;
 use dfe_fetcher::source::slack::SlackSource;
 
 // =============================================================================
@@ -300,32 +302,6 @@ async fn azure_fetch_activity_log() {
     );
 }
 
-/// Back-compat: legacy `entra_id` service still emits ONE merged FetchResult
-/// tagged `azure.entra_id` covering all 3 Graph endpoints.
-#[tokio::test]
-#[ignore = "requires live Azure credentials"]
-async fn azure_fetch_entra_id_back_compat() {
-    load_env();
-    let mut cfg = azure_base();
-    cfg.services.push(AzureService {
-        name: "entra_id".to_string(),
-        config: HashMap::new(),
-    });
-    let source = AzureSource::new(cfg);
-    let results = source.fetch(None).await.expect("entra_id fetch failed");
-    for r in &results {
-        assert_eq!(
-            r.source, "azure.entra_id",
-            "back-compat entra_id should keep emitting azure.entra_id, got {}",
-            r.source
-        );
-    }
-    eprintln!(
-        "Azure entra_id (back-compat): {} record(s)",
-        results.iter().map(|r| r.records.len()).sum::<usize>()
-    );
-}
-
 /// New split: `entra_signins` emits its own FetchResult tagged
 /// `azure.entra_signins`.
 #[tokio::test]
@@ -528,32 +504,6 @@ async fn gcp_fetch_cloud_logging() {
     eprintln!(
         "GCP Cloud Logging: {} result(s), {} total records",
         results.len(),
-        results.iter().map(|r| r.records.len()).sum::<usize>()
-    );
-}
-
-/// Back-compat: legacy `audit_logs` service still emits ONE merged FetchResult
-/// tagged `gcp.audit_logs` covering all 4 audit subtypes.
-#[tokio::test]
-#[ignore = "requires live GCP credentials"]
-async fn gcp_fetch_audit_logs_back_compat() {
-    load_env();
-    let mut cfg = gcp_base();
-    cfg.services.push(GcpService {
-        name: "audit_logs".to_string(),
-        config: HashMap::new(),
-    });
-    let source = GcpSource::new(cfg);
-    let results = source.fetch(None).await.expect("audit_logs fetch failed");
-    for r in &results {
-        assert_eq!(
-            r.source, "gcp.audit_logs",
-            "back-compat audit_logs should keep emitting gcp.audit_logs, got {}",
-            r.source
-        );
-    }
-    eprintln!(
-        "GCP audit_logs (back-compat): {} record(s)",
         results.iter().map(|r| r.records.len()).sum::<usize>()
     );
 }
@@ -853,37 +803,6 @@ async fn m365_fetch_dlp_via_omap() {
     }
     eprintln!(
         "M365 dlp: {} record(s)",
-        results.iter().map(|r| r.records.len()).sum::<usize>()
-    );
-}
-
-/// `message_trace` (legacy name) and `exchange_audit` both dispatch to OMAP
-/// Audit.Exchange after 2026-05-21 refactor. Old name kept for config
-/// compatibility.
-#[tokio::test]
-#[ignore = "requires live M365 credentials"]
-async fn m365_fetch_message_trace_via_omap() {
-    load_env();
-    let mut cfg = m365_base();
-    cfg.services.push(M365Service {
-        name: "message_trace".to_string(),
-        config: HashMap::new(),
-    });
-    let source = M365Source::new(cfg);
-    let results = source
-        .fetch(None)
-        .await
-        .expect("message_trace fetch failed");
-
-    for r in &results {
-        assert_eq!(
-            r.source, "m365.exchange_audit",
-            "message_trace should now emit m365.exchange_audit, got {}",
-            r.source
-        );
-    }
-    eprintln!(
-        "M365 message_trace (=> exchange_audit): {} record(s)",
         results.iter().map(|r| r.records.len()).sum::<usize>()
     );
 }
@@ -1285,7 +1204,7 @@ async fn crowdstrike_health_check() {
     load_env();
     let mut cfg = crowdstrike_base();
     cfg.services.push(CrowdstrikeService {
-        name: "detections".to_string(),
+        name: "alerts".to_string(),
         config: HashMap::new(),
     });
     let source = CrowdstrikeSource::new(cfg);
@@ -1301,23 +1220,23 @@ async fn crowdstrike_health_check() {
 
 #[tokio::test]
 #[ignore = "requires live CrowdStrike Falcon credentials"]
-async fn crowdstrike_fetch_detections() {
+async fn crowdstrike_fetch_alerts() {
     load_env();
     let mut cfg = crowdstrike_base();
     cfg.services.push(CrowdstrikeService {
-        name: "detections".to_string(),
+        name: "alerts".to_string(),
         config: HashMap::new(),
     });
     let source = CrowdstrikeSource::new(cfg);
     let results = source
         .fetch(None)
         .await
-        .expect("CrowdStrike detections fetch failed");
+        .expect("CrowdStrike alerts fetch failed");
     for r in &results {
-        assert_eq!(r.source, "crowdstrike.detections");
+        assert_eq!(r.source, "crowdstrike.alerts");
     }
     eprintln!(
-        "CrowdStrike detections: {} record(s)",
+        "CrowdStrike alerts: {} record(s)",
         results.iter().map(|r| r.records.len()).sum::<usize>()
     );
 }
@@ -1835,6 +1754,120 @@ async fn object_store_s3_parse_json_gz_objects() {
             // Every record carries the envelope; the bucket name is the
             // ground truth we asserted on.
             assert_eq!(parsed["_dfe_fetcher_object"]["bucket"], bucket.as_str());
+        }
+    }
+}
+
+// =============================================================================
+// Salesforce -- SetupAuditTrail + LoginHistory (SOQL) + EventLogFile (CSV)
+// =============================================================================
+//
+// Auth picks JWT bearer when SALESFORCE_PRIVATE_KEY[_PATH] is set, else
+// client credentials via SALESFORCE_CLIENT_SECRET. Requires a connected app
+// in the target org + an integration user with API Enabled, View Setup Audit
+// Trail, and (for event_log_file) View Event Log Files.
+
+fn salesforce_base() -> SalesforceSourceConfig {
+    SalesforceSourceConfig {
+        enabled: true,
+        login_url: optional("SALESFORCE_LOGIN_URL"),
+        api_version: optional("SALESFORCE_API_VERSION"),
+        client_id: optional("SALESFORCE_CLIENT_ID"),
+        username: optional("SALESFORCE_USERNAME"),
+        private_key: optional("SALESFORCE_PRIVATE_KEY"),
+        private_key_secret: optional("SALESFORCE_PRIVATE_KEY_SECRET"),
+        client_secret: optional("SALESFORCE_CLIENT_SECRET").map(Into::into),
+        credential_secret: optional("SALESFORCE_CREDENTIAL_SECRET"),
+        instance_url_override: optional("SALESFORCE_INSTANCE_URL"),
+        topic: "test-salesforce".to_string(),
+        ..SalesforceSourceConfig::default()
+    }
+}
+
+fn salesforce_has_auth() -> bool {
+    optional("SALESFORCE_CLIENT_ID").is_some()
+        && (optional("SALESFORCE_PRIVATE_KEY").is_some()
+            || optional("SALESFORCE_PRIVATE_KEY_SECRET").is_some()
+            || optional("SALESFORCE_CLIENT_SECRET").is_some()
+            || optional("SALESFORCE_CREDENTIAL_SECRET").is_some())
+}
+
+#[tokio::test]
+#[ignore = "requires a Salesforce connected app + integration user"]
+async fn salesforce_health_check() {
+    load_env();
+    assert!(
+        salesforce_has_auth(),
+        "missing SALESFORCE_CLIENT_ID + one of SALESFORCE_PRIVATE_KEY / \
+         SALESFORCE_PRIVATE_KEY_SECRET / SALESFORCE_CLIENT_SECRET / \
+         SALESFORCE_CREDENTIAL_SECRET"
+    );
+    let src = SalesforceSource::new(salesforce_base());
+    let ok = src
+        .health_check()
+        .await
+        .expect("Salesforce health_check errored");
+    assert!(ok, "Salesforce health_check returned false");
+}
+
+#[tokio::test]
+#[ignore = "requires a Salesforce connected app + integration user"]
+async fn salesforce_setup_audit_trail_and_login_history() {
+    load_env();
+    assert!(salesforce_has_auth(), "missing Salesforce auth env vars");
+    let mut cfg = salesforce_base();
+    cfg.services = vec![
+        SalesforceService {
+            name: "setup_audit_trail".to_string(),
+            config: HashMap::new(),
+        },
+        SalesforceService {
+            name: "login_history".to_string(),
+            config: HashMap::new(),
+        },
+    ];
+    let src = SalesforceSource::new(cfg);
+    let results = src.fetch(None).await.expect("Salesforce fetch failed");
+    let total: usize = results.iter().map(|r| r.records.len()).sum();
+    eprintln!(
+        "Salesforce SOQL: {} FetchResult(s), {total} record(s) total",
+        results.len(),
+    );
+    for r in &results {
+        assert!(
+            r.source.starts_with("salesforce."),
+            "unexpected source tag: {}",
+            r.source
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Salesforce Event Monitoring (or the 7 free EventLogFile types)"]
+async fn salesforce_event_log_file() {
+    load_env();
+    assert!(salesforce_has_auth(), "missing Salesforce auth env vars");
+    let mut cfg = salesforce_base();
+    cfg.services = vec![SalesforceService {
+        name: "event_log_file".to_string(),
+        config: HashMap::new(),
+    }];
+    let src = SalesforceSource::new(cfg);
+    let results = src.fetch(None).await.expect("Salesforce ELF fetch failed");
+    let total: usize = results.iter().map(|r| r.records.len()).sum();
+    eprintln!(
+        "Salesforce EventLogFile: {} FetchResult(s), {total} record(s) total",
+        results.len(),
+    );
+    for r in &results {
+        assert_eq!(r.source, "salesforce.event_log_file");
+        for rec in &r.records {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(rec).expect("each ELF record must be valid JSON");
+            assert!(
+                parsed["_dfe_fetcher_event_type"].is_string(),
+                "ELF record missing _dfe_fetcher_event_type envelope"
+            );
         }
     }
 }

@@ -30,6 +30,7 @@ pub mod object_store;
 pub mod okta;
 pub mod onepassword;
 pub mod pypi;
+pub mod salesforce;
 pub mod slack;
 
 use async_trait::async_trait;
@@ -64,6 +65,37 @@ pub struct FetchResult {
     pub topic: String,
 }
 
+/// Release-maturity stage of a source, used for runtime warnings and docs.
+///
+/// The progression is `Alpha -> Beta -> Stable`:
+/// - `Alpha`   - code-complete but not production-validated. Default for all
+///   sources. Use at your own risk; behaviour and config may change.
+/// - `Beta`    - validated against a live service, hardening in progress.
+/// - `Stable`  - production-ready. The four core sources (aws, azure, m365,
+///   gcp) are stable; everything else is currently alpha.
+///
+/// New sources start at `Alpha` (the trait default) until explicitly promoted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceMaturity {
+    /// Code-complete, not production-validated.
+    Alpha,
+    /// Live-validated, hardening in progress.
+    Beta,
+    /// Production-ready.
+    Stable,
+}
+
+impl std::fmt::Display for SourceMaturity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SourceMaturity::Alpha => "alpha",
+            SourceMaturity::Beta => "beta",
+            SourceMaturity::Stable => "stable",
+        };
+        f.write_str(s)
+    }
+}
+
 /// Trait for native data sources (AWS, Azure, M365, GCP).
 ///
 /// Each source implementation is responsible for:
@@ -78,6 +110,16 @@ pub trait Source: Send + Sync {
 
     /// Check if the source is enabled in configuration.
     fn is_enabled(&self) -> bool;
+
+    /// Release-maturity stage of this source.
+    ///
+    /// Defaults to [`SourceMaturity::Alpha`] - new sources are alpha until
+    /// explicitly promoted. The four core sources (aws, azure, m365, gcp)
+    /// override this to [`SourceMaturity::Stable`]. The orchestrator logs a
+    /// warning at startup for any enabled non-stable source.
+    fn maturity(&self) -> SourceMaturity {
+        SourceMaturity::Alpha
+    }
 
     /// Fetch data from the external service.
     ///
