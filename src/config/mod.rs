@@ -569,14 +569,14 @@ pub struct SourcesConfig {
 
     /// Google Workspace Reports API source configuration.
     ///
-    /// **SPECULATIVE - pending hyperi-infra#5** (domain-wide-delegation
-    /// service account + manual Admin-console scope grants).
+    /// **Alpha** - additionally pending hyperi-infra#5 (domain-wide-delegation
+    /// service account + manual Admin-console scope grants) before live use.
     pub google_workspace: GoogleWorkspaceSourceConfig,
 
     /// GCP Pub/Sub pull source configuration.
     ///
-    /// **SPECULATIVE - pending hyperi-infra issue (TBD)** for tenant-side
-    /// Log Sink + Pub/Sub topic + subscription provisioning.
+    /// **Alpha** - additionally pending a hyperi-infra issue (TBD) for
+    /// tenant-side Log Sink + Pub/Sub topic + subscription provisioning.
     pub gcp_pubsub: GcpPubsubSourceConfig,
 
     /// Object-store source family configuration (S3 / GCS / Azure Blob).
@@ -585,6 +585,13 @@ pub struct SourcesConfig {
     /// log-and-skip until Phase 2. See
     /// `docs/superpowers/specs/2026-05-21-object-store-source-design.md`.
     pub object_store: ObjectStoreSourceConfig,
+
+    /// Salesforce audit source configuration (SetupAuditTrail,
+    /// LoginHistory, EventLogFile).
+    ///
+    /// **Alpha** - additionally pending a Salesforce connected app for live
+    /// testing.
+    pub salesforce: SalesforceSourceConfig,
 }
 
 impl Default for SourcesConfig {
@@ -608,6 +615,7 @@ impl Default for SourcesConfig {
             google_workspace: GoogleWorkspaceSourceConfig::default(),
             gcp_pubsub: GcpPubsubSourceConfig::default(),
             object_store: ObjectStoreSourceConfig::default(),
+            salesforce: SalesforceSourceConfig::default(),
         }
     }
 }
@@ -1084,8 +1092,11 @@ pub struct CloudflareSourceConfig {
     pub account_id: Option<String>,
 
     /// API token. Always redacted on serialisation.
-    /// Required token permissions:
-    /// - Account: Audit Logs:Read (for `audit_logs`)
+    /// Required token permission for the v1 account audit-logs endpoint this
+    /// source calls (`/accounts/{id}/audit_logs`): **Account Settings: Read**.
+    /// (The separate "Account Audit Logs Read" permission applies to the
+    /// newer v2 `/accounts/{id}/logs/audit` API, which this source does not
+    /// use yet.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<SensitiveString>,
 
@@ -1621,7 +1632,8 @@ impl Default for CratesIoSourceConfig {
 
 /// Google Workspace Reports API source configuration.
 ///
-/// **SPECULATIVE - pending hyperi-infra#5.** The fetcher code is written
+/// **Alpha** (code-complete, not production-validated) and additionally
+/// pending hyperi-infra#5. The fetcher code is written
 /// against the documented Workspace Reports API but cannot be live-tested
 /// until the GCP service account is provisioned with domain-wide delegation
 /// and the manual Admin-console scope grants are completed.
@@ -1717,9 +1729,139 @@ pub struct GoogleWorkspaceService {
     pub config: HashMap<String, serde_json::Value>,
 }
 
+/// Salesforce audit source configuration.
+///
+/// **Alpha** (code-complete, not production-validated) and additionally
+/// pending a Salesforce connected app + integration user for live testing
+/// (same status as [`GoogleWorkspaceSourceConfig`] and
+/// [`GcpPubsubSourceConfig`]). The fetcher code is complete but cannot be
+/// live-tested until a connected app is provisioned in a HyperI Salesforce org.
+///
+/// Pulls security/audit data from a Salesforce org via the REST API:
+/// - `setup_audit_trail` - admin config changes (SOQL, every org)
+/// - `login_history` - login events (SOQL, every org)
+/// - `event_log_file` - runtime events as downloadable CSV log files
+///   (7 event types free with 1-day retention; 70+ with the Event
+///   Monitoring / Shield add-on)
+///
+/// Auth is OAuth2 against `<login_url>/services/oauth2/token`, via one of
+/// two server-to-server flows selected by which fields are set:
+/// - **JWT bearer** (Salesforce-recommended): set `client_id` (connected
+///   app consumer key), `username` (integration user), and one of
+///   `private_key` / `private_key_secret` (RSA private key PEM). An RS256
+///   JWT is signed and exchanged for a token.
+/// - **client credentials**: set `client_id` + one of `client_secret` /
+///   `credential_secret`. Requires the connected app to have the client-
+///   credentials flow enabled with a run-as user.
+///
+/// The token response carries an `instance_url` which is used for all
+/// subsequent API calls (not `login_url`). `instance_url_override` pins it
+/// for testing or custom-domain deployments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SalesforceSourceConfig {
+    /// Enable Salesforce source.
+    pub enabled: bool,
+
+    /// OAuth2 login base URL. Default `https://login.salesforce.com`.
+    /// Sandboxes use `https://test.salesforce.com`; My Domain orgs may use
+    /// `https://<mydomain>.my.salesforce.com`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_url: Option<String>,
+
+    /// REST API version path segment. Default `v60.0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<String>,
+
+    /// Connected app consumer key. Used as the JWT `iss` claim (JWT bearer)
+    /// or the `client_id` form field (client credentials).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Integration username (JWT `sub` claim). JWT-bearer flow only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+
+    /// RSA private key PEM for the JWT-bearer flow (full
+    /// `-----BEGIN PRIVATE KEY-----` ... block). JWT-bearer flow only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+
+    /// Secret source spec resolving to the RSA private key PEM
+    /// (e.g. `vault:secret/salesforce:private_key`). Takes precedence over
+    /// `private_key` when set. JWT-bearer flow only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_secret: Option<String>,
+
+    /// Connected app consumer secret. client-credentials flow only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source spec resolving to the consumer secret
+    /// (e.g. `vault:secret/salesforce:client_secret`). Takes precedence
+    /// over `client_secret` when set. client-credentials flow only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Pin the API instance URL instead of using the token response's
+    /// `instance_url`. For testing or custom-domain deployments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_url_override: Option<String>,
+
+    /// Fetch interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+
+    /// Services to fetch from.
+    pub services: Vec<SalesforceService>,
+
+    /// Output Kafka topic.
+    pub topic: String,
+
+    /// CEL filter expression applied to fetched records.
+    #[serde(default)]
+    pub filter: Option<String>,
+}
+
+impl Default for SalesforceSourceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            login_url: None,
+            api_version: None,
+            client_id: None,
+            username: None,
+            private_key: None,
+            private_key_secret: None,
+            client_secret: None,
+            credential_secret: None,
+            instance_url_override: None,
+            interval_secs: None,
+            services: vec![],
+            topic: "salesforce".to_string(),
+            filter: None,
+        }
+    }
+}
+
+/// Salesforce service. `name` selects the audit surface:
+/// `setup_audit_trail`, `login_history`, or `event_log_file`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SalesforceService {
+    /// Service name (audit surface to pull).
+    pub name: String,
+
+    /// Service-specific configuration. Recognised keys (event_log_file):
+    /// - `event_types`: array of EventType values to include (default all)
+    /// - `interval`: `"Hourly"` or `"Daily"` (default `"Daily"`)
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
+}
+
 /// GCP Pub/Sub pull source configuration.
 ///
-/// **SPECULATIVE - pending hyperi-infra issue (TBD).** The Pub/Sub pull
+/// **Alpha** (code-complete, not production-validated) and additionally
+/// pending a hyperi-infra issue (TBD). The Pub/Sub pull
 /// source is written but cannot be exercised against the live HyperI GCP
 /// tenant until:
 ///

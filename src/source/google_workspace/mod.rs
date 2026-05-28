@@ -8,7 +8,8 @@
 
 //! Google Workspace Reports API audit/activity source.
 //!
-//! **SPECULATIVE - pending hyperi-infra#5.** This module is fully written
+//! **Alpha** (code-complete, not production-validated) and additionally
+//! pending hyperi-infra#5 before it can be exercised live. This module is fully written
 //! against the documented Workspace Reports API but cannot be exercised
 //! against the live HyperI tenant until:
 //!

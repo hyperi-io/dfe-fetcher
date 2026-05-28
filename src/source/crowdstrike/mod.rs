@@ -8,16 +8,18 @@
 
 //! CrowdStrike Falcon source.
 //!
-//! Pulls detections from the Falcon public API. Auth: OAuth2
+//! Pulls alerts from the Falcon public API. Auth: OAuth2
 //! `client_credentials` against `/oauth2/token`, then bearer-token to the
 //! data endpoints.
 //!
-//! Detections is a two-stage API call:
+//! The `alerts` service is a two-stage API call against the Alerts API
+//! (the legacy Detects API - `/detects/queries/detects/v1` +
+//! `/detects/entities/summaries/GET/v1` - was decommissioned 2025-09-30):
 //!
-//! 1. `GET /detects/queries/detects/v1?filter=...&offset=...&limit=...`
-//!    returns detection IDs only.
-//! 2. `POST /detects/entities/summaries/GET/v1` with the ID list returns
-//!    full detection summaries.
+//! 1. `GET /alerts/queries/alerts/v2?filter=...&offset=...&limit=...`
+//!    returns alert composite IDs only.
+//! 2. `POST /alerts/entities/alerts/v2` with `{"composite_ids": [...]}`
+//!    returns full alert entities.
 //!
 //! Region awareness: Falcon tenants live on different cloud regions, each
 //! with its own API host. The fetcher takes the API base URL from config
@@ -40,14 +42,17 @@ use crate::source::{FetchResult, FetchWindow, Source};
 /// Default lookback when no `FetchWindow` is supplied.
 const DEFAULT_LOOKBACK_HOURS: i64 = 1;
 
-/// Default detections page size. Falcon caps `limit` at 9999.
+/// Default alerts page size. The Alerts query API caps `limit` at 1000.
 const DEFAULT_LIMIT: u32 = 100;
+
+/// Hard cap on the configurable query page size for the Alerts API.
+const MAX_LIMIT: u32 = 1000;
 
 /// Maximum query-pages we will follow per fetch call (each holds <=`limit` IDs).
 const MAX_PAGES: usize = 50;
 
-/// Maximum detection IDs per `summaries` POST batch. Falcon docs say 1000.
-const SUMMARY_BATCH_LIMIT: usize = 1000;
+/// Maximum composite IDs per entities POST batch. Falcon docs say 1000.
+const ENTITY_BATCH_LIMIT: usize = 1000;
 
 /// Per-request HTTP timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -197,7 +202,7 @@ impl CrowdstrikeSource {
         }
     }
 
-    async fn fetch_detections(
+    async fn fetch_alerts(
         &self,
         service: &CrowdstrikeService,
         window: Option<&FetchWindow>,
@@ -209,18 +214,18 @@ impl CrowdstrikeSource {
             .config
             .get("limit")
             .and_then(|v| v.as_u64())
-            .map(|n| n.min(9999) as u32)
+            .map(|n| (n.min(u64::from(MAX_LIMIT))) as u32)
             .unwrap_or(DEFAULT_LIMIT);
 
         let filter = Self::build_fql_filter(service, start, end);
         let api_base = self.api_base().to_string();
 
-        // Stage 1: collect detection IDs via /detects/queries/detects/v1.
+        // Stage 1: collect alert composite IDs via /alerts/queries/alerts/v2.
         let mut ids: Vec<String> = Vec::new();
         let mut offset: u32 = 0;
         for page in 0..MAX_PAGES {
             let url = format!(
-                "{api_base}/detects/queries/detects/v1?filter={}&offset={offset}&limit={limit}&sort=created_timestamp.asc",
+                "{api_base}/alerts/queries/alerts/v2?filter={}&offset={offset}&limit={limit}&sort=created_timestamp.asc",
                 urlencoded(&filter),
             );
 
@@ -231,19 +236,20 @@ impl CrowdstrikeSource {
                 .header("Accept", "application/json")
                 .send()
                 .await
-                .map_err(|e| Error::Source(format!("CrowdStrike detection query failed: {e}")))?;
+                .map_err(|e| Error::Source(format!("CrowdStrike alert query failed: {e}")))?;
 
             let status = resp.status();
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 return Err(Error::Source(format!(
-                    "CrowdStrike detection query returned {status}: {body}"
+                    "CrowdStrike alert query returned {status}: {body}"
                 )));
             }
 
-            let body: serde_json::Value = resp.json().await.map_err(|e| {
-                Error::Source(format!("CrowdStrike detection query parse failed: {e}"))
-            })?;
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| Error::Source(format!("CrowdStrike alert query parse failed: {e}")))?;
 
             let resources = body["resources"].as_array().cloned().unwrap_or_default();
             let batch_len = resources.len();
@@ -259,7 +265,7 @@ impl CrowdstrikeSource {
                 batch_len,
                 total_ids = ids.len(),
                 total_advertised = total,
-                "CrowdStrike detection-query page fetched"
+                "CrowdStrike alert-query page fetched"
             );
 
             if (ids.len() as u32) >= total || batch_len == 0 {
@@ -272,33 +278,34 @@ impl CrowdstrikeSource {
             return Ok(None);
         }
 
-        // Stage 2: POST batches of IDs to /detects/entities/summaries/GET/v1.
-        let summaries_url = format!("{api_base}/detects/entities/summaries/GET/v1");
+        // Stage 2: POST batches of composite IDs to /alerts/entities/alerts/v2.
+        let entities_url = format!("{api_base}/alerts/entities/alerts/v2");
         let mut records: Vec<Bytes> = Vec::new();
-        for chunk in ids.chunks(SUMMARY_BATCH_LIMIT) {
-            let body = serde_json::json!({ "ids": chunk });
+        for chunk in ids.chunks(ENTITY_BATCH_LIMIT) {
+            let body = serde_json::json!({ "composite_ids": chunk });
             let resp = self
                 .client
-                .post(&summaries_url)
+                .post(&entities_url)
                 .bearer_auth(&token)
                 .header("Accept", "application/json")
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| Error::Source(format!("CrowdStrike summaries POST failed: {e}")))?;
+                .map_err(|e| {
+                    Error::Source(format!("CrowdStrike alert entities POST failed: {e}"))
+                })?;
 
             let status = resp.status();
             if !status.is_success() {
                 let body_text = resp.text().await.unwrap_or_default();
                 return Err(Error::Source(format!(
-                    "CrowdStrike summaries returned {status}: {body_text}"
+                    "CrowdStrike alert entities returned {status}: {body_text}"
                 )));
             }
 
-            let envelope: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| Error::Source(format!("CrowdStrike summaries parse failed: {e}")))?;
+            let envelope: serde_json::Value = resp.json().await.map_err(|e| {
+                Error::Source(format!("CrowdStrike alert entities parse failed: {e}"))
+            })?;
 
             let resources = envelope["resources"]
                 .as_array()
@@ -313,7 +320,7 @@ impl CrowdstrikeSource {
             debug!(
                 chunk_size = chunk.len(),
                 total_records = records.len(),
-                "CrowdStrike summaries batch fetched"
+                "CrowdStrike alert-entities batch fetched"
             );
         }
 
@@ -321,10 +328,10 @@ impl CrowdstrikeSource {
             return Ok(None);
         }
 
-        info!(records = records.len(), "CrowdStrike detections fetched");
+        info!(records = records.len(), "CrowdStrike alerts fetched");
         Ok(Some(FetchResult {
             records,
-            source: "crowdstrike.detections".to_string(),
+            source: "crowdstrike.alerts".to_string(),
             topic: self.config.topic.clone(),
         }))
     }
@@ -353,7 +360,7 @@ impl Source for CrowdstrikeSource {
         let mut results: Vec<FetchResult> = Vec::new();
         for service in &self.config.services {
             let outcome = match service.name.as_str() {
-                "detections" => self.fetch_detections(service, window).await,
+                "alerts" => self.fetch_alerts(service, window).await,
                 other => {
                     warn!(service = other, "Unknown CrowdStrike service, skipping");
                     continue;
@@ -457,7 +464,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         let svc = CrowdstrikeService {
-            name: "detections".into(),
+            name: "alerts".into(),
             config: HashMap::default(),
         };
         let f = CrowdstrikeSource::build_fql_filter(&svc, start, end);
@@ -476,7 +483,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         let mut svc = CrowdstrikeService {
-            name: "detections".into(),
+            name: "alerts".into(),
             config: HashMap::default(),
         };
         svc.config.insert(

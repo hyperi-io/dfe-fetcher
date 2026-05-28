@@ -57,6 +57,7 @@ use dfe_fetcher::source::object_store::ObjectStoreSource;
 use dfe_fetcher::source::okta::OktaSource;
 use dfe_fetcher::source::onepassword::OnePasswordSource;
 use dfe_fetcher::source::pypi::PypiSource;
+use dfe_fetcher::source::salesforce::SalesforceSource;
 use dfe_fetcher::source::slack::SlackSource;
 
 /// dfe-fetcher: Data fetcher for external services (AWS, Azure, M365, GCP).
@@ -476,12 +477,27 @@ async fn run_fetcher_service(
         )),
         Arc::new(GcpPubsubSource::new(config.sources.gcp_pubsub.clone())),
         Arc::new(ObjectStoreSource::new(config.sources.object_store.clone())),
+        Arc::new(SalesforceSource::new(config.sources.salesforce.clone())),
     ];
 
     // Start fetch tasks for enabled sources
     for source in &sources {
         if !source.is_enabled() {
             continue;
+        }
+
+        // Surface non-stable sources at startup. The four core sources
+        // (aws, azure, m365, gcp) are stable; everything else is alpha
+        // (code-complete, not production-validated) until promoted.
+        let maturity = source.maturity();
+        if maturity != dfe_fetcher::source::SourceMaturity::Stable {
+            warn!(
+                source = source.name(),
+                maturity = %maturity,
+                "source is {maturity} maturity - not production-validated; \
+                 behaviour and config may change. See docs/cloud-setup/{}.md",
+                source.name(),
+            );
         }
 
         let initial_interval = scheduler.effective_interval(None);
