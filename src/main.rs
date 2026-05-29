@@ -3,7 +3,7 @@
 // Purpose:   CLI entry point and runtime initialisation
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! dfe-fetcher CLI entry point.

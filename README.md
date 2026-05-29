@@ -1,5 +1,7 @@
 # dfe-fetcher
 
+[![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
+
 Data fetcher component for the HyperI DFE (Data Fusion Engine) platform.
 
 Fetches security and operational data from cloud services and external extractors,
@@ -95,6 +97,6 @@ cargo test  # 71 tests
 
 ## License
 
-FSL-1.1-ALv2 - See [LICENSE](LICENSE) for details.
+BUSL-1.1 - See [LICENSE](LICENSE) for details.
 
 Copyright (c) 2026 HYPERI PTY LIMITED

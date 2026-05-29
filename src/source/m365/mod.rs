@@ -3,7 +3,7 @@
 // Purpose:   Microsoft 365 data source (Audit Log, DLP, Exchange Audit, Alerts)
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! Microsoft 365 data source.

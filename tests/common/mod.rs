@@ -3,7 +3,7 @@
 // Purpose:   Shared test infrastructure for dual-mode (remote/docker) testing
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! Shared test helpers for dual-mode test infrastructure.

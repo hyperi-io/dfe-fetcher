@@ -3,7 +3,7 @@
 // Purpose:   Recursively unwrap double-serialised JSON string fields
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! Recursively unwrap JSON string fields that contain serialised JSON.
