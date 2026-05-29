@@ -30,6 +30,14 @@ regexes = [
     # in a later commit with a low-entropy placeholder, but git history
     # still contains the high-entropy version which `generic-api-key` flags.
     '''Zh5eGmUq9zpfQnyUIu5OL9iWoMMv5ZNmk3zLJ4Ep''',
+    # Public Microsoft resource App ID documented in the M365 cloud-setup
+    # guide (Office 365 Management API) - a fixed, well-known identifier,
+    # not a secret. `generic-api-key` flags it on entropy.
+    '''c5393580-f805-4401-95e8-94b7a6ef2fc2''',
+    # Placeholder private key in cloud-setup guides: the literal ellipsis
+    # form `-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----`
+    # shown as a config example, not a real key.
+    '''-----BEGIN PRIVATE KEY-----\\n\.\.\.''',
 ]
 
 # Stopwords - findings containing these are likely false positives
