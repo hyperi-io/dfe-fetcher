@@ -9,7 +9,7 @@ HyperI projects use [Conventional Commits](https://www.conventionalcommits.org/)
 and [semantic-release](https://semantic-release.gitbook.io/) for automated
 versioning and changelog generation. All commits must follow this format:
 
-```text
+```
 <type>(<scope>): <subject>
 
 [optional body]
@@ -38,16 +38,41 @@ versioning and changelog generation. All commits must follow this format:
 For breaking changes that require a major version bump, add `!` after the type
 or include `BREAKING CHANGE:` in the footer:
 
-```text
+```
 feat!: remove deprecated API endpoints
 
 BREAKING CHANGE: The /v1/users endpoint has been removed. Use /v2/users instead.
 ```
 
+### Examples
+
+```
+feat(auth): add OAuth2 support for Google login
+
+fix(api): handle null response from upstream service
+
+docs: update installation instructions for Windows
+
+refactor(core)!: restructure module exports
+
+BREAKING CHANGE: Named exports are now used instead of default exports.
+```
+
 ### Scope
 
 Scope is optional but recommended. Use it to indicate the area of the codebase
-affected (e.g., `sources`, `extractors`, `pipeline`, `sink`, `config`).
+affected (e.g., `api`, `auth`, `core`, `cli`, `docs`).
+
+## Semantic Versioning
+
+This project follows [Semantic Versioning 2.0.0](https://semver.org/):
+
+- **MAJOR** (X.0.0): Breaking changes that require users to modify their code
+- **MINOR** (0.X.0): New features that are backwards-compatible
+- **PATCH** (0.0.X): Bug fixes and minor improvements
+
+Versions are automatically determined by semantic-release based on commit
+messages. Do not manually update version numbers.
 
 ## Developer Certificate of Origin
 
@@ -75,29 +100,65 @@ By making a contribution to this project, you certify that:
 
 ## How to Sign Off Your Commits
 
-You must sign off each commit to indicate your acceptance of the DCO:
+You must sign off each commit to indicate your acceptance of the DCO. Combine
+the signoff with your conventional commit message:
 
-```bash
-git commit --signoff -m "feat(sources): add OAuth2 support for Google login"
+```
+git commit --signoff -m "feat(auth): add two-factor authentication"
+```
+
+This produces:
+
+```
+feat(auth): add two-factor authentication
+
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+Make sure your Git configuration has your correct name and email:
+
+```
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
 ```
 
 ## License for Contributions
 
 All contributions to this project are licensed under the Functional Source
-License, Version 1.1, ALv2 Future License (FSL-1.1-ALv2), the same license
+License, Version 1.1, ALv2 Future License (BUSL-1.1), the same license
 that covers the project.
+
+Each version of the software (including your contributions) will automatically
+become available under the Apache License, Version 2.0 on the second
+anniversary of its release.
 
 ## How to Contribute
 
 1. **Fork the repository** and create your branch from `main`
 2. **Make your changes** following the commit message format above
 3. **Sign off your commits** with the DCO
-4. **Test your changes**: `hyperi-ci check` (or `make check`)
+4. **Test your changes** to ensure they work as expected
 5. **Submit a pull request** with a clear description of what you've done
 
 ### Pull Request Checklist
 
 - [ ] Commits follow the conventional commit format
 - [ ] All commits are signed off (DCO)
-- [ ] `hyperi-ci check` passes (quality + tests)
+- [ ] Tests pass (if applicable)
 - [ ] Documentation is updated (if applicable)
+
+## CI/CD Workflow
+
+When your pull request is merged to `main`:
+
+1. **semantic-release** analyses commit messages since the last release
+2. Determines the next version number based on commit types
+3. Generates/updates the CHANGELOG
+4. Creates a new GitHub release with release notes
+5. Publishes the package (if applicable)
+
+This happens automatically - no manual intervention required.
+
+## Questions
+
+If you have questions about contributing, please open an issue or contact us.

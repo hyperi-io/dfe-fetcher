@@ -3,7 +3,7 @@
 // Purpose:   End-to-end tests exercising real Kafka produce + consume
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! End-to-end Kafka tests — produce via OutputManager, consume back, verify.

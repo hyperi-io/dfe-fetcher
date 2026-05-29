@@ -3,7 +3,7 @@
 <!-- Purpose:   GitHub cloud admin setup guide        -->
 <!-- Language:  Markdown                              -->
 <!--                                                  -->
-<!-- License:   FSL-1.1-ALv2                          -->
+<!-- License:   BUSL-1.1                          -->
 <!-- Copyright: (c) 2026 HYPERI PTY LIMITED           -->
 
 # GitHub Setup for dfe-fetcher

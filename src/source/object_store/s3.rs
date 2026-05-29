@@ -3,7 +3,7 @@
 // Purpose:   S3 backend for the object_store source family
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! S3 backend: SigV4-signed ListObjectsV2 + GetObject.

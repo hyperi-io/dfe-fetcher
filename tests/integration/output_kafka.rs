@@ -3,7 +3,7 @@
 // Purpose:   Output Kafka round-trip integration test (live → docker fallback)
 // Language:  Rust
 //
-// License:   FSL-1.1-ALv2
+// License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! Output Kafka round-trip in **integration** mode (not e2e).

@@ -3,7 +3,7 @@
 # Purpose:   cargo-deny configuration for license and advisory checks
 # Language:  Rust
 #
-# License:   FSL-1.1-ALv2
+# License:   BUSL-1.1
 # Copyright: (c) 2026 HYPERI PTY LIMITED
 
 [graph]
@@ -33,7 +33,7 @@ allow = [
     "BSL-1.0",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
-    "FSL-1.1-ALv2",
+    "BUSL-1.1",
 ]
 confidence-threshold = 0.8
 
