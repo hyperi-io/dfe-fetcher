@@ -17,10 +17,19 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      from-head:
+        type: boolean
+        default: true
+        description: "Release/retry from HEAD (CI creates the tag). Uncheck to publish an existing tag."
+      bump:
+        type: choice
+        default: auto
+        options: [auto, patch, minor]
+        description: "Version bump for from-head dispatch"
       tag:
         type: string
-        required: true
-        description: "Tag to publish (e.g. v1.1.7)"
+        required: false
+        description: "Existing tag to publish (only when from-head is unchecked)"
 
 permissions:
   contents: write
@@ -34,4 +43,6 @@ jobs:
     with:
       publish-target: both
       tag: ${{ inputs.tag || '' }}
+      from-head: ${{ inputs.from-head && 'true' || '' }}
+      bump: ${{ inputs.bump || 'auto' }}
     secrets: inherit
