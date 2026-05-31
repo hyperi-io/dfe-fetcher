@@ -11,10 +11,6 @@
 What a GCP administrator needs to configure so dfe-fetcher can pull audit and
 log entries delivered through a Cloud Logging sink into a Pub/Sub topic.
 
-> Status: alpha - code-complete, not production-validated; additionally
-> pending a Log Sink + Pub/Sub topic + subscription before it can be
-> exercised against a live tenant.
-
 ## Overview
 
 dfe-fetcher consumes Pub/Sub via **REST synchronous pull**. For each configured

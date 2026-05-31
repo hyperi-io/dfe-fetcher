@@ -1,3 +1,11 @@
+<!-- Project:   dfe-fetcher                          -->
+<!-- File:      docs/DESIGN.md                        -->
+<!-- Purpose:   Architecture, data flow, and design rationale -->
+<!-- Language:  Markdown                               -->
+<!--                                                   -->
+<!-- License:   BUSL-1.1                               -->
+<!-- Copyright: (c) 2026 HYPERI PTY LIMITED            -->
+
 # dfe-fetcher Design Document
 
 ## Overview
@@ -195,10 +203,9 @@ graph TB
 
 ```mermaid
 graph TB
-    subgraph "Deployment: 10 M365 Orgs"
+    subgraph "Per-Org Deployment"
         F1[dfe-fetcher<br>config-org-1.yaml]
         F2[dfe-fetcher<br>config-org-2.yaml]
-        F3[dfe-fetcher<br>config-org-3.yaml]
         FN[dfe-fetcher<br>config-org-N.yaml]
     end
 
@@ -304,14 +311,12 @@ graph TD
 
 | Source | Mode | Reason |
 |--------|------|--------|
-| AWS CloudTrail | Native | `aws-sdk-cloudtrail` crate |
+| AWS CloudTrail | Native | Direct REST, signed with `reqsign` (SigV4) |
 | Azure Activity Log | Native | REST API, `reqwest` sufficient |
-| M365 Audit Log | Native | Graph API, `reqwest` sufficient |
-| GCP Audit Logs | Native | `google-cloud-*` crates |
-| CloudWatch Metrics | Container | YACE is mature Go project |
-| Okta System Log | Container/Native | Evaluate Rust crate quality |
-| CrowdStrike Falcon | Container | Vendor SDK typically Python |
-| Syslog Collection | Vector | Vector has native syslog source |
+| M365 Audit Log | Native | Microsoft Graph REST, OAuth2 |
+| GCP Audit Logs | Native | Direct REST, service-account JWT |
+| Prometheus exporters | Container | Mature exporter (e.g. a Go tool) run as a sidecar |
+| Syslog collection | Vector | Vector has a native syslog source |
 
 ### Sidecar Patterns
 
@@ -358,7 +363,7 @@ We still care about correctness, cancellation safety, bounded retries,
 and not leaking tasks - those are correctness concerns, not perf
 concerns. We also still prefer the simple, idiomatic version of any
 pattern over the clever one. But the aggressive hot-path discipline
-documented in `hyperi-ai/standards/rules/rust.md` and applied across
+documented in the hyperi-ai Rust standards and applied across
 dfe-loader / dfe-receiver / dfe-archiver does **not** need to be
 applied symmetrically here.
 

@@ -11,11 +11,6 @@
 What a Salesforce administrator configures so dfe-fetcher can read security and
 audit data from a Salesforce org (read-only, pull-mode).
 
-> Status: alpha - code-complete, not production-validated. The source has not
-> been verified against a live org; this guide is what unblocks that
-> verification. Leave `enabled: false` until the connected app (or external
-> client app) below exists and a first manual fetch succeeds.
-
 ## Overview
 
 dfe-fetcher authenticates server-to-server against
@@ -49,10 +44,10 @@ Services (each emits source tag `salesforce.<service>`):
 - A Salesforce org (production or sandbox) and an admin who can create a
   connected app / external client app and a permission set.
 - For JWT bearer: `openssl` to generate an RSA keypair and self-signed cert.
-- For `event_log_file`: at least the seven free event types (EE/UE/Performance
-  editions), or the Event Monitoring / Shield add-on for the full ~74 types and
-  longer retention.
-- Default REST API version is `v60.0` (override with `api_version`).
+- For `event_log_file`: at least the free event types (EE/UE/Performance
+  editions), or the Event Monitoring / Shield add-on for the full event-type
+  set and longer retention.
+- The REST API version is selected with `api_version`.
 
 ## Required Permissions
 
@@ -63,7 +58,7 @@ Salesforce API) - no `full` or write scope.
 |---------|--------------------|-----------------------------|--------|
 | `setup_audit_trail` | `SetupAuditTrail` (SOQL) | API Enabled + View Setup and Configuration | None (every org) |
 | `login_history` | `LoginHistory` (SOQL) | API Enabled + Manage Users (or View All Users) | None (every org) |
-| `event_log_file` | `EventLogFile` (SOQL + LogFile download) | API Enabled + View Event Log Files | 7 event types free (1-day retention); ~74 types and up to 1-year retention require Event Monitoring / Shield |
+| `event_log_file` | `EventLogFile` (SOQL + LogFile download) | API Enabled + View Event Log Files | Free event types with limited retention; the full event-type set and longer retention require Event Monitoring / Shield |
 
 ## Source-Side Setup
 
@@ -252,11 +247,6 @@ its own app (and cert for JWT), integration user, and `instance_id`.
    ```bash
    cargo test --test e2e salesforce_ -- --ignored --nocapture
    ```
-
-   Tests: `salesforce_health_check`,
-   `salesforce_setup_audit_trail_and_login_history` (sources start with
-   `salesforce.`), `salesforce_event_log_file` (asserts each record carries the
-   `_dfe_fetcher_event_type` envelope).
 
 3. **Common failures.**
    - Auth error / missing auth fields: supply `client_id` plus a private key

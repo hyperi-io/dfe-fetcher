@@ -277,12 +277,6 @@ several projects.
    cargo test --test e2e gcp_ -- --ignored --nocapture
    ```
 
-   Notable tests: `gcp_health_check`, `gcp_fetch_cloud_logging`,
-   `gcp_fetch_admin_activity` (should return records on any active project),
-   `gcp_fetch_data_access` (passes on zero records - zero usually means Data
-   Access logs are not enabled), `gcp_fetch_system_event`,
-   `gcp_fetch_policy_denied`, `gcp_fetch_vpc_flow_logs`, `gcp_fetch_dns_queries`.
-
 3. **Common failures.**
    - `403`/empty on `data_access` or `storage_access`: missing
      `roles/logging.privateLogViewer`, or Data Access audit logs not enabled.

@@ -11,8 +11,6 @@
 What a Cisco Duo administrator needs to configure so dfe-fetcher can read
 authentication logs from a Duo tenant via the Admin API.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher reads Duo authentication events from the **Duo Admin API**
@@ -149,17 +147,12 @@ tests that hit a real tenant. They read these variables (canonical
 Run them:
 
 ```bash
-# Auth probe (/admin/v1/check)
-cargo nextest run --test e2e -- --ignored duo_health_check
-
-# Authentication-log pull (/admin/v2/logs/authentication)
-cargo nextest run --test e2e -- --ignored duo_fetch_authentication_logs
+cargo nextest run --test e2e -- --ignored duo_
 ```
 
-`duo_fetch_authentication_logs` asserts every result is tagged
-`duo.authentication_logs`. Zero records is normal on a quiet tenant, a short
-lookback (default 1 hour), or if all events fall inside the two-minute delay
-window.
+Results are tagged `duo.authentication_logs`. Zero records is normal on a
+quiet tenant, a short lookback, or if all events fall inside the two-minute
+delay window.
 
 **Common failures.**
 

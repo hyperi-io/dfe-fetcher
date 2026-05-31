@@ -11,8 +11,6 @@
 What a CrowdStrike Falcon administrator needs to configure so dfe-fetcher
 can read alert data from a Falcon tenant.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher reads CrowdStrike alerts via the Falcon public API. It
@@ -170,16 +168,11 @@ tests that hit a real tenant. They read these variables (canonical
 Run them:
 
 ```bash
-# Auth probe only (token exchange)
-cargo nextest run --test e2e -- --ignored crowdstrike_health_check
-
-# Full two-stage alert pull
-cargo nextest run --test e2e -- --ignored crowdstrike_fetch_alerts
+cargo nextest run --test e2e -- --ignored crowdstrike_
 ```
 
-`crowdstrike_fetch_alerts` asserts every result is tagged
-`crowdstrike.alerts`. Zero records is normal on a quiet tenant or short
-lookback window (default 1 hour).
+Results are tagged `crowdstrike.alerts`. Zero records is normal on a quiet
+tenant or a short lookback window.
 
 **Common failures.**
 

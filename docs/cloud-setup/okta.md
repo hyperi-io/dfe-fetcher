@@ -11,8 +11,6 @@
 What an Okta administrator needs to configure so dfe-fetcher can read System
 Log events from an Okta org.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher pulls events from the Okta System Log API at

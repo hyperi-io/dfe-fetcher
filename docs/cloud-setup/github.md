@@ -11,8 +11,6 @@
 What a GitHub administrator needs to configure so dfe-fetcher can read
 audit-log data from a GitHub organisation or enterprise account.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher pulls events from the GitHub audit log over the REST API at
@@ -169,15 +167,14 @@ sources:
   cargo nextest run --test e2e -- --ignored github_
   ```
 
-  Covers `github_health_check`, `github_fetch_audit_log`, and the git-only
-  include variant.
+  Covers the health check, audit-log fetch, and git-only include variant.
 - **Common failure modes.**
   - `403 Forbidden` with a valid token: token lacks `read:audit_log` (or the
     fine-grained permission), or the org is not on Enterprise Cloud.
   - `404 Not Found`: wrong `org`/`enterprise` slug, or the audit-log API is
     not available for that account tier.
-  - Empty result every tick: no events in the lookback window (default 1h);
-    git events are retained only ~7 days, so a stale window returns nothing.
+  - Empty result every tick: no events in the lookback window; git events are
+    retained only ~7 days, so a stale window returns nothing.
   - Setting both `org` and `enterprise` is a config error and the fetch is
     rejected.
 

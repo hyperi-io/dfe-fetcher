@@ -11,8 +11,6 @@
 What a 1Password account owner or administrator needs to configure so
 dfe-fetcher can read activity from the 1Password Events Reporting API.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher pulls three event streams from the 1Password Events Reporting

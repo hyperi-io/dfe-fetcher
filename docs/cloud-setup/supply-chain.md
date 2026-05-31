@@ -12,8 +12,6 @@ What an operator needs to configure so dfe-fetcher can watch public
 package registries (PyPI, crates.io, Go module proxy) for supply-chain
 takeover of the packages your organisation owns.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 These three sources poll public, unauthenticated registry APIs. On each
@@ -22,11 +20,11 @@ package and emits it; downstream tooling computes deltas across ticks to
 detect unexpected publications, yanks, ownership changes, or commit-hash
 drift - the classic indicators of a hijacked package.
 
-| Source | Endpoint(s) | Record unit | Status |
+| Source | Endpoint(s) | Record unit | Auth |
 |--------|-------------|-------------|--------|
-| `pypi` | `https://pypi.org/pypi/<package>/json` | one record per package | stable, no credentials |
-| `crates_io` | `https://crates.io/api/v1/crates/<name>` | one record per crate | stable, no credentials |
-| `go_modules` | `https://proxy.golang.org/<module>/@v/list` then `.../@v/<version>.info` | one record per module (version list + per-version info) | stable, no credentials |
+| `pypi` | `https://pypi.org/pypi/<package>/json` | one record per package | no credentials |
+| `crates_io` | `https://crates.io/api/v1/crates/<name>` | one record per crate | no credentials |
+| `go_modules` | `https://proxy.golang.org/<module>/@v/list` then `.../@v/<version>.info` | one record per module (version list + per-version info) | no credentials |
 
 There is NO authentication for any of these sources. There are no API
 keys, OAuth flows, or service accounts to provision. The only "setup" is

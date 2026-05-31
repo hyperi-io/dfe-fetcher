@@ -11,10 +11,6 @@
 What a Google Workspace / GCP administrator needs to configure so dfe-fetcher
 can read audit and activity data from the Workspace Reports API.
 
-> Status: alpha - code-complete, not production-validated; additionally
-> pending hyperi-infra#5 (domain-wide-delegation service account) before it
-> can be exercised against a live tenant.
-
 ## Overview
 
 dfe-fetcher reads the Google Workspace **Reports API** (part of the Admin SDK
@@ -131,8 +127,8 @@ administrator privilege. Console path: Admin console -> Account -> Admin roles.
 
 ## dfe-fetcher Configuration
 
-Service names map directly to Reports API `applicationName` values. Current
-values include: `login`, `admin`, `drive`, `token`, `mobile`, `groups`,
+Service names map directly to Reports API `applicationName` values, such as
+`login`, `admin`, `drive`, `token`, `mobile`, `groups`,
 `groups_enterprise`, `calendar`, `chat`, `meet`, `chrome`, `keep`,
 `access_transparency`, `context_aware_access`. Each entry produces records
 tagged `google_workspace.<name>`. Per-service config supports an optional

@@ -14,7 +14,7 @@ operational data from AWS.
 ## Overview
 
 dfe-fetcher polls AWS service APIs on an interval and ships each record to
-Kafka. It supports seven AWS services: CloudTrail (management-event audit
+Kafka. It supports these AWS services: CloudTrail (management-event audit
 trail), GuardDuty (threat-detection findings), SecurityHub (aggregated
 security findings), Config (resource-configuration snapshots via an
 aggregator), CloudWatch Logs (log events), CloudWatch Metrics (monitoring
@@ -322,13 +322,7 @@ The vault secret must be JSON with these keys (PascalCase `AccessKeyId` /
 
    ```bash
    cargo test --test e2e -- --ignored        # all live tests
-   cargo test --test e2e aws_fetch_cloudtrail -- --ignored
    ```
-
-   Available AWS tests: `aws_health_check`, `aws_fetch_cloudtrail`,
-   `aws_fetch_cloudwatch_logs`, `aws_fetch_cloudwatch_metrics`,
-   `aws_fetch_inspector` (needs Inspector v2 enabled), `aws_fetch_health`
-   (needs Business+ support tier).
 
 3. Common failures.
    - `403 / SignatureDoesNotMatch`: clock skew or wrong secret key.
