@@ -1955,9 +1955,9 @@ dependencies = [
 
 [[package]]
 name = "hyperi-rustlib"
-version = "2.8.2"
+version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee205dd39a64cabdc3f5008e3733ffae5ac43dfb128b36de178dfcc9eadc6301"
+checksum = "0632eba60ead728bce781730eb22913ac901d566ee839124511fe9fd80d6e928"
 dependencies = [
  "aes-gcm",
  "async-trait",
