@@ -2,7 +2,7 @@
 # File:      .github/workflows/ci.yml
 # Purpose:   CI pipeline
 #
-# License:   FSL-1.1-ALv2
+# License:   BUSL-1.1
 # Copyright: (c) 2026 HYPERI PTY LIMITED
 
 name: CI
@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   ci:
-    uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@189c2a251e97bf8a5051853be43e121de40ef821 # main
+    uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@41bfd1f1e033f9bcd4877089a9ee7f48f989263d # v2.6.4
     with:
       publish-target: both
       tag: ${{ inputs.tag || '' }}
