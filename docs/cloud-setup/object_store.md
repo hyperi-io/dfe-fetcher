@@ -12,8 +12,6 @@ What a cloud administrator needs to configure so dfe-fetcher can read log
 objects (gzipped JSON-lines and similar) that cloud services drop into a
 storage bucket.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 Many cloud services do not expose an API for their logs - they only

@@ -11,8 +11,6 @@
 What a Slack Enterprise Grid Organization Owner needs to configure so
 dfe-fetcher can read audit-log events from the Slack Audit Logs API.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher pulls organization-wide audit events from the Slack Audit Logs

@@ -3,7 +3,7 @@
 Terraform configuration to provision lightweight cloud credentials for testing
 dfe-fetcher against real AWS, Azure, and GCP APIs.
 
-**Cost:** All resources are free tier — IAM users, app registrations, service
+**Cost:** All resources are free tier -- IAM users, app registrations, service
 accounts, CloudTrail management events, Activity Log reads, and Cloud Logging
 reads cost nothing.
 
@@ -20,7 +20,7 @@ reads cost nothing.
 1. **AWS:** Authenticated via SSO (`aws sso login --profile <profile>`)
 2. **Azure:** Authenticated via `az login`
 3. **GCP:** Authenticated via `gcloud auth application-default login`
-4. **Terraform:** v1.5+
+4. **Terraform:** a recent release
 
 ## Setup
 

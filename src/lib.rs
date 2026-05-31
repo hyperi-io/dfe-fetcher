@@ -14,32 +14,10 @@
 //!
 //! ## Architecture
 //!
-//! ```text
-//! ┌─────────────────────────────────┐
-//! │         Native Sources          │
-//! │  (AWS, Azure, M365, GCP)        │
-//! └──────────┬──────────────────────┘
-//!            │
-//! ┌──────────┴──────────────────────┐
-//! │   Container Extractors          │
-//! │  (Docker/podman, any language)  │
-//! └──────────┬──────────────────────┘
-//!            │
-//! ┌──────────┴──────────────────────┐
-//! │   Vector.dev Extractors         │
-//! │  (gRPC native protocol)        │
-//! └──────────┬──────────────────────┘
-//!            │
-//!            ▼
-//! ┌─────────────────────────────────┐
-//! │     Pipeline (enrich + route)   │
-//! └──────────┬──────────────────────┘
-//!            │
-//!            ▼
-//! ┌─────────────────────────────────┐
-//! │   Output Transport (Kafka/gRPC) │
-//! └─────────────────────────────────┘
-//! ```
+//! Three input families -- native sources, container extractors, and Vector.dev
+//! extractors -- feed a common pipeline that enriches, filters, and routes each
+//! record to the output transport (Kafka and/or gRPC). See `docs/DESIGN.md` for
+//! diagrams and the full data flow.
 
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]

@@ -11,8 +11,6 @@
 What a Cloudflare administrator needs to configure so dfe-fetcher can read
 account-level audit logs.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher pulls account audit-log entries from the v1 REST endpoint
@@ -26,7 +24,7 @@ envelope. Authentication is a scoped API token in
 
 Note on API versions: Cloudflare made **Audit Logs v2** (the newer
 `/accounts/{account_id}/logs/audit` endpoint) generally available in early
-2026. dfe-fetcher currently targets the **v1** `audit_logs` endpoint, which
+2026. dfe-fetcher targets the **v1** `audit_logs` endpoint, which
 is still live - Cloudflare has not published a firm retirement date for v1.
 If/when v1 is sunset, this source will need to move to v2; track the
 references below.
@@ -158,8 +156,8 @@ sources:
     account ID, not a zone ID).
   - Body `success:false` on a 2xx: dfe-fetcher treats this as an error and
     surfaces the `errors` array.
-  - Empty result every tick: no audit events in the lookback window
-    (default 1h).
+  - Empty result every tick: no audit events in the configured lookback
+    window.
 
 ## Cost
 

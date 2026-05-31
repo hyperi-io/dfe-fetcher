@@ -262,13 +262,7 @@ sources:
 
    ```bash
    cargo test --test e2e -- --ignored        # all live tests
-   cargo test --test e2e azure_fetch_entra_signins -- --ignored
    ```
-
-   Available Azure tests: `azure_health_check`, `azure_fetch_activity_log`,
-   `azure_fetch_entra_signins`, `azure_fetch_entra_directory_audits`,
-   `azure_fetch_entra_provisioning` (needs provisioning scope),
-   `azure_fetch_log_analytics`, `azure_fetch_sentinel`.
 
 3. Common failures.
    - `401 / AADSTS700016` or invalid client: wrong `tenant_id` /

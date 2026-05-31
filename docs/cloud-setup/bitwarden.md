@@ -11,8 +11,6 @@
 What a Bitwarden organization owner needs to configure so dfe-fetcher can
 read organization event logs from the Bitwarden Public API.
 
-> Status: alpha - code-complete, not production-validated; behaviour and config may change.
-
 ## Overview
 
 dfe-fetcher pulls organization event logs from the Bitwarden Public API at
