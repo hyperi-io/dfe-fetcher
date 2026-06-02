@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   ci:
-    uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@41bfd1f1e033f9bcd4877089a9ee7f48f989263d # v2.6.4
+    uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@main
     with:
       publish-target: both
       tag: ${{ inputs.tag || '' }}
