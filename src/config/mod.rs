@@ -3031,6 +3031,10 @@ mod tests {
 
     #[test]
     fn test_load_from_valid_yaml_file() {
+        // load_from_file applies DFE_FETCHER_* env overrides, so serialise
+        // against the env-override tests via ENV_LOCK -- otherwise a parallel
+        // test's DFE_FETCHER_KAFKA_CLIENT_ID (etc.) bleeds into this file load.
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let yaml = r#"
 scheduler:
   default_interval_secs: 120

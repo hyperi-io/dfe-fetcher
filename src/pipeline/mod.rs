@@ -56,9 +56,9 @@ impl PipelineState {
     /// Create new pipeline state.
     ///
     /// The `output` parameter is optional: pass `None` for tests or when
-    /// output transports are not yet initialised (the [`Orchestrator`]
-    /// creates the [`OutputManager`] asynchronously and injects it via
-    /// [`set_output`](Self::set_output)).
+    /// output transports are not yet initialised. The [`Orchestrator`]
+    /// creates the [`OutputManager`] asynchronously and injects it through
+    /// this `output` parameter.
     pub fn new(
         shared_config: SharedConfig,
         metrics: Arc<Metrics>,
@@ -313,7 +313,7 @@ impl PipelineState {
         self.memory_guard.add_bytes(payload_size);
 
         let send_start = std::time::Instant::now();
-        let result = output.send_all(topic, payload.as_ref()).await;
+        let result = output.send_all(topic, payload.clone()).await;
         let send_duration_ms = send_start.elapsed().as_millis();
 
         self.memory_guard.release(payload_size);

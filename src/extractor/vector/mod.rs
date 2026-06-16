@@ -48,7 +48,6 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use hyperi_rustlib::transport::{GrpcConfig, GrpcTransport, TransportBase, TransportReceiver};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -153,21 +152,25 @@ impl VectorManager {
             tokio::select! {
                 result = transport.recv(100) => {
                     match result {
-                        Ok(messages) if messages.is_empty() => {}
-                        Ok(messages) => {
+                        Ok(batch) if batch.is_empty() => {}
+                        Ok(batch) => {
                             batch_count += 1;
-                            let msg_count = messages.len() as u64;
+                            let msg_count = batch.len() as u64;
 
-                            // Deliver messages concurrently within the batch
-                            let delivery_futures: Vec<_> = messages
+                            // rustlib 2.8.13: `recv` yields a zero-copy `WorkBatch`;
+                            // iterate its `records` (each carries `payload: Bytes`
+                            // and `key: Option<Arc<str>>`). Deliver concurrently
+                            // within the batch.
+                            let delivery_futures: Vec<_> = batch
+                                .records
                                 .into_iter()
-                                .map(|msg| {
-                                    let topic = msg.key
+                                .map(|record| {
+                                    let topic = record.key
                                         .as_ref()
                                         .and_then(|k| topic_map.get(k.as_ref()).cloned())
-                                        .or_else(|| msg.key.as_ref().map(|k| k.to_string()))
+                                        .or_else(|| record.key.as_ref().map(|k| k.to_string()))
                                         .unwrap_or_else(|| default_topic.clone());
-                                    let payload = Bytes::from(msg.payload);
+                                    let payload = record.payload;
                                     let pipeline = Arc::clone(&pipeline);
                                     async move {
                                         if let Err(e) = pipeline.deliver_ingest(&topic, payload).await {

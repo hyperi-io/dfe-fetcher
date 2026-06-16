@@ -65,7 +65,7 @@ async fn test_output_kafka_single_message_roundtrip() {
     }))
     .unwrap();
 
-    if let Err(e) = output.send_all(&topic, &payload).await {
+    if let Err(e) = output.send_all(&topic, Bytes::from(payload)).await {
         eprintln!("Skipping: send failed (likely broker auth/topic ACL): {e}");
         output.close_all().await;
         return;
@@ -91,9 +91,9 @@ async fn test_output_kafka_single_message_roundtrip() {
     let mut found = false;
 
     while !found && tokio::time::Instant::now() < deadline {
-        if let Ok(msgs) = consumer.recv(10).await {
-            for msg in msgs {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&msg.payload)
+        if let Ok(batch) = consumer.recv(10).await {
+            for record in batch.records {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
                     && parsed["test"] == "single-roundtrip"
                 {
                     found = true;
@@ -177,9 +177,9 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     let mut enriched_found = false;
 
     while !enriched_found && tokio::time::Instant::now() < deadline {
-        if let Ok(msgs) = consumer.recv(10).await {
-            for msg in msgs {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&msg.payload)
+        if let Ok(batch) = consumer.recv(10).await {
+            for record in batch.records {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
                     && parsed.get("_timestamp_fetcher").is_some()
                     && parsed["_source_fetcher"] == "aws.cloudtrail"
                     && parsed["eventName"] == "CreateUser"
@@ -230,7 +230,7 @@ async fn test_output_kafka_batch_roundtrip() {
     const N: u64 = 10;
     for i in 0..N {
         let payload = serde_json::to_vec(&json!({"seq": i, "tag": "batch-test"})).unwrap();
-        if let Err(e) = output.send_all(&topic, &payload).await {
+        if let Err(e) = output.send_all(&topic, Bytes::from(payload)).await {
             eprintln!("Skipping: send {i} failed: {e}");
             output.close_all().await;
             return;
@@ -256,9 +256,9 @@ async fn test_output_kafka_batch_roundtrip() {
     let mut seqs: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     while seqs.len() < N as usize && tokio::time::Instant::now() < deadline {
-        if let Ok(msgs) = consumer.recv(N as usize).await {
-            for msg in msgs {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&msg.payload)
+        if let Ok(batch) = consumer.recv(N as usize).await {
+            for record in batch.records {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
                     && parsed["tag"] == "batch-test"
                     && let Some(seq) = parsed["seq"].as_u64()
                 {
@@ -307,7 +307,7 @@ async fn test_output_manager_close_when_already_closed() {
 
     // Send one message so the producer is in active state, then close twice.
     let payload = serde_json::to_vec(&json!({"closing": "test"})).unwrap();
-    let _ = output.send_all(&topic, &payload).await;
+    let _ = output.send_all(&topic, Bytes::from(payload)).await;
 
     // Health checks before close
     let _ = output.all_healthy();

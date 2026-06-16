@@ -61,7 +61,7 @@ async fn test_e2e_produce_consume_roundtrip() {
         .unwrap();
 
         output
-            .send_all(&topic, &payload)
+            .send_all(&topic, Bytes::from(payload))
             .await
             .unwrap_or_else(|e| panic!("send {i} failed: {e}"));
     }
@@ -83,9 +83,9 @@ async fn test_e2e_produce_consume_roundtrip() {
 
     while received.len() < 5 && tokio::time::Instant::now() < deadline {
         match consumer.recv(100).await {
-            Ok(msgs) => {
-                for msg in msgs {
-                    received.push(msg.payload.clone());
+            Ok(batch) => {
+                for record in batch.records {
+                    received.push(record.payload.clone());
                 }
             }
             Err(_) => {
@@ -171,9 +171,9 @@ async fn test_e2e_enriched_record_in_kafka() {
     let mut found = false;
 
     while !found && tokio::time::Instant::now() < deadline {
-        if let Ok(msgs) = consumer.recv(10).await {
-            for msg in msgs {
-                let parsed: serde_json::Value = serde_json::from_slice(&msg.payload).unwrap();
+        if let Ok(batch) = consumer.recv(10).await {
+            for record in batch.records {
+                let parsed: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
                 if parsed.get("_timestamp_fetcher").is_some() {
                     assert!(parsed["_timestamp_fetcher"].is_number());
                     assert!(parsed["_timestamp_received"].is_number());

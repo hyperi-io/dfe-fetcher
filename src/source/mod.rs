@@ -194,16 +194,29 @@ pub fn parse_link_next_url_from_str(link_header: &str) -> Option<String> {
 
 /// Classify an HTTP/API error into a bounded category for metrics.
 ///
-/// Returns one of: "4xx", "5xx", "timeout", "network"
+/// Returns one of: "throttle", "4xx", "5xx", "timeout", "network".
+///
+/// "throttle" (HTTP 429 / AWS SlowDown / rate-limit) is split out of the
+/// generic "4xx" bucket: it is the signal a producer wants to scale OUT on
+/// (spread the upstream quota over more pods), not a client bug like a
+/// 401/404. It feeds the self-normalised `throttle_ratio` scaling signal.
 pub fn classify_api_error(error: &crate::error::Error) -> &'static str {
     let msg = error.to_string();
+    let lower = msg.to_ascii_lowercase();
     if msg.contains("timed out") || msg.contains("timeout") {
         "timeout"
+    } else if msg.contains("429")
+        || lower.contains("slowdown")
+        || lower.contains("too many requests")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limit")
+        || lower.contains("throttl")
+    {
+        "throttle"
     } else if msg.contains("status: 4")
         || msg.contains("401")
         || msg.contains("403")
         || msg.contains("404")
-        || msg.contains("429")
     {
         "4xx"
     } else if msg.contains("status: 5")
@@ -273,6 +286,37 @@ mod tests {
     #[test]
     fn test_classify_429() {
         let err = crate::error::Error::Source("rate limited with 429".to_string());
+        assert_eq!(classify_api_error(&err), "throttle");
+    }
+
+    #[test]
+    fn test_classify_aws_slowdown() {
+        let err = crate::error::Error::Source("AWS SlowDown: reduce request rate".to_string());
+        assert_eq!(classify_api_error(&err), "throttle");
+    }
+
+    #[test]
+    fn test_classify_too_many_requests() {
+        let err = crate::error::Error::Source("Too Many Requests".to_string());
+        assert_eq!(classify_api_error(&err), "throttle");
+    }
+
+    #[test]
+    fn test_classify_rate_limit_phrase() {
+        let err = crate::error::Error::Source("upstream rate limit exceeded".to_string());
+        assert_eq!(classify_api_error(&err), "throttle");
+    }
+
+    #[test]
+    fn test_classify_throttled_keyword() {
+        let err = crate::error::Error::Source("request was throttled".to_string());
+        assert_eq!(classify_api_error(&err), "throttle");
+    }
+
+    #[test]
+    fn test_classify_403_still_4xx() {
+        // A genuine client error stays in the 4xx bucket (NOT throttle).
+        let err = crate::error::Error::Source("received 403 Forbidden".to_string());
         assert_eq!(classify_api_error(&err), "4xx");
     }
 

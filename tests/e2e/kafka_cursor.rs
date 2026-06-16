@@ -42,7 +42,7 @@ async fn test_output_transport_kafka_send() {
         .expect("OutputManager creation should succeed");
 
     // Send a test message
-    let payload = br#"{"test": true, "source": "integration_test"}"#;
+    let payload = bytes::Bytes::from_static(br#"{"test": true, "source": "integration_test"}"#);
     let result = output.send_all(&topic, payload).await;
     assert!(
         result.is_ok(),

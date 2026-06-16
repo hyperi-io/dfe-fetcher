@@ -666,3 +666,44 @@ metrics:
 # cursor:
 #   file_path: "/var/lib/dfe-fetcher/cursors.json"  # REQUIRES RESTART
 #   default_window_hours: 1                          # hot-reloaded
+
+# =============================================================================
+# Horizontal scaling pressure (rustlib 2.8.10+ engine) — REQUIRES RESTART
+# =============================================================================
+# Honoured via the rustlib config cascade (run_app reads the `scaling` key).
+# The fetcher's inbound is NOT a rustlib transport — it PULLS from cloud APIs
+# (aws/azure/gcp/m365/salesforce + the alpha source families) — so
+# transport.inbound is `other` and the engine's compound inbound is 0. Left
+# alone the smart default reduces to CPU-only. We therefore push DOMAIN signals
+# from the fetch loop and fold them into a CEL pressure here. Both domain
+# signals are SELF-NORMALISED (0-1), so NO unguessable per-env target is needed:
+#   custom.fetch_pressure = active_fetches / scheduler.max_concurrent_fetches
+#   custom.throttle_ratio = throttle_errors / fetch_attempts (HTTP 429 / SlowDown)
+# CEL has no max() — the ternary picks the worse of CPU-vs-domain pressure,
+# then the inner ternary picks the worse of the two domain signals. The
+# outbound Kafka circuit (set_circuit_open) gates to 0 (more pods won't fix a
+# dead sink). Emits dfe_fetcher_scaling_pressure{name="fetch"}.
+scaling:
+  enabled: true
+  interval_secs: 15
+  transport:
+    inbound: other            # cloud-API pull, not a rustlib transport
+    outbound: kafka           # producer (downstream-bound; not in the default max)
+  params:
+    cpu_target: 0.70
+    # NOTE: no lag_target — fetcher has NO kafka INBOUND (it is a producer).
+    # NOTE: fetch_pressure + throttle_ratio are self-normalised, so they need
+    #       NO target param. Add one ONLY if you switch to an absolute signal.
+  pressures:
+    - name: fetch
+      # 100 * max(cpu/cpu_target, max(fetch_pressure, throttle_ratio)), gated by circuit.
+      expression: >
+        circuit_open ? 0.0 :
+        100.0 * (
+          cpu_utilisation_ratio / params.cpu_target >
+            (custom.fetch_pressure > custom.throttle_ratio
+               ? custom.fetch_pressure : custom.throttle_ratio)
+          ? cpu_utilisation_ratio / params.cpu_target
+          : (custom.fetch_pressure > custom.throttle_ratio
+               ? custom.fetch_pressure : custom.throttle_ratio)
+        )

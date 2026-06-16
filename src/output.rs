@@ -13,9 +13,10 @@
 //!
 //! All Kafka access via rustlib's `KafkaTransport` — no direct rdkafka dependency.
 
+use bytes::Bytes;
 use hyperi_rustlib::transport::{
-    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, TransportBase,
-    TransportSender,
+    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaRole, KafkaTransport, SendResult,
+    TransportBase, TransportSender,
 };
 use tracing::{debug, error, info, trace};
 
@@ -24,9 +25,9 @@ use crate::error::{Error, Result};
 
 /// Wrapper enum for transport backends.
 ///
-/// Needed because [`Transport`] has an associated `Token` type, which prevents
-/// dynamic dispatch via `dyn Transport`. Each variant delegates to the concrete
-/// transport implementation.
+/// Needed because rustlib's `Transport` traits carry an associated `Token`
+/// type, which prevents dynamic dispatch via a `dyn Transport`. Each variant
+/// delegates to the concrete transport implementation.
 pub enum OutputTransport {
     /// Kafka transport (rustlib).
     Kafka(KafkaTransport),
@@ -39,7 +40,11 @@ impl OutputTransport {
     ///
     /// Records per-transport send duration as
     /// `dfe_fetcher_transport_send_duration_seconds{transport="kafka"|"grpc"}`.
-    async fn send(&self, key: &str, payload: &[u8]) -> Result<()> {
+    ///
+    /// `payload` is a [`Bytes`] (rustlib's `TransportSender::send` takes it by
+    /// value); it is ref-counted, so the per-transport clone in `send_all` is
+    /// cheap (no buffer copy).
+    async fn send(&self, key: &str, payload: Bytes) -> Result<()> {
         let start = std::time::Instant::now();
 
         trace!(
@@ -120,8 +125,8 @@ impl OutputTransport {
 
 /// Manages one or more output transports for delivering pipeline data.
 ///
-/// Created from [`OutputConfig`] (with legacy [`KafkaConfig`] fallback).
-/// Sends to all configured transports simultaneously.
+/// Created from [`OutputConfig`] (with legacy [`KafkaConfig`](LegacyKafkaConfig)
+/// fallback). Sends to all configured transports simultaneously.
 pub struct OutputManager {
     transports: Vec<OutputTransport>,
 }
@@ -136,11 +141,15 @@ impl OutputManager {
         let mut transports = Vec::new();
 
         if output.includes_kafka() {
-            let kafka_config = if let Some(ref cfg) = output.kafka {
+            let mut kafka_config = if let Some(ref cfg) = output.kafka {
                 cfg.clone()
             } else {
                 build_rustlib_kafka_config(legacy_kafka)
             };
+            // Fetcher output is produce-only: Producer role + no consumer group,
+            // so rustlib builds no idle consumer (rustlib #44).
+            kafka_config.role = KafkaRole::Producer;
+            kafka_config.group = String::new();
 
             let transport = KafkaTransport::new(&kafka_config)
                 .await
@@ -176,11 +185,12 @@ impl OutputManager {
     /// Attempts delivery to every transport even if one fails, so that a
     /// Kafka failure does not prevent gRPC from receiving the message (and
     /// vice versa). Returns the first error encountered for DLQ routing.
-    pub async fn send_all(&self, key: &str, payload: &[u8]) -> Result<()> {
+    pub async fn send_all(&self, key: &str, payload: Bytes) -> Result<()> {
         let mut first_error: Option<Error> = None;
 
         for transport in &self.transports {
-            if let Err(e) = transport.send(key, payload).await {
+            // Cheap ref-counted clone per transport (no buffer copy).
+            if let Err(e) = transport.send(key, payload.clone()).await {
                 {
                     use std::sync::atomic::{AtomicU64, Ordering};
                     static SEND_ERROR_SAMPLES: AtomicU64 = AtomicU64::new(0);

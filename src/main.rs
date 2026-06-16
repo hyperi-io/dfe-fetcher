@@ -302,6 +302,11 @@ async fn run_fetcher_service(
     // fetcher-specific metric descriptions by constructing Metrics::with_dfe().
     let metrics = Arc::new(Metrics::with_dfe(&runtime.metrics));
 
+    // Seed the self-normalised fetch-pressure denominator (scheduler semaphore
+    // size). Lets the scaling engine read `active_fetches / concurrency_cap`
+    // without an unguessable per-env target.
+    metrics.set_concurrency_cap(config.scheduler.max_concurrent_fetches);
+
     // Create and run the pipeline orchestrator
     let orchestrator =
         Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
@@ -366,10 +371,24 @@ async fn run_fetcher_service(
         handle
     };
 
-    // Spawn periodic scaling pressure update (feeds buffer + transport health to ScalingPressure)
+    // Spawn periodic scaling pressure update. Feeds two planes:
+    //  - legacy weighted `ScalingPressure` (buffer depth + memory + circuit);
+    //  - the rustlib 2.8.10+ horizontal scaling ENGINE via the lock-free
+    //    `scaling_signals` cell. The fetcher's inbound is NOT a rustlib
+    //    transport (it PULLS from cloud APIs), so the engine's compound inbound
+    //    is 0 and the smart default would reduce to CPU-only. We push DOMAIN
+    //    backlog signals so a `scaling.pressures` CEL expression can fold them in:
+    //      * `fetch_pressure` = active_fetches / concurrency_cap (self-normalised
+    //        0-1; saturated semaphore => pod is fetch-bound);
+    //      * `throttle_ratio` = throttle_errors / fetch_attempts (self-normalised
+    //        0-1; upstream rate-limiting => spread the quota over more pods).
+    //    Both are self-normalised -- no per-env target needed. The outbound
+    //    Kafka circuit drives the engine's only default gate via set_circuit_open.
     {
         let scaling = Arc::clone(&scaling_pressure);
         let state = Arc::clone(&pipeline_state);
+        let engine_metrics = Arc::clone(&metrics);
+        let signals = Arc::clone(&runtime.scaling_signals);
         let shutdown = shutdown_token.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -379,9 +398,18 @@ async fn run_fetcher_service(
                         let mg = state.memory_guard();
                         let used = mg.current_bytes();
                         let limit = mg.limit_bytes();
+                        let circuit_open = !state.output_healthy();
+                        // Legacy weighted pressure plane.
                         scaling.set_component("buffer_depth", used as f64);
                         scaling.set_memory(used, limit);
-                        scaling.set_circuit_open(!state.output_healthy());
+                        scaling.set_circuit_open(circuit_open);
+                        // Horizontal scaling-engine plane (domain signals + gate).
+                        signals.set_custom("fetch_pressure", engine_metrics.fetch_pressure_ratio());
+                        signals.set_custom("throttle_ratio", engine_metrics.throttle_ratio());
+                        signals.set_circuit_open(circuit_open);
+                        // Keep the per-tick scaling gauges current for KEDA's
+                        // Prometheus scaler.
+                        engine_metrics.update_rate_gauge();
                     }
                     _ = shutdown.cancelled() => break,
                 }

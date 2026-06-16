@@ -12,7 +12,7 @@
 //! Helm chart, and Docker Compose fragments via `hyperi-rustlib`.
 
 use hyperi_rustlib::deployment::{
-    DeploymentContract, HealthContract, ImageProfile, KedaContract, NativeDepsContract,
+    DeploymentContract, HealthContract, ImageProfile, KedaConfig, KedaContract, NativeDepsContract,
     PortContract, SecretEnvContract, SecretGroupContract, base_image_from_cascade,
     image_registry_from_cascade,
 };
@@ -179,7 +179,13 @@ pub fn contract() -> DeploymentContract {
             }
         })),
         depends_on: vec!["kafka".into()],
-        keda: Some(KedaContract {
+        // `KedaContract` is `#[non_exhaustive]` (rustlib 2.8.13) so it can no
+        // longer be built via a struct literal. Construct a `KedaConfig` with
+        // the fetcher's real KEDA values and convert via `from_config`;
+        // `..Default::default()` fills the rest (the 2.8.12 scaling-pressure
+        // trigger stays OFF -- it needs a cluster-specific Prometheus
+        // serverAddress before enabling).
+        keda: Some(KedaContract::from_config(&KedaConfig {
             min_replicas: 1,
             max_replicas: 5,
             polling_interval: 30,
@@ -188,7 +194,8 @@ pub fn contract() -> DeploymentContract {
             activation_lag_threshold: 0,
             cpu_enabled: false,
             cpu_threshold: 80,
-        }),
+            ..Default::default()
+        })),
         schema_version: 2,
         oci_labels: hyperi_rustlib::deployment::OciLabels::default(),
     }

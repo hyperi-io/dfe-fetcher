@@ -15,7 +15,7 @@
 //!
 //! Each metric exists as both a local [`AtomicU64`] field (for fast hot-path
 //! reads like `pipeline.is_ready()`) **and** as a `metrics` crate emission
-//! (so [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager) can render
+//! (so [`MetricsManager`] can render
 //! the full Prometheus text format).
 //!
 //! When [`Metrics::with_dfe()`] is used, fetcher-specific metrics are
@@ -79,6 +79,17 @@ pub struct Metrics {
     rate_window: RateWindow,
     /// Records-per-second rate window (EPS — events per second).
     records_rate_window: RateWindow,
+
+    // Scaling-signal inputs (cheap, self-normalised — no per-env target).
+    /// Configured concurrent-fetch cap (the scheduler semaphore size). Used as
+    /// the denominator of the self-normalised `fetch_pressure` scaling signal
+    /// (`active_fetches / concurrency_cap`). 0 = unset (signal contributes 0).
+    concurrency_cap: AtomicU64,
+    /// Cumulative throttle/rate-limit API errors (HTTP 429 + AWS SlowDown).
+    throttle_errors_total: AtomicU64,
+    /// Cumulative attempted fetch cycles (success + error), the throttle-ratio
+    /// denominator.
+    fetch_attempts_total: AtomicU64,
 }
 
 impl Metrics {
@@ -114,6 +125,9 @@ impl Metrics {
             memory_limit_bytes: AtomicU64::new(0),
             rate_window: RateWindow::new(Duration::from_mins(1)),
             records_rate_window: RateWindow::new(Duration::from_mins(1)),
+            concurrency_cap: AtomicU64::new(0),
+            throttle_errors_total: AtomicU64::new(0),
+            fetch_attempts_total: AtomicU64::new(0),
         }
     }
 
@@ -121,7 +135,7 @@ impl Metrics {
     ///
     /// Registers standard DFE metric descriptions **and** fetcher-specific
     /// metric descriptions with the global `metrics` recorder. Use in
-    /// production where [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager)
+    /// production where [`MetricsManager`]
     /// is (or will be) installed.
     pub fn with_dfe(manager: &MetricsManager) -> Self {
         // Register fetcher-specific metrics with the global recorder.
@@ -132,6 +146,14 @@ impl Metrics {
             "Fetch operations by source and status"
         );
         metrics::describe_counter!("dfe_fetcher_bytes_received_total", "Total bytes received");
+        metrics::describe_gauge!(
+            "dfe_fetcher_fetch_pressure_ratio",
+            "Self-normalised fetch backlog: active_fetches / concurrency_cap (0-1)"
+        );
+        metrics::describe_gauge!(
+            "dfe_fetcher_throttle_ratio",
+            "Self-normalised upstream throttle rate: throttle_errors / fetch_attempts (0-1)"
+        );
         metrics::describe_counter!("dfe_fetcher_extractor_runs_total", "Total extractor runs");
         metrics::describe_counter!(
             "dfe_fetcher_extractor_runs_success_total",
@@ -215,6 +237,7 @@ impl Metrics {
     #[inline]
     pub fn inc_fetches_success_for(&self, source: &str) {
         self.fetches_success.fetch_add(1, Ordering::Relaxed);
+        self.fetch_attempts_total.fetch_add(1, Ordering::Relaxed);
         let count = self.fetches_total.fetch_add(1, Ordering::Relaxed) + 1;
         self.rate_window.record(count);
         if self.dfe.is_some() {
@@ -243,6 +266,7 @@ impl Metrics {
     #[inline]
     pub fn inc_fetches_error_for(&self, source: &str) {
         self.fetches_error.fetch_add(1, Ordering::Relaxed);
+        self.fetch_attempts_total.fetch_add(1, Ordering::Relaxed);
         self.fetches_total.fetch_add(1, Ordering::Relaxed);
         if self.dfe.is_some() {
             metrics::counter!(
@@ -264,9 +288,16 @@ impl Metrics {
 
     /// Record a cloud API error.
     ///
-    /// `code` should be one of: "4xx", "5xx", "timeout", "network"
+    /// `code` should be one of: "throttle", "4xx", "5xx", "timeout", "network".
+    /// The "throttle" category (HTTP 429 / AWS SlowDown / rate-limit) is split
+    /// out of the generic "4xx" bucket so it also drives the self-normalised
+    /// `throttle_ratio` scaling signal (rate-limiting => spread quota over more
+    /// pods, NOT a client bug like a 401/404).
     #[inline]
     pub fn inc_api_error(&self, source: &str, code: &str) {
+        if code == "throttle" {
+            self.throttle_errors_total.fetch_add(1, Ordering::Relaxed);
+        }
         if self.dfe.is_some() {
             metrics::counter!(
                 "dfe_fetcher_api_errors_total",
@@ -275,6 +306,41 @@ impl Metrics {
             )
             .increment(1);
         }
+    }
+
+    /// Set the configured concurrent-fetch cap (scheduler semaphore size).
+    /// Denominator of the self-normalised `fetch_pressure` scaling signal.
+    #[inline]
+    pub fn set_concurrency_cap(&self, cap: usize) {
+        self.concurrency_cap.store(cap as u64, Ordering::Relaxed);
+    }
+
+    /// Self-normalised fetch-pressure signal in `[0, 1]`: in-flight fetches over
+    /// the concurrency cap. Needs NO per-env target -- 1.0 means the fetch
+    /// semaphore is saturated (pod is fetch-bound, scale out helps). Returns 0
+    /// when the cap is unset.
+    #[must_use]
+    pub fn fetch_pressure_ratio(&self) -> f64 {
+        let cap = self.concurrency_cap.load(Ordering::Relaxed);
+        if cap == 0 {
+            return 0.0;
+        }
+        let active = self.active_fetches.load(Ordering::Relaxed);
+        (active as f64 / cap as f64).min(1.0)
+    }
+
+    /// Self-normalised throttle signal in `[0, 1]`: cumulative throttle/429
+    /// errors over cumulative fetch attempts. Needs NO per-env target -- 1.0
+    /// means every fetch is being rate-limited upstream (spread the quota over
+    /// more pods). Returns 0 before any fetch attempt.
+    #[must_use]
+    pub fn throttle_ratio(&self) -> f64 {
+        let attempts = self.fetch_attempts_total.load(Ordering::Relaxed);
+        if attempts == 0 {
+            return 0.0;
+        }
+        let throttled = self.throttle_errors_total.load(Ordering::Relaxed);
+        (throttled as f64 / attempts as f64).min(1.0)
     }
 
     /// Add records fetched. Also updates the records-per-second rate window (EPS).
@@ -595,6 +661,8 @@ impl Metrics {
         if self.dfe.is_some() {
             metrics::gauge!("dfe_fetcher_fetch_rate").set(self.fetch_rate());
             metrics::gauge!("dfe_fetcher_events_per_second").set(self.events_per_second());
+            metrics::gauge!("dfe_fetcher_fetch_pressure_ratio").set(self.fetch_pressure_ratio());
+            metrics::gauge!("dfe_fetcher_throttle_ratio").set(self.throttle_ratio());
         }
     }
 
@@ -624,7 +692,7 @@ impl Metrics {
 
     /// Render metrics in Prometheus format (hand-rolled, for tests and fallback).
     ///
-    /// In production, prefer the [`MetricsManager`](hyperi_rustlib::metrics::MetricsManager)
+    /// In production, prefer the [`MetricsManager`]
     /// render path which includes all metrics registered via the `metrics` crate.
     pub fn render(&self) -> String {
         let mut output = String::with_capacity(4096);
@@ -1390,6 +1458,56 @@ mod tests {
         metrics.inc_api_error("azure", "timeout");
         metrics.inc_api_error("m365", "4xx");
         metrics.inc_api_error("gcp", "network");
+        metrics.inc_api_error("salesforce", "throttle");
+    }
+
+    #[test]
+    fn test_fetch_pressure_ratio_zero_when_cap_unset() {
+        let metrics = Metrics::new();
+        metrics.inc_active_fetches();
+        // No concurrency cap seeded -> signal contributes 0.
+        assert!(metrics.fetch_pressure_ratio().abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fetch_pressure_ratio_self_normalised() {
+        let metrics = Metrics::new();
+        metrics.set_concurrency_cap(4);
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        // 2 active / cap 4 = 0.5.
+        assert!((metrics.fetch_pressure_ratio() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fetch_pressure_ratio_saturates_at_one() {
+        let metrics = Metrics::new();
+        metrics.set_concurrency_cap(2);
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        metrics.inc_active_fetches();
+        // 3 active / cap 2 clamps to 1.0 (semaphore saturated).
+        assert!((metrics.fetch_pressure_ratio() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_throttle_ratio_zero_before_attempts() {
+        let metrics = Metrics::new();
+        assert!(metrics.throttle_ratio().abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_throttle_ratio_counts_only_throttle_code() {
+        let metrics = Metrics::new();
+        // Four attempts (two success, two error), one classified as throttle.
+        metrics.inc_fetches_success_for("aws");
+        metrics.inc_fetches_success_for("aws");
+        metrics.inc_fetches_error_for("aws");
+        metrics.inc_fetches_error_for("aws");
+        metrics.inc_api_error("aws", "throttle");
+        metrics.inc_api_error("aws", "4xx"); // NOT a throttle -> not counted.
+        // 1 throttle / 4 attempts = 0.25.
+        assert!((metrics.throttle_ratio() - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]

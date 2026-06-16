@@ -63,6 +63,30 @@ config:
     default_interval_secs: 300
     jitter_percent: 10
     max_concurrent_fetches: 10
+  # Horizontal scaling pressure (rustlib 2.8.10+ engine). Fetcher inbound is a
+  # cloud-API pull (transport.inbound=other) so the smart default is CPU-only
+  # unless domain signals are folded in. Both custom signals are self-normalised
+  # (0-1) -- no per-env target needed. Emits dfe_fetcher_scaling_pressure{name=fetch}.
+  scaling:
+    enabled: true
+    interval_secs: 15
+    transport:
+      inbound: other
+      outbound: kafka
+    params:
+      cpu_target: 0.70
+    pressures:
+    - name: fetch
+      expression: >
+        circuit_open ? 0.0 :
+        100.0 * (
+          cpu_utilisation_ratio / params.cpu_target >
+            (custom.fetch_pressure > custom.throttle_ratio
+               ? custom.fetch_pressure : custom.throttle_ratio)
+          ? cpu_utilisation_ratio / params.cpu_target
+          : (custom.fetch_pressure > custom.throttle_ratio
+               ? custom.fetch_pressure : custom.throttle_ratio)
+        )
   sources:
     aws:
       enabled: false
@@ -128,19 +152,27 @@ keda:
   maxReplicaCount: 5
   pollingInterval: 30
   cooldownPeriod: 300
-  kafka:
-    # -- Scale when consumer group lag exceeds this per partition
-    lagThreshold: "5000"
-    # -- Wake from zero replicas when lag exceeds this
-    activationLagThreshold: "0"
-    # -- Override topic (default: first topic from config)
-    topic: ""
-    # -- Override consumer group (default: from config)
-    consumerGroup: ""
+  # dfe-fetcher is a producer (no consumer group) -- no Kafka lag scaler.
+  # CPU is the always-on baseline trigger; scalingPressure below is the rich
+  # opt-in signal.
   cpu:
-    enabled: false
     # -- CPU utilisation percentage threshold
     threshold: "80"
+  # -- Scale on the rustlib horizontal scaling-pressure engine gauge
+  # (dfe_fetcher_scaling_pressure{name="fetch"}), a 0-100 correlated composite
+  # of CPU + the fetcher's self-normalised domain signals (fetch backlog +
+  # upstream throttle). Opt-in: requires a Prometheus reachable from KEDA.
+  # NOTE: serverAddress is CLUSTER-SPECIFIC -- set it to your in-cluster
+  # Prometheus before enabling. Use avg()+Value for a composite ratio gauge
+  # (NEVER sum() a ratio). Disabled by default.
+  scalingPressure:
+    enabled: false
+    # -- In-cluster Prometheus query endpoint (CLUSTER-SPECIFIC -- must be set).
+    serverAddress: ""
+    # -- Scale-out when the composite pressure gauge exceeds this (0-100).
+    threshold: "70"
+    # -- Activation threshold (wake from zero).
+    activationThreshold: "1"
 
 # -- Standard HPA fallback (when KEDA is not installed)
 # Mutually exclusive with keda.enabled

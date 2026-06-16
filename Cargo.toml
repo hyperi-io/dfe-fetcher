@@ -10,8 +10,9 @@
 name = "dfe-fetcher"
 version = "1.3.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "Data fetcher for external services (AWS, Azure, M365, GCP)"
+license = "BUSL-1.1"
 license-file = "LICENSE"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
 exclude = [".github/", "chart/", "docs/", "infra/", "reference/", "schemas/", "benches/"]
@@ -32,7 +33,7 @@ required-features = ["pgo-driver"]
 
 [dependencies]
 # HyperI shared library
-hyperi-rustlib = { version = ">=2.8.3", features = [
+hyperi-rustlib = { version = ">=2.8.14, <3", features = [
     "config",
     "config-reload",
     "logger",
@@ -161,7 +162,9 @@ tempfile = "3"
 tokio-test = "0.4"
 dotenvy = "0.15"
 wiremock = "0.6"
-tower = "0.5"
+# `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
+# ships ZERO default features, so this must be explicit (not transitive on axum).
+tower = { version = "0.5", features = ["util"] }
 opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
 prost = "0.14"
 # Auto-managed Docker containers for integration tests (start + stop lifecycle).
