@@ -1,0 +1,69 @@
+// Project:   dfe-fetcher
+// File:      src/config/resolve.rs
+// Purpose:   Resolve env:/vault:/literal spec strings on selected config fields
+// Language:  Rust
+//
+// License:   FSL-1.1-ALv2
+// Copyright: (c) 2026 HYPERI PTY LIMITED
+
+//! Post-load spec resolution for dfe-fetcher config.
+//!
+//! Runs once at startup, after `Config::load()` and before any source is
+//! constructed. Resolves `env:VAR_NAME` / `vault:path:key` / literal specs
+//! on fields that opt in to the syntax.
+//!
+//! Currently resolves:
+//! - `sources.aws.region`
+
+use crate::config::Config;
+use crate::credential::{CredentialError, resolve};
+
+/// Resolve all `env:`/`vault:` spec strings on opted-in config fields.
+pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialError> {
+    config.sources.aws.region = resolve(&config.sources.aws.region).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> Config {
+        Config::default()
+    }
+
+    #[tokio::test]
+    async fn literal_region_passes_through() {
+        let mut cfg = base_config();
+        cfg.sources.aws.region = "ap-southeast-2".to_string();
+        resolve_config_specs(&mut cfg).await.unwrap();
+        assert_eq!(cfg.sources.aws.region, "ap-southeast-2");
+    }
+
+    #[tokio::test]
+    async fn env_region_resolves() {
+        // SAFETY: test-only; uses a unique var name to avoid interference with parallel tests
+        unsafe { std::env::set_var("DFE_FETCHER_TEST_AWS_REGION", "eu-west-1") };
+
+        let mut cfg = base_config();
+        cfg.sources.aws.region = "env:DFE_FETCHER_TEST_AWS_REGION".to_string();
+        resolve_config_specs(&mut cfg).await.unwrap();
+        assert_eq!(cfg.sources.aws.region, "eu-west-1");
+
+        unsafe { std::env::remove_var("DFE_FETCHER_TEST_AWS_REGION") };
+    }
+
+    #[tokio::test]
+    async fn missing_env_returns_clear_error() {
+        let mut cfg = base_config();
+        cfg.sources.aws.region = "env:DFE_FETCHER_NONEXISTENT_REGION_XYZ".to_string();
+        let err = resolve_config_specs(&mut cfg).await.unwrap_err();
+        match err {
+            CredentialError::MissingEnvVar { name } => {
+                assert_eq!(name, "DFE_FETCHER_NONEXISTENT_REGION_XYZ");
+            }
+            other => panic!("expected MissingEnvVar, got {other:?}"),
+        }
+    }
+}
