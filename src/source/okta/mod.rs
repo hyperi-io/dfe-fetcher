@@ -72,7 +72,7 @@ impl OktaSource {
     /// Resolve the bearer token from `credential_secret` or the literal `token`.
     async fn resolve_token(&self) -> Result<String> {
         if let Some(ref spec) = self.config.credential_secret {
-            return credential::resolve(spec).await;
+            return Ok(credential::resolve(spec).await?);
         }
         self.config
             .token

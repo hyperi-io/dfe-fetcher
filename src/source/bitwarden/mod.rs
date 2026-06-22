@@ -91,7 +91,7 @@ impl BitwardenSource {
 
     async fn resolve_client_secret(&self) -> Result<String> {
         if let Some(ref spec) = self.config.credential_secret {
-            return credential::resolve(spec).await;
+            return Ok(credential::resolve(spec).await?);
         }
         self.config
             .client_secret
