@@ -17,6 +17,7 @@
 //! 6. defaults.yaml
 //! 7. Hard-coded defaults
 
+pub mod resolve;
 mod shared;
 
 pub use shared::SharedConfig;

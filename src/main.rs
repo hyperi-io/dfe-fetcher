@@ -202,6 +202,12 @@ async fn run_fetcher_service(
     config: Config,
     mut runtime: ServiceRuntime,
 ) -> anyhow::Result<()> {
+    let mut config = config;
+
+    // Resolve env:/vault: spec strings on opt-in config fields before
+    // anyone reads them. See src/config/resolve.rs for the spec syntax.
+    crate::config::resolve::resolve_config_specs(&mut config).await?;
+
     // Warn if deprecated plugin config is present
     config.extractors.plugins.warn_if_configured();
 
