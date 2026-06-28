@@ -9,11 +9,11 @@
 //! Credential resolution and OAuth2 token management.
 //!
 //! `resolve` / `resolve_optional` / `CredentialError` are re-exported from
-//! [`hyperi_rustlib::credential`]. This module additionally owns the
+//! [`scalo::secrets`]. This module additionally owns the
 //! fetcher-specific OAuth2 [`TokenManager`] and shared HTTP client
 //! factories.
 
-pub use hyperi_rustlib::credential::{CredentialError, resolve, resolve_optional};
+pub use scalo::secrets::{CredentialError, resolve, resolve_optional};
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

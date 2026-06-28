@@ -20,23 +20,23 @@
 //!
 //! When [`Metrics::with_dfe()`] is used, fetcher-specific metrics are
 //! described and emitted through the `metrics` crate global recorder,
-//! alongside the standard DFE metrics from rustlib [`DfeMetrics`].
+//! alongside the standard DFE metrics from rustlib [`ServiceMetrics`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use hyperi_rustlib::metrics::{DfeMetrics, MetricsManager, TransportKind};
-use hyperi_rustlib::scaling::RateWindow;
+use scalo::metrics::{MetricsManager, ServiceMetrics, TransportKind};
+use scalo::scaling::RateWindow;
 
 /// Metrics collector for dfe-fetcher.
 ///
 /// Maintains local atomic counters for fast hot-path access and optionally
 /// dual-emits to the `metrics` crate global recorder (via rustlib
-/// [`DfeMetrics`] for standard DFE metrics, and direct `metrics::counter!` /
+/// [`ServiceMetrics`] for standard DFE metrics, and direct `metrics::counter!` /
 /// `metrics::gauge!` calls for fetcher-specific metrics).
 pub struct Metrics {
-    /// Optional rustlib DfeMetrics for dual-emit to global `metrics` recorder.
-    dfe: Option<DfeMetrics>,
+    /// Optional rustlib ServiceMetrics for dual-emit to global `metrics` recorder.
+    dfe: Option<ServiceMetrics>,
     // Fetch counters
     fetches_total: AtomicU64,
     fetches_success: AtomicU64,
@@ -93,7 +93,7 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Create a new metrics collector (without DfeMetrics dual-emit).
+    /// Create a new metrics collector (without ServiceMetrics dual-emit).
     ///
     /// Used in tests and contexts where no global `metrics` recorder is installed.
     pub fn new() -> Self {
@@ -131,7 +131,7 @@ impl Metrics {
         }
     }
 
-    /// Create a new metrics collector with DfeMetrics dual-emit enabled.
+    /// Create a new metrics collector with ServiceMetrics dual-emit enabled.
     ///
     /// Registers standard DFE metric descriptions **and** fetcher-specific
     /// metric descriptions with the global `metrics` recorder. Use in
@@ -139,7 +139,7 @@ impl Metrics {
     /// is (or will be) installed.
     pub fn with_dfe(manager: &MetricsManager) -> Self {
         // Register fetcher-specific metrics with the global recorder.
-        // These are NOT part of DfeMetrics (which covers standard DFE metrics
+        // These are NOT part of ServiceMetrics (which covers standard DFE metrics
         // shared across receiver/loader/engine) — they are fetcher-only.
         metrics::describe_counter!(
             "dfe_fetcher_fetches_total",
@@ -220,7 +220,7 @@ impl Metrics {
         );
 
         Self {
-            dfe: Some(DfeMetrics::register(manager)),
+            dfe: Some(ServiceMetrics::register(manager)),
             ..Self::new()
         }
     }
@@ -233,7 +233,7 @@ impl Metrics {
     ///
     /// Increments both the local `fetches_success` and `fetches_total` atomics,
     /// and emits `dfe_fetcher_fetches_total{source="..",status="success"}` via the
-    /// `metrics` crate when DfeMetrics is active.
+    /// `metrics` crate when ServiceMetrics is active.
     #[inline]
     pub fn inc_fetches_success_for(&self, source: &str) {
         self.fetches_success.fetch_add(1, Ordering::Relaxed);
@@ -262,7 +262,7 @@ impl Metrics {
     ///
     /// Increments both the local `fetches_error` and `fetches_total` atomics,
     /// and emits `dfe_fetcher_fetches_total{source="..",status="error"}` via the
-    /// `metrics` crate when DfeMetrics is active.
+    /// `metrics` crate when ServiceMetrics is active.
     #[inline]
     pub fn inc_fetches_error_for(&self, source: &str) {
         self.fetches_error.fetch_add(1, Ordering::Relaxed);
@@ -439,7 +439,7 @@ impl Metrics {
     /// Increment extractor runs counter with name and status labels.
     ///
     /// Emits `dfe_fetcher_extractor_runs_total{name="..",status=".."}` via the
-    /// `metrics` crate when DfeMetrics is active. Also updates local atomics
+    /// `metrics` crate when ServiceMetrics is active. Also updates local atomics
     /// for the aggregate counters.
     #[inline]
     pub fn inc_extractor_run_for(&self, name: &str, status: &str) {
@@ -1433,13 +1433,13 @@ mod tests {
     }
 
     // ==========================================================================
-    // Methods that are no-ops without DfeMetrics must not panic
+    // Methods that are no-ops without ServiceMetrics must not panic
     // ==========================================================================
 
     #[test]
     fn test_record_fetch_duration_without_dfe_is_noop() {
         let metrics = Metrics::new();
-        // Must not panic when no global recorder / DfeMetrics is configured.
+        // Must not panic when no global recorder / ServiceMetrics is configured.
         metrics.record_fetch_duration("aws", Duration::from_millis(250));
         metrics.record_fetch_duration("azure", Duration::from_secs(2));
     }
@@ -1528,7 +1528,7 @@ mod tests {
     #[test]
     fn test_update_rate_gauge_without_dfe_is_noop() {
         let metrics = Metrics::new();
-        // Should silently return without a DfeMetrics registered.
+        // Should silently return without a ServiceMetrics registered.
         metrics.update_rate_gauge();
         // Feeding the rate window first still shouldn't panic.
         metrics.inc_fetches_success();
@@ -1594,13 +1594,13 @@ mod tests {
     }
 
     /// Exercise the `Metrics::with_dfe()` constructor end-to-end so the
-    /// describe_* + DfeMetrics::register path is covered, and so every
+    /// describe_* + ServiceMetrics::register path is covered, and so every
     /// `if self.dfe.is_some()` branch across the hot-path recording
     /// methods gets executed. A `MetricsManager` is installed as the
     /// global recorder for the duration of this test.
     #[test]
     fn test_with_dfe_exercises_all_dual_emit_paths() {
-        use hyperi_rustlib::metrics::MetricsManager;
+        use scalo::metrics::MetricsManager;
 
         // Install a MetricsManager (it registers the global metrics recorder).
         // Use a distinct namespace so this test doesn't collide with any other

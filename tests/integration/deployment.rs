@@ -50,7 +50,7 @@ fn test_metrics_extractor_counters() {
 
 #[test]
 fn test_memory_guard_pressure_tracking() {
-    use hyperi_rustlib::memory::{MemoryGuard, MemoryGuardConfig};
+    use scalo::memory::{MemoryGuard, MemoryGuardConfig};
 
     let guard = MemoryGuard::new(MemoryGuardConfig {
         limit_bytes: 1000,
@@ -74,7 +74,7 @@ fn test_memory_guard_pressure_tracking() {
 
 #[test]
 fn test_memory_guard_release_underflow() {
-    use hyperi_rustlib::memory::{MemoryGuard, MemoryGuardConfig};
+    use scalo::memory::{MemoryGuard, MemoryGuardConfig};
 
     let guard = MemoryGuard::new(MemoryGuardConfig {
         limit_bytes: 1000,
@@ -159,7 +159,7 @@ fn test_output_legacy_kafka_config_mapping() {
             enabled: true,
             mechanism: "SCRAM-SHA-256".into(),
             username: "user".into(),
-            password: hyperi_rustlib::config::sensitive::SensitiveString::from("pass"),
+            password: scalo::config::sensitive::SensitiveString::from("pass"),
         }),
         tls: KafkaTlsConfig {
             enabled: true,
@@ -190,7 +190,7 @@ fn test_output_legacy_kafka_config_mapping() {
         rustlib
             .sasl_password
             .as_ref()
-            .map(hyperi_rustlib::SensitiveString::expose),
+            .map(scalo::SensitiveString::expose),
         Some("pass")
     );
     assert_eq!(rustlib.security_protocol, "sasl_ssl");

@@ -48,7 +48,7 @@
 
 use std::sync::Arc;
 
-use hyperi_rustlib::transport::{GrpcConfig, GrpcTransport, TransportBase, TransportReceiver};
+use scalo::transport::{GrpcConfig, GrpcTransport, TransportBase, TransportReceiver};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 

@@ -24,10 +24,10 @@ pub use shared::SharedConfig;
 
 use std::collections::HashMap;
 
-use hyperi_rustlib::config::flat_env::{self, ApplyFlatEnv};
-use hyperi_rustlib::config::sensitive::SensitiveString;
-use hyperi_rustlib::config::{self, ConfigOptions};
-use hyperi_rustlib::dlq::DlqConfig;
+use scalo::config::flat_env::{self, ApplyFlatEnv};
+use scalo::config::sensitive::SensitiveString;
+use scalo::config::{self, ConfigOptions};
+use scalo::dlq::DlqConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -110,7 +110,7 @@ pub struct Config {
 
     /// Scaling pressure configuration for KEDA autoscaling.
     #[serde(default)]
-    pub scaling: hyperi_rustlib::scaling::ScalingPressureConfig,
+    pub scaling: scalo::scaling::ScalingPressureConfig,
 
     /// Recursively unwrap double-serialised JSON string fields before delivery.
     ///
@@ -147,7 +147,7 @@ impl Default for Config {
             instance_id: None,
             output: OutputConfig::default(),
             cursor: CursorConfig::default(),
-            scaling: hyperi_rustlib::scaling::ScalingPressureConfig::default(),
+            scaling: scalo::scaling::ScalingPressureConfig::default(),
             unwrap_nested_json: default_unwrap_nested_json(),
             config_path: None,
         }
@@ -200,7 +200,7 @@ impl Config {
     /// Register all config sections in the global config registry.
     /// Enables the /config debug endpoint and change notifications.
     pub fn register_in_registry(&self) {
-        use hyperi_rustlib::config::registry;
+        use scalo::config::registry;
         registry::register("scheduler", &self.scheduler);
         registry::register("sources", &self.sources);
         registry::register("extractors", &self.extractors);
@@ -301,7 +301,7 @@ impl Config {
 
         // Validate source filter expressions (CEL)
         if let Some(ref filter) = self.sources.aws.filter {
-            let errors = hyperi_rustlib::expression::validate(filter);
+            let errors = scalo::expression::validate(filter);
             if !errors.is_empty() {
                 return Err(Error::Config(format!(
                     "sources.aws.filter invalid: {}",
@@ -310,7 +310,7 @@ impl Config {
             }
         }
         if let Some(ref filter) = self.sources.azure.filter {
-            let errors = hyperi_rustlib::expression::validate(filter);
+            let errors = scalo::expression::validate(filter);
             if !errors.is_empty() {
                 return Err(Error::Config(format!(
                     "sources.azure.filter invalid: {}",
@@ -319,7 +319,7 @@ impl Config {
             }
         }
         if let Some(ref filter) = self.sources.m365.filter {
-            let errors = hyperi_rustlib::expression::validate(filter);
+            let errors = scalo::expression::validate(filter);
             if !errors.is_empty() {
                 return Err(Error::Config(format!(
                     "sources.m365.filter invalid: {}",
@@ -328,7 +328,7 @@ impl Config {
             }
         }
         if let Some(ref filter) = self.sources.gcp.filter {
-            let errors = hyperi_rustlib::expression::validate(filter);
+            let errors = scalo::expression::validate(filter);
             if !errors.is_empty() {
                 return Err(Error::Config(format!(
                     "sources.gcp.filter invalid: {}",
@@ -2625,11 +2625,11 @@ pub struct OutputConfig {
 
     /// Kafka transport configuration (rustlib KafkaConfig).
     #[serde(default)]
-    pub kafka: Option<hyperi_rustlib::transport::KafkaConfig>,
+    pub kafka: Option<scalo::transport::KafkaConfig>,
 
     /// gRPC transport configuration (rustlib GrpcConfig, client mode).
     #[serde(default)]
-    pub grpc: Option<hyperi_rustlib::transport::GrpcConfig>,
+    pub grpc: Option<scalo::transport::GrpcConfig>,
 
     /// Suffix appended to source topic names (e.g., "_land").
     /// If set, takes precedence over legacy `kafka.topic_suffix`.
@@ -3473,7 +3473,7 @@ sources:
     fn test_config_roundtrip_preserves_output_type() {
         let mut cfg = valid_config();
         cfg.output.output_type = "grpc".to_string();
-        cfg.output.grpc = Some(hyperi_rustlib::transport::GrpcConfig {
+        cfg.output.grpc = Some(scalo::transport::GrpcConfig {
             endpoint: Some("http://receiver:6000".to_string()),
             ..Default::default()
         });

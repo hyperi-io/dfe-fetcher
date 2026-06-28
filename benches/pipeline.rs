@@ -107,7 +107,7 @@ fn bench_cel_filter_evaluation(c: &mut Criterion) {
 
     group.bench_function("not_equal_string", |b| {
         b.iter(|| {
-            hyperi_rustlib::expression::evaluate_condition(
+            scalo::expression::evaluate_condition(
                 black_box(r#"eventName != "ConsoleLogin""#),
                 black_box(&context),
             )
@@ -116,7 +116,7 @@ fn bench_cel_filter_evaluation(c: &mut Criterion) {
 
     group.bench_function("equal_string", |b| {
         b.iter(|| {
-            hyperi_rustlib::expression::evaluate_condition(
+            scalo::expression::evaluate_condition(
                 black_box(r#"severity == "high""#),
                 black_box(&context),
             )

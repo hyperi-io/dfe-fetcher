@@ -29,8 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use hyperi_rustlib::dlq::{Dlq, DlqEntry};
-use hyperi_rustlib::logger::security;
+use scalo::dlq::{Dlq, DlqEntry};
+use scalo::logger::security;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -40,7 +40,7 @@ use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::Metrics;
 use crate::output::OutputManager;
 use crate::source::FetchResult;
-use hyperi_rustlib::memory::MemoryGuard;
+use scalo::memory::MemoryGuard;
 
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
@@ -68,7 +68,7 @@ impl PipelineState {
         let config = shared_config.get();
 
         // Create MemoryGuard — prefer env vars (cgroup-aware), fall back to BufferConfig
-        let mut mg_config = hyperi_rustlib::memory::MemoryGuardConfig::from_env("DFE_FETCHER");
+        let mut mg_config = scalo::memory::MemoryGuardConfig::from_env("DFE_FETCHER");
         if mg_config.limit_bytes == 0 && config.buffer.memory_limit > 0 {
             // Legacy config fallback: explicit limit from buffer.memory_limit
             mg_config.limit_bytes = config.buffer.memory_limit as u64;
@@ -295,7 +295,7 @@ impl PipelineState {
         };
 
         let context: HashMap<String, serde_json::Value> = map.into_iter().collect();
-        hyperi_rustlib::expression::evaluate_condition(expression, &context)
+        scalo::expression::evaluate_condition(expression, &context)
     }
 
     /// Send a message to output transports. On failure, routes to DLQ if available.
@@ -351,7 +351,7 @@ impl PipelineState {
                 {
                     use std::sync::atomic::AtomicU64;
                     static DLQ_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
-                    if hyperi_rustlib::logger::log_debounced(&DLQ_DEBOUNCE, 5_000) {
+                    if scalo::logger::log_debounced(&DLQ_DEBOUNCE, 5_000) {
                         error!(
                             error = %dlq_err,
                             topic,
@@ -532,12 +532,10 @@ mod tests {
                 PipelineState {
                     shared_config: shared,
                     output: None,
-                    memory_guard: Arc::new(MemoryGuard::new(
-                        hyperi_rustlib::memory::MemoryGuardConfig {
-                            limit_bytes: 1_073_741_824, // 1 GiB for tests
-                            ..Default::default()
-                        },
-                    )),
+                    memory_guard: Arc::new(MemoryGuard::new(scalo::memory::MemoryGuardConfig {
+                        limit_bytes: 1_073_741_824, // 1 GiB for tests
+                        ..Default::default()
+                    })),
                     dlq: None,
                     metrics: Arc::new(Metrics::new()),
                     ready: AtomicBool::new(true),
@@ -751,13 +749,11 @@ mod tests {
         let state = PipelineState {
             shared_config: shared,
             output: None,
-            memory_guard: Arc::new(MemoryGuard::new(
-                hyperi_rustlib::memory::MemoryGuardConfig {
-                    limit_bytes: 1, // 1 byte — will be under pressure
-                    pressure_threshold: 0.01,
-                    ..Default::default()
-                },
-            )),
+            memory_guard: Arc::new(MemoryGuard::new(scalo::memory::MemoryGuardConfig {
+                limit_bytes: 1, // 1 byte — will be under pressure
+                pressure_threshold: 0.01,
+                ..Default::default()
+            })),
             dlq: None,
             metrics,
             ready: AtomicBool::new(true),
@@ -1013,13 +1009,11 @@ mod tests {
         let state = PipelineState {
             shared_config: shared,
             output: None,
-            memory_guard: Arc::new(MemoryGuard::new(
-                hyperi_rustlib::memory::MemoryGuardConfig {
-                    limit_bytes: 524_288_000, // 500 MB
-                    pressure_threshold: 0.8,
-                    ..Default::default()
-                },
-            )),
+            memory_guard: Arc::new(MemoryGuard::new(scalo::memory::MemoryGuardConfig {
+                limit_bytes: 524_288_000, // 500 MB
+                pressure_threshold: 0.8,
+                ..Default::default()
+            })),
             dlq: None,
             metrics: Arc::clone(&metrics),
             ready: AtomicBool::new(true),

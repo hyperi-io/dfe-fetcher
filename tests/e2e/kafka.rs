@@ -21,7 +21,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use serde_json::json;
 
-use hyperi_rustlib::transport::{TransportBase, TransportReceiver};
+use scalo::transport::{TransportBase, TransportReceiver};
 
 use dfe_fetcher::config::{Config, OutputConfig, SharedConfig};
 use dfe_fetcher::cursor::file::FileCursorStore;
@@ -73,7 +73,7 @@ async fn test_e2e_produce_consume_roundtrip() {
     consumer_config.auto_offset_reset = "earliest".to_string();
     consumer_config.enable_auto_commit = true;
 
-    let consumer = hyperi_rustlib::transport::KafkaTransport::new(&consumer_config)
+    let consumer = scalo::transport::KafkaTransport::new(&consumer_config)
         .await
         .expect("consumer should connect");
 
@@ -163,7 +163,7 @@ async fn test_e2e_enriched_record_in_kafka() {
     consumer_config.auto_offset_reset = "earliest".to_string();
     consumer_config.enable_auto_commit = true;
 
-    let consumer = hyperi_rustlib::transport::KafkaTransport::new(&consumer_config)
+    let consumer = scalo::transport::KafkaTransport::new(&consumer_config)
         .await
         .expect("consumer should connect");
 

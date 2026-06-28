@@ -25,7 +25,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use serde_json::json;
 
-use hyperi_rustlib::transport::{TransportBase, TransportReceiver};
+use scalo::transport::{TransportBase, TransportReceiver};
 
 use dfe_fetcher::config::{Config, OutputConfig, SharedConfig};
 use dfe_fetcher::metrics::Metrics;
@@ -78,7 +78,7 @@ async fn test_output_kafka_single_message_roundtrip() {
     consumer_config.auto_offset_reset = "earliest".to_string();
     consumer_config.enable_auto_commit = true;
 
-    let consumer = match hyperi_rustlib::transport::KafkaTransport::new(&consumer_config).await {
+    let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Skipping consume: consumer init failed: {e}");
@@ -165,7 +165,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     consumer_config.auto_offset_reset = "earliest".to_string();
     consumer_config.enable_auto_commit = true;
 
-    let consumer = match hyperi_rustlib::transport::KafkaTransport::new(&consumer_config).await {
+    let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Skipping consume: consumer init failed: {e}");
@@ -243,7 +243,7 @@ async fn test_output_kafka_batch_roundtrip() {
     consumer_config.auto_offset_reset = "earliest".to_string();
     consumer_config.enable_auto_commit = true;
 
-    let consumer = match hyperi_rustlib::transport::KafkaTransport::new(&consumer_config).await {
+    let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Skipping consume: consumer init failed: {e}");

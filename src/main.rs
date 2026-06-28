@@ -9,7 +9,7 @@
 //! dfe-fetcher CLI entry point.
 //!
 //! Uses hyperi-rustlib CLI module for standard arguments and subcommands.
-//! Implements the [`DfeApp`] trait for the standard DFE service lifecycle.
+//! Implements the [`ServiceApp`] trait for the standard DFE service lifecycle.
 
 // Jemalloc — DFE allocator policy 2026-04-17 (jemalloc only at every channel).
 #[cfg(feature = "jemalloc")]
@@ -21,13 +21,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use hyperi_rustlib::cli::{
-    CliError, CommonArgs, DfeApp, ServiceRuntime, StandardCommand, VersionInfo,
-};
-use hyperi_rustlib::config::reloader::{ConfigReloader, ReloaderConfig};
-use hyperi_rustlib::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
-use hyperi_rustlib::logger::security;
-use hyperi_rustlib::scaling::ScalingComponent;
+use scalo::cli::{CliError, CommonArgs, ServiceApp, ServiceRuntime, StandardCommand, VersionInfo};
+use scalo::config::reloader::{ConfigReloader, ReloaderConfig};
+use scalo::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
+use scalo::logger::security;
+use scalo::scaling::ScalingComponent;
 use tracing::{debug, error, info, warn};
 
 use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
@@ -105,7 +103,7 @@ enum AppCommand {
     EmitContract,
 }
 
-impl DfeApp for App {
+impl ServiceApp for App {
     type Config = Config;
 
     #[allow(clippy::unnecessary_literal_bound)]
@@ -150,7 +148,7 @@ impl DfeApp for App {
             .map_err(|e| CliError::Service(e.to_string()))
     }
 
-    fn deployment_contract(&self) -> Option<hyperi_rustlib::deployment::DeploymentContract> {
+    fn deployment_contract(&self) -> Option<scalo::deployment::DeploymentContract> {
         Some(crate::deployment::contract())
     }
 }
@@ -159,7 +157,7 @@ impl DfeApp for App {
 async fn main() {
     let app = App::parse();
 
-    // Handle non-standard subcommands locally before entering the DfeApp lifecycle
+    // Handle non-standard subcommands locally before entering the ServiceApp lifecycle
     // (these don't need config or logging). Standard subcommands fall through to run_app.
     if let Some(ref cmd) = app.command {
         match cmd {
@@ -198,15 +196,15 @@ async fn main() {
         }
     }
 
-    // Delegate to standard DfeApp lifecycle (logging → config → run_service)
+    // Delegate to standard ServiceApp lifecycle (logging → config → run_service)
     // Box::pin avoids a large-future clippy lint on the run_app async fn.
-    if let Err(e) = Box::pin(hyperi_rustlib::cli::run_app(app)).await {
+    if let Err(e) = Box::pin(scalo::cli::run_app(app)).await {
         eprintln!("fatal: {e}");
         std::process::exit(1);
     }
 }
 
-/// Main service loop — called by the DfeApp lifecycle after logging and config.
+/// Main service loop — called by the ServiceApp lifecycle after logging and config.
 async fn run_fetcher_service(
     _common: &CommonArgs,
     config: Config,
@@ -291,7 +289,7 @@ async fn run_fetcher_service(
 
     // Fire-and-forget version check against crates.io
     {
-        use hyperi_rustlib::version_check::{VersionCheck, VersionCheckConfig};
+        use scalo::version_check::{VersionCheck, VersionCheckConfig};
         let checker = VersionCheck::new(VersionCheckConfig::from_cascade(
             "dfe-fetcher",
             env!("CARGO_PKG_VERSION"),
@@ -303,8 +301,8 @@ async fn run_fetcher_service(
     // and shutdown token (signal handler already installed with K8s pre-stop delay).
     let shutdown_token = runtime.shutdown.clone();
 
-    // Initialise fetcher metrics (with DfeMetrics dual-emit for standard DFE metric names).
-    // runtime.dfe is the DfeMetrics already registered by ServiceRuntime; we also register
+    // Initialise fetcher metrics (with ServiceMetrics dual-emit for standard DFE metric names).
+    // runtime.dfe is the ServiceMetrics already registered by ServiceRuntime; we also register
     // fetcher-specific metric descriptions by constructing Metrics::with_dfe().
     let metrics = Arc::new(Metrics::with_dfe(&runtime.metrics));
 
@@ -321,7 +319,7 @@ async fn run_fetcher_service(
     // Build scaling pressure calculator for KEDA autoscaling with fetcher-specific components.
     // The ServiceRuntime's scaling field (if any) uses generic components; we create one
     // with fetcher-specific weights for buffer depth, transport errors, and memory.
-    let scaling_pressure = Arc::new(hyperi_rustlib::scaling::ScalingPressure::new(
+    let scaling_pressure = Arc::new(scalo::scaling::ScalingPressure::new(
         config.scaling.clone(),
         vec![
             ScalingComponent::new(
@@ -377,24 +375,18 @@ async fn run_fetcher_service(
         handle
     };
 
-    // Spawn periodic scaling pressure update. Feeds two planes:
-    //  - legacy weighted `ScalingPressure` (buffer depth + memory + circuit);
-    //  - the rustlib 2.8.10+ horizontal scaling ENGINE via the lock-free
-    //    `scaling_signals` cell. The fetcher's inbound is NOT a rustlib
-    //    transport (it PULLS from cloud APIs), so the engine's compound inbound
-    //    is 0 and the smart default would reduce to CPU-only. We push DOMAIN
-    //    backlog signals so a `scaling.pressures` CEL expression can fold them in:
-    //      * `fetch_pressure` = active_fetches / concurrency_cap (self-normalised
-    //        0-1; saturated semaphore => pod is fetch-bound);
-    //      * `throttle_ratio` = throttle_errors / fetch_attempts (self-normalised
-    //        0-1; upstream rate-limiting => spread the quota over more pods).
-    //    Both are self-normalised -- no per-env target needed. The outbound
-    //    Kafka circuit drives the engine's only default gate via set_circuit_open.
+    // Spawn periodic scaling pressure update. scalo 2.9 collapsed the old
+    // dual-engine model (a separate runtime `scaling_signals` cell) into ONE
+    // canonical `ScalingPressure` engine, served to KEDA at `/scaling/pressure`.
+    // We feed that single engine its weighted components (buffer depth + memory)
+    // and the outbound-circuit gate. The fetcher's domain signals
+    // (fetch_pressure / throttle_ratio) remain emitted as gauges by the metrics
+    // module for direct Prometheus/KEDA scraping; they are no longer pushed to a
+    // separate engine cell (that cell no longer exists). See update_rate_gauge.
     {
         let scaling = Arc::clone(&scaling_pressure);
         let state = Arc::clone(&pipeline_state);
         let engine_metrics = Arc::clone(&metrics);
-        let signals = Arc::clone(&runtime.scaling_signals);
         let shutdown = shutdown_token.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -405,16 +397,12 @@ async fn run_fetcher_service(
                         let used = mg.current_bytes();
                         let limit = mg.limit_bytes();
                         let circuit_open = !state.output_healthy();
-                        // Legacy weighted pressure plane.
+                        // Canonical weighted pressure engine (served to KEDA).
                         scaling.set_component("buffer_depth", used as f64);
                         scaling.set_memory(used, limit);
                         scaling.set_circuit_open(circuit_open);
-                        // Horizontal scaling-engine plane (domain signals + gate).
-                        signals.set_custom("fetch_pressure", engine_metrics.fetch_pressure_ratio());
-                        signals.set_custom("throttle_ratio", engine_metrics.throttle_ratio());
-                        signals.set_circuit_open(circuit_open);
                         // Keep the per-tick scaling gauges current for KEDA's
-                        // Prometheus scaler.
+                        // Prometheus scaler (fetch_pressure / throttle_ratio).
                         engine_metrics.update_rate_gauge();
                     }
                     _ = shutdown.cancelled() => break,

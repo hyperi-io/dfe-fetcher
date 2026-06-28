@@ -118,7 +118,7 @@ impl Scheduler {
                     {
                         use std::sync::atomic::AtomicU64;
                         static BACKPRESSURE_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
-                        if hyperi_rustlib::logger::log_debounced(&BACKPRESSURE_DEBOUNCE, 10_000) {
+                        if scalo::logger::log_debounced(&BACKPRESSURE_DEBOUNCE, 10_000) {
                             warn!(
                                 source = source.name(),
                                 "Pipeline not ready (backpressure), waiting"

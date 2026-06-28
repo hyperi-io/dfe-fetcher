@@ -74,7 +74,7 @@ fn test_enrich_large_payload() {
 }
 
 /// Verify the full enrich -> filter pipeline path works end-to-end.
-/// Uses `enrich_record` for enrichment and `hyperi_rustlib::expression::evaluate_condition`
+/// Uses `enrich_record` for enrichment and `scalo::expression::evaluate_condition`
 /// for CEL filtering (since `evaluate_filter` is private to the pipeline module).
 #[tokio::test]
 async fn test_pipeline_deliver_enriches_and_filters() {
@@ -118,7 +118,7 @@ async fn test_pipeline_deliver_enriches_and_filters() {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-    let passes = hyperi_rustlib::expression::evaluate_condition(filter_expr, &context);
+    let passes = scalo::expression::evaluate_condition(filter_expr, &context);
     assert!(passes, "CreateUser should pass the filter");
 
     // 5. CEL filter: ConsoleLogin should be dropped
@@ -132,7 +132,7 @@ async fn test_pipeline_deliver_enriches_and_filters() {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-    let drops = hyperi_rustlib::expression::evaluate_condition(filter_expr, &login_context);
+    let drops = scalo::expression::evaluate_condition(filter_expr, &login_context);
     assert!(!drops, "ConsoleLogin should be filtered out");
 }
 

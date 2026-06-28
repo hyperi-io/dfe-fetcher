@@ -32,13 +32,13 @@ path = "src/bin/pgo-driver.rs"
 required-features = ["pgo-driver"]
 
 [dependencies]
-# HyperI shared library
-hyperi-rustlib = { version = ">=2.8.15, <3", features = [
+# scalo shared library (crates.io).
+scalo = { version = ">=2.10.0, <3", features = [
     "config",
     "config-reload",
     "logger",
     "metrics",
-    "metrics-dfe",
+    "service-metrics",
     "http-server",
     "transport-kafka",
     "transport-grpc",
@@ -48,7 +48,9 @@ hyperi-rustlib = { version = ">=2.8.15, <3", features = [
     "tiered-sink",
     "runtime",
     "secrets",
-    "credential",
+    # vault: credential specs (scalo::secrets::resolve "vault:path:key"); the
+    # former hyperi-rustlib `credential` feature carried vault support.
+    "secrets-vault",
     "dlq",
     "deployment",
     "cli-service",

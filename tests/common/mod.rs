@@ -82,8 +82,8 @@ impl KafkaTestConfig {
     }
 
     /// Convert to rustlib KafkaConfig for use with KafkaTransport.
-    pub fn to_rustlib_config(&self) -> hyperi_rustlib::transport::KafkaConfig {
-        let mut config = hyperi_rustlib::transport::KafkaConfig {
+    pub fn to_rustlib_config(&self) -> scalo::transport::KafkaConfig {
+        let mut config = scalo::transport::KafkaConfig {
             brokers: self
                 .brokers
                 .split(',')

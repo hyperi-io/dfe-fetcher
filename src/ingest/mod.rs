@@ -33,8 +33,8 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::routing::post;
-use hyperi_rustlib::http_server::{HttpServer, HttpServerConfig};
-use hyperi_rustlib::logger::security;
+use scalo::http_server::{HttpServer, HttpServerConfig};
+use scalo::logger::security;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 

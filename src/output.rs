@@ -14,9 +14,9 @@
 //! All Kafka access via rustlib's `KafkaTransport` — no direct rdkafka dependency.
 
 use bytes::Bytes;
-use hyperi_rustlib::transport::{
-    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaRole, KafkaTransport, SendResult,
-    TransportBase, TransportSender,
+use scalo::transport::{
+    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, TransportBase,
+    TransportSender,
 };
 use tracing::{debug, error, info, trace};
 
@@ -146,9 +146,9 @@ impl OutputManager {
             } else {
                 build_rustlib_kafka_config(legacy_kafka)
             };
-            // Fetcher output is produce-only: Producer role + no consumer group,
-            // so rustlib builds no idle consumer (rustlib #44).
-            kafka_config.role = KafkaRole::Producer;
+            // Fetcher output is produce-only. scalo's KafkaConfig is now
+            // profile-based (no `role`); an empty consumer group means no idle
+            // consumer is built for a producer-only transport.
             kafka_config.group = String::new();
 
             let transport = KafkaTransport::new(&kafka_config)
@@ -194,7 +194,7 @@ impl OutputManager {
                 {
                     use std::sync::atomic::{AtomicU64, Ordering};
                     static SEND_ERROR_SAMPLES: AtomicU64 = AtomicU64::new(0);
-                    if hyperi_rustlib::logger::log_sampled(&SEND_ERROR_SAMPLES, 1000) {
+                    if scalo::logger::log_sampled(&SEND_ERROR_SAMPLES, 1000) {
                         error!(
                             transport = transport.name(),
                             error = %e,

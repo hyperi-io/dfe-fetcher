@@ -151,9 +151,7 @@ impl ContainerExtractor {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty()
-                        && hyperi_rustlib::logger::log_sampled(&STDERR_SAMPLES, 100)
-                    {
+                    if !line.trim().is_empty() && scalo::logger::log_sampled(&STDERR_SAMPLES, 100) {
                         warn!(
                             container = %name,
                             stderr = %line,

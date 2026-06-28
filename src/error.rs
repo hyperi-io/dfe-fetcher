@@ -68,11 +68,11 @@ pub enum Error {
 
     /// Secrets management error.
     #[error("secrets error: {0}")]
-    Secrets(#[from] hyperi_rustlib::SecretsError),
+    Secrets(#[from] scalo::SecretsError),
 
     /// Dead letter queue error.
     #[error("DLQ error: {0}")]
-    Dlq(#[from] hyperi_rustlib::dlq::DlqError),
+    Dlq(#[from] scalo::dlq::DlqError),
 }
 
 /// Result type alias for dfe-fetcher operations.
@@ -102,8 +102,8 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-impl From<hyperi_rustlib::credential::CredentialError> for Error {
-    fn from(e: hyperi_rustlib::credential::CredentialError) -> Self {
+impl From<scalo::secrets::CredentialError> for Error {
+    fn from(e: scalo::secrets::CredentialError) -> Self {
         Error::Credential(e.to_string())
     }
 }

@@ -11,7 +11,7 @@
 //! Builds a [`DeploymentContract`] that drives generation of Dockerfile,
 //! Helm chart, and Docker Compose fragments via `hyperi-rustlib`.
 
-use hyperi_rustlib::deployment::{
+use scalo::deployment::{
     DeploymentContract, HealthContract, ImageProfile, KedaConfig, KedaContract, NativeDepsContract,
     PortContract, SecretEnvContract, SecretGroupContract, base_image_from_cascade,
     image_registry_from_cascade,
@@ -197,7 +197,13 @@ pub fn contract() -> DeploymentContract {
             ..Default::default()
         })),
         schema_version: 2,
-        oci_labels: hyperi_rustlib::deployment::OciLabels::default(),
+        // dfe-fetcher is BUSL-1.1 (scalo itself is Apache-2.0). Drive the OCI
+        // licenses label + the generated Dockerfile's `# License` header from the
+        // contract so a regen never stamps Apache into this BUSL repo.
+        oci_labels: scalo::deployment::OciLabels {
+            licenses: "BUSL-1.1".into(),
+            ..Default::default()
+        },
     }
 }
 
