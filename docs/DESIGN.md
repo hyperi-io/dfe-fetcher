@@ -275,7 +275,7 @@ graph TD
 
     config --> error
 
-    subgraph "hyperi-rustlib"
+    subgraph "scalo"
         rustlib_config[config]
         rustlib_logger[logger]
         rustlib_metrics[metrics]
@@ -373,6 +373,6 @@ records out), keeps the cognitive load low for new sources, and
 reserves the harder optimisation work for the pipeline tiers where
 volumes actually demand it. When a fetcher source ever becomes a
 bottleneck (sustained high-cardinality tenants, very chatty audit
-feeds), revisit on a case-by-case basis - the rustlib hot-path
+feeds), revisit on a case-by-case basis - the scalo hot-path
 patterns are available if needed, just not the default starting
 point here.

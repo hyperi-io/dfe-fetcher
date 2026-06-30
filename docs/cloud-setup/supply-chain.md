@@ -103,7 +103,7 @@ sources:
   crates_io:
     enabled: true
     crates:
-      - "hyperi-rustlib"
+      - "scalo"
       - "dfe-loader"
       - "dfe-fetcher"
     # api_url_override: "https://crates.io"   # default

@@ -5,7 +5,9 @@
 Data fetcher for the HyperI DFE (Data Fusion Engine) platform. It pulls
 security and operational data from cloud and SaaS providers, and from external
 extractors, then delivers each record to the DFE pipeline over Kafka and/or
-gRPC.
+gRPC. It is built on the [scalo](https://github.com/hyperi-io/scalo-rs)
+data-plane runtime (config cascade, logging, metrics, transport, tiered sink,
+deployment contract).
 
 ## Architecture
 
