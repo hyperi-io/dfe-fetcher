@@ -196,7 +196,7 @@ pub fn contract() -> DeploymentContract {
             cpu_threshold: 80,
             ..Default::default()
         })),
-        schema_version: 2,
+        schema_version: 3,
         // dfe-fetcher is BUSL-1.1 (scalo itself is Apache-2.0). Drive the OCI
         // licenses label + the generated Dockerfile's `# License` header from the
         // contract so a regen never stamps Apache into this BUSL repo.
@@ -204,6 +204,12 @@ pub fn contract() -> DeploymentContract {
             licenses: "BUSL-1.1".into(),
             ..Default::default()
         },
+        // Reflectable config (scalo-rs#6): the derived JSON Schema of the full
+        // multi-endpoint `Config` (secret fields carry `x-dfe-secret`) plus the
+        // hand-authored capability catalog schemars cannot derive (service names
+        // + their knobs). Emitted to docs/config-schema.* + docs/capability-catalog.*.
+        config_schema: Some(scalo::deployment::config_schema_json::<crate::config::Config>()),
+        capabilities: crate::deployment_catalog::capabilities(),
     }
 }
 
@@ -415,7 +421,41 @@ mod tests {
     #[test]
     fn test_contract_schema_version() {
         let c = contract();
-        assert_eq!(c.schema_version, 2);
+        assert_eq!(c.schema_version, 3);
+    }
+
+    #[test]
+    fn test_contract_carries_config_schema() {
+        let c = contract();
+        assert!(c.config_schema.is_some(), "config_schema must be populated");
+    }
+
+    #[test]
+    fn test_contract_carries_capabilities() {
+        let c = contract();
+        assert_eq!(c.capabilities.len(), 19, "one capability per source type");
+    }
+
+    /// The derived schema must mark the fetcher's secret fields with the
+    /// `x-dfe-secret` marker (via scalo's SensitiveString JsonSchema impl).
+    #[test]
+    fn test_config_schema_marks_secrets() {
+        let c = contract();
+        let schema = c.config_schema.expect("config_schema");
+        let json = serde_json::to_string(&schema).expect("serialise schema");
+        assert!(
+            json.contains("x-dfe-secret"),
+            "schema must carry the x-dfe-secret marker on secret fields"
+        );
+    }
+
+    /// The committed reflectable artefacts under docs/ must not drift from a
+    /// fresh regeneration of the current Config + catalog. Regenerate with
+    /// `dfe-fetcher config-schema --dir docs` (or generate-artefacts) and commit.
+    #[test]
+    fn test_config_artifacts_do_not_drift() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+        scalo::deployment::assert_no_config_artifact_drift(&contract(), dir);
     }
 
     #[test]

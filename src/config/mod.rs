@@ -63,7 +63,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `scheduler.max_concurrent_fetches` — semaphore created at startup
 /// - `dlq.*` — DLQ created at startup
 /// - `buffer.*` — buffer manager created at startup
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Config {
     /// Scheduler configuration.
@@ -564,7 +564,7 @@ impl ApplyFlatEnv for Config {
 // =============================================================================
 
 /// Scheduler configuration for fetch timing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct SchedulerConfig {
     /// Default fetch interval in seconds (used when source doesn't specify its own).
@@ -592,7 +592,7 @@ impl Default for SchedulerConfig {
 // =============================================================================
 
 /// Top-level sources configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct SourcesConfig {
     /// AWS source configuration.
@@ -740,7 +740,7 @@ impl<C> Resolved<C> {
 
 /// One AWS connection: an account/region + its credentials. Type-wide fields
 /// (`services`, `topic`, `filter`) are shared and stay on [`AwsSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AwsConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -775,7 +775,7 @@ pub struct AwsConnection {
 }
 
 /// AWS source configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct AwsSourceConfig {
     /// Enable AWS source.
@@ -879,7 +879,7 @@ impl AwsSourceConfig {
 }
 
 /// AWS service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AwsService {
     /// Service name (e.g., "cloudtrail", "guardduty", "securityhub", "config").
     pub name: String,
@@ -892,7 +892,7 @@ pub struct AwsService {
 /// One Azure connection: a tenant/subscription + its service-principal
 /// credentials. Type-wide fields (`services`, `topic`, `filter`) are shared and
 /// stay on [`AzureSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AzureConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -935,7 +935,7 @@ pub struct AzureConnection {
 }
 
 /// Azure source configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct AzureSourceConfig {
     /// Enable Azure source.
@@ -1044,7 +1044,7 @@ impl AzureSourceConfig {
 }
 
 /// Azure service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AzureService {
     /// Service name (e.g., "activity_log", "defender", "sentinel", "entra_id").
     pub name: String,
@@ -1057,7 +1057,7 @@ pub struct AzureService {
 /// One M365 connection: a tenant + its application credentials. Type-wide
 /// fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`M365SourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct M365Connection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -1096,7 +1096,7 @@ pub struct M365Connection {
 }
 
 /// Microsoft 365 source configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct M365SourceConfig {
     /// Enable M365 source.
@@ -1200,7 +1200,7 @@ impl M365SourceConfig {
 }
 
 /// M365 service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct M365Service {
     /// Service name (e.g., "audit_log", "message_trace", "dlp", "alerts").
     pub name: String,
@@ -1213,7 +1213,7 @@ pub struct M365Service {
 /// One GCP connection: a project + its service-account credentials. Type-wide
 /// fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`GcpSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcpConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -1244,7 +1244,7 @@ pub struct GcpConnection {
 }
 
 /// Google Cloud Platform source configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GcpSourceConfig {
     /// Enable GCP source.
@@ -1337,7 +1337,7 @@ impl GcpSourceConfig {
 }
 
 /// GCP service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcpService {
     /// Service name (e.g., "audit_logs", "scc", "cloud_logging").
     pub name: String,
@@ -1355,7 +1355,7 @@ pub struct GcpService {
 /// `enterprise` per fetcher instance - scale to multiple by deploying multiple
 /// fetcher instances with different configs (per the no-horizontal-scaling rule
 /// in CLAUDE.md).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GithubSourceConfig {
     /// Enable GitHub source.
@@ -1408,7 +1408,7 @@ pub struct GithubSourceConfig {
 /// One GitHub connection: an org or enterprise + its token. Type-wide fields
 /// (`services`, `topic`, `filter`) are shared and stay on
 /// [`GithubSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GithubConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -1489,7 +1489,7 @@ impl GithubSourceConfig {
 }
 
 /// GitHub service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GithubService {
     /// Service name (currently only "audit_log").
     pub name: String,
@@ -1504,7 +1504,7 @@ pub struct GithubService {
 ///
 /// Pulls events from the Okta System Log API
 /// (`{tenant_url}/api/v1/logs`). One Okta tenant per fetcher instance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct OktaSourceConfig {
     /// Enable Okta source.
@@ -1557,7 +1557,7 @@ pub struct OktaSourceConfig {
 
 /// One Okta connection: a tenant URL + its token. Type-wide fields (`services`,
 /// `topic`, `filter`) are shared and stay on [`OktaSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OktaConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -1645,7 +1645,7 @@ impl OktaSourceConfig {
 }
 
 /// Okta service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OktaService {
     /// Service name (currently only "system_log").
     pub name: String,
@@ -1662,7 +1662,7 @@ pub struct OktaService {
 ///
 /// Pulls events from Cloudflare's REST API. One account per fetcher instance.
 /// Auth: scoped API token (read-only). Account ID required for audit logs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct CloudflareSourceConfig {
     /// Enable Cloudflare source.
@@ -1712,7 +1712,7 @@ pub struct CloudflareSourceConfig {
 /// One Cloudflare connection: an account + its token. Type-wide fields
 /// (`services`, `topic`, `filter`) are shared and stay on
 /// [`CloudflareSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CloudflareConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -1787,7 +1787,7 @@ impl CloudflareSourceConfig {
 }
 
 /// Cloudflare service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CloudflareService {
     /// Service name (currently only "audit_logs").
     pub name: String,
@@ -1805,7 +1805,7 @@ pub struct CloudflareService {
 /// Pulls events from the 1Password Events Reporting API
 /// (`events.1password.com/api/v2/*`). Requires a 1Password Business or
 /// Enterprise account with Events Reporting enabled.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct OnePasswordSourceConfig {
     /// Enable 1Password source.
@@ -1850,7 +1850,7 @@ pub struct OnePasswordSourceConfig {
 /// One 1Password connection: an account + its Events Reporting token. Type-wide
 /// fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`OnePasswordSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OnePasswordConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -1920,7 +1920,7 @@ impl OnePasswordSourceConfig {
 
 /// 1Password service to fetch data from. Each maps to one Events Reporting
 /// endpoint: `signinattempts`, `itemusages`, or `auditevents`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OnePasswordService {
     /// Service name: one of "signin_attempts", "item_usages", "audit_events".
     pub name: String,
@@ -1937,7 +1937,7 @@ pub struct OnePasswordService {
 /// public API via OAuth2 client_credentials. Region-aware: each Falcon
 /// instance lives on a different cloud (US-1, US-2, EU-1, US-GOV-1) and
 /// the API host changes accordingly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct CrowdstrikeSourceConfig {
     /// Enable CrowdStrike source.
@@ -1988,7 +1988,7 @@ pub struct CrowdstrikeSourceConfig {
 /// One CrowdStrike connection: a Falcon tenant (region + OAuth2 client). Type-
 /// wide fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`CrowdstrikeSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CrowdstrikeConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -2063,7 +2063,7 @@ impl CrowdstrikeSourceConfig {
 }
 
 /// CrowdStrike service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CrowdstrikeService {
     /// Service name (currently only "detections" - returns enriched
     /// EPP detection summaries).
@@ -2082,7 +2082,7 @@ pub struct CrowdstrikeService {
 /// Pulls audit-log events from `https://api.slack.com/audit/v1/logs`.
 /// Enterprise Grid only - requires an Org Admin token with the
 /// `auditlogs:read` scope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct SlackSourceConfig {
     /// Enable Slack source.
@@ -2125,7 +2125,7 @@ pub struct SlackSourceConfig {
 /// One Slack connection: an Enterprise Grid org + its admin token. Type-wide
 /// fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`SlackSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SlackConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -2194,7 +2194,7 @@ impl SlackSourceConfig {
 }
 
 /// Slack service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SlackService {
     /// Service name (currently only "audit_logs").
     pub name: String,
@@ -2215,7 +2215,7 @@ pub struct SlackService {
 ///
 /// Supports both Bitwarden Cloud and self-hosted instances - set
 /// `api_url_override` and `identity_url_override` for self-hosted.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct BitwardenSourceConfig {
     /// Enable Bitwarden source.
@@ -2270,7 +2270,7 @@ pub struct BitwardenSourceConfig {
 /// One Bitwarden connection: an organisation + its API credentials. Type-wide
 /// fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`BitwardenSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BitwardenConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -2351,7 +2351,7 @@ impl BitwardenSourceConfig {
 }
 
 /// Bitwarden service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BitwardenService {
     /// Service name (currently only "events").
     pub name: String,
@@ -2367,7 +2367,7 @@ pub struct BitwardenService {
 /// `api-XXXXXXXX.duosecurity.com/admin/v2/logs/authentication` endpoint.
 /// Auth uses Duo's proprietary scheme: HMAC-SHA1 over a canonical request
 /// signature, transported in a Basic auth header.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct DuoSourceConfig {
     /// Enable Duo source.
@@ -2420,7 +2420,7 @@ pub struct DuoSourceConfig {
 /// One Duo connection: a tenant (api_host) + its integration/secret keys.
 /// Type-wide fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`DuoSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DuoConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -2501,7 +2501,7 @@ impl DuoSourceConfig {
 }
 
 /// Duo service to fetch data from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DuoService {
     /// Service name (currently only "authentication_logs").
     pub name: String,
@@ -2526,7 +2526,7 @@ pub struct DuoService {
 ///
 /// No authentication required - all responses come from
 /// `https://pypi.org/pypi/<package>/json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct PypiSourceConfig {
     /// Enable PyPI source.
@@ -2569,7 +2569,7 @@ impl Default for PypiSourceConfig {
 /// Fetches metadata for a configured list of crates on each tick.
 /// No authentication required - all responses come from
 /// `https://crates.io/api/v1/crates/<name>`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct CratesIoSourceConfig {
     /// Enable crates.io source.
@@ -2620,7 +2620,7 @@ impl Default for CratesIoSourceConfig {
 /// Auth: OAuth2 service account using JWT-with-subject (RS256) - the SA
 /// impersonates a designated Workspace admin email so the Reports API
 /// returns data scoped to the tenant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GoogleWorkspaceSourceConfig {
     /// Enable Google Workspace source.
@@ -2682,7 +2682,7 @@ pub struct GoogleWorkspaceSourceConfig {
 /// One Google Workspace connection: a tenant (impersonated admin) + its SA key.
 /// Type-wide fields (`services`, `topic`, `filter`) are shared and stay on
 /// [`GoogleWorkspaceSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GoogleWorkspaceConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -2771,7 +2771,7 @@ impl GoogleWorkspaceSourceConfig {
 /// Google Workspace service. Each maps to one `applicationName` under the
 /// Reports API: `login`, `admin`, `drive`, `mobile`, `groups`, `calendar`,
 /// `chat`, `meet`, `token`, etc.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GoogleWorkspaceService {
     /// Service name; passed directly as the `applicationName` URL segment.
     pub name: String,
@@ -2810,7 +2810,7 @@ pub struct GoogleWorkspaceService {
 /// The token response carries an `instance_url` which is used for all
 /// subsequent API calls (not `login_url`). `instance_url_override` pins it
 /// for testing or custom-domain deployments.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct SalesforceSourceConfig {
     /// Enable Salesforce source.
@@ -2884,7 +2884,7 @@ pub struct SalesforceSourceConfig {
 /// One Salesforce connection: an org + its OAuth2 credentials (JWT-bearer or
 /// client-credentials). Type-wide fields (`services`, `topic`, `filter`) are
 /// shared and stay on [`SalesforceSourceConfig`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SalesforceConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
@@ -2990,7 +2990,7 @@ impl SalesforceSourceConfig {
 
 /// Salesforce service. `name` selects the audit surface:
 /// `setup_audit_trail`, `login_history`, or `event_log_file`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SalesforceService {
     /// Service name (audit surface to pull).
     pub name: String,
@@ -3029,7 +3029,7 @@ pub struct SalesforceService {
 /// emits one record per Pub/Sub message; `message.data` is base64
 /// decoded and parsed as JSON if possible (typical for Log Sink
 /// payloads), otherwise emitted as a string.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GcpPubsubSourceConfig {
     /// Enable Pub/Sub pull source.
@@ -3088,7 +3088,7 @@ impl Default for GcpPubsubSourceConfig {
 }
 
 /// A single Pub/Sub subscription configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcpPubsubSubscription {
     /// GCP project ID owning the subscription.
     pub project_id: String,
@@ -3127,7 +3127,7 @@ fn default_pubsub_return_immediately() -> bool {
 /// return a "not yet implemented" error - configuring them today is
 /// safe (the source skips them with a warning) but live use must wait
 /// for Phase 2.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ObjectStoreSourceConfig {
     /// Enable object-store source.
@@ -3166,7 +3166,7 @@ impl Default for ObjectStoreSourceConfig {
 /// Provider is selected by the `provider` discriminator (serde-tagged
 /// enum). Each provider variant carries its own auth shape; only S3 is
 /// live in Phase 1.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum ObjectStoreBackendConfig {
     /// Amazon S3 (or S3-compatible: MinIO, R2, B2 via endpoint_override).
@@ -3180,7 +3180,7 @@ pub enum ObjectStoreBackendConfig {
 }
 
 /// S3 backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct S3BackendConfig {
     /// AWS region for SigV4 signing + endpoint construction.
     pub region: String,
@@ -3209,7 +3209,7 @@ pub struct S3BackendConfig {
 }
 
 /// GCS backend configuration. **Phase 2 stub.**
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcsBackendConfig {
     /// Service account JSON key path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3224,7 +3224,7 @@ pub struct GcsBackendConfig {
 }
 
 /// Azure Blob backend configuration. **Phase 2 stub.**
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AzureBlobBackendConfig {
     /// Storage account name (the `<name>` in
     /// `https://<name>.blob.core.windows.net`).
@@ -3262,7 +3262,7 @@ pub struct AzureBlobBackendConfig {
 }
 
 /// One bucket / container to tail, plus its prefixes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ObjectStoreBucket {
     /// Bucket (S3, GCS) or container (Azure Blob) name.
     pub bucket: String,
@@ -3272,7 +3272,7 @@ pub struct ObjectStoreBucket {
 }
 
 /// One prefix to tail, plus its format and routing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ObjectStorePrefix {
     /// Object key prefix (may be empty to scan the whole bucket).
     #[serde(default)]
@@ -3293,7 +3293,7 @@ pub struct ObjectStorePrefix {
 }
 
 /// Object body format. Drives gzip handling + parser dispatch.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectStoreFormat {
     /// Gzipped JSON-lines (one JSON value per newline).
@@ -3319,7 +3319,7 @@ pub enum ObjectStoreFormat {
 /// `https://proxy.golang.org` - free for everyone, GOPROXY-compatible.
 ///
 /// No authentication required.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GoModulesSourceConfig {
     /// Enable Go modules source.
@@ -3363,7 +3363,7 @@ impl Default for GoModulesSourceConfig {
 // =============================================================================
 
 /// External extractors configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ExtractorsConfig {
     /// Container-based extractors.
@@ -3390,7 +3390,7 @@ impl Default for ExtractorsConfig {
 ///
 /// Each container runs an isolated extraction tool (any language/runtime).
 /// One container per source + config — no horizontal scaling needed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContainerExtractorConfig {
     /// Unique name for this extractor instance.
     pub name: String,
@@ -3477,7 +3477,7 @@ fn default_stdout() -> String {
 }
 
 /// Deprecated plugin configuration — logs warning if non-empty values present.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PluginsConfig {
     #[serde(default)]
     pub directory: Option<String>,
@@ -3495,7 +3495,7 @@ impl PluginsConfig {
 }
 
 /// Vector.dev extractor configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct VectorExtractorConfig {
     /// Enable Vector extractor integration.
@@ -3519,7 +3519,7 @@ impl Default for VectorExtractorConfig {
 }
 
 /// A managed Vector instance configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VectorInstance {
     /// Instance name.
     pub name: String,
@@ -3550,7 +3550,7 @@ fn default_container_mode() -> String {
 // =============================================================================
 
 /// HTTP ingest server for container extractors to post data.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct IngestConfig {
     /// Enable ingest HTTP endpoint.
@@ -3591,7 +3591,7 @@ impl Default for IngestConfig {
 ///
 /// Migration: move your `kafka:` settings under `output.kafka:` using rustlib
 /// `KafkaConfig` format (profiles, `librdkafka_overrides`, standard field names).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct KafkaConfig {
     /// Broker addresses.
@@ -3627,7 +3627,7 @@ impl Default for KafkaConfig {
 }
 
 /// SASL authentication configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SaslConfig {
     /// Enable SASL.
     pub enabled: bool,
@@ -3643,7 +3643,7 @@ pub struct SaslConfig {
 }
 
 /// Kafka TLS configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct KafkaTlsConfig {
     /// Enable TLS for Kafka.
@@ -3671,7 +3671,7 @@ impl Default for KafkaTlsConfig {
 }
 
 /// Kafka producer settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ProducerConfig {
     /// Maximum batch size in bytes.
@@ -3711,7 +3711,7 @@ impl Default for ProducerConfig {
 // =============================================================================
 
 /// Buffer and memory configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct BufferConfig {
     /// Maximum memory for buffers in bytes (0 = auto-detect 67% of available).
@@ -3735,7 +3735,7 @@ impl Default for BufferConfig {
 // =============================================================================
 
 /// Metrics configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct MetricsConfig {
     /// Enable metrics.
@@ -3759,7 +3759,7 @@ impl Default for MetricsConfig {
 // =============================================================================
 
 /// Output transport mode.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct OutputConfig {
     /// Transport type: "kafka", "grpc", or "both".
@@ -3819,7 +3819,7 @@ impl OutputConfig {
 ///
 /// If `directory` is empty, the cursor store falls back to the config
 /// file's parent directory with a warning.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct CursorConfig {
     /// Directory for cursor files. Each source gets its own file

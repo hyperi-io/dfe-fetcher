@@ -33,7 +33,7 @@ required-features = ["pgo-driver"]
 
 [dependencies]
 # scalo shared library (crates.io).
-scalo = { version = ">=2.10.0, <3", features = [
+scalo = { version = ">=2.10.4, <3", features = [
     "config",
     "config-reload",
     "logger",
@@ -53,6 +53,9 @@ scalo = { version = ">=2.10.0, <3", features = [
     "secrets-vault",
     "dlq",
     "deployment",
+    # Reflectable config schema + capability catalog (scalo-rs#6): derive
+    # JsonSchema on Config and emit config-schema.* / capability-catalog.*.
+    "config-schema",
     "cli-service",
     "top",
     "expression",
@@ -73,6 +76,12 @@ futures-core = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
+
+# JSON Schema derivation for the reflectable config-schema capability
+# (scalo-rs#6). Same version range as scalo so cargo unifies to ONE schemars in
+# the graph -- so scalo's `SensitiveString` x-dfe-secret impl and the fetcher's
+# derives resolve against the same `JsonSchema` trait.
+schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
 
 # HTTP client (for API calls to external services).
 # `default-features = false` drops the `default-tls` feature (which pulls

@@ -1,0 +1,4779 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` — fetch interval re-computed each cycle\n- `scheduler.jitter_percent` — jitter re-computed each cycle\n- `kafka.topic_suffix` — topic name suffix re-read on each delivery\n- `sources.*.filter` — CEL filter re-evaluated on each record\n- `cursor.default_window_hours` — lookback window re-read when no cursor exists\n\n**Requires pod restart:**\n- `output.*` — transport connections established at startup\n- `kafka.*` (except `topic_suffix`) — transport config bound at startup\n- `ingest.*` — HTTP server binds at startup, auth token resolved once\n- `extractors.*` — containers and Vector instances spawned at startup\n- `metrics.*` — metrics server binds at startup\n- `instance_id` — cursor key prefix set at startup\n- `cursor.directory` — cursor store created at startup\n- `sources.*.enabled` — source registration at startup\n- `sources.*.credential_secret` / `tenant_id` / `client_id` etc. — credentials resolved once\n- `scheduler.max_concurrent_fetches` — semaphore created at startup\n- `dlq.*` — DLQ created at startup\n- `buffer.*` — buffer manager created at startup",
+  "type": "object",
+  "properties": {
+    "scheduler": {
+      "description": "Scheduler configuration.",
+      "$ref": "#/$defs/SchedulerConfig",
+      "default": {
+        "default_interval_secs": 300,
+        "max_concurrent_fetches": 10,
+        "jitter_percent": 10
+      }
+    },
+    "sources": {
+      "description": "Native source modules configuration.",
+      "$ref": "#/$defs/SourcesConfig",
+      "default": {
+        "aws": {
+          "enabled": false,
+          "region": "us-east-1",
+          "access_key_id": null,
+          "secret_access_key": null,
+          "assume_role_arn": null,
+          "credential_secret": null,
+          "interval_secs": null,
+          "services": [],
+          "topic": "aws",
+          "filter": null
+        },
+        "azure": {
+          "enabled": false,
+          "tenant_id": null,
+          "client_id": null,
+          "client_secret": null,
+          "credential_secret": null,
+          "subscription_id": null,
+          "interval_secs": null,
+          "services": [],
+          "topic": "azure",
+          "filter": null
+        },
+        "m365": {
+          "enabled": false,
+          "tenant_id": null,
+          "client_id": null,
+          "client_secret": null,
+          "credential_secret": null,
+          "interval_secs": null,
+          "services": [],
+          "topic": "m365",
+          "filter": null
+        },
+        "gcp": {
+          "enabled": false,
+          "project_id": null,
+          "service_account_key": null,
+          "credential_secret": null,
+          "interval_secs": null,
+          "services": [],
+          "topic": "gcp",
+          "filter": null
+        },
+        "github": {
+          "enabled": false,
+          "services": [],
+          "topic": "github",
+          "filter": null
+        },
+        "okta": {
+          "enabled": false,
+          "use_ssws_header": true,
+          "services": [],
+          "topic": "okta",
+          "filter": null
+        },
+        "cloudflare": {
+          "enabled": false,
+          "services": [],
+          "topic": "cloudflare",
+          "filter": null
+        },
+        "onepassword": {
+          "enabled": false,
+          "services": [],
+          "topic": "onepassword",
+          "filter": null
+        },
+        "crowdstrike": {
+          "enabled": false,
+          "services": [],
+          "topic": "crowdstrike",
+          "filter": null
+        },
+        "slack": {
+          "enabled": false,
+          "services": [],
+          "topic": "slack",
+          "filter": null
+        },
+        "bitwarden": {
+          "enabled": false,
+          "services": [],
+          "topic": "bitwarden",
+          "filter": null
+        },
+        "duo": {
+          "enabled": false,
+          "services": [],
+          "topic": "duo",
+          "filter": null
+        },
+        "pypi": {
+          "enabled": false,
+          "packages": [],
+          "topic": "pypi",
+          "filter": null
+        },
+        "crates_io": {
+          "enabled": false,
+          "crates": [],
+          "topic": "crates_io",
+          "filter": null
+        },
+        "go_modules": {
+          "enabled": false,
+          "modules": [],
+          "topic": "go_modules",
+          "filter": null
+        },
+        "google_workspace": {
+          "enabled": false,
+          "services": [],
+          "topic": "google_workspace",
+          "filter": null
+        },
+        "gcp_pubsub": {
+          "enabled": false,
+          "subscriptions": [],
+          "topic": "gcp_pubsub",
+          "filter": null
+        },
+        "object_store": {
+          "enabled": false,
+          "backends": [],
+          "topic": "object_store",
+          "filter": null
+        },
+        "salesforce": {
+          "enabled": false,
+          "services": [],
+          "topic": "salesforce",
+          "filter": null
+        }
+      }
+    },
+    "extractors": {
+      "description": "External extractors configuration (containers, vector).",
+      "$ref": "#/$defs/ExtractorsConfig",
+      "default": {
+        "containers": [],
+        "plugins": {
+          "directory": null
+        },
+        "vector": {
+          "enabled": false,
+          "grpc_bind_address": "0.0.0.0:6000",
+          "instances": []
+        }
+      }
+    },
+    "ingest": {
+      "description": "HTTP ingest server configuration (for container extractors to post data).",
+      "$ref": "#/$defs/IngestConfig",
+      "default": {
+        "enabled": true,
+        "bind_address": "0.0.0.0:8080",
+        "max_body_size": 10485760,
+        "auth_token": null
+      }
+    },
+    "kafka": {
+      "description": "Kafka producer configuration (output).",
+      "$ref": "#/$defs/KafkaConfig",
+      "default": {
+        "brokers": [],
+        "client_id": "dfe-fetcher",
+        "topic_suffix": "_land",
+        "sasl": null,
+        "tls": {
+          "enabled": false,
+          "ca_file": null,
+          "cert_file": null,
+          "key_file": null
+        },
+        "producer": {
+          "batch_size": 8388608,
+          "batch_messages": 10000,
+          "linger_ms": 20,
+          "compression": "lz4",
+          "acks": "all",
+          "retries": 5
+        }
+      }
+    },
+    "buffer": {
+      "description": "Buffer and memory configuration.",
+      "$ref": "#/$defs/BufferConfig",
+      "default": {
+        "memory_limit": 0,
+        "pressure_threshold": 0.8
+      }
+    },
+    "metrics": {
+      "description": "Metrics configuration.",
+      "$ref": "#/$defs/MetricsConfig",
+      "default": {
+        "enabled": true,
+        "address": "0.0.0.0:9090"
+      }
+    },
+    "dlq": {
+      "description": "Dead letter queue configuration.",
+      "$ref": "#/$defs/DlqConfig",
+      "default": {
+        "enabled": true,
+        "mode": "cascade",
+        "queue_capacity": 10000,
+        "batch_size": 256,
+        "flush_interval_ms": 100,
+        "file": {
+          "enabled": true,
+          "path": "/var/spool/dfe/dlq",
+          "rotation": "hourly",
+          "max_age_days": 30,
+          "compress_rotated": true
+        }
+      }
+    },
+    "config_reload_secs": {
+      "description": "Periodic config reload interval in seconds (0 = disabled, SIGHUP only).",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "default": 0
+    },
+    "instance_id": {
+      "description": "Instance identity for cursor isolation across multiple fetcher pods.\nAuto-derived from source config if omitted.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "output": {
+      "description": "Output transport configuration.",
+      "$ref": "#/$defs/OutputConfig",
+      "default": {
+        "type": "kafka",
+        "kafka": null,
+        "grpc": null,
+        "topic_suffix": null
+      }
+    },
+    "cursor": {
+      "description": "Cursor store configuration.",
+      "$ref": "#/$defs/CursorConfig",
+      "default": {
+        "directory": "",
+        "default_window_hours": 1
+      }
+    },
+    "scaling": {
+      "description": "Scaling pressure configuration for KEDA autoscaling.",
+      "$ref": "#/$defs/ScalingPressureConfig",
+      "default": {
+        "enabled": true,
+        "memory_gate_threshold": 0.8
+      }
+    },
+    "unwrap_nested_json": {
+      "description": "Recursively unwrap double-serialised JSON string fields before delivery.\n\nWhen enabled (default), any string field whose value parses as a JSON\nobject or array is replaced with the parsed value. This makes fields\nlike AWS CloudTrail's `CloudTrailEvent` queryable as nested JSON in\ndownstream systems like ClickHouse.\n\nSet to `false` for sources that intentionally store JSON as strings.",
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "$defs": {
+    "SchedulerConfig": {
+      "description": "Scheduler configuration for fetch timing.",
+      "type": "object",
+      "properties": {
+        "default_interval_secs": {
+          "description": "Default fetch interval in seconds (used when source doesn't specify its own).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 300
+        },
+        "max_concurrent_fetches": {
+          "description": "Maximum concurrent fetch tasks across all sources.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10
+        },
+        "jitter_percent": {
+          "description": "Jitter percentage (0-100) added to intervals to avoid thundering herd.",
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255,
+          "default": 10
+        }
+      }
+    },
+    "SourcesConfig": {
+      "description": "Top-level sources configuration.",
+      "type": "object",
+      "properties": {
+        "aws": {
+          "description": "AWS source configuration.",
+          "$ref": "#/$defs/AwsSourceConfig",
+          "default": {
+            "enabled": false,
+            "region": "us-east-1",
+            "access_key_id": null,
+            "secret_access_key": null,
+            "assume_role_arn": null,
+            "credential_secret": null,
+            "interval_secs": null,
+            "services": [],
+            "topic": "aws",
+            "filter": null
+          }
+        },
+        "azure": {
+          "description": "Azure source configuration.",
+          "$ref": "#/$defs/AzureSourceConfig",
+          "default": {
+            "enabled": false,
+            "tenant_id": null,
+            "client_id": null,
+            "client_secret": null,
+            "credential_secret": null,
+            "subscription_id": null,
+            "interval_secs": null,
+            "services": [],
+            "topic": "azure",
+            "filter": null
+          }
+        },
+        "m365": {
+          "description": "Microsoft 365 source configuration.",
+          "$ref": "#/$defs/M365SourceConfig",
+          "default": {
+            "enabled": false,
+            "tenant_id": null,
+            "client_id": null,
+            "client_secret": null,
+            "credential_secret": null,
+            "interval_secs": null,
+            "services": [],
+            "topic": "m365",
+            "filter": null
+          }
+        },
+        "gcp": {
+          "description": "Google Cloud Platform source configuration.",
+          "$ref": "#/$defs/GcpSourceConfig",
+          "default": {
+            "enabled": false,
+            "project_id": null,
+            "service_account_key": null,
+            "credential_secret": null,
+            "interval_secs": null,
+            "services": [],
+            "topic": "gcp",
+            "filter": null
+          }
+        },
+        "github": {
+          "description": "GitHub audit-log source configuration.",
+          "$ref": "#/$defs/GithubSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "github",
+            "filter": null
+          }
+        },
+        "okta": {
+          "description": "Okta System Log source configuration.",
+          "$ref": "#/$defs/OktaSourceConfig",
+          "default": {
+            "enabled": false,
+            "use_ssws_header": true,
+            "services": [],
+            "topic": "okta",
+            "filter": null
+          }
+        },
+        "cloudflare": {
+          "description": "Cloudflare audit-log source configuration.",
+          "$ref": "#/$defs/CloudflareSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "cloudflare",
+            "filter": null
+          }
+        },
+        "onepassword": {
+          "description": "1Password Events Reporting source configuration.",
+          "$ref": "#/$defs/OnePasswordSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "onepassword",
+            "filter": null
+          }
+        },
+        "crowdstrike": {
+          "description": "CrowdStrike Falcon source configuration.",
+          "$ref": "#/$defs/CrowdstrikeSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "crowdstrike",
+            "filter": null
+          }
+        },
+        "slack": {
+          "description": "Slack audit-log source configuration.",
+          "$ref": "#/$defs/SlackSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "slack",
+            "filter": null
+          }
+        },
+        "bitwarden": {
+          "description": "Bitwarden Events API source configuration.",
+          "$ref": "#/$defs/BitwardenSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "bitwarden",
+            "filter": null
+          }
+        },
+        "duo": {
+          "description": "Duo Admin API source configuration.",
+          "$ref": "#/$defs/DuoSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "duo",
+            "filter": null
+          }
+        },
+        "pypi": {
+          "description": "PyPI supply-chain audit source configuration.",
+          "$ref": "#/$defs/PypiSourceConfig",
+          "default": {
+            "enabled": false,
+            "packages": [],
+            "topic": "pypi",
+            "filter": null
+          }
+        },
+        "crates_io": {
+          "description": "crates.io supply-chain audit source configuration.",
+          "$ref": "#/$defs/CratesIoSourceConfig",
+          "default": {
+            "enabled": false,
+            "crates": [],
+            "topic": "crates_io",
+            "filter": null
+          }
+        },
+        "go_modules": {
+          "description": "Go module-proxy supply-chain audit source configuration.",
+          "$ref": "#/$defs/GoModulesSourceConfig",
+          "default": {
+            "enabled": false,
+            "modules": [],
+            "topic": "go_modules",
+            "filter": null
+          }
+        },
+        "google_workspace": {
+          "description": "Google Workspace Reports API source configuration.\n\n**Alpha** - additionally pending hyperi-infra#5 (domain-wide-delegation\nservice account + manual Admin-console scope grants) before live use.",
+          "$ref": "#/$defs/GoogleWorkspaceSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "google_workspace",
+            "filter": null
+          }
+        },
+        "gcp_pubsub": {
+          "description": "GCP Pub/Sub pull source configuration.\n\n**Alpha** - additionally pending a hyperi-infra issue (TBD) for\ntenant-side Log Sink + Pub/Sub topic + subscription provisioning.",
+          "$ref": "#/$defs/GcpPubsubSourceConfig",
+          "default": {
+            "enabled": false,
+            "subscriptions": [],
+            "topic": "gcp_pubsub",
+            "filter": null
+          }
+        },
+        "object_store": {
+          "description": "Object-store source family configuration (S3 / GCS / Azure Blob).\n\nPhase 1: S3 backend is live; GCS and Azure Blob are stubs that\nlog-and-skip until Phase 2. See\n`docs/superpowers/specs/2026-05-21-object-store-source-design.md`.",
+          "$ref": "#/$defs/ObjectStoreSourceConfig",
+          "default": {
+            "enabled": false,
+            "backends": [],
+            "topic": "object_store",
+            "filter": null
+          }
+        },
+        "salesforce": {
+          "description": "Salesforce audit source configuration (SetupAuditTrail,\nLoginHistory, EventLogFile).\n\n**Alpha** - additionally pending a Salesforce connected app for live\ntesting.",
+          "$ref": "#/$defs/SalesforceSourceConfig",
+          "default": {
+            "enabled": false,
+            "services": [],
+            "topic": "salesforce",
+            "filter": null
+          }
+        }
+      }
+    },
+    "AwsSourceConfig": {
+      "description": "AWS source configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable AWS source.",
+          "type": "boolean",
+          "default": false
+        },
+        "region": {
+          "description": "AWS region.",
+          "type": "string",
+          "default": "us-east-1"
+        },
+        "access_key_id": {
+          "description": "Access key ID (prefer secrets manager in production).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "secret_access_key": {
+          "description": "Secret access key (prefer secrets manager in production; always redacted in serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "assume_role_arn": {
+          "description": "Assume role ARN for cross-account access.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials.\nFormat: \"provider:path:key\" (e.g., \"vault:secret/aws:credentials\")",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AwsService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "aws"
+        },
+        "endpoint_override": {
+          "description": "Endpoint URL override for testing (e.g., wiremock server URI).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple accounts/regions of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AwsConnection"
+          }
+        }
+      }
+    },
+    "AwsService": {
+      "description": "AWS service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (e.g., \"cloudtrail\", \"guardduty\", \"securityhub\", \"config\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "AwsConnection": {
+      "description": "One AWS connection: an account/region + its credentials. Type-wide fields\n(`services`, `topic`, `filter`) are shared and stay on [`AwsSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "region": {
+          "description": "AWS region. Inherits the type-level `region` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "access_key_id": {
+          "description": "Access key ID (prefer `credential_secret` in production).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_access_key": {
+          "description": "Secret access key (always redacted in serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "assume_role_arn": {
+          "description": "Assume role ARN for cross-account access.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint_override": {
+          "description": "Endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "AzureSourceConfig": {
+      "description": "Azure source configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Azure source.",
+          "type": "boolean",
+          "default": false
+        },
+        "tenant_id": {
+          "description": "Azure tenant ID.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "client_id": {
+          "description": "Client (application) ID.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "client_secret": {
+          "description": "Client secret (prefer secrets manager in production; always redacted in serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "subscription_id": {
+          "description": "Subscription ID.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AzureService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "azure"
+        },
+        "management_url_override": {
+          "description": "Management API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "graph_url_override": {
+          "description": "Graph API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple tenants/subscriptions of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AzureConnection"
+          }
+        }
+      }
+    },
+    "AzureService": {
+      "description": "Azure service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (e.g., \"activity_log\", \"defender\", \"sentinel\", \"entra_id\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "AzureConnection": {
+      "description": "One Azure connection: a tenant/subscription + its service-principal\ncredentials. Type-wide fields (`services`, `topic`, `filter`) are shared and\nstay on [`AzureSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Azure tenant ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "Client (application) ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Client secret (always redacted in serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscription_id": {
+          "description": "Subscription ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "management_url_override": {
+          "description": "Management API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "graph_url_override": {
+          "description": "Graph API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "M365SourceConfig": {
+      "description": "Microsoft 365 source configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable M365 source.",
+          "type": "boolean",
+          "default": false
+        },
+        "tenant_id": {
+          "description": "Azure AD tenant ID.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "client_id": {
+          "description": "Client (application) ID.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "client_secret": {
+          "description": "Client secret (prefer secrets manager in production; always redacted in serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/M365Service"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "m365"
+        },
+        "management_url_override": {
+          "description": "Management API (manage.office.com) base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "graph_url_override": {
+          "description": "Graph API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple tenants of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/M365Connection"
+          }
+        }
+      }
+    },
+    "M365Service": {
+      "description": "M365 service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (e.g., \"audit_log\", \"message_trace\", \"dlp\", \"alerts\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "M365Connection": {
+      "description": "One M365 connection: a tenant + its application credentials. Type-wide\nfields (`services`, `topic`, `filter`) are shared and stay on\n[`M365SourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Azure AD tenant ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "Client (application) ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Client secret (always redacted in serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "management_url_override": {
+          "description": "Management API (manage.office.com) base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "graph_url_override": {
+          "description": "Graph API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "GcpSourceConfig": {
+      "description": "Google Cloud Platform source configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable GCP source.",
+          "type": "boolean",
+          "default": false
+        },
+        "project_id": {
+          "description": "GCP project ID.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "service_account_key": {
+          "description": "Path to service account key file.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GcpService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "gcp"
+        },
+        "api_url_override": {
+          "description": "API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple projects of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GcpConnection"
+          }
+        }
+      }
+    },
+    "GcpService": {
+      "description": "GCP service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (e.g., \"audit_logs\", \"scc\", \"cloud_logging\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "GcpConnection": {
+      "description": "One GCP connection: a project + its service-account credentials. Type-wide\nfields (`services`, `topic`, `filter`) are shared and stay on\n[`GcpSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "GCP project ID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account_key": {
+          "description": "Path to service account key file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Secret source for credentials (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "GithubSourceConfig": {
+      "description": "GitHub source configuration.\n\nPulls audit-log events from either a GitHub organisation\n(`/orgs/{org}/audit-log`) or a GitHub Enterprise Cloud account\n(`/enterprises/{enterprise}/audit-log`). Set exactly one of `org` or\n`enterprise` per fetcher instance - scale to multiple by deploying multiple\nfetcher instances with different configs (per the no-horizontal-scaling rule\nin CLAUDE.md).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable GitHub source.",
+          "type": "boolean",
+          "default": false
+        },
+        "org": {
+          "description": "Organisation slug for `/orgs/{org}/audit-log`. Exactly one of `org` /\n`enterprise` must be set when enabled.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enterprise": {
+          "description": "Enterprise slug for `/enterprises/{enterprise}/audit-log`. Requires a\nGitHub Enterprise Cloud plan.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "description": "Personal Access Token, fine-grained PAT, or GitHub App installation\ntoken. Required scope: `read:audit_log` (org) or `read:enterprise`\n(enterprise). Always redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (e.g. `vault:secret/github:token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base URL override for testing (e.g. wiremock).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GithubService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "github"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple orgs/enterprises of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GithubConnection"
+          }
+        }
+      }
+    },
+    "GithubService": {
+      "description": "GitHub service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"audit_log\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys for `audit_log`:\n- `include`: one of `\"all\"` (default), `\"web\"`, or `\"git\"`.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "GithubConnection": {
+      "description": "One GitHub connection: an org or enterprise + its token. Type-wide fields\n(`services`, `topic`, `filter`) are shared and stay on\n[`GithubSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "org": {
+          "description": "Organisation slug for `/orgs/{org}/audit-log`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enterprise": {
+          "description": "Enterprise slug for `/enterprises/{enterprise}/audit-log`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "description": "Audit-log token (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base URL override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "OktaSourceConfig": {
+      "description": "Okta source configuration.\n\nPulls events from the Okta System Log API\n(`{tenant_url}/api/v1/logs`). One Okta tenant per fetcher instance.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Okta source.",
+          "type": "boolean",
+          "default": false
+        },
+        "tenant_url": {
+          "description": "Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).\nThe OAuth-style preview API uses `oktapreview.com`; either is accepted\nhere verbatim. Override per environment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "description": "SSWS API token (legacy auth) or bearer token from OAuth.\nAlways redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "use_ssws_header": {
+          "description": "If `true`, send the token as `Authorization: SSWS <token>` (Okta's\nlegacy API-token header). If `false`, send as `Authorization: Bearer\n<token>` (OAuth access token). Default: `true`.",
+          "type": "boolean",
+          "default": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (e.g. `vault:secret/okta:token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OktaService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "okta"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple tenants of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OktaConnection"
+          }
+        }
+      }
+    },
+    "OktaService": {
+      "description": "Okta service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"system_log\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys for `system_log`:\n- `filter`: OData-style filter applied server-side\n  (e.g. `eventType eq \"user.session.start\"`).\n- `limit`: per-page size (Okta caps at 1000).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "OktaConnection": {
+      "description": "One Okta connection: a tenant URL + its token. Type-wide fields (`services`,\n`topic`, `filter`) are shared and stay on [`OktaSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "tenant_url": {
+          "description": "Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "description": "SSWS API token or OAuth bearer token (always redacted).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "use_ssws_header": {
+          "description": "Override the SSWS vs Bearer header choice for this connection.\nInherits the type-level `use_ssws_header` when unset.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "CloudflareSourceConfig": {
+      "description": "Cloudflare source configuration.\n\nPulls events from Cloudflare's REST API. One account per fetcher instance.\nAuth: scoped API token (read-only). Account ID required for audit logs.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Cloudflare source.",
+          "type": "boolean",
+          "default": false
+        },
+        "account_id": {
+          "description": "Account ID (32-char hex) for account-level audit logs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "description": "API token. Always redacted on serialisation.\nRequired token permission for the v1 account audit-logs endpoint this\nsource calls (`/accounts/{id}/audit_logs`): **Account Settings: Read**.\n(The separate \"Account Audit Logs Read\" permission applies to the\nnewer v2 `/accounts/{id}/logs/audit` API, which this source does not\nuse yet.)",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (e.g. `vault:secret/cloudflare:token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CloudflareService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "cloudflare"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple accounts of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CloudflareConnection"
+          }
+        }
+      }
+    },
+    "CloudflareService": {
+      "description": "Cloudflare service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"audit_logs\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys for `audit_logs`:\n- `actor_email`: filter by acting user (optional).\n- `action_type`: filter by action category (optional).\n- `per_page`: page size (default 100, max 1000).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "CloudflareConnection": {
+      "description": "One Cloudflare connection: an account + its token. Type-wide fields\n(`services`, `topic`, `filter`) are shared and stay on\n[`CloudflareSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "account_id": {
+          "description": "Account ID (32-char hex) for account-level audit logs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token": {
+          "description": "API token (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "OnePasswordSourceConfig": {
+      "description": "1Password Events Reporting source configuration.\n\nPulls events from the 1Password Events Reporting API\n(`events.1password.com/api/v2/*`). Requires a 1Password Business or\nEnterprise account with Events Reporting enabled.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable 1Password source.",
+          "type": "boolean",
+          "default": false
+        },
+        "token": {
+          "description": "Events Reporting API token (Bearer token, generated from the\n1Password Business dashboard). Always redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token\n(e.g. `vault:secret/onepassword:events_token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.\nProduction default: `https://events.1password.com`.\nEU-region tenants: `https://events.ent.1password.eu`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OnePasswordService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "onepassword"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple 1Password accounts of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OnePasswordConnection"
+          }
+        }
+      }
+    },
+    "OnePasswordService": {
+      "description": "1Password service to fetch data from. Each maps to one Events Reporting\nendpoint: `signinattempts`, `itemusages`, or `auditevents`.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name: one of \"signin_attempts\", \"item_usages\", \"audit_events\".",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys:\n- `limit`: page size (default 100, max 1000).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "OnePasswordConnection": {
+      "description": "One 1Password connection: an account + its Events Reporting token. Type-wide\nfields (`services`, `topic`, `filter`) are shared and stay on\n[`OnePasswordSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "token": {
+          "description": "Events Reporting API token (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "CrowdstrikeSourceConfig": {
+      "description": "CrowdStrike Falcon source configuration.\n\nPulls detections, incidents, and host data from CrowdStrike Falcon's\npublic API via OAuth2 client_credentials. Region-aware: each Falcon\ninstance lives on a different cloud (US-1, US-2, EU-1, US-GOV-1) and\nthe API host changes accordingly.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable CrowdStrike source.",
+          "type": "boolean",
+          "default": false
+        },
+        "api_url_override": {
+          "description": "API base URL for the region the tenant lives on.\nExamples:\n- US-1: `https://api.crowdstrike.com` (default)\n- US-2: `https://api.us-2.crowdstrike.com`\n- EU-1: `https://api.eu-1.crowdstrike.com`\n- US-GOV-1: `https://api.laggar.gcw.crowdstrike.com`",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "OAuth2 client ID (Falcon API client, created in Falcon admin console).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "OAuth2 client secret. Always redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the client_secret\n(e.g. `vault:secret/crowdstrike:client_secret`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CrowdstrikeService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "crowdstrike"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple Falcon tenants of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CrowdstrikeConnection"
+          }
+        }
+      }
+    },
+    "CrowdstrikeService": {
+      "description": "CrowdStrike service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"detections\" - returns enriched\nEPP detection summaries).",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys for `detections`:\n- `limit`: query page size (default 100, max 9999).\n- `filter`: Falcon Query Language clause appended to the auto-built\n  `created_timestamp:>'<start>'+created_timestamp:<'<end>'`.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "CrowdstrikeConnection": {
+      "description": "One CrowdStrike connection: a Falcon tenant (region + OAuth2 client). Type-\nwide fields (`services`, `topic`, `filter`) are shared and stay on\n[`CrowdstrikeSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "api_url_override": {
+          "description": "API base URL for the region the tenant lives on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "OAuth2 client ID (Falcon API client).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "OAuth2 client secret (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the client_secret (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "SlackSourceConfig": {
+      "description": "Slack audit-log source configuration.\n\nPulls audit-log events from `https://api.slack.com/audit/v1/logs`.\nEnterprise Grid only - requires an Org Admin token with the\n`auditlogs:read` scope.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Slack source.",
+          "type": "boolean",
+          "default": false
+        },
+        "token": {
+          "description": "Org-admin user token (xoxa-... or xoxb-...) with `auditlogs:read`.\nAlways redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token\n(e.g. `vault:secret/slack:audit_token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SlackService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "slack"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple Slack orgs of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SlackConnection"
+          }
+        }
+      }
+    },
+    "SlackService": {
+      "description": "Slack service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"audit_logs\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys for `audit_logs`:\n- `action`: filter by action name (e.g. `user_login`).\n- `entity`: filter by entity type (`user` / `workspace` / etc).\n- `limit`: per-page size (default 200, max 1000).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "SlackConnection": {
+      "description": "One Slack connection: an Enterprise Grid org + its admin token. Type-wide\nfields (`services`, `topic`, `filter`) are shared and stay on\n[`SlackSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "token": {
+          "description": "Org-admin user token (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the token (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "BitwardenSourceConfig": {
+      "description": "Bitwarden Events API source configuration.\n\nPulls events from a Bitwarden Teams/Enterprise organisation via\n`/public/events`. Auth: OAuth2 client_credentials against\n`/identity/connect/token` using organisation API credentials.\n\nSupports both Bitwarden Cloud and self-hosted instances - set\n`api_url_override` and `identity_url_override` for self-hosted.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Bitwarden source.",
+          "type": "boolean",
+          "default": false
+        },
+        "client_id": {
+          "description": "Organisation API client ID. Generated in Bitwarden admin:\nSettings > Organization info > \"View API Key\".\nFormat is `organization.<uuid>`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Organisation API client secret. Always redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the client_secret\n(e.g. `vault:secret/bitwarden:client_secret`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override (default `https://api.bitwarden.com`).\nSelf-hosted: `https://your-host/api`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity_url_override": {
+          "description": "Identity/token endpoint override\n(default `https://identity.bitwarden.com/connect/token`).\nSelf-hosted: `https://your-host/identity/connect/token`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BitwardenService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "bitwarden"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple Bitwarden organisations of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BitwardenConnection"
+          }
+        }
+      }
+    },
+    "BitwardenService": {
+      "description": "Bitwarden service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"events\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. No recognised keys yet.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "BitwardenConnection": {
+      "description": "One Bitwarden connection: an organisation + its API credentials. Type-wide\nfields (`services`, `topic`, `filter`) are shared and stay on\n[`BitwardenSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "client_id": {
+          "description": "Organisation API client ID (`organization.<uuid>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Organisation API client secret (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the client_secret (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity_url_override": {
+          "description": "Identity/token endpoint override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "DuoSourceConfig": {
+      "description": "Duo Admin API source configuration.\n\nPulls authentication events from a Duo tenant's\n`api-XXXXXXXX.duosecurity.com/admin/v2/logs/authentication` endpoint.\nAuth uses Duo's proprietary scheme: HMAC-SHA1 over a canonical request\nsignature, transported in a Basic auth header.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Duo source.",
+          "type": "boolean",
+          "default": false
+        },
+        "api_host": {
+          "description": "API hostname (without scheme). Format: `api-XXXXXXXX.duosecurity.com`.\nAvailable in the Duo Admin Panel under Applications > Admin API.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "integration_key": {
+          "description": "Integration key (`ikey`). Identifies the Admin API integration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_key": {
+          "description": "Secret key (`skey`). Used to compute the HMAC-SHA1 request signature.\nAlways redacted on serialisation.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the secret_key\n(e.g. `vault:secret/duo:skey`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing (full URL incl. scheme). Production\nshould use `api_host` only; this is for mock servers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DuoService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "duo"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple Duo tenants of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DuoConnection"
+          }
+        }
+      }
+    },
+    "DuoService": {
+      "description": "Duo service to fetch data from.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (currently only \"authentication_logs\").",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys for\n`authentication_logs`:\n- `limit`: per-page size (default 100, max 1000).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "DuoConnection": {
+      "description": "One Duo connection: a tenant (api_host) + its integration/secret keys.\nType-wide fields (`services`, `topic`, `filter`) are shared and stay on\n[`DuoSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "api_host": {
+          "description": "API hostname (without scheme).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "integration_key": {
+          "description": "Integration key (`ikey`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_key": {
+          "description": "Secret key (`skey`) (always redacted on serialisation).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the secret_key (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "PypiSourceConfig": {
+      "description": "PyPI source configuration.\n\nFetches metadata for a configured list of PyPI packages on each tick.\nUse case: supply-chain monitoring of HyperI-published Python packages -\ndownstream tooling computes deltas against a known-good baseline and\nalerts on unexpected version, file, or maintainer changes.\n\nNo authentication required - all responses come from\n`https://pypi.org/pypi/<package>/json`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable PyPI source.",
+          "type": "boolean",
+          "default": false
+        },
+        "packages": {
+          "description": "Package names to monitor. Each becomes one record per fetch tick.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "api_url_override": {
+          "description": "API base override for testing (default `https://pypi.org`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "pypi"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "CratesIoSourceConfig": {
+      "description": "crates.io source configuration.\n\nFetches metadata for a configured list of crates on each tick.\nNo authentication required - all responses come from\n`https://crates.io/api/v1/crates/<name>`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable crates.io source.",
+          "type": "boolean",
+          "default": false
+        },
+        "crates": {
+          "description": "Crate names to monitor.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "api_url_override": {
+          "description": "API base override for testing (default `https://crates.io`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "crates_io"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "GoModulesSourceConfig": {
+      "description": "Go module-proxy source configuration.\n\nFetches version list + per-version `.info` metadata for a configured list\nof Go modules. The default proxy is Google's at\n`https://proxy.golang.org` - free for everyone, GOPROXY-compatible.\n\nNo authentication required.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Go modules source.",
+          "type": "boolean",
+          "default": false
+        },
+        "modules": {
+          "description": "Module paths to monitor (e.g. `github.com/hyperi-io/dfe-loader`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "api_url_override": {
+          "description": "Module proxy base override (default `https://proxy.golang.org`).\nUse an internal mirror if desired.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "go_modules"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "GoogleWorkspaceSourceConfig": {
+      "description": "Google Workspace Reports API source configuration.\n\n**Alpha** (code-complete, not production-validated) and additionally\npending hyperi-infra#5. The fetcher code is written\nagainst the documented Workspace Reports API but cannot be live-tested\nuntil the GCP service account is provisioned with domain-wide delegation\nand the manual Admin-console scope grants are completed.\n\nPulls per-application audit/activity reports from\n`admin.googleapis.com/admin/reports/v1/activity/users/all/applications/<app>`.\nAuth: OAuth2 service account using JWT-with-subject (RS256) - the SA\nimpersonates a designated Workspace admin email so the Reports API\nreturns data scoped to the tenant.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Google Workspace source.",
+          "type": "boolean",
+          "default": false
+        },
+        "service_account_key": {
+          "description": "Path to the service account JSON key file (same shape as the GCP\nsource). The SA must have domain-wide delegation enabled and the\nrequired Reports API scopes granted in the Workspace Admin console.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the SA key\n(e.g. `vault:secret/google_workspace:sa_key`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "admin_email": {
+          "description": "Admin email the SA impersonates (the `sub` claim of the signed JWT).\nMust be a Workspace admin in the target tenant; without this the\nReports API returns 403.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "customer_id": {
+          "description": "Customer ID. Defaults to `my_customer` (the tenant the SA's\nimpersonated admin belongs to). Explicit C-prefixed IDs are only\nneeded for multi-tenant reseller scenarios.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing\n(default `https://admin.googleapis.com`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint override for testing\n(default `https://oauth2.googleapis.com/token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GoogleWorkspaceService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "google_workspace"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple Workspace tenants of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GoogleWorkspaceConnection"
+          }
+        }
+      }
+    },
+    "GoogleWorkspaceService": {
+      "description": "Google Workspace service. Each maps to one `applicationName` under the\nReports API: `login`, `admin`, `drive`, `mobile`, `groups`, `calendar`,\n`chat`, `meet`, `token`, etc.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name; passed directly as the `applicationName` URL segment.",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys:\n- `event_name`: filter to a single event name (optional).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "GoogleWorkspaceConnection": {
+      "description": "One Google Workspace connection: a tenant (impersonated admin) + its SA key.\nType-wide fields (`services`, `topic`, `filter`) are shared and stay on\n[`GoogleWorkspaceSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "service_account_key": {
+          "description": "Path to the service account JSON key file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the SA key (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "admin_email": {
+          "description": "Admin email the SA impersonates (the `sub` claim of the signed JWT).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "customer_id": {
+          "description": "Customer ID (defaults to `my_customer` when unset).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "Token endpoint override for testing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "GcpPubsubSourceConfig": {
+      "description": "GCP Pub/Sub pull source configuration.\n\n**Alpha** (code-complete, not production-validated) and additionally\npending a hyperi-infra issue (TBD). The Pub/Sub pull\nsource is written but cannot be exercised against the live HyperI GCP\ntenant until:\n\n1. A Cloud Logging Log Sink is provisioned to route the desired\n   log entries (audit, VPC flow, DNS query, custom workloads) into\n   a Pub/Sub topic.\n2. A Pub/Sub subscription is created on that topic for the fetcher\n   SA to pull from.\n3. The fetcher's GCP SA is granted `roles/pubsub.subscriber` on the\n   subscription.\n\nSubscriptions are read via the REST `:pull` endpoint (synchronous\npull); the fetcher acknowledges drained messages with `:acknowledge`\nafter they have been emitted to Kafka. The gRPC StreamingPull variant\nis intentionally not used - fetcher volumes do not justify the extra\ndependency surface (tonic + protobuf). If a tenant's subscription\never sustains volumes that REST pull cannot keep up with, revisit\nwith a v2 source.\n\nEach subscription is one entry under `subscriptions`. The fetcher\nemits one record per Pub/Sub message; `message.data` is base64\ndecoded and parsed as JSON if possible (typical for Log Sink\npayloads), otherwise emitted as a string.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Pub/Sub pull source.",
+          "type": "boolean",
+          "default": false
+        },
+        "service_account_key": {
+          "description": "Path to a GCP service account JSON key file. The SA must have\n`roles/pubsub.subscriber` on every configured subscription.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Secret source spec for the SA key\n(e.g. `vault:secret/gcp-pubsub:sa_key`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_url_override": {
+          "description": "API base override for testing\n(default `https://pubsub.googleapis.com`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_url_override": {
+          "description": "OAuth2 token endpoint override for testing\n(default `https://oauth2.googleapis.com/token`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "subscriptions": {
+          "description": "Subscriptions to pull from. Each becomes one `FetchResult`\ntagged `gcp_pubsub.<subscription-id>`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GcpPubsubSubscription"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "gcp_pubsub"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "GcpPubsubSubscription": {
+      "description": "A single Pub/Sub subscription configuration.",
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "description": "GCP project ID owning the subscription.",
+          "type": "string"
+        },
+        "subscription_id": {
+          "description": "Subscription ID (the short name, not the fully-qualified path).",
+          "type": "string"
+        },
+        "max_messages": {
+          "description": "Maximum messages to pull per tick. Default 1000 (the REST API cap).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 1000
+        },
+        "return_immediately": {
+          "description": "Whether to return immediately when the subscription is empty,\nor block for `returnImmediately=false` server-side wait.\nDefault true (single-shot, fits the polling fetcher model).",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "project_id",
+        "subscription_id"
+      ]
+    },
+    "ObjectStoreSourceConfig": {
+      "description": "Object-store source family configuration.\n\nPolls one or more bucket prefixes across S3 / GCS / Azure Blob,\nemitting one record per line of every new object since the cursor.\nSee `docs/superpowers/specs/2026-05-21-object-store-source-design.md`\nfor the full design.\n\n**Phase 1:** S3 backend is fully implemented. GCS and Azure Blob\nbackends compile but their `list_new_objects` / `get_object` calls\nreturn a \"not yet implemented\" error - configuring them today is\nsafe (the source skips them with a warning) but live use must wait\nfor Phase 2.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable object-store source.",
+          "type": "boolean",
+          "default": false
+        },
+        "backends": {
+          "description": "One or more cloud-store backends to poll.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectStoreBackendConfig"
+          },
+          "default": []
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "topic": {
+          "description": "Default output topic. Each prefix may override it with its own\n`topic:` field.",
+          "type": "string",
+          "default": "object_store"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "ObjectStoreBackendConfig": {
+      "description": "One backend: provider + auth + buckets/containers to tail.\n\nProvider is selected by the `provider` discriminator (serde-tagged\nenum). Each provider variant carries its own auth shape; only S3 is\nlive in Phase 1.",
+      "oneOf": [
+        {
+          "description": "Amazon S3 (or S3-compatible: MinIO, R2, B2 via endpoint_override).",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "s3"
+            }
+          },
+          "$ref": "#/$defs/S3BackendConfig",
+          "required": [
+            "provider"
+          ]
+        },
+        {
+          "description": "Google Cloud Storage. **Phase 2 - stub today.**",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "gcs"
+            }
+          },
+          "$ref": "#/$defs/GcsBackendConfig",
+          "required": [
+            "provider"
+          ]
+        },
+        {
+          "description": "Azure Blob Storage. **Phase 2 - stub today.**",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "azure_blob"
+            }
+          },
+          "$ref": "#/$defs/AzureBlobBackendConfig",
+          "required": [
+            "provider"
+          ]
+        }
+      ]
+    },
+    "ObjectStoreBucket": {
+      "description": "One bucket / container to tail, plus its prefixes.",
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "description": "Bucket (S3, GCS) or container (Azure Blob) name.",
+          "type": "string"
+        },
+        "prefixes": {
+          "description": "Prefixes within the bucket to poll. At least one is required.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectStorePrefix"
+          }
+        }
+      },
+      "required": [
+        "bucket",
+        "prefixes"
+      ]
+    },
+    "ObjectStorePrefix": {
+      "description": "One prefix to tail, plus its format and routing.",
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "description": "Object key prefix (may be empty to scan the whole bucket).",
+          "type": "string",
+          "default": ""
+        },
+        "format": {
+          "description": "Object format. Drives parser dispatch and gzip handling.",
+          "$ref": "#/$defs/ObjectStoreFormat"
+        },
+        "source_tag": {
+          "description": "Source tag attached to emitted records (e.g. `aws_cloudtrail`,\n`aws_vpc_flow`, `gcp_audit_sink`). Becomes the `source` field on\nthe `FetchResult` as `object_store.<source_tag>`.",
+          "type": "string"
+        },
+        "topic": {
+          "description": "Per-prefix Kafka topic override. Falls back to the source-level\n`topic` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "format",
+        "source_tag"
+      ]
+    },
+    "ObjectStoreFormat": {
+      "description": "Object body format. Drives gzip handling + parser dispatch.",
+      "oneOf": [
+        {
+          "description": "Gzipped JSON-lines (one JSON value per newline).",
+          "type": "string",
+          "const": "json_gz"
+        },
+        {
+          "description": "Plain JSON-lines (one JSON value per newline).",
+          "type": "string",
+          "const": "jsonl"
+        },
+        {
+          "description": "Single JSON document (array -> one record per element,\nobject -> one record).",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "Gzipped plain text. Phase 1 emits each non-empty line as\n`{\"line\": \"...\"}`; Phase 2 will add ALB / CloudFront / S3\naccess-log parsers.",
+          "type": "string",
+          "const": "text_gz"
+        },
+        {
+          "description": "Plain text. Same Phase 1 behaviour as `text_gz` minus the\ngunzip step.",
+          "type": "string",
+          "const": "text"
+        }
+      ]
+    },
+    "S3BackendConfig": {
+      "description": "S3 backend configuration.",
+      "type": "object",
+      "properties": {
+        "region": {
+          "description": "AWS region for SigV4 signing + endpoint construction.",
+          "type": "string"
+        },
+        "endpoint_override": {
+          "description": "Optional S3 endpoint override for S3-compatible stores\n(MinIO, R2, B2) or for VPC endpoints. When unset, uses\n`https://<bucket>.s3.<region>.amazonaws.com`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "access_key_id": {
+          "description": "AWS access key ID. May be a `vault:` or `env:` spec.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_access_key": {
+          "description": "AWS secret access key. May be a `vault:` or `env:` spec.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Vault secret spec containing both access_key_id +\nsecret_access_key as a JSON object.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "buckets": {
+          "description": "Buckets + prefixes to tail.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectStoreBucket"
+          }
+        }
+      },
+      "required": [
+        "region",
+        "buckets"
+      ]
+    },
+    "GcsBackendConfig": {
+      "description": "GCS backend configuration. **Phase 2 stub.**",
+      "type": "object",
+      "properties": {
+        "service_account_key": {
+          "description": "Service account JSON key path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credential_secret": {
+          "description": "Vault secret spec for the SA key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "buckets": {
+          "description": "Buckets + prefixes to tail.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectStoreBucket"
+          }
+        }
+      },
+      "required": [
+        "buckets"
+      ]
+    },
+    "AzureBlobBackendConfig": {
+      "description": "Azure Blob backend configuration. **Phase 2 stub.**",
+      "type": "object",
+      "properties": {
+        "account": {
+          "description": "Storage account name (the `<name>` in\n`https://<name>.blob.core.windows.net`).",
+          "type": "string"
+        },
+        "account_key": {
+          "description": "Shared Key (account key). May be a `vault:` or `env:` spec.\nMutually exclusive with `sas_token` and `tenant_id`/`client_*`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "sas_token": {
+          "description": "SAS token (without leading `?`). Mutually exclusive with\n`account_key` and SP credentials.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "tenant_id": {
+          "description": "Entra Service-Principal tenant ID (for OAuth2 bearer auth).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "Entra Service-Principal client ID (for OAuth2 bearer auth).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Entra Service-Principal client secret (for OAuth2 bearer auth).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Vault secret spec for whichever auth method is in use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "buckets": {
+          "description": "Blob containers + prefixes to tail. The `bucket` field on each\nentry is the container name.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ObjectStoreBucket"
+          }
+        }
+      },
+      "required": [
+        "account",
+        "buckets"
+      ]
+    },
+    "SalesforceSourceConfig": {
+      "description": "Salesforce audit source configuration.\n\n**Alpha** (code-complete, not production-validated) and additionally\npending a Salesforce connected app + integration user for live testing\n(same status as [`GoogleWorkspaceSourceConfig`] and\n[`GcpPubsubSourceConfig`]). The fetcher code is complete but cannot be\nlive-tested until a connected app is provisioned in a HyperI Salesforce org.\n\nPulls security/audit data from a Salesforce org via the REST API:\n- `setup_audit_trail` - admin config changes (SOQL, every org)\n- `login_history` - login events (SOQL, every org)\n- `event_log_file` - runtime events as downloadable CSV log files\n  (7 event types free with 1-day retention; 70+ with the Event\n  Monitoring / Shield add-on)\n\nAuth is OAuth2 against `<login_url>/services/oauth2/token`, via one of\ntwo server-to-server flows selected by which fields are set:\n- **JWT bearer** (Salesforce-recommended): set `client_id` (connected\n  app consumer key), `username` (integration user), and one of\n  `private_key` / `private_key_secret` (RSA private key PEM). An RS256\n  JWT is signed and exchanged for a token.\n- **client credentials**: set `client_id` + one of `client_secret` /\n  `credential_secret`. Requires the connected app to have the client-\n  credentials flow enabled with a run-as user.\n\nThe token response carries an `instance_url` which is used for all\nsubsequent API calls (not `login_url`). `instance_url_override` pins it\nfor testing or custom-domain deployments.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Salesforce source.",
+          "type": "boolean",
+          "default": false
+        },
+        "login_url": {
+          "description": "OAuth2 login base URL. Default `https://login.salesforce.com`.\nSandboxes use `https://test.salesforce.com`; My Domain orgs may use\n`https://<mydomain>.my.salesforce.com`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_version": {
+          "description": "REST API version path segment. Default `v60.0`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "Connected app consumer key. Used as the JWT `iss` claim (JWT bearer)\nor the `client_id` form field (client credentials).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "username": {
+          "description": "Integration username (JWT `sub` claim). JWT-bearer flow only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_key": {
+          "description": "RSA private key PEM for the JWT-bearer flow (full\n`-----BEGIN PRIVATE KEY-----` ... block). JWT-bearer flow only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_key_secret": {
+          "description": "Secret source spec resolving to the RSA private key PEM\n(e.g. `vault:secret/salesforce:private_key`). Takes precedence over\n`private_key` when set. JWT-bearer flow only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Connected app consumer secret. client-credentials flow only.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec resolving to the consumer secret\n(e.g. `vault:secret/salesforce:client_secret`). Takes precedence\nover `client_secret` when set. client-credentials flow only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance_url_override": {
+          "description": "Pin the API instance URL instead of using the token response's\n`instance_url`. For testing or custom-domain deployments.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Fetch interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "services": {
+          "description": "Services to fetch from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SalesforceService"
+          },
+          "default": []
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string",
+          "default": "salesforce"
+        },
+        "filter": {
+          "description": "CEL filter expression applied to fetched records.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "connections": {
+          "description": "Multiple Salesforce orgs of this type, each polled independently.\nEmpty = a single implicit connection from the fields above.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SalesforceConnection"
+          }
+        }
+      }
+    },
+    "SalesforceService": {
+      "description": "Salesforce service. `name` selects the audit surface:\n`setup_audit_trail`, `login_history`, or `event_log_file`.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Service name (audit surface to pull).",
+          "type": "string"
+        },
+        "config": {
+          "description": "Service-specific configuration. Recognised keys (event_log_file):\n- `event_types`: array of EventType values to include (default all)\n- `interval`: `\"Hourly\"` or `\"Daily\"` (default `\"Daily\"`)",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "SalesforceConnection": {
+      "description": "One Salesforce connection: an org + its OAuth2 credentials (JWT-bearer or\nclient-credentials). Type-wide fields (`services`, `topic`, `filter`) are\nshared and stay on [`SalesforceSourceConfig`].",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable, unique connection id (cursor key + metric/log label).",
+          "type": "string"
+        },
+        "login_url": {
+          "description": "OAuth2 login base URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_version": {
+          "description": "REST API version path segment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_id": {
+          "description": "Connected app consumer key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "username": {
+          "description": "Integration username (JWT `sub` claim). JWT-bearer flow only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_key": {
+          "description": "RSA private key PEM for the JWT-bearer flow.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_key_secret": {
+          "description": "Secret source spec resolving to the RSA private key PEM.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "client_secret": {
+          "description": "Connected app consumer secret (client-credentials flow only).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
+        },
+        "credential_secret": {
+          "description": "Secret source spec resolving to the consumer secret (\"provider:path:key\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance_url_override": {
+          "description": "Pin the API instance URL for this connection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_secs": {
+          "description": "Per-connection fetch-interval override in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "ExtractorsConfig": {
+      "description": "External extractors configuration.",
+      "type": "object",
+      "properties": {
+        "containers": {
+          "description": "Container-based extractors.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContainerExtractorConfig"
+          },
+          "default": []
+        },
+        "plugins": {
+          "description": "Deprecated plugin config (kept for backwards-compatible deserialisation).",
+          "$ref": "#/$defs/PluginsConfig",
+          "default": {
+            "directory": null
+          }
+        },
+        "vector": {
+          "description": "Vector.dev extractor integration.",
+          "$ref": "#/$defs/VectorExtractorConfig",
+          "default": {
+            "enabled": false,
+            "grpc_bind_address": "0.0.0.0:6000",
+            "instances": []
+          }
+        }
+      }
+    },
+    "ContainerExtractorConfig": {
+      "description": "Container-based extractor configuration.\n\nEach container runs an isolated extraction tool (any language/runtime).\nOne container per source + config — no horizontal scaling needed.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Unique name for this extractor instance.",
+          "type": "string"
+        },
+        "image": {
+          "description": "Container image (e.g., \"ghcr.io/org/tool:latest\").",
+          "type": "string"
+        },
+        "runtime": {
+          "description": "Container runtime (docker, podman). Default: \"docker\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "Run mode: \"scheduled\" (one-shot per tick) or \"continuous\" (long-running).",
+          "type": "string",
+          "default": "scheduled"
+        },
+        "communication": {
+          "description": "Communication mode: \"stdout\" (JSON lines) or \"http\" (POST to /ingest).",
+          "type": "string",
+          "default": "stdout"
+        },
+        "topic": {
+          "description": "Output Kafka topic for this extractor's data.",
+          "type": "string"
+        },
+        "interval_secs": {
+          "description": "Fetch interval for scheduled mode (seconds).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "env": {
+          "description": "Environment variables passed to the container.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "volumes": {
+          "description": "Volume mounts (host:container format).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "network": {
+          "description": "Docker network to attach to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memory_limit": {
+          "description": "Container memory limit (e.g., \"512m\", \"1g\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cpu_limit": {
+          "description": "Container CPU limit (e.g., 0.5, 1.0, 2.0).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "command": {
+          "description": "Override container command.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout_secs": {
+          "description": "Timeout in seconds for scheduled (one-shot) containers (0 = no timeout).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "pull_policy": {
+          "description": "Image pull policy: \"always\", \"if-not-present\", \"never\". Default: \"if-not-present\".",
+          "type": "string",
+          "default": "if-not-present"
+        },
+        "max_restart_attempts": {
+          "description": "Maximum restart attempts for continuous mode (0 = unlimited).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_restart_backoff_secs": {
+          "description": "Maximum backoff delay between restarts in seconds.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 60
+        },
+        "stable_after_secs": {
+          "description": "Seconds of stable running before resetting backoff counter.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 300
+        }
+      },
+      "required": [
+        "name",
+        "image",
+        "topic"
+      ]
+    },
+    "PluginsConfig": {
+      "description": "Deprecated plugin configuration — logs warning if non-empty values present.",
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": true
+    },
+    "VectorExtractorConfig": {
+      "description": "Vector.dev extractor configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable Vector extractor integration.",
+          "type": "boolean",
+          "default": false
+        },
+        "grpc_bind_address": {
+          "description": "gRPC bind address for receiving Vector sink data.",
+          "type": "string",
+          "default": "0.0.0.0:6000"
+        },
+        "instances": {
+          "description": "Managed Vector instances.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VectorInstance"
+          },
+          "default": []
+        }
+      }
+    },
+    "VectorInstance": {
+      "description": "A managed Vector instance configuration.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Instance name.",
+          "type": "string"
+        },
+        "mode": {
+          "description": "Run mode: \"container\" or \"sidecar\".",
+          "type": "string",
+          "default": "container"
+        },
+        "image": {
+          "description": "Container image for container mode.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vector_config": {
+          "description": "Vector configuration (inline TOML/YAML).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vector_config_path": {
+          "description": "Path to Vector configuration file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "topic": {
+          "description": "Output Kafka topic.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "topic"
+      ]
+    },
+    "IngestConfig": {
+      "description": "HTTP ingest server for container extractors to post data.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable ingest HTTP endpoint.",
+          "type": "boolean",
+          "default": true
+        },
+        "bind_address": {
+          "description": "Bind address.",
+          "type": "string",
+          "default": "0.0.0.0:8080"
+        },
+        "max_body_size": {
+          "description": "Maximum request body size in bytes.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10485760
+        },
+        "auth_token": {
+          "description": "Bearer token for authentication (credential resolver format).\nEmpty or absent = no auth (backward compatible, logs warning).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "KafkaConfig": {
+      "description": "Legacy Kafka producer configuration.\n\n**Deprecated:** Use `output.kafka` (rustlib `KafkaConfig`) instead.\nThis struct is kept for backward compatibility with existing config files\nthat use the top-level `kafka:` section. Will be removed in next major version.\n\nMigration: move your `kafka:` settings under `output.kafka:` using rustlib\n`KafkaConfig` format (profiles, `librdkafka_overrides`, standard field names).",
+      "type": "object",
+      "properties": {
+        "brokers": {
+          "description": "Broker addresses.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "client_id": {
+          "description": "Client ID.",
+          "type": "string",
+          "default": "dfe-fetcher"
+        },
+        "topic_suffix": {
+          "description": "Suffix appended to source topic names.",
+          "type": "string",
+          "default": "_land"
+        },
+        "sasl": {
+          "description": "SASL configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SaslConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tls": {
+          "description": "TLS configuration.",
+          "$ref": "#/$defs/KafkaTlsConfig",
+          "default": {
+            "enabled": false,
+            "ca_file": null,
+            "cert_file": null,
+            "key_file": null
+          }
+        },
+        "producer": {
+          "description": "Producer-specific settings.",
+          "$ref": "#/$defs/ProducerConfig",
+          "default": {
+            "batch_size": 8388608,
+            "batch_messages": 10000,
+            "linger_ms": 20,
+            "compression": "lz4",
+            "acks": "all",
+            "retries": 5
+          }
+        }
+      }
+    },
+    "SaslConfig": {
+      "description": "SASL authentication configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable SASL.",
+          "type": "boolean"
+        },
+        "mechanism": {
+          "description": "SASL mechanism (plain, scram_sha_256, scram_sha_512).",
+          "type": "string"
+        },
+        "username": {
+          "description": "Username.",
+          "type": "string"
+        },
+        "password": {
+          "description": "Password (always redacted in serialisation/debug output).",
+          "type": "string",
+          "x-dfe-secret": true,
+          "writeOnly": true
+        }
+      },
+      "required": [
+        "enabled",
+        "mechanism",
+        "username",
+        "password"
+      ]
+    },
+    "KafkaTlsConfig": {
+      "description": "Kafka TLS configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable TLS for Kafka.",
+          "type": "boolean",
+          "default": false
+        },
+        "ca_file": {
+          "description": "CA certificate file.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "cert_file": {
+          "description": "Client certificate file.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "key_file": {
+          "description": "Client key file.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "ProducerConfig": {
+      "description": "Kafka producer settings.",
+      "type": "object",
+      "properties": {
+        "batch_size": {
+          "description": "Maximum batch size in bytes.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 8388608
+        },
+        "batch_messages": {
+          "description": "Maximum messages per batch.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10000
+        },
+        "linger_ms": {
+          "description": "Linger time in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 20
+        },
+        "compression": {
+          "description": "Compression type (none, gzip, snappy, lz4, zstd).",
+          "type": "string",
+          "default": "lz4"
+        },
+        "acks": {
+          "description": "Acknowledgment level (0, 1, all).",
+          "type": "string",
+          "default": "all"
+        },
+        "retries": {
+          "description": "Number of retries.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 5
+        }
+      }
+    },
+    "BufferConfig": {
+      "description": "Buffer and memory configuration.",
+      "type": "object",
+      "properties": {
+        "memory_limit": {
+          "description": "Maximum memory for buffers in bytes (0 = auto-detect 67% of available).",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
+        },
+        "pressure_threshold": {
+          "description": "Memory pressure threshold (0.0-1.0).",
+          "type": "number",
+          "format": "double",
+          "default": 0.8
+        }
+      }
+    },
+    "MetricsConfig": {
+      "description": "Metrics configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable metrics.",
+          "type": "boolean",
+          "default": true
+        },
+        "address": {
+          "description": "Metrics server address.",
+          "type": "string",
+          "default": "0.0.0.0:9090"
+        }
+      }
+    },
+    "DlqConfig": {
+      "description": "Top-level DLQ configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether DLQ is enabled.",
+          "type": "boolean",
+          "default": true
+        },
+        "mode": {
+          "description": "Backend routing mode.",
+          "$ref": "#/$defs/DlqMode",
+          "default": "cascade"
+        },
+        "queue_capacity": {
+          "description": "Bounded mpsc capacity. When the queue is full, `try_send` returns\n`QueueFull` (overflow=Drop). Sized for failure-burst tolerance.\nDefault 10_000.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10000
+        },
+        "batch_size": {
+          "description": "Drain coalesces up to this many entries into one backend write.\nDefault 256.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 256
+        },
+        "flush_interval_ms": {
+          "description": "Flush a partial batch after this duration, even if not full.\nDefault 100 ms.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 100
+        },
+        "file": {
+          "description": "File backend configuration.",
+          "$ref": "#/$defs/FileDlqConfig",
+          "default": {
+            "enabled": true,
+            "path": "/var/spool/dfe/dlq",
+            "rotation": "hourly",
+            "max_age_days": 30,
+            "compress_rotated": true
+          }
+        }
+      }
+    },
+    "DlqMode": {
+      "description": "How backends are used when multiple are enabled.",
+      "oneOf": [
+        {
+          "description": "Try backends in order; stop on first success.\nDefault order: Kafka first, file fallback.",
+          "type": "string",
+          "const": "cascade"
+        },
+        {
+          "description": "Write to all enabled backends; report any failures.",
+          "type": "string",
+          "const": "fan_out"
+        },
+        {
+          "description": "File backend only (no Kafka dependency).",
+          "type": "string",
+          "const": "file_only"
+        },
+        {
+          "description": "Kafka backend only (current dfe-loader behaviour).",
+          "type": "string",
+          "const": "kafka_only"
+        }
+      ]
+    },
+    "FileDlqConfig": {
+      "description": "File-based DLQ configuration.\n\nWrites NDJSON files with automatic rotation and cleanup.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable the file backend.",
+          "type": "boolean",
+          "default": true
+        },
+        "path": {
+          "description": "Base directory for DLQ files.\nService name is appended as a subdirectory.",
+          "type": "string",
+          "default": "/var/spool/dfe/dlq"
+        },
+        "rotation": {
+          "description": "File rotation period.",
+          "$ref": "#/$defs/RotationPeriod",
+          "default": "hourly"
+        },
+        "max_age_days": {
+          "description": "Auto-cleanup files older than this many days.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 30
+        },
+        "compress_rotated": {
+          "description": "Compress rotated files with flate2/gzip.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "RotationPeriod": {
+      "description": "File rotation period.",
+      "oneOf": [
+        {
+          "description": "Rotate files every hour.",
+          "type": "string",
+          "const": "hourly"
+        },
+        {
+          "description": "Rotate files every day.",
+          "type": "string",
+          "const": "daily"
+        }
+      ]
+    },
+    "OutputConfig": {
+      "description": "Output transport mode.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Transport type: \"kafka\", \"grpc\", or \"both\".",
+          "type": "string",
+          "default": "kafka"
+        },
+        "kafka": {
+          "description": "Kafka transport configuration (rustlib KafkaConfig).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KafkaConfig2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grpc": {
+          "description": "gRPC transport configuration (rustlib GrpcConfig, client mode).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GrpcConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "topic_suffix": {
+          "description": "Suffix appended to source topic names (e.g., \"_land\").\nIf set, takes precedence over legacy `kafka.topic_suffix`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "KafkaConfig2": {
+      "description": "Kafka transport configuration.\n\nUses a profile-based system where profiles provide opinionated defaults,\nand `librdkafka_overrides` allows overriding any setting.",
+      "type": "object",
+      "properties": {
+        "profile": {
+          "description": "Configuration profile (production, devtest).\n\nThe profile provides baseline librdkafka settings optimized for the use case.\nUse `librdkafka_overrides` to customize specific settings.",
+          "$ref": "#/$defs/KafkaProfile",
+          "default": "production"
+        },
+        "brokers": {
+          "description": "Kafka broker addresses.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "localhost:9092"
+          ]
+        },
+        "group": {
+          "description": "Consumer group ID.",
+          "type": "string",
+          "default": "scalo-consumer"
+        },
+        "client_id": {
+          "description": "Client ID for identification in broker logs.",
+          "type": "string",
+          "default": "scalo"
+        },
+        "group_instance_id": {
+          "description": "Static group membership id (`group.instance.id`). Opt-in: `None` (the\ndefault) uses dynamic membership.\n\nSet this to a STABLE, UNIQUE-per-replica value (the K8s pod name is the\ncanonical choice -- e.g. from `$HOSTNAME` / the downward API) to take\nstatic membership (KIP-345). A static member that restarts rejoins with\nits prior partitions WITHOUT triggering a group-wide rebalance, which\nturns a rolling restart of a large consumer fleet from dozens of\nstop-the-world rebalances into zero. Two replicas sharing one value get\nfenced -- the value MUST be unique per replica.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "topics": {
+          "description": "Topics to subscribe to.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "auto_discover": {
+          "description": "Enable auto-discovery when `topics` is empty.\nWhen false (default), empty `topics` means no subscription (producer-only).\nWhen true, empty `topics` triggers broker auto-discovery with\n`topic_include`/`topic_exclude` filters and suppression rules.",
+          "type": "boolean",
+          "default": false
+        },
+        "topic_include": {
+          "description": "Regex patterns for topic include filtering (empty = accept all).\nTopics must match at least one pattern (OR logic).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "topic_exclude": {
+          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: `[\"^__\"]` (excludes Kafka internal topics like `__consumer_offsets`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "^__"
+          ]
+        },
+        "topic_refresh_secs": {
+          "description": "Periodic topic refresh interval in seconds (0 = disabled).\nOnly applies when `topics` is empty (auto-discovery mode).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 60
+        },
+        "topic_suppression_rules": {
+          "description": "Suppression rules: if a topic with preferred_suffix exists,\nsuppress the topic with suppressed_suffix for the same base name.\nDefault: _load suppresses _land (the convention).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SuppressionRule"
+          },
+          "default": [
+            {
+              "preferred_suffix": "_load",
+              "suppressed_suffix": "_land"
+            }
+          ]
+        },
+        "security_protocol": {
+          "description": "Security protocol (plaintext, ssl, sasl_plaintext, sasl_ssl).",
+          "type": "string",
+          "default": "plaintext"
+        },
+        "provider": {
+          "description": "Optional managed-Kafka provider name (strimzi / redpanda / confluent-cloud /\nredpanda-cloud / msk / plaintext). When set, DERIVES security_protocol +\nsasl_mechanism from the opt-in provider presets -- the caller does NOT\nhand-set them. Applied by [`apply_provider`](KafkaConfig::apply_provider)\nbefore validate(). See [`providers`](super::providers).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "sasl_mechanism": {
+          "description": "SASL mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, OAUTHBEARER).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "sasl_username": {
+          "description": "SASL username.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "sasl_password": {
+          "description": "SASL password.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "ssl_ca_location": {
+          "description": "SSL CA certificate file path (private-CA bundle; maps to\n`TlsTrust.extra_roots` -- a single combined root+intermediate PEM is\naccepted).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "ssl_certificate_location": {
+          "description": "SSL client certificate file path (mTLS).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "ssl_key_location": {
+          "description": "SSL client key file path (mTLS).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "ssl_skip_verify": {
+          "description": "Skip SSL certificate verification.\n\nAutomatically enabled for `devtest` profile.",
+          "type": "boolean",
+          "default": false
+        },
+        "allow_insecure_transport": {
+          "description": "Deliberately permit an unencrypted transport (`plaintext` /\n`sasl_plaintext`) in production. Default `false`: production\n[`validate`](KafkaConfig::validate) rejects unencrypted transports so a\nmisconfiguration cannot ship data/credentials in the clear. Set `true`\nonly for an audited case (e.g. mesh-encrypted in-cluster traffic).",
+          "type": "boolean",
+          "default": false
+        },
+        "enable_auto_commit": {
+          "description": "Enable auto-commit (default: false for manual commit).",
+          "type": "boolean",
+          "default": false
+        },
+        "auto_commit_interval_ms": {
+          "description": "Auto-commit interval in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 5000
+        },
+        "session_timeout_ms": {
+          "description": "Session timeout in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 45000
+        },
+        "heartbeat_interval_ms": {
+          "description": "Heartbeat interval in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 3000
+        },
+        "max_poll_interval_ms": {
+          "description": "Maximum poll interval in milliseconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 300000
+        },
+        "fetch_min_bytes": {
+          "description": "Fetch minimum bytes.",
+          "type": "integer",
+          "format": "int32",
+          "default": 1
+        },
+        "fetch_max_bytes": {
+          "description": "Fetch maximum bytes.",
+          "type": "integer",
+          "format": "int32",
+          "default": 52428800
+        },
+        "max_partition_fetch_bytes": {
+          "description": "Maximum messages per partition per poll.",
+          "type": "integer",
+          "format": "int32",
+          "default": 1048576
+        },
+        "auto_offset_reset": {
+          "description": "Auto offset reset (earliest, latest, none).",
+          "type": "string",
+          "default": "earliest"
+        },
+        "enable_partition_eof": {
+          "description": "Enable partition EOF events.",
+          "type": "boolean",
+          "default": false
+        },
+        "sizing": {
+          "description": "Kafka sizing surface: profile + named knobs + raw librdkafka escape hatch.\n\nControls the byte-budget and latency envelope for GET (consumer) and\nSEND (producer) paths. See [`KafkaSizingConfig`] for full documentation.\n\nExample YAML:\n```yaml\nkafka:\n  sizing:\n    profile: throughput\n    consumer:\n      fetch_min_bytes: 2097152  # 2 MiB, overrides profile default\n    producer:\n      compression_type: zstd    # opt into zstd for storage-bound topics\n    consumer_librdkafka:\n      fetch.wait.max.ms: \"75\"   # raw override wins over everything\n    producer_librdkafka:\n      linger.ms: \"50\"\n```",
+          "$ref": "#/$defs/KafkaSizingConfig",
+          "default": {
+            "profile": "throughput",
+            "consumer": {
+              "fetch_min_bytes": null,
+              "fetch_max_wait_ms": null,
+              "max_partition_fetch_bytes": null,
+              "fetch_max_bytes": null,
+              "max_poll_records": null
+            },
+            "producer": {
+              "batch_size_bytes": null,
+              "linger_ms": null,
+              "compression_type": null,
+              "buffer_memory_bytes": null,
+              "max_in_flight": null,
+              "idempotence": null
+            },
+            "consumer_librdkafka": {},
+            "producer_librdkafka": {}
+          }
+        },
+        "librdkafka_overrides": {
+          "description": "Librdkafka configuration overrides.\n\nThese settings override both the profile defaults and explicit config fields.\nUse this to customize any librdkafka setting not exposed as an explicit field.\n\nExample:\n```yaml\nlibrdkafka_overrides:\n  statistics.interval.ms: \"5000\"\n  fetch.min.bytes: \"2097152\"\n```",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "extra_config": {
+          "description": "Legacy field - use `librdkafka_overrides` instead.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "deprecated": true,
+          "default": {}
+        },
+        "filters_in": {
+          "description": "Inbound message filters (applied on recv before caller sees messages).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterRule"
+          },
+          "default": []
+        },
+        "filters_out": {
+          "description": "Outbound message filters (applied on send before transport dispatches).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterRule"
+          },
+          "default": []
+        }
+      }
+    },
+    "KafkaProfile": {
+      "description": "Kafka configuration profile.\n\nProfiles provide opinionated librdkafka defaults for specific use cases.\nUsers can override any setting via `librdkafka_overrides`.",
+      "oneOf": [
+        {
+          "description": "Production profile: lean baseline for all data-plane services.\n\nOnly sets values that differ from librdkafka defaults.\nServices add overrides via `librdkafka_overrides`.",
+          "type": "string",
+          "const": "production"
+        },
+        {
+          "description": "Development/test profile: fast iteration, low memory.\n\nCooperative rebalancing, fast reconnects, debug logging.\nSSL certificate verification disabled by default.",
+          "type": "string",
+          "const": "devtest"
+        }
+      ]
+    },
+    "SuppressionRule": {
+      "description": "Topic suppression rule for auto-discovery.\n\nWhen auto-discovering topics, if a topic with `preferred_suffix` exists\nfor a base name, the topic with `suppressed_suffix` for that same base\nis removed. Default: `_load` suppresses `_land`.",
+      "type": "object",
+      "properties": {
+        "preferred_suffix": {
+          "description": "The suffix of the preferred (kept) topic.",
+          "type": "string"
+        },
+        "suppressed_suffix": {
+          "description": "The suffix of the suppressed (removed) topic.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preferred_suffix",
+        "suppressed_suffix"
+      ]
+    },
+    "KafkaSizingConfig": {
+      "description": "Kafka sizing surface: profile + named per-knob overrides + raw escape hatch.\n\nResolution precedence (lowest to highest):\n1. `SelfRegulationProfile` defaults\n2. Named knobs in `consumer` / `producer` (explicit `Some(v)` wins)\n3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka` (wins\n   over everything, applied last via `ClientConfig::set`)\n\nThe raw maps are logged (one line per key) when they override a property\nthat the sizing surface depends on (the fetch byte sizes and\n`enable.auto.commit`).",
+      "type": "object",
+      "properties": {
+        "profile": {
+          "description": "Sizing profile (throughput / balanced / low_latency).",
+          "$ref": "#/$defs/SelfRegulationProfile",
+          "default": "throughput"
+        },
+        "consumer": {
+          "description": "Per-knob consumer overrides (any `Some(v)` beats the profile default).",
+          "$ref": "#/$defs/ConsumerKnobs",
+          "default": {
+            "fetch_min_bytes": null,
+            "fetch_max_wait_ms": null,
+            "max_partition_fetch_bytes": null,
+            "fetch_max_bytes": null,
+            "max_poll_records": null
+          }
+        },
+        "producer": {
+          "description": "Per-knob producer overrides (any `Some(v)` beats the profile default).",
+          "$ref": "#/$defs/ProducerKnobs",
+          "default": {
+            "batch_size_bytes": null,
+            "linger_ms": null,
+            "compression_type": null,
+            "buffer_memory_bytes": null,
+            "max_in_flight": null,
+            "idempotence": null
+          }
+        },
+        "consumer_librdkafka": {
+          "description": "Raw librdkafka consumer properties applied LAST, winning over everything.\n\nKeys must be valid librdkafka property names (e.g. `fetch.wait.max.ms`).\nAn invalid key silently no-ops in librdkafka -- double-check spelling.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "producer_librdkafka": {
+          "description": "Raw librdkafka producer properties applied LAST, winning over everything.\n\nKeys must be valid librdkafka property names (e.g. `linger.ms`).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      }
+    },
+    "SelfRegulationProfile": {
+      "description": "Opinionated sizing profile for the Kafka GET/SEND surface.\n\nThe profile sets default values for all named knobs below. An explicit\nper-knob value in [`KafkaSizingConfig`] always wins over the profile\ndefault. The raw librdkafka escape hatch in [`KafkaConfig`] wins over\neverything.\n\nProfiles target the BYTE-level throughput budget and latency envelope:\n\n| Profile | Use case |\n|---|---|\n| `throughput` (default) | PB/day batch ingest, large fanout topics |\n| `balanced` | Mixed OLTP + analytics, moderate batch size |\n| `low_latency` | Near-real-time, event-driven, small messages |",
+      "oneOf": [
+        {
+          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 10 MiB per-partition,\n100 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight.",
+          "type": "string",
+          "const": "throughput"
+        },
+        {
+          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 5 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight.",
+          "type": "string",
+          "const": "balanced"
+        },
+        {
+          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 1 MiB per-partition,\n10 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight.",
+          "type": "string",
+          "const": "low_latency"
+        }
+      ]
+    },
+    "ConsumerKnobs": {
+      "description": "Named consumer sizing knobs.\n\nAll fields are `Option<T>`: `None` means \"use the profile default\".\nAn explicit `Some(v)` wins over the profile default.",
+      "type": "object",
+      "properties": {
+        "fetch_min_bytes": {
+          "description": "Minimum bytes the broker must have ready before responding to a Fetch.\n\nlibrdkafka: `fetch.min.bytes` (default 1 byte).\nRaising this batches more data per round-trip but adds latency when\ntopic traffic is low.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "fetch_max_wait_ms": {
+          "description": "Maximum milliseconds the broker may wait to fill `fetch.min.bytes`.\n\nlibrdkafka: `fetch.wait.max.ms` (default 500 ms).\nWorks in tandem with `fetch_min_bytes` -- the broker returns whatever\nit has when this timer fires even if `fetch.min.bytes` is not met.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "max_partition_fetch_bytes": {
+          "description": "Maximum bytes returned per partition per Fetch request.\n\nlibrdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,\ndefault 1 MiB). Must be >= the topic's `max.message.bytes`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "fetch_max_bytes": {
+          "description": "Maximum total bytes returned by the broker for a single Fetch request\nacross all partitions.\n\nlibrdkafka: `fetch.max.bytes` (default 50 MiB).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "max_poll_records": {
+          "description": "Maximum number of messages the recv() loop returns per call.\n\nNOTE: `max.poll.records` does NOT exist in librdkafka -- there is no\nbroker-level property for this. This is a purely CLIENT-SIDE cap,\nenforced by passing this value as the `max` argument to\n`KafkaTransport::recv()` via `KafkaSizingConfig::effective_poll_cap()`.\nIt bounds the batch size delivered to the WorkBatch layer, not the\nnetwork fetch size (which is byte-governed by the knobs above).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        }
+      }
+    },
+    "ProducerKnobs": {
+      "description": "Named producer sizing knobs.\n\nAll fields are `Option<T>`: `None` means \"use the profile default\".",
+      "type": "object",
+      "properties": {
+        "batch_size_bytes": {
+          "description": "Maximum bytes per MessageSet (librdkafka `batch.size`, default 1 MiB).\n\nThis is the PER-BATCH ceiling, not the total queue size. Raise this for\nfewer, larger network writes. Note: `batch.size` in librdkafka is in\nbytes (matches the Java Kafka client name and unit).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "default": null
+        },
+        "linger_ms": {
+          "description": "Accumulation delay before transmitting a MessageSet.\n\nlibrdkafka: `linger.ms` (alias for `queue.buffering.max.ms`, default 5 ms).\nHigher values fill larger batches; 0 sends immediately.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "compression_type": {
+          "description": "Compression codec for MessageSets.\n\nlibrdkafka: `compression.type` (alias for `compression.codec`).\nValid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.\nDefault (all profiles): `lz4` -- best throughput/ratio tradeoff.\nUse `zstd` for storage-bound topics that can absorb the CPU cost.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "buffer_memory_bytes": {
+          "description": "Total byte budget for the producer's in-memory queue.\n\nlibrdkafka: `queue.buffering.max.kbytes` (in KiB, default 1 GiB).\nThis is the TOTAL queue, not per-batch. Set lower to bound memory\nusage in containers. Stored as bytes in this struct; divided by 1024\nwhen applied to librdkafka.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "max_in_flight": {
+          "description": "Maximum concurrent in-flight requests per broker connection.\n\nlibrdkafka: `max.in.flight.requests.per.connection` (default 1,000,000).\nSet to 5 to match the exactly-once safe limit (KIP-98) and to bound\nmemory/reorder window. Matches the Java Kafka producer default for\nidempotent producers.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "idempotence": {
+          "description": "Enable the Kafka idempotent producer (`enable.idempotence`).\n\n`None` (default) -> ON: scalo enables idempotence by default (v2.10) as\nthe cheap \"effectively-once\" step -- it dedups producer-retry writes in\nthe broker at near-zero cost. Idempotence REQUIRES `acks=all`,\n`max.in.flight<=5` and `retries>0`, so when on\n[`resolved_producer_map`](KafkaSizingConfig::resolved_producer_map)\nforces `acks=all` and clamps `max.in.flight` to 5. Set `Some(false)` to\nopt out (e.g. a latency-bound topic that wants `acks=1`). The raw\n`producer_librdkafka` escape hatch still wins over this.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "FilterRule": {
+      "description": "A single filter rule -- CEL expression + disposition action.\n\nWritten in CEL syntax regardless of execution tier. The engine determines\nthe optimal execution strategy at construction time.\n\n# Examples\n\n```yaml\n- expression: 'has(_table)'\n  action: drop\n- expression: 'status == \"poison\"'\n  action: dlq\n```",
+      "type": "object",
+      "properties": {
+        "expression": {
+          "description": "CEL expression to evaluate against each message payload.",
+          "type": "string"
+        },
+        "action": {
+          "description": "Action to take when the expression matches. Defaults to `drop`.",
+          "$ref": "#/$defs/FilterAction",
+          "default": "drop"
+        }
+      },
+      "required": [
+        "expression"
+      ]
+    },
+    "FilterAction": {
+      "description": "Disposition action when a filter matches.",
+      "oneOf": [
+        {
+          "description": "Silently discard the message (counted in metrics).",
+          "type": "string",
+          "const": "drop"
+        },
+        {
+          "description": "Route the message to the dead-letter queue (counted + security audit).",
+          "type": "string",
+          "const": "dlq"
+        }
+      ]
+    },
+    "GrpcConfig": {
+      "description": "gRPC transport configuration.\n\nSupports client mode (sending), server mode (receiving), or both.\n\n# Client mode\n\nSet `endpoint` to connect to a remote gRPC server.\n\n# Server mode\n\nSet `listen` to accept incoming Push RPCs.\n\n# Both\n\nSet both for bidirectional communication (e.g., a relay node).",
+      "type": "object",
+      "properties": {
+        "listen": {
+          "description": "Server listen address (e.g., \"0.0.0.0:6000\").\nWhen set, the transport accepts incoming Push RPCs.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "endpoint": {
+          "description": "Client endpoint URI (e.g., \"http://loader:6000\").\nWhen set, the transport can send messages to a remote server.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "recv_buffer_size": {
+          "description": "Receive buffer size (messages buffered from incoming RPCs).",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10000
+        },
+        "recv_timeout_ms": {
+          "description": "Receive timeout in milliseconds (0 = non-blocking).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 100
+        },
+        "send_timeout_ms": {
+          "description": "Per-RPC send deadline in milliseconds (0 = no deadline).\n\nBounds a single `push` so a hung/black-holing server cannot block a\nsender task forever. Applied as the `grpc-timeout` header. Default 30s.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 30000
+        },
+        "max_message_size": {
+          "description": "Maximum message size in bytes (both send and receive).",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 16777216
+        },
+        "compression": {
+          "description": "Enable gzip compression for gRPC messages.",
+          "type": "boolean",
+          "default": false
+        },
+        "tls_enabled": {
+          "description": "Enable client TLS for the `endpoint` connection.",
+          "type": "boolean",
+          "default": false
+        },
+        "tls_ca_path": {
+          "description": "Private-CA PEM (maps to `TlsTrust.extra_roots`). When unset with\n`tls_enabled`, falls back to OS native roots.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tls_domain": {
+          "description": "Domain name for SNI / certificate verification (overrides the URI host).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tls_client_cert_path": {
+          "description": "Client certificate PEM for mTLS (with `tls_client_key_path`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tls_client_key_path": {
+          "description": "Client key PEM for mTLS (with `tls_client_cert_path`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "vector_compat": {
+          "description": "Enable Vector wire protocol compatibility on the same server.\nWhen true, the server also accepts `/vector.Vector/PushEvents` RPCs\nfrom legacy Vector sinks.\nRequires the `transport-grpc-vector-compat` feature.",
+          "type": "boolean",
+          "default": false
+        },
+        "filters_in": {
+          "description": "Inbound message filters (applied on recv before caller sees messages).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterRule"
+          },
+          "default": []
+        },
+        "filters_out": {
+          "description": "Outbound message filters (applied on send before transport dispatches).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilterRule"
+          },
+          "default": []
+        }
+      }
+    },
+    "CursorConfig": {
+      "description": "Cursor store configuration for incremental fetching.\n\nCursors are stored as individual JSON files in `directory`, one per\nsource service (e.g., `aws.cloudtrail.cursor.json`). The directory\nshould be PVC-backed for pod restart persistence.\n\nIf `directory` is empty, the cursor store falls back to the config\nfile's parent directory with a warning.",
+      "type": "object",
+      "properties": {
+        "directory": {
+          "description": "Directory for cursor files. Each source gets its own file\nnamed `{instance_id}.{source}.{service}.cursor.json`.\nEmpty = fall back to config file directory (with warning).",
+          "type": "string",
+          "default": ""
+        },
+        "default_window_hours": {
+          "description": "Default lookback window in hours when no cursor exists.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 1
+        }
+      }
+    },
+    "ScalingPressureConfig": {
+      "description": "Base configuration for scaling pressure calculation.\n\nLives in the app's config cascade so thresholds are env-var overridable\n(e.g., `DFE_LOADER__SCALING__MEMORY_GATE_THRESHOLD=0.9`).\n\nComponent weights and saturation points are app-specific -- defined in\neach app's config and passed to [`super::ScalingPressure::new`] via\n[`ScalingComponent`].",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable scaling pressure calculation.\nWhen disabled, `calculate()` always returns 0.0.",
+          "type": "boolean",
+          "default": true
+        },
+        "memory_gate_threshold": {
+          "description": "Memory usage ratio that triggers the memory gate (0.0-1.0).\n\nWhen `memory_used / memory_limit >= threshold`, scaling pressure\nis forced to 100.0 to trigger immediate scale-up before OOM.",
+          "type": "number",
+          "format": "double",
+          "default": 0.8
+        }
+      }
+    }
+  }
+}

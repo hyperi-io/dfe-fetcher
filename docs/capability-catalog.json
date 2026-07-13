@@ -1,0 +1,1093 @@
+[
+  {
+    "kind": "source",
+    "name": "aws",
+    "description": "AWS audit + security sources via SigV4-signed API calls.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "region",
+        "type": "string",
+        "required": false,
+        "default": "us-east-1",
+        "description": "AWS region."
+      },
+      {
+        "name": "access_key_id",
+        "type": "string",
+        "required": false,
+        "description": "Access key ID (prefer credential_secret in production)."
+      },
+      {
+        "name": "secret_access_key",
+        "type": "secret",
+        "required": false,
+        "description": "AWS secret access key.",
+        "secret": true
+      },
+      {
+        "name": "assume_role_arn",
+        "type": "string",
+        "required": false,
+        "description": "Assume-role ARN for cross-account access."
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      },
+      {
+        "name": "endpoint_override",
+        "type": "string",
+        "required": false,
+        "description": "Endpoint URL override (testing)."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "cloudtrail",
+        "description": "CloudTrail management + data events via LookupEvents.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "guardduty",
+        "description": "GuardDuty findings.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "securityhub",
+        "description": "Security Hub findings.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "config",
+        "description": "AWS Config configuration + compliance items.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "cloudwatch_logs",
+        "description": "CloudWatch Logs events for a named log group.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "log_group_name",
+            "type": "string",
+            "required": true,
+            "description": "CloudWatch log group to pull events from."
+          }
+        ]
+      },
+      {
+        "kind": "service",
+        "name": "cloudwatch_metrics",
+        "description": "CloudWatch metric statistics for namespaces.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "namespaces",
+            "type": "list",
+            "required": false,
+            "description": "CloudWatch namespaces to pull metrics for."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "azure",
+    "description": "Azure tenant audit + security sources (Management + Graph APIs).",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "tenant_id",
+        "type": "string",
+        "required": false,
+        "description": "Azure AD tenant ID."
+      },
+      {
+        "name": "client_id",
+        "type": "string",
+        "required": false,
+        "description": "Client (application) ID."
+      },
+      {
+        "name": "client_secret",
+        "type": "secret",
+        "required": false,
+        "description": "Client secret.",
+        "secret": true
+      },
+      {
+        "name": "subscription_id",
+        "type": "string",
+        "required": false,
+        "description": "Subscription ID."
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "activity_log",
+        "description": "Azure Monitor activity log (control-plane events).",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "defender",
+        "description": "Microsoft Defender for Cloud alerts.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "sentinel",
+        "description": "Microsoft Sentinel incidents.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "entra_id",
+        "description": "Entra ID (Azure AD) sign-in + audit logs.",
+        "maturity": "stable"
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "m365",
+    "description": "Microsoft 365 tenant audit sources (Management Activity + Graph).",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "tenant_id",
+        "type": "string",
+        "required": false,
+        "description": "Azure AD tenant ID."
+      },
+      {
+        "name": "client_id",
+        "type": "string",
+        "required": false,
+        "description": "Client (application) ID."
+      },
+      {
+        "name": "client_secret",
+        "type": "secret",
+        "required": false,
+        "description": "Client secret.",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "audit_log",
+        "description": "Unified audit log via the Management Activity API.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "message_trace",
+        "description": "Exchange Online message trace.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "dlp",
+        "description": "Data-loss-prevention events.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "alerts",
+        "description": "Security + compliance alerts.",
+        "maturity": "stable"
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "gcp",
+    "description": "Google Cloud audit + security sources (service-account auth).",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "project_id",
+        "type": "string",
+        "required": false,
+        "description": "GCP project ID."
+      },
+      {
+        "name": "service_account_key",
+        "type": "string",
+        "required": false,
+        "description": "Path to the service-account JSON key file."
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "audit_logs",
+        "description": "Cloud Audit Logs (admin activity + data access).",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "scc",
+        "description": "Security Command Center findings.",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "cloud_logging",
+        "description": "Cloud Logging entries via a logging filter.",
+        "maturity": "stable"
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "github",
+    "description": "GitHub org / Enterprise Cloud audit-log events.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "org",
+        "type": "string",
+        "required": false,
+        "description": "Organisation slug (set exactly one of org/enterprise)."
+      },
+      {
+        "name": "enterprise",
+        "type": "string",
+        "required": false,
+        "description": "Enterprise slug (GitHub Enterprise Cloud)."
+      },
+      {
+        "name": "token",
+        "type": "secret",
+        "required": false,
+        "description": "PAT / fine-grained PAT / App token with read:audit_log.",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "audit_log",
+        "description": "Org or enterprise audit-log stream.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "include",
+            "type": "enum",
+            "required": false,
+            "default": "all",
+            "description": "Which event families to include.",
+            "enum_values": [
+              "all",
+              "web",
+              "git"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "okta",
+    "description": "Okta System Log events for one tenant.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "tenant_url",
+        "type": "string",
+        "required": false,
+        "description": "Tenant URL, e.g. https://hyperi.okta.com."
+      },
+      {
+        "name": "token",
+        "type": "secret",
+        "required": false,
+        "description": "SSWS API token or OAuth bearer token.",
+        "secret": true
+      },
+      {
+        "name": "use_ssws_header",
+        "type": "bool",
+        "required": false,
+        "default": true,
+        "description": "Send `Authorization: SSWS <token>` (true) vs Bearer (false)."
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "system_log",
+        "description": "Okta System Log API (/api/v1/logs).",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "filter",
+            "type": "string",
+            "required": false,
+            "description": "OData-style server-side filter."
+          },
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Per-page size (Okta caps at 1000)."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "cloudflare",
+    "description": "Cloudflare account audit-log events.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "account_id",
+        "type": "string",
+        "required": false,
+        "description": "Account ID (32-char hex) for account-level audit logs."
+      },
+      {
+        "name": "token",
+        "type": "secret",
+        "required": false,
+        "description": "Scoped API token (Account Settings: Read).",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "audit_logs",
+        "description": "Account audit logs (/accounts/{id}/audit_logs).",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "actor_email",
+            "type": "string",
+            "required": false,
+            "description": "Filter by acting user."
+          },
+          {
+            "name": "action_type",
+            "type": "string",
+            "required": false,
+            "description": "Filter by action category."
+          },
+          {
+            "name": "per_page",
+            "type": "int",
+            "required": false,
+            "description": "Page size (default 100, max 1000)."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "onepassword",
+    "description": "1Password Events Reporting API (Business/Enterprise).",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "token",
+        "type": "secret",
+        "required": false,
+        "description": "Events Reporting Bearer token.",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "signin_attempts",
+        "description": "Sign-in attempt events.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Page size (default 100, max 1000)."
+          }
+        ]
+      },
+      {
+        "kind": "service",
+        "name": "item_usages",
+        "description": "Item-usage events.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Page size (default 100, max 1000)."
+          }
+        ]
+      },
+      {
+        "kind": "service",
+        "name": "audit_events",
+        "description": "Account audit events.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Page size (default 100, max 1000)."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "crowdstrike",
+    "description": "CrowdStrike Falcon detections via OAuth2 client-credentials.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "api_url_override",
+        "type": "string",
+        "required": false,
+        "description": "Region API base (US-1/US-2/EU-1/US-GOV-1)."
+      },
+      {
+        "name": "client_id",
+        "type": "string",
+        "required": false,
+        "description": "Falcon API OAuth2 client ID."
+      },
+      {
+        "name": "client_secret",
+        "type": "secret",
+        "required": false,
+        "description": "Falcon API OAuth2 client secret.",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "detections",
+        "description": "Enriched EPP detection summaries.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Query page size (default 100, max 9999)."
+          },
+          {
+            "name": "filter",
+            "type": "string",
+            "required": false,
+            "description": "Falcon Query Language clause (ANDed with the time window)."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "slack",
+    "description": "Slack Enterprise Grid audit-log events.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "token",
+        "type": "secret",
+        "required": false,
+        "description": "Org-admin token with auditlogs:read.",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "audit_logs",
+        "description": "Enterprise Grid audit logs (audit/v1/logs).",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "action",
+            "type": "string",
+            "required": false,
+            "description": "Filter by action name (e.g. user_login)."
+          },
+          {
+            "name": "entity",
+            "type": "string",
+            "required": false,
+            "description": "Filter by entity type (user/workspace/...)."
+          },
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Page size (default 200, max 1000)."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "bitwarden",
+    "description": "Bitwarden organisation Events API (OAuth2 client-credentials).",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "client_id",
+        "type": "string",
+        "required": false,
+        "description": "Organisation API client ID (organization.<uuid>)."
+      },
+      {
+        "name": "client_secret",
+        "type": "secret",
+        "required": false,
+        "description": "Organisation API client secret.",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "events",
+        "description": "Organisation event stream (/public/events).",
+        "maturity": "stable"
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "duo",
+    "description": "Duo Admin API authentication events (HMAC-SHA1 signed).",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "api_host",
+        "type": "string",
+        "required": false,
+        "description": "api-XXXXXXXX.duosecurity.com."
+      },
+      {
+        "name": "integration_key",
+        "type": "string",
+        "required": false,
+        "description": "Admin API integration key (ikey)."
+      },
+      {
+        "name": "secret_key",
+        "type": "secret",
+        "required": false,
+        "description": "Admin API secret key (skey).",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "authentication_logs",
+        "description": "Admin API v2 authentication logs.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "limit",
+            "type": "int",
+            "required": false,
+            "description": "Page size (default 100, max 1000)."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "google_workspace",
+    "description": "Google Workspace Reports API per-application activity (domain-wide-delegation SA).",
+    "maturity": "alpha",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "service_account_key",
+        "type": "string",
+        "required": false,
+        "description": "Path to the SA JSON key (domain-wide delegation)."
+      },
+      {
+        "name": "admin_email",
+        "type": "string",
+        "required": false,
+        "description": "Workspace admin the SA impersonates (JWT sub)."
+      },
+      {
+        "name": "customer_id",
+        "type": "string",
+        "required": false,
+        "default": "my_customer",
+        "description": "Customer ID."
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "applications",
+        "description": "Any Reports API applicationName (login/admin/drive/mobile/groups/calendar/chat/meet/token/...); set `name` to the application.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "event_name",
+            "type": "string",
+            "required": false,
+            "description": "Filter to a single event name."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "salesforce",
+    "description": "Salesforce audit surfaces via REST (JWT-bearer or client-credentials OAuth2).",
+    "maturity": "alpha",
+    "fields": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Stable, unique connection id -- the cursor key and metric/log/DLQ label."
+      },
+      {
+        "name": "login_url",
+        "type": "string",
+        "required": false,
+        "default": "https://login.salesforce.com",
+        "description": "OAuth2 login base URL."
+      },
+      {
+        "name": "client_id",
+        "type": "string",
+        "required": false,
+        "description": "Connected-app consumer key."
+      },
+      {
+        "name": "username",
+        "type": "string",
+        "required": false,
+        "description": "Integration username (JWT sub; JWT-bearer flow)."
+      },
+      {
+        "name": "private_key",
+        "type": "string",
+        "required": false,
+        "description": "RSA private key PEM (JWT-bearer flow)."
+      },
+      {
+        "name": "private_key_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret ref for the RSA private key PEM."
+      },
+      {
+        "name": "client_secret",
+        "type": "secret",
+        "required": false,
+        "description": "Connected-app consumer secret (client-credentials flow).",
+        "secret": true
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "setup_audit_trail",
+        "description": "Admin config changes (SOQL).",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "login_history",
+        "description": "Login events (SOQL).",
+        "maturity": "stable"
+      },
+      {
+        "kind": "service",
+        "name": "event_log_file",
+        "description": "Runtime events as downloadable CSV logs.",
+        "maturity": "stable",
+        "fields": [
+          {
+            "name": "event_types",
+            "type": "list",
+            "required": false,
+            "description": "EventType values to include (default all)."
+          },
+          {
+            "name": "interval",
+            "type": "enum",
+            "required": false,
+            "default": "Daily",
+            "description": "Log-file cadence.",
+            "enum_values": [
+              "Hourly",
+              "Daily"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "pypi",
+    "description": "PyPI package metadata (supply-chain monitoring; no auth). Single-connection.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "packages",
+        "type": "list",
+        "required": true,
+        "description": "Package names to monitor (one record each per tick)."
+      },
+      {
+        "name": "topic",
+        "type": "string",
+        "required": false,
+        "default": "pypi",
+        "description": "Output Kafka topic."
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "crates_io",
+    "description": "crates.io crate metadata (supply-chain monitoring; no auth). Single-connection.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "crates",
+        "type": "list",
+        "required": true,
+        "description": "Crate names to monitor."
+      },
+      {
+        "name": "topic",
+        "type": "string",
+        "required": false,
+        "default": "crates_io",
+        "description": "Output Kafka topic."
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "go_modules",
+    "description": "Go module-proxy metadata (supply-chain monitoring; no auth). Single-connection.",
+    "maturity": "stable",
+    "fields": [
+      {
+        "name": "modules",
+        "type": "list",
+        "required": true,
+        "description": "Module paths to monitor."
+      },
+      {
+        "name": "topic",
+        "type": "string",
+        "required": false,
+        "default": "go_modules",
+        "description": "Output Kafka topic."
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "gcp_pubsub",
+    "description": "GCP Pub/Sub pull source (Log Sink delivery). Single-connection.",
+    "maturity": "alpha",
+    "fields": [
+      {
+        "name": "service_account_key",
+        "type": "string",
+        "required": false,
+        "description": "Path to the SA JSON key (roles/pubsub.subscriber)."
+      },
+      {
+        "name": "credential_secret",
+        "type": "string",
+        "required": false,
+        "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+      }
+    ],
+    "children": [
+      {
+        "kind": "service",
+        "name": "subscription",
+        "description": "One entry per `subscriptions[]`: a subscription to pull from.",
+        "maturity": "alpha",
+        "fields": [
+          {
+            "name": "project_id",
+            "type": "string",
+            "required": true,
+            "description": "GCP project owning the subscription."
+          },
+          {
+            "name": "subscription_id",
+            "type": "string",
+            "required": true,
+            "description": "Subscription short name."
+          },
+          {
+            "name": "max_messages",
+            "type": "int",
+            "required": false,
+            "default": 1000,
+            "description": "Max messages per tick (default 1000, REST cap)."
+          },
+          {
+            "name": "return_immediately",
+            "type": "bool",
+            "required": false,
+            "default": true,
+            "description": "Single-shot pull vs server-side wait."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "source",
+    "name": "object_store",
+    "description": "Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection.",
+    "maturity": "alpha",
+    "children": [
+      {
+        "kind": "service",
+        "name": "s3",
+        "description": "Amazon S3 (or S3-compatible: MinIO / R2 / B2 via endpoint_override).",
+        "maturity": "beta",
+        "fields": [
+          {
+            "name": "region",
+            "type": "string",
+            "required": true,
+            "description": "AWS region for SigV4 + endpoint construction."
+          },
+          {
+            "name": "endpoint_override",
+            "type": "string",
+            "required": false,
+            "description": "S3 endpoint override (S3-compatible / VPC endpoints)."
+          },
+          {
+            "name": "access_key_id",
+            "type": "string",
+            "required": false,
+            "description": "Access key ID (or a vault:/env: spec)."
+          },
+          {
+            "name": "secret_access_key",
+            "type": "secret",
+            "required": false,
+            "description": "AWS secret access key.",
+            "secret": true
+          },
+          {
+            "name": "credential_secret",
+            "type": "string",
+            "required": false,
+            "description": "Secret reference ('provider:path:key', e.g. vault:secret/aws/prod:credentials) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+          }
+        ]
+      },
+      {
+        "kind": "service",
+        "name": "gcs",
+        "description": "Google Cloud Storage (Phase-2 stub).",
+        "maturity": "alpha"
+      },
+      {
+        "kind": "service",
+        "name": "azure_blob",
+        "description": "Azure Blob Storage (Phase-2 stub).",
+        "maturity": "alpha"
+      }
+    ]
+  }
+]
