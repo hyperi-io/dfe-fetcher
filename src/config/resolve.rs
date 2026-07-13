@@ -13,7 +13,7 @@
 //! on fields that opt in to the syntax.
 //!
 //! Currently resolves:
-//! - `sources.aws.region`
+//! - `sources.aws.region` (type-level and each `connections[].region`)
 
 use crate::config::Config;
 use crate::credential::{CredentialError, resolve};
@@ -21,6 +21,13 @@ use crate::credential::{CredentialError, resolve};
 /// Resolve all `env:`/`vault:` spec strings on opted-in config fields.
 pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialError> {
     config.sources.aws.region = resolve(&config.sources.aws.region).await?;
+    // Multi-endpoint: each AWS connection carries its own region, which may
+    // also be an `env:`/`vault:` spec.
+    for conn in &mut config.sources.aws.connections {
+        if let Some(region) = &conn.region {
+            conn.region = Some(resolve(region).await?);
+        }
+    }
     Ok(())
 }
 

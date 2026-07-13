@@ -73,6 +73,7 @@ impl Scheduler {
     /// When a cursor store is configured, the scheduler reads the last fetch
     /// position before each fetch to compute a `FetchWindow`, and writes the
     /// cursor back after successful delivery.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_source_task(
         &self,
         source: Arc<dyn Source>,
@@ -81,6 +82,7 @@ impl Scheduler {
         shutdown: CancellationToken,
         callback: Arc<dyn Fn(Vec<FetchResult>) + Send + Sync>,
         is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
+        connection_id: String,
     ) {
         let semaphore = Arc::clone(&self.concurrency_semaphore);
         let cursor_store = self.cursor_store.clone();
@@ -88,7 +90,13 @@ impl Scheduler {
         let shared_config = self.shared_config.clone();
 
         tokio::spawn(async move {
-            let cursor_key = format!("{}.{}", instance_id, source.cursor_prefix());
+            // GA 2.2 multi-endpoint: cursor key and per-source metric/log
+            // labels are keyed on the CONNECTION id (C4), not the type name, so
+            // each account/tenant of a type checkpoints and reports
+            // independently. For a single implicit connection the id is the type
+            // name, so existing cursor keys and metric labels are unchanged.
+            let label = connection_id.as_str();
+            let cursor_key = format!("{instance_id}.{connection_id}");
 
             // Initial sleep before first fetch (let startup complete).
             // Read interval from current config so even the first tick is dynamic.
@@ -156,7 +164,7 @@ impl Scheduler {
                     &cursor_key,
                     default_window_hours,
                     &metrics,
-                    &source.cursor_prefix(),
+                    label,
                 )
                 .await;
 
@@ -181,7 +189,7 @@ impl Scheduler {
                     Ok(results) => {
                         let fetch_duration = fetch_start.elapsed();
                         let fetch_duration_ms = fetch_duration.as_millis();
-                        metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
+                        metrics.record_fetch_duration(label, fetch_duration);
 
                         let total_records: usize = results.iter().map(|r| r.records.len()).sum();
                         let total_bytes: usize = results
@@ -189,7 +197,7 @@ impl Scheduler {
                             .flat_map(|r| r.records.iter())
                             .map(|b| b.len())
                             .sum();
-                        metrics.inc_fetches_success_for(&source.cursor_prefix());
+                        metrics.inc_fetches_success_for(label);
                         metrics.add_records_fetched(total_records as u64);
 
                         debug!(
@@ -203,6 +211,7 @@ impl Scheduler {
                         if total_records > 0 {
                             info!(
                                 source = source.name(),
+                                connection = label,
                                 records = total_records,
                                 duration_ms = fetch_duration_ms,
                                 "Fetch completed with records"
@@ -228,14 +237,15 @@ impl Scheduler {
                     }
                     Err(e) => {
                         let fetch_duration = fetch_start.elapsed();
-                        metrics.record_fetch_duration(&source.cursor_prefix(), fetch_duration);
+                        metrics.record_fetch_duration(label, fetch_duration);
 
                         let code = crate::source::classify_api_error(&e);
-                        metrics.inc_api_error(&source.cursor_prefix(), code);
+                        metrics.inc_api_error(label, code);
 
-                        metrics.inc_fetches_error_for(&source.cursor_prefix());
+                        metrics.inc_fetches_error_for(label);
                         error!(
                             source = source.name(),
+                            connection = label,
                             error = %e,
                             error_code = code,
                             duration_ms = fetch_duration.as_millis(),
@@ -558,6 +568,7 @@ mod tests {
             shutdown.clone(),
             callback,
             is_ready,
+            "counting".to_string(),
         );
 
         // Advance time past the initial sleep + several backpressure poll intervals
@@ -659,6 +670,7 @@ mod tests {
             shutdown.clone(),
             callback,
             is_ready,
+            "counting".to_string(),
         );
 
         // Advance past initial sleep (2s) in small steps to let spawned task run
@@ -873,5 +885,101 @@ mod tests {
         // A source-level override is still honoured
         let overridden = scheduler.effective_interval(Some(45));
         assert_eq!(overridden.as_secs(), 45);
+    }
+
+    /// Two tasks over the SAME source type but DIFFERENT connection ids must
+    /// checkpoint under DIFFERENT cursor keys (C4: cursor key = connection id),
+    /// so accounts of one type do not collide (the GA 2.2 multi-endpoint fix).
+    #[tokio::test]
+    async fn test_per_connection_cursor_keys() {
+        use std::sync::atomic::AtomicU64;
+
+        use crate::cursor::file::FileCursorStore;
+        use crate::source::{FetchResult, Source};
+
+        struct CountingSource {
+            fetch_count: AtomicU64,
+        }
+
+        #[async_trait::async_trait]
+        impl Source for CountingSource {
+            fn name(&self) -> &'static str {
+                "counting"
+            }
+            fn is_enabled(&self) -> bool {
+                true
+            }
+            async fn fetch(
+                &self,
+                _window: Option<&crate::source::FetchWindow>,
+            ) -> crate::error::Result<Vec<FetchResult>> {
+                self.fetch_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(vec![])
+            }
+            async fn health_check(&self) -> crate::error::Result<bool> {
+                Ok(true)
+            }
+        }
+
+        tokio::time::pause();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store: Arc<dyn CursorStore> =
+            Arc::new(FileCursorStore::new(dir.path().to_str().unwrap()).unwrap());
+
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.scheduler.jitter_percent = 0;
+        let shared = SharedConfig::new(cfg);
+        let sched_cfg = SchedulerConfig {
+            default_interval_secs: 1,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let scheduler = Scheduler::new(&sched_cfg, shared, Some(store.clone()), "inst".into());
+
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+        let is_ready = Arc::new(|| true);
+        let callback = Arc::new(|_r: Vec<FetchResult>| {});
+
+        for conn in ["acct-a", "acct-b"] {
+            let source = Arc::new(CountingSource {
+                fetch_count: AtomicU64::new(0),
+            });
+            scheduler.spawn_source_task(
+                source,
+                Some(1),
+                metrics.clone(),
+                shutdown.clone(),
+                callback.clone(),
+                is_ready.clone(),
+                conn.to_string(),
+            );
+        }
+
+        // Advance past the initial sleep, one fetch, and the cursor write.
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        // Each connection has its OWN cursor key ({instance}.{connection_id}),
+        // NOT the shared type prefix ("inst.counting").
+        assert!(
+            store.get("inst.acct-a").await.unwrap().is_some(),
+            "connection acct-a must checkpoint under its own cursor key"
+        );
+        assert!(
+            store.get("inst.acct-b").await.unwrap().is_some(),
+            "connection acct-b must checkpoint under its own cursor key"
+        );
+        assert!(
+            store.get("inst.counting").await.unwrap().is_none(),
+            "cursor must NOT be keyed on the type prefix any more"
+        );
+
+        shutdown.cancel();
     }
 }

@@ -204,6 +204,15 @@ async fn main() {
     }
 }
 
+/// One connection's fetch task, ready to schedule. GA 2.2 multi-endpoint:
+/// a source type expands into one `SpawnEntry` per connection, each keyed on
+/// its connection id (cursor key + metric/log label).
+struct SpawnEntry {
+    source: Arc<dyn Source>,
+    connection_id: String,
+    interval_secs: Option<u64>,
+}
+
 /// Main service loop — called by the ServiceApp lifecycle after logging and config.
 async fn run_fetcher_service(
     _common: &CommonArgs,
@@ -477,63 +486,95 @@ async fn run_fetcher_service(
         instance_id,
     );
 
-    // Register native sources
-    let sources: Vec<Arc<dyn Source>> = vec![
-        Arc::new(AwsSource::new(config.sources.aws.clone())),
-        Arc::new(AzureSource::new(config.sources.azure.clone())),
-        Arc::new(M365Source::new(config.sources.m365.clone())),
-        Arc::new(GcpSource::new(config.sources.gcp.clone())),
-        Arc::new(GithubSource::new(config.sources.github.clone())),
-        Arc::new(OktaSource::new(config.sources.okta.clone())),
-        Arc::new(CloudflareSource::new(config.sources.cloudflare.clone())),
-        Arc::new(OnePasswordSource::new(config.sources.onepassword.clone())),
-        Arc::new(CrowdstrikeSource::new(config.sources.crowdstrike.clone())),
-        Arc::new(SlackSource::new(config.sources.slack.clone())),
-        Arc::new(BitwardenSource::new(config.sources.bitwarden.clone())),
-        Arc::new(DuoSource::new(config.sources.duo.clone())),
-        Arc::new(PypiSource::new(config.sources.pypi.clone())),
-        Arc::new(CratesIoSource::new(config.sources.crates_io.clone())),
-        Arc::new(GoModulesSource::new(config.sources.go_modules.clone())),
-        Arc::new(GoogleWorkspaceSource::new(
-            config.sources.google_workspace.clone(),
-        )),
-        Arc::new(GcpPubsubSource::new(config.sources.gcp_pubsub.clone())),
-        Arc::new(ObjectStoreSource::new(config.sources.object_store.clone())),
-        Arc::new(SalesforceSource::new(config.sources.salesforce.clone())),
-    ];
+    // Expand enabled sources into one spawn entry per connection (GA 2.2
+    // multi-endpoint model). A source TYPE maps 1:1 to this pod group and
+    // carries a `connections` list -- many accounts/tenants of that ONE type,
+    // each polled by its own scheduler task keyed on its connection id (the
+    // cursor key + metric/log label). A single-connection type yields one entry
+    // keyed on the type name, so existing single-account configs are unchanged.
+    let mut entries: Vec<SpawnEntry> = Vec::new();
 
-    // Start fetch tasks for enabled sources
-    for source in &sources {
-        if !source.is_enabled() {
-            continue;
-        }
+    // Multi-connection types: `resolved()` merges the shared type-level fields
+    // with each connection and tags it with the connection id.
+    macro_rules! expand_multi {
+        ($field:ident, $name:literal, $ctor:ty) => {
+            if config.sources.$field.enabled {
+                for r in config.sources.$field.resolved($name) {
+                    entries.push(SpawnEntry {
+                        source: Arc::new(<$ctor>::new(r.config)),
+                        connection_id: r.id,
+                        interval_secs: r.interval_secs,
+                    });
+                }
+            }
+        };
+    }
+    expand_multi!(aws, "aws", AwsSource);
+    expand_multi!(azure, "azure", AzureSource);
+    expand_multi!(m365, "m365", M365Source);
+    expand_multi!(gcp, "gcp", GcpSource);
+    expand_multi!(github, "github", GithubSource);
+    expand_multi!(okta, "okta", OktaSource);
+    expand_multi!(cloudflare, "cloudflare", CloudflareSource);
+    expand_multi!(onepassword, "onepassword", OnePasswordSource);
+    expand_multi!(crowdstrike, "crowdstrike", CrowdstrikeSource);
+    expand_multi!(slack, "slack", SlackSource);
+    expand_multi!(bitwarden, "bitwarden", BitwardenSource);
+    expand_multi!(duo, "duo", DuoSource);
+    expand_multi!(google_workspace, "google_workspace", GoogleWorkspaceSource);
+    expand_multi!(salesforce, "salesforce", SalesforceSource);
 
+    // Single-connection types (public registries + multi-target sources that
+    // already carry their own internal fan-out): one task keyed on the type
+    // name.
+    macro_rules! expand_single {
+        ($field:ident, $name:literal, $ctor:ty) => {
+            if config.sources.$field.enabled {
+                let interval = config.sources.$field.interval_secs;
+                entries.push(SpawnEntry {
+                    source: Arc::new(<$ctor>::new(config.sources.$field.clone())),
+                    connection_id: $name.to_string(),
+                    interval_secs: interval,
+                });
+            }
+        };
+    }
+    expand_single!(pypi, "pypi", PypiSource);
+    expand_single!(crates_io, "crates_io", CratesIoSource);
+    expand_single!(go_modules, "go_modules", GoModulesSource);
+    expand_single!(gcp_pubsub, "gcp_pubsub", GcpPubsubSource);
+    expand_single!(object_store, "object_store", ObjectStoreSource);
+
+    // Start one fetch task per connection.
+    for entry in &entries {
         // Surface non-stable sources at startup. The four core sources
         // (aws, azure, m365, gcp) are stable; everything else is alpha
         // (code-complete, not production-validated) until promoted.
-        let maturity = source.maturity();
+        let maturity = entry.source.maturity();
         if maturity != dfe_fetcher::source::SourceMaturity::Stable {
             warn!(
-                source = source.name(),
+                source = entry.source.name(),
+                connection = %entry.connection_id,
                 maturity = %maturity,
                 "source is {maturity} maturity - not production-validated; \
                  behaviour and config may change. See docs/cloud-setup/{}.md",
-                source.name(),
+                entry.source.name(),
             );
         }
 
-        let initial_interval = scheduler.effective_interval(None);
+        let initial_interval = scheduler.effective_interval(entry.interval_secs);
         let state = Arc::clone(&pipeline_state);
         let ready_state = Arc::clone(&pipeline_state);
         info!(
-            source = source.name(),
+            source = entry.source.name(),
+            connection = %entry.connection_id,
             interval_secs = initial_interval.as_secs(),
             "Starting fetch schedule (interval is hot-reloaded)"
         );
 
         scheduler.spawn_source_task(
-            Arc::clone(source),
-            None,
+            Arc::clone(&entry.source),
+            entry.interval_secs,
             Arc::clone(&metrics),
             shutdown_token.clone(),
             Arc::new(move |results| {
@@ -545,6 +586,7 @@ async fn run_fetcher_service(
                 });
             }),
             Arc::new(move || ready_state.is_ready()),
+            entry.connection_id.clone(),
         );
     }
 

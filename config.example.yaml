@@ -55,6 +55,23 @@ sources:
       #     max_results: 100   # per-page, max 100
     topic: "aws"
     # filter: 'eventName != "ConsoleLogin"'  # hot-reloaded
+    #
+    # Multi-endpoint (GA 2.2): ONE type per pod, MANY connections. The fields
+    # above (region/credentials) define a single implicit connection. To poll
+    # several accounts of the SAME type from this one pod, list them under
+    # `connections` instead -- `services`, `topic`, and `filter` above are
+    # shared by all of them, and every connection lands on the one `_land`
+    # topic. Each connection needs a stable, unique `id` (it is the cursor key
+    # and the metric/log label). Connection fields override the shared defaults
+    # above; `interval_secs` may be overridden per connection.
+    # connections:
+    #   - id: aws-acct-123
+    #     region: us-east-1
+    #     credential_secret: "vault:secret/dfe/fetcher/aws-acct-123:creds"
+    #   - id: aws-acct-456
+    #     region: eu-west-1
+    #     credential_secret: "vault:secret/dfe/fetcher/aws-acct-456:creds"
+    #     interval_secs: 600
 
   azure:
     enabled: false

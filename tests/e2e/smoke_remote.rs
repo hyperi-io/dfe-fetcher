@@ -108,6 +108,7 @@ fn aws_base() -> AwsSourceConfig {
         endpoint_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-aws".to_string(),
         filter: None,
     }
@@ -262,6 +263,7 @@ fn azure_base() -> AzureSourceConfig {
         token_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-azure".to_string(),
         filter: None,
     }
@@ -465,6 +467,7 @@ fn gcp_base() -> GcpSourceConfig {
         token_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-gcp".to_string(),
         filter: None,
     }
@@ -697,6 +700,7 @@ fn m365_base() -> M365SourceConfig {
         credential_secret: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-m365".to_string(),
         filter: None,
         management_url_override: None,
@@ -853,6 +857,7 @@ fn github_base() -> GithubSourceConfig {
         api_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-github".to_string(),
         filter: None,
     }
@@ -939,6 +944,7 @@ fn okta_base() -> OktaSourceConfig {
         api_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-okta".to_string(),
         filter: None,
     }
@@ -1026,6 +1032,7 @@ fn cloudflare_base() -> CloudflareSourceConfig {
         api_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-cloudflare".to_string(),
         filter: None,
     }
@@ -1086,6 +1093,7 @@ fn onepassword_base() -> OnePasswordSourceConfig {
         api_url_override: optional("ONEPASSWORD_API_BASE"),
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-onepassword".to_string(),
         filter: None,
     }
@@ -1193,6 +1201,7 @@ fn crowdstrike_base() -> CrowdstrikeSourceConfig {
         credential_secret: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-crowdstrike".to_string(),
         filter: None,
     }
@@ -1253,6 +1262,7 @@ fn slack_base() -> SlackSourceConfig {
         api_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-slack".to_string(),
         filter: None,
     }
@@ -1312,6 +1322,7 @@ fn bitwarden_base() -> BitwardenSourceConfig {
         identity_url_override: optional("BITWARDEN_IDENTITY_URL"),
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-bitwarden".to_string(),
         filter: None,
     }
@@ -1374,6 +1385,7 @@ fn duo_base() -> DuoSourceConfig {
         api_url_override: None,
         interval_secs: None,
         services: vec![],
+        connections: vec![],
         topic: "test-duo".to_string(),
         filter: None,
     }
@@ -1515,6 +1527,7 @@ fn google_workspace_base() -> GoogleWorkspaceSourceConfig {
         customer_id: optional("GOOGLE_WORKSPACE_CUSTOMER_ID"),
         api_url_override: optional("GOOGLE_WORKSPACE_API_URL"),
         token_url_override: optional("GOOGLE_WORKSPACE_TOKEN_URL"),
+        connections: vec![],
         topic: "test-google_workspace".to_string(),
         ..GoogleWorkspaceSourceConfig::default()
     }
@@ -1779,6 +1792,7 @@ fn salesforce_base() -> SalesforceSourceConfig {
         client_secret: optional("SALESFORCE_CLIENT_SECRET").map(Into::into),
         credential_secret: optional("SALESFORCE_CREDENTIAL_SECRET"),
         instance_url_override: optional("SALESFORCE_INSTANCE_URL"),
+        connections: vec![],
         topic: "test-salesforce".to_string(),
         ..SalesforceSourceConfig::default()
     }

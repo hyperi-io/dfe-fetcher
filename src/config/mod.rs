@@ -337,6 +337,46 @@ impl Config {
             }
         }
 
+        // Validate multi-endpoint connection ids: each connection needs a
+        // non-empty id, unique within its type. The id is the cursor key (C4)
+        // and the metric/log label; a collision would cross-checkpoint two
+        // accounts. Only enabled types are checked (a disabled type never
+        // spawns). Empty `connections` is fine (single implicit connection).
+        {
+            macro_rules! check_conn_ids {
+                ($($field:ident => $name:literal),+ $(,)?) => {{
+                    $(
+                        if self.sources.$field.enabled {
+                            let ids: Vec<&str> = self
+                                .sources
+                                .$field
+                                .connections
+                                .iter()
+                                .map(|c| c.id.as_str())
+                                .collect();
+                            validate_connection_ids($name, &ids)?;
+                        }
+                    )+
+                }};
+            }
+            check_conn_ids!(
+                aws => "aws",
+                azure => "azure",
+                m365 => "m365",
+                gcp => "gcp",
+                github => "github",
+                okta => "okta",
+                cloudflare => "cloudflare",
+                onepassword => "onepassword",
+                crowdstrike => "crowdstrike",
+                slack => "slack",
+                bitwarden => "bitwarden",
+                duo => "duo",
+                google_workspace => "google_workspace",
+                salesforce => "salesforce",
+            );
+        }
+
         // Validate Vector gRPC address
         if self.extractors.vector.enabled
             && self
@@ -354,6 +394,38 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Overlay a per-connection optional field onto the resolved config: when the
+/// connection sets it, its value wins; when unset, the shared type-level value
+/// stays. Used by every `<Type>SourceConfig::resolved()`.
+///
+/// Takes `&Option<T>` (not `Option<&T>`) so call sites can pass `&c.field`
+/// directly; `clone_from` reuses the destination allocation.
+#[allow(clippy::ref_option)]
+fn overlay_opt<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
+    if src.is_some() {
+        dst.clone_from(src);
+    }
+}
+
+/// Validate the connection ids of one source type: each must be non-empty and
+/// unique within the type (they become cursor keys and metric labels).
+fn validate_connection_ids(type_name: &str, ids: &[&str]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if id.trim().is_empty() {
+            return Err(Error::Config(format!(
+                "sources.{type_name}: every connection needs a non-empty 'id'"
+            )));
+        }
+        if !seen.insert(*id) {
+            return Err(Error::Config(format!(
+                "sources.{type_name}: duplicate connection id '{id}' (ids must be unique)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Derive instance ID from config. Uses explicit value if set,
@@ -621,6 +693,87 @@ impl Default for SourcesConfig {
     }
 }
 
+// =============================================================================
+// Multi-endpoint (GA 2.2) connection model
+// =============================================================================
+//
+// A source TYPE (e.g. AWS) maps 1:1 to a fetcher pod group and carries a
+// `connections` list -- many accounts/tenants of that ONE type, each polled by
+// its own scheduler task. Type-wide fields (`services`, `topic`, `filter`, the
+// default `interval_secs`) live at the top of the type config and are SHARED by
+// every connection. Connection-specific fields (credentials, region, endpoints)
+// live per entry in `connections`. When `connections` is empty the top-level
+// fields define a single implicit connection (id = the type name), preserving
+// single-account configs and their cursor keys. See
+// `docs/superpowers/plans/2026-07-13-multi-endpoint-fetcher.md` (Part A).
+
+/// One resolved connection, ready to instantiate a source.
+///
+/// Produced by each type config's `resolved()`: the shared type-level fields
+/// merged with one connection's identity/credentials, tagged with a stable
+/// `id`. The `id` is the connection's cursor key (C4) and its metric/log/DLQ
+/// label -- keep it identical to the engine's source-def connection `id`.
+#[derive(Debug, Clone)]
+pub struct Resolved<C> {
+    /// Stable connection id: cursor key + metric/log/DLQ label.
+    pub id: String,
+
+    /// Per-connection source config (shared type fields + this connection).
+    pub config: C,
+
+    /// Effective fetch-interval override for this connection, in seconds.
+    /// Per-connection override falls back to the type-level `interval_secs`.
+    pub interval_secs: Option<u64>,
+}
+
+impl<C> Resolved<C> {
+    /// Wrap a single config as a one-element connection list (the implicit
+    /// single-connection form: id defaults to the type name).
+    pub fn single(id: impl Into<String>, config: C, interval_secs: Option<u64>) -> Vec<Self> {
+        vec![Self {
+            id: id.into(),
+            config,
+            interval_secs,
+        }]
+    }
+}
+
+/// One AWS connection: an account/region + its credentials. Type-wide fields
+/// (`services`, `topic`, `filter`) are shared and stay on [`AwsSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AwsConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// AWS region. Inherits the type-level `region` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+
+    /// Access key ID (prefer `credential_secret` in production).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+
+    /// Secret access key (always redacted in serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<SensitiveString>,
+
+    /// Assume role ARN for cross-account access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assume_role_arn: Option<String>,
+
+    /// Secret source for credentials ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+}
+
 /// AWS source configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -660,6 +813,11 @@ pub struct AwsSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple accounts/regions of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<AwsConnection>,
 }
 
 impl Default for AwsSourceConfig {
@@ -676,7 +834,47 @@ impl Default for AwsSourceConfig {
             topic: "aws".to_string(),
             endpoint_override: None,
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl AwsSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4). With no
+    /// `connections`, returns the single implicit connection keyed on
+    /// `default_id`.
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<AwsSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                if let Some(region) = &c.region {
+                    cfg.region.clone_from(region);
+                }
+                overlay_opt(&mut cfg.access_key_id, &c.access_key_id);
+                overlay_opt(&mut cfg.secret_access_key, &c.secret_access_key);
+                overlay_opt(&mut cfg.assume_role_arn, &c.assume_role_arn);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.endpoint_override, &c.endpoint_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    /// Clone with the `connections` list cleared (the per-connection runtime
+    /// config never re-reads it).
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -689,6 +887,51 @@ pub struct AwsService {
     /// Service-specific configuration.
     #[serde(default)]
     pub config: HashMap<String, serde_json::Value>,
+}
+
+/// One Azure connection: a tenant/subscription + its service-principal
+/// credentials. Type-wide fields (`services`, `topic`, `filter`) are shared and
+/// stay on [`AzureSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AzureConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Azure tenant ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+
+    /// Client (application) ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Client secret (always redacted in serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source for credentials ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Subscription ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+
+    /// Management API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url_override: Option<String>,
+
+    /// Graph API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_url_override: Option<String>,
+
+    /// Token endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 /// Azure source configuration.
@@ -737,6 +980,11 @@ pub struct AzureSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple tenants/subscriptions of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<AzureConnection>,
 }
 
 impl Default for AzureSourceConfig {
@@ -755,7 +1003,43 @@ impl Default for AzureSourceConfig {
             graph_url_override: None,
             token_url_override: None,
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl AzureSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<AzureSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.tenant_id, &c.tenant_id);
+                overlay_opt(&mut cfg.client_id, &c.client_id);
+                overlay_opt(&mut cfg.client_secret, &c.client_secret);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.subscription_id, &c.subscription_id);
+                overlay_opt(&mut cfg.management_url_override, &c.management_url_override);
+                overlay_opt(&mut cfg.graph_url_override, &c.graph_url_override);
+                overlay_opt(&mut cfg.token_url_override, &c.token_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -768,6 +1052,47 @@ pub struct AzureService {
     /// Service-specific configuration.
     #[serde(default)]
     pub config: HashMap<String, serde_json::Value>,
+}
+
+/// One M365 connection: a tenant + its application credentials. Type-wide
+/// fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`M365SourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct M365Connection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Azure AD tenant ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+
+    /// Client (application) ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Client secret (always redacted in serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source for credentials ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Management API (manage.office.com) base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url_override: Option<String>,
+
+    /// Graph API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_url_override: Option<String>,
+
+    /// Token endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 /// Microsoft 365 source configuration.
@@ -813,6 +1138,11 @@ pub struct M365SourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple tenants of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<M365Connection>,
 }
 
 impl Default for M365SourceConfig {
@@ -830,7 +1160,42 @@ impl Default for M365SourceConfig {
             graph_url_override: None,
             token_url_override: None,
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl M365SourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<M365SourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.tenant_id, &c.tenant_id);
+                overlay_opt(&mut cfg.client_id, &c.client_id);
+                overlay_opt(&mut cfg.client_secret, &c.client_secret);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.management_url_override, &c.management_url_override);
+                overlay_opt(&mut cfg.graph_url_override, &c.graph_url_override);
+                overlay_opt(&mut cfg.token_url_override, &c.token_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -843,6 +1208,39 @@ pub struct M365Service {
     /// Service-specific configuration.
     #[serde(default)]
     pub config: HashMap<String, serde_json::Value>,
+}
+
+/// One GCP connection: a project + its service-account credentials. Type-wide
+/// fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`GcpSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GcpConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// GCP project ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+
+    /// Path to service account key file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_key: Option<String>,
+
+    /// Secret source for credentials ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Token endpoint URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 /// Google Cloud Platform source configuration.
@@ -881,6 +1279,11 @@ pub struct GcpSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple projects of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<GcpConnection>,
 }
 
 impl Default for GcpSourceConfig {
@@ -896,7 +1299,40 @@ impl Default for GcpSourceConfig {
             api_url_override: None,
             token_url_override: None,
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl GcpSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<GcpSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.project_id, &c.project_id);
+                overlay_opt(&mut cfg.service_account_key, &c.service_account_key);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                overlay_opt(&mut cfg.token_url_override, &c.token_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -962,6 +1398,44 @@ pub struct GithubSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple orgs/enterprises of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<GithubConnection>,
+}
+
+/// One GitHub connection: an org or enterprise + its token. Type-wide fields
+/// (`services`, `topic`, `filter`) are shared and stay on
+/// [`GithubSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GithubConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Organisation slug for `/orgs/{org}/audit-log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+
+    /// Enterprise slug for `/enterprises/{enterprise}/audit-log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise: Option<String>,
+
+    /// Audit-log token (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base URL override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for GithubSourceConfig {
@@ -977,7 +1451,40 @@ impl Default for GithubSourceConfig {
             services: vec![],
             topic: "github".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl GithubSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<GithubSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.org, &c.org);
+                overlay_opt(&mut cfg.enterprise, &c.enterprise);
+                overlay_opt(&mut cfg.token, &c.token);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1041,6 +1548,44 @@ pub struct OktaSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple tenants of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<OktaConnection>,
+}
+
+/// One Okta connection: a tenant URL + its token. Type-wide fields (`services`,
+/// `topic`, `filter`) are shared and stay on [`OktaSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OktaConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_url: Option<String>,
+
+    /// SSWS API token or OAuth bearer token (always redacted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Override the SSWS vs Bearer header choice for this connection.
+    /// Inherits the type-level `use_ssws_header` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_ssws_header: Option<bool>,
+
+    /// Secret source spec for the token ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 fn default_okta_use_ssws() -> bool {
@@ -1060,7 +1605,42 @@ impl Default for OktaSourceConfig {
             services: vec![],
             topic: "okta".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl OktaSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<OktaSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.tenant_url, &c.tenant_url);
+                overlay_opt(&mut cfg.token, &c.token);
+                if let Some(v) = c.use_ssws_header {
+                    cfg.use_ssws_header = v;
+                }
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1122,6 +1702,40 @@ pub struct CloudflareSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple accounts of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<CloudflareConnection>,
+}
+
+/// One Cloudflare connection: an account + its token. Type-wide fields
+/// (`services`, `topic`, `filter`) are shared and stay on
+/// [`CloudflareSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CloudflareConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Account ID (32-char hex) for account-level audit logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+
+    /// API token (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for CloudflareSourceConfig {
@@ -1136,7 +1750,39 @@ impl Default for CloudflareSourceConfig {
             services: vec![],
             topic: "cloudflare".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl CloudflareSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<CloudflareSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.account_id, &c.account_id);
+                overlay_opt(&mut cfg.token, &c.token);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1194,6 +1840,36 @@ pub struct OnePasswordSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple 1Password accounts of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<OnePasswordConnection>,
+}
+
+/// One 1Password connection: an account + its Events Reporting token. Type-wide
+/// fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`OnePasswordSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OnePasswordConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Events Reporting API token (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for OnePasswordSourceConfig {
@@ -1207,7 +1883,38 @@ impl Default for OnePasswordSourceConfig {
             services: vec![],
             topic: "onepassword".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl OnePasswordSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<OnePasswordSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.token, &c.token);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1271,6 +1978,40 @@ pub struct CrowdstrikeSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple Falcon tenants of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<CrowdstrikeConnection>,
+}
+
+/// One CrowdStrike connection: a Falcon tenant (region + OAuth2 client). Type-
+/// wide fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`CrowdstrikeSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CrowdstrikeConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// API base URL for the region the tenant lives on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// OAuth2 client ID (Falcon API client).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// OAuth2 client secret (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source spec for the client_secret ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for CrowdstrikeSourceConfig {
@@ -1285,7 +2026,39 @@ impl Default for CrowdstrikeSourceConfig {
             services: vec![],
             topic: "crowdstrike".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl CrowdstrikeSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<CrowdstrikeSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                overlay_opt(&mut cfg.client_id, &c.client_id);
+                overlay_opt(&mut cfg.client_secret, &c.client_secret);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1342,6 +2115,36 @@ pub struct SlackSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple Slack orgs of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<SlackConnection>,
+}
+
+/// One Slack connection: an Enterprise Grid org + its admin token. Type-wide
+/// fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`SlackSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SlackConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Org-admin user token (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<SensitiveString>,
+
+    /// Secret source spec for the token ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for SlackSourceConfig {
@@ -1355,7 +2158,38 @@ impl Default for SlackSourceConfig {
             services: vec![],
             topic: "slack".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl SlackSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<SlackSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.token, &c.token);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1426,6 +2260,44 @@ pub struct BitwardenSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple Bitwarden organisations of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<BitwardenConnection>,
+}
+
+/// One Bitwarden connection: an organisation + its API credentials. Type-wide
+/// fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`BitwardenSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BitwardenConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Organisation API client ID (`organization.<uuid>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Organisation API client secret (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source spec for the client_secret ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Identity/token endpoint override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for BitwardenSourceConfig {
@@ -1441,7 +2313,40 @@ impl Default for BitwardenSourceConfig {
             services: vec![],
             topic: "bitwarden".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl BitwardenSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<BitwardenSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.client_id, &c.client_id);
+                overlay_opt(&mut cfg.client_secret, &c.client_secret);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                overlay_opt(&mut cfg.identity_url_override, &c.identity_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1505,6 +2410,44 @@ pub struct DuoSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple Duo tenants of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<DuoConnection>,
+}
+
+/// One Duo connection: a tenant (api_host) + its integration/secret keys.
+/// Type-wide fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`DuoSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DuoConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// API hostname (without scheme).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_host: Option<String>,
+
+    /// Integration key (`ikey`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_key: Option<String>,
+
+    /// Secret key (`skey`) (always redacted on serialisation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key: Option<SensitiveString>,
+
+    /// Secret source spec for the secret_key ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for DuoSourceConfig {
@@ -1520,7 +2463,40 @@ impl Default for DuoSourceConfig {
             services: vec![],
             topic: "duo".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl DuoSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<DuoSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.api_host, &c.api_host);
+                overlay_opt(&mut cfg.integration_key, &c.integration_key);
+                overlay_opt(&mut cfg.secret_key, &c.secret_key);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1696,6 +2672,48 @@ pub struct GoogleWorkspaceSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple Workspace tenants of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<GoogleWorkspaceConnection>,
+}
+
+/// One Google Workspace connection: a tenant (impersonated admin) + its SA key.
+/// Type-wide fields (`services`, `topic`, `filter`) are shared and stay on
+/// [`GoogleWorkspaceSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleWorkspaceConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// Path to the service account JSON key file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account_key: Option<String>,
+
+    /// Secret source spec for the SA key ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Admin email the SA impersonates (the `sub` claim of the signed JWT).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_email: Option<String>,
+
+    /// Customer ID (defaults to `my_customer` when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<String>,
+
+    /// API base override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url_override: Option<String>,
+
+    /// Token endpoint override for testing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for GoogleWorkspaceSourceConfig {
@@ -1712,7 +2730,41 @@ impl Default for GoogleWorkspaceSourceConfig {
             services: vec![],
             topic: "google_workspace".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl GoogleWorkspaceSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<GoogleWorkspaceSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.service_account_key, &c.service_account_key);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.admin_email, &c.admin_email);
+                overlay_opt(&mut cfg.customer_id, &c.customer_id);
+                overlay_opt(&mut cfg.api_url_override, &c.api_url_override);
+                overlay_opt(&mut cfg.token_url_override, &c.token_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -1822,6 +2874,60 @@ pub struct SalesforceSourceConfig {
     /// CEL filter expression applied to fetched records.
     #[serde(default)]
     pub filter: Option<String>,
+
+    /// Multiple Salesforce orgs of this type, each polled independently.
+    /// Empty = a single implicit connection from the fields above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<SalesforceConnection>,
+}
+
+/// One Salesforce connection: an org + its OAuth2 credentials (JWT-bearer or
+/// client-credentials). Type-wide fields (`services`, `topic`, `filter`) are
+/// shared and stay on [`SalesforceSourceConfig`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SalesforceConnection {
+    /// Stable, unique connection id (cursor key + metric/log label).
+    pub id: String,
+
+    /// OAuth2 login base URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_url: Option<String>,
+
+    /// REST API version path segment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<String>,
+
+    /// Connected app consumer key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+
+    /// Integration username (JWT `sub` claim). JWT-bearer flow only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+
+    /// RSA private key PEM for the JWT-bearer flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+
+    /// Secret source spec resolving to the RSA private key PEM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_secret: Option<String>,
+
+    /// Connected app consumer secret (client-credentials flow only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<SensitiveString>,
+
+    /// Secret source spec resolving to the consumer secret ("provider:path:key").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_secret: Option<String>,
+
+    /// Pin the API instance URL for this connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_url_override: Option<String>,
+
+    /// Per-connection fetch-interval override in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
 }
 
 impl Default for SalesforceSourceConfig {
@@ -1841,7 +2947,44 @@ impl Default for SalesforceSourceConfig {
             services: vec![],
             topic: "salesforce".to_string(),
             filter: None,
+            connections: vec![],
         }
+    }
+}
+
+impl SalesforceSourceConfig {
+    /// Expand into one resolved config per connection (C1/C4).
+    #[must_use]
+    pub fn resolved(&self, default_id: &str) -> Vec<Resolved<SalesforceSourceConfig>> {
+        if self.connections.is_empty() {
+            return Resolved::single(default_id, self.without_connections(), self.interval_secs);
+        }
+        self.connections
+            .iter()
+            .map(|c| {
+                let mut cfg = self.without_connections();
+                overlay_opt(&mut cfg.login_url, &c.login_url);
+                overlay_opt(&mut cfg.api_version, &c.api_version);
+                overlay_opt(&mut cfg.client_id, &c.client_id);
+                overlay_opt(&mut cfg.username, &c.username);
+                overlay_opt(&mut cfg.private_key, &c.private_key);
+                overlay_opt(&mut cfg.private_key_secret, &c.private_key_secret);
+                overlay_opt(&mut cfg.client_secret, &c.client_secret);
+                overlay_opt(&mut cfg.credential_secret, &c.credential_secret);
+                overlay_opt(&mut cfg.instance_url_override, &c.instance_url_override);
+                Resolved {
+                    id: c.id.clone(),
+                    config: cfg,
+                    interval_secs: c.interval_secs.or(self.interval_secs),
+                }
+            })
+            .collect()
+    }
+
+    fn without_connections(&self) -> Self {
+        let mut c = self.clone();
+        c.connections = vec![];
+        c
     }
 }
 
@@ -3483,5 +4626,235 @@ sources:
         assert_eq!(restored.output.output_type, "grpc");
         assert!(restored.output.includes_grpc());
         assert!(!restored.output.includes_kafka());
+    }
+
+    // =========================================================================
+    // Multi-endpoint (GA 2.2) connection model
+    // =========================================================================
+
+    #[test]
+    fn test_resolved_no_connections_is_single_implicit() {
+        let mut cfg = AwsSourceConfig::default();
+        cfg.region = "sa-east-1".to_string();
+        cfg.interval_secs = Some(120);
+
+        let resolved = cfg.resolved("aws");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "no connections => one implicit connection"
+        );
+        assert_eq!(
+            resolved[0].id, "aws",
+            "implicit id defaults to the type name"
+        );
+        assert_eq!(resolved[0].config.region, "sa-east-1");
+        assert_eq!(resolved[0].interval_secs, Some(120));
+        assert!(resolved[0].config.connections.is_empty());
+    }
+
+    #[test]
+    fn test_resolved_multi_overlays_connection_fields() {
+        let mut cfg = AwsSourceConfig::default();
+        cfg.enabled = true;
+        cfg.region = "us-east-1".to_string();
+        cfg.topic = "aws".to_string();
+        cfg.services = vec![AwsService {
+            name: "cloudtrail".to_string(),
+            config: HashMap::new(),
+        }];
+        cfg.connections = vec![
+            AwsConnection {
+                id: "acct-a".to_string(),
+                region: Some("eu-west-1".to_string()),
+                credential_secret: Some("vault:secret/a:creds".to_string()),
+                ..Default::default()
+            },
+            AwsConnection {
+                id: "acct-b".to_string(),
+                region: Some("ap-southeast-2".to_string()),
+                interval_secs: Some(60),
+                ..Default::default()
+            },
+        ];
+
+        let resolved = cfg.resolved("aws");
+        assert_eq!(resolved.len(), 2);
+
+        // Connection A: id + per-connection region/credential overlaid.
+        assert_eq!(resolved[0].id, "acct-a");
+        assert_eq!(resolved[0].config.region, "eu-west-1");
+        assert_eq!(
+            resolved[0].config.credential_secret.as_deref(),
+            Some("vault:secret/a:creds")
+        );
+        // Shared type-level fields are preserved on every connection.
+        assert_eq!(resolved[0].config.topic, "aws");
+        assert_eq!(resolved[0].config.services.len(), 1);
+        // The runtime config never re-reads the connections list.
+        assert!(resolved[0].config.connections.is_empty());
+
+        // Connection B: region overlaid, credential inherits (None), interval set.
+        assert_eq!(resolved[1].id, "acct-b");
+        assert_eq!(resolved[1].config.region, "ap-southeast-2");
+        assert_eq!(resolved[1].config.credential_secret, None);
+        assert_eq!(resolved[1].interval_secs, Some(60));
+    }
+
+    #[test]
+    fn test_resolved_interval_precedence() {
+        let mut cfg = AwsSourceConfig::default();
+        cfg.interval_secs = Some(300);
+        cfg.connections = vec![
+            AwsConnection {
+                id: "a".to_string(),
+                interval_secs: Some(60),
+                ..Default::default()
+            },
+            AwsConnection {
+                id: "b".to_string(),
+                interval_secs: None,
+                ..Default::default()
+            },
+        ];
+
+        let resolved = cfg.resolved("aws");
+        assert_eq!(resolved[0].interval_secs, Some(60), "per-connection wins");
+        assert_eq!(
+            resolved[1].interval_secs,
+            Some(300),
+            "unset connection inherits the type-level interval"
+        );
+    }
+
+    #[test]
+    fn test_resolved_okta_use_ssws_bool_override() {
+        let mut cfg = OktaSourceConfig::default(); // use_ssws_header default true
+        cfg.connections = vec![
+            OktaConnection {
+                id: "t1".to_string(),
+                tenant_url: Some("https://a.okta.com".to_string()),
+                use_ssws_header: Some(false),
+                ..Default::default()
+            },
+            OktaConnection {
+                id: "t2".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let resolved = cfg.resolved("okta");
+        assert!(
+            !resolved[0].config.use_ssws_header,
+            "explicit false overlaid"
+        );
+        assert_eq!(
+            resolved[0].config.tenant_url.as_deref(),
+            Some("https://a.okta.com")
+        );
+        assert!(
+            resolved[1].config.use_ssws_header,
+            "unset connection inherits the type-level default (true)"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_empty_connection_id() {
+        let mut cfg = valid_config();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.connections = vec![AwsConnection {
+            id: String::new(),
+            ..Default::default()
+        }];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("non-empty 'id'"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_connection_id() {
+        let mut cfg = valid_config();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.connections = vec![
+            AwsConnection {
+                id: "dup".to_string(),
+                ..Default::default()
+            },
+            AwsConnection {
+                id: "dup".to_string(),
+                ..Default::default()
+            },
+        ];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate connection id"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_accepts_unique_connection_ids() {
+        let mut cfg = valid_config();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.connections = vec![
+            AwsConnection {
+                id: "acct-a".to_string(),
+                ..Default::default()
+            },
+            AwsConnection {
+                id: "acct-b".to_string(),
+                ..Default::default()
+            },
+        ];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_ignores_disabled_type_connection_ids() {
+        let mut cfg = valid_config();
+        cfg.sources.okta.enabled = false;
+        cfg.sources.okta.connections = vec![
+            OktaConnection {
+                id: "dup".to_string(),
+                ..Default::default()
+            },
+            OktaConnection {
+                id: "dup".to_string(),
+                ..Default::default()
+            },
+        ];
+        assert!(
+            cfg.validate().is_ok(),
+            "a disabled type never spawns, so its connection ids are not validated"
+        );
+    }
+
+    #[test]
+    fn test_connections_yaml_roundtrip() {
+        let yaml = r#"
+sources:
+  aws:
+    enabled: true
+    topic: aws
+    services:
+      - name: cloudtrail
+    connections:
+      - id: acct-123
+        region: us-east-1
+        credential_secret: "vault:secret/aws-123:creds"
+      - id: acct-456
+        region: eu-west-1
+        credential_secret: "vault:secret/aws-456:creds"
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse connections");
+        assert_eq!(cfg.sources.aws.connections.len(), 2);
+        assert_eq!(cfg.sources.aws.connections[0].id, "acct-123");
+        assert_eq!(
+            cfg.sources.aws.connections[0].region.as_deref(),
+            Some("us-east-1")
+        );
+
+        let resolved = cfg.sources.aws.resolved("aws");
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[1].config.region, "eu-west-1");
+        // All connections of a group share the one type-level topic (C2).
+        assert_eq!(resolved[0].config.topic, "aws");
+        assert_eq!(resolved[1].config.topic, "aws");
     }
 }
