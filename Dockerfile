@@ -18,13 +18,18 @@ LABEL io.hyperi.profile="production"
 # Runtime shared libraries for dynamically-linked Rust crates.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl netcat-openbsd iputils-ping gnupg \
-    && curl -fsSL https://packages.confluent.io/clients/deb/archive.key \
-       | gpg --dearmor -o /usr/share/keyrings/confluent-clients.gpg \
+    && curl -fsSL https://packages.confluent.io/clients/deb/archive.key -o /tmp/repo-key.asc \
+    && gpg --show-keys --with-colons --with-fingerprint /tmp/repo-key.asc \
+       > /tmp/repo-key.info \
+    && grep -q "^fpr:::::::::CBBB821E8FAF364F79835C438B1DA6120C2BF624:" /tmp/repo-key.info \
+    && rm -f /tmp/repo-key.info \
+    && gpg --dearmor -o /usr/share/keyrings/confluent-clients.gpg /tmp/repo-key.asc \
+    && rm -f /tmp/repo-key.asc \
     && echo "deb [signed-by=/usr/share/keyrings/confluent-clients.gpg] \
        https://packages.confluent.io/clients/deb bookworm main" \
        > /etc/apt/sources.list.d/confluent-clients.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-       librdkafka1 libssl3 zlib1g libzstd1 \
+       librdkafka1 libssl3t64 zlib1g libzstd1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dfe-fetcher /usr/local/bin/dfe-fetcher
