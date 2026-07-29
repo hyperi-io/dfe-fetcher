@@ -13,7 +13,7 @@
 //! `docs/superpowers/specs/2026-05-21-object-store-source-design.md` for the
 //! full design.
 //!
-//! ## Phase 1 (this module today)
+//! ## Implemented today
 //!
 //! - **S3 backend:** fully implemented (ListObjectsV2 + GetObject via
 //!   SigV4-signed REST). Tested live against the dfe-test AWS account.
