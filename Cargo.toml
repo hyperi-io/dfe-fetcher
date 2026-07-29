@@ -13,7 +13,6 @@ edition = "2024"
 rust-version = "1.95"
 description = "Data fetcher for external services (AWS, Azure, M365, GCP)"
 license = "BUSL-1.1"
-license-file = "LICENSE"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
 exclude = [".github/", "chart/", "docs/", "infra/", "reference/", "schemas/", "benches/"]
 
