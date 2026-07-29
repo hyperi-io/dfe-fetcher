@@ -81,8 +81,8 @@ impl KafkaTestConfig {
             .unwrap_or(false)
     }
 
-    /// Convert to rustlib KafkaConfig for use with KafkaTransport.
-    pub fn to_rustlib_config(&self) -> scalo::transport::KafkaConfig {
+    /// Convert to scalo KafkaConfig for use with KafkaTransport.
+    pub fn to_scalo_config(&self) -> scalo::transport::KafkaConfig {
         let mut config = scalo::transport::KafkaConfig {
             brokers: self
                 .brokers
@@ -205,6 +205,30 @@ pub struct VaultTestConfig {
     _container: Option<TestcontainerHolder>,
 }
 
+// =============================================================================
+// Test image pins
+// =============================================================================
+//
+// Pinned HERE rather than left to testcontainers-modules' defaults, which lag
+// badly: Kafka 3.8.0 and LocalStack 4.5, which predates its move to CalVer. A
+// tag baked into a dependency's source is invisible to dependency review --
+// Renovate reads Cargo.toml, correctly reports the crate current, and never
+// sees the image. Hoisting the tags out is what puts them back under review,
+// hence the annotations.
+
+/// renovate: datasource=docker depName=apache/kafka-native
+const KAFKA_TAG: &str = "4.3.1";
+
+/// renovate: datasource=docker depName=localstack/localstack
+const LOCALSTACK_TAG: &str = "2026.07.0";
+
+/// A floating `latest` was worse than a stale pin: the harness silently
+/// retargeted on every image refresh, so a break landed with nothing in the
+/// diff to explain it.
+///
+/// renovate: datasource=docker depName=openbao/openbao
+const OPENBAO_TAG: &str = "2.6.1";
+
 /// Holder for any auto-managed testcontainer. Drop stops the container.
 pub enum TestcontainerHolder {
     GenericVault(testcontainers::ContainerAsync<testcontainers::GenericImage>),
@@ -238,11 +262,16 @@ impl VaultTestConfig {
         use testcontainers::runners::AsyncRunner;
         use testcontainers::{GenericImage, ImageExt};
 
-        let image = GenericImage::new("openbao/openbao", "latest")
+        // BAO_-prefixed, and the readiness line reads "OpenBao server started!".
+        // The VAULT_ spellings this used to carry are silently ignored: the
+        // server issues a RANDOM root token instead of the one asked for, and
+        // the wait strategy never matches, so the container start just times
+        // out. Neither failure names OpenBao as the cause.
+        let image = GenericImage::new("openbao/openbao", OPENBAO_TAG)
             .with_exposed_port(8200u16.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Vault server started"))
-            .with_env_var("VAULT_DEV_ROOT_TOKEN_ID", "root")
-            .with_env_var("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
+            .with_wait_for(WaitFor::message_on_stdout("OpenBao server started"))
+            .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "root")
+            .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
             .with_cmd(["server", "-dev"]);
 
         let container = image.start().await.ok()?;
@@ -294,10 +323,15 @@ impl LocalStackConfig {
         }
 
         // Fallback: testcontainer
+        use testcontainers::ImageExt;
         use testcontainers::runners::AsyncRunner;
         use testcontainers_modules::localstack::LocalStack;
 
-        let container = LocalStack::default().start().await.ok()?;
+        let container = LocalStack::default()
+            .with_tag(LOCALSTACK_TAG)
+            .start()
+            .await
+            .ok()?;
         let host = container.get_host().await.ok()?;
         let port = container.get_host_port_ipv4(4566).await.ok()?;
         let endpoint = format!("http://{host}:{port}");
@@ -328,10 +362,11 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     }
 
     // Fallback: start an Apache Kafka testcontainer
+    use testcontainers::ImageExt;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::kafka::apache::Kafka;
 
-    let container = Kafka::default().start().await.ok()?;
+    let container = Kafka::default().with_tag(KAFKA_TAG).start().await.ok()?;
     let host = container.get_host().await.ok()?;
     let port = container
         .get_host_port_ipv4(testcontainers_modules::kafka::apache::KAFKA_PORT)
