@@ -384,6 +384,20 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     Some((cfg, Some(TestcontainerHolder::Kafka(container))))
 }
 
+/// Panic if a backing service is missing while running in CI.
+///
+/// Skipping is right on a developer machine, where the daemon may simply be
+/// down. In CI it makes the test pass VACUOUSLY: the suite reports green while
+/// exercising none of the integration surface. A gate that disappears along
+/// with its environment is not a gate.
+pub fn require_service_in_ci(what: &str, detail: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{what} unreachable in CI ({detail}) -- integration tests must RUN here, \
+         not skip. Skipping would report green while testing nothing."
+    );
+}
+
 /// Skip test if Kafka is not reachable in the current test mode.
 ///
 /// Usage: `skip_if_no_kafka!();` at the top of a test function.
@@ -392,6 +406,7 @@ macro_rules! skip_if_no_kafka {
     () => {
         let kf = common::kafka_test_config();
         if !kf.is_reachable() {
+            common::require_service_in_ci("Kafka", &kf.brokers);
             eprintln!(
                 "Skipping: Kafka not reachable at {} (TEST_MODE={})",
                 kf.brokers,
