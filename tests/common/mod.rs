@@ -366,7 +366,10 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::kafka::apache::Kafka;
 
-    let container = Kafka::default().with_tag(KAFKA_TAG).start().await.ok()?;
+    let Ok(container) = Kafka::default().with_tag(KAFKA_TAG).start().await else {
+        require_kafka_path_in_ci();
+        return None;
+    };
     let host = container.get_host().await.ok()?;
     let port = container
         .get_host_port_ipv4(testcontainers_modules::kafka::apache::KAFKA_PORT)
@@ -384,17 +387,21 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     Some((cfg, Some(TestcontainerHolder::Kafka(container))))
 }
 
-/// Panic if a backing service is missing while running in CI.
+/// Panic if NEITHER a live broker nor Docker is available while running in CI.
 ///
-/// Skipping is right on a developer machine, where the daemon may simply be
-/// down. In CI it makes the test pass VACUOUSLY: the suite reports green while
-/// exercising none of the integration surface. A gate that disappears along
-/// with its environment is not a gate.
-pub fn require_service_in_ci(what: &str, detail: &str) {
+/// Scoped to "no path at all", not to "the live broker is absent". CI is not
+/// promised an external Kafka, but it does provide a container runtime, so
+/// `acquire_kafka()` should always find one of the two. If it finds neither,
+/// the test would pass VACUOUSLY -- green while exercising nothing.
+///
+/// The live-only probe below stays a plain skip for the same reason: failing
+/// on it would assert an environment nobody agreed to provide.
+pub fn require_kafka_path_in_ci() {
     assert!(
         std::env::var_os("CI").is_none(),
-        "{what} unreachable in CI ({detail}) -- integration tests must RUN here, \
-         not skip. Skipping would report green while testing nothing."
+        "no Kafka available in CI -- neither a live broker nor Docker. \
+         Integration tests must RUN here, not skip; skipping would report \
+         green while testing nothing."
     );
 }
 
@@ -406,7 +413,6 @@ macro_rules! skip_if_no_kafka {
     () => {
         let kf = common::kafka_test_config();
         if !kf.is_reachable() {
-            common::require_service_in_ci("Kafka", &kf.brokers);
             eprintln!(
                 "Skipping: Kafka not reachable at {} (TEST_MODE={})",
                 kf.brokers,
