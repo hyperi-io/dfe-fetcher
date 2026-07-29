@@ -30,7 +30,7 @@ async fn test_output_transport_kafka_send() {
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
+        kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
     };

@@ -1120,7 +1120,7 @@ mod tests {
         // A syntactically invalid expression should fail-open (keep record)
         let payload = Bytes::from(r#"{"key":"value"}"#);
         let result = PipelineState::evaluate_filter("@@@invalid", &payload);
-        // evaluate_condition in rustlib returns false on parse error,
+        // evaluate_condition in scalo returns false on parse error,
         // but we want to verify behaviour without panic
         let _ = result; // don't panic
     }

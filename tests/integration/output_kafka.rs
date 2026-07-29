@@ -42,7 +42,7 @@ async fn test_output_kafka_single_message_roundtrip() {
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
+        kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
     };
@@ -72,7 +72,7 @@ async fn test_output_kafka_single_message_roundtrip() {
     }
 
     // Consume back
-    let mut consumer_config = kf.to_rustlib_config();
+    let mut consumer_config = kf.to_scalo_config();
     consumer_config.topics = vec![topic.clone()];
     consumer_config.group = format!("integration-single-{}", Utc::now().timestamp_millis());
     consumer_config.auto_offset_reset = "earliest".to_string();
@@ -122,7 +122,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     let mut config = Config::default();
     config.output = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
+        kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: Some(String::new()), // no suffix — use topic as-is
     };
@@ -159,7 +159,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     }
 
     // Consume and verify enrichment
-    let mut consumer_config = kf.to_rustlib_config();
+    let mut consumer_config = kf.to_scalo_config();
     consumer_config.topics = vec![topic.clone()];
     consumer_config.group = format!("integration-enrich-{}", Utc::now().timestamp_millis());
     consumer_config.auto_offset_reset = "earliest".to_string();
@@ -213,7 +213,7 @@ async fn test_output_kafka_batch_roundtrip() {
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
+        kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
     };
@@ -237,7 +237,7 @@ async fn test_output_kafka_batch_roundtrip() {
         }
     }
 
-    let mut consumer_config = kf.to_rustlib_config();
+    let mut consumer_config = kf.to_scalo_config();
     consumer_config.topics = vec![topic.clone()];
     consumer_config.group = format!("integration-batch-{}", Utc::now().timestamp_millis());
     consumer_config.auto_offset_reset = "earliest".to_string();
@@ -291,7 +291,7 @@ async fn test_output_manager_close_when_already_closed() {
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
+        kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
     };

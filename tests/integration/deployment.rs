@@ -146,7 +146,7 @@ fn test_startup_instance_id_derivation() {
 // Output transport (unit-testable parts)
 // =============================================================================
 
-/// Verify build_rustlib_kafka_config maps legacy config fields correctly.
+/// Verify build_scalo_kafka_config maps legacy config fields correctly.
 #[test]
 fn test_output_legacy_kafka_config_mapping() {
     use dfe_fetcher::config::{KafkaConfig, KafkaTlsConfig, ProducerConfig, SaslConfig};
@@ -177,48 +177,48 @@ fn test_output_legacy_kafka_config_mapping() {
         },
     };
 
-    let rustlib = dfe_fetcher::output::build_rustlib_kafka_config(&legacy);
+    let scalo = dfe_fetcher::output::build_scalo_kafka_config(&legacy);
 
     // Basic fields
-    assert_eq!(rustlib.brokers, vec!["broker1:9092", "broker2:9092"]);
-    assert_eq!(rustlib.client_id, "my-fetcher");
+    assert_eq!(scalo.brokers, vec!["broker1:9092", "broker2:9092"]);
+    assert_eq!(scalo.client_id, "my-fetcher");
 
     // SASL
-    assert_eq!(rustlib.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
-    assert_eq!(rustlib.sasl_username.as_deref(), Some("user"));
+    assert_eq!(scalo.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
+    assert_eq!(scalo.sasl_username.as_deref(), Some("user"));
     assert_eq!(
-        rustlib
+        scalo
             .sasl_password
             .as_ref()
             .map(scalo::SensitiveString::expose),
         Some("pass")
     );
-    assert_eq!(rustlib.security_protocol, "sasl_ssl");
+    assert_eq!(scalo.security_protocol, "sasl_ssl");
 
     // TLS
-    assert_eq!(rustlib.ssl_ca_location.as_deref(), Some("/etc/ssl/ca.pem"));
+    assert_eq!(scalo.ssl_ca_location.as_deref(), Some("/etc/ssl/ca.pem"));
 
     // Producer overrides
     assert_eq!(
-        rustlib
+        scalo
             .librdkafka_overrides
             .get("compression.type")
             .unwrap(),
         "zstd"
     );
-    assert_eq!(rustlib.librdkafka_overrides.get("acks").unwrap(), "all");
-    assert_eq!(rustlib.librdkafka_overrides.get("linger.ms").unwrap(), "50");
+    assert_eq!(scalo.librdkafka_overrides.get("acks").unwrap(), "all");
+    assert_eq!(scalo.librdkafka_overrides.get("linger.ms").unwrap(), "50");
 }
 
-/// Verify build_rustlib_kafka_config with no SASL (plaintext).
+/// Verify build_scalo_kafka_config with no SASL (plaintext).
 #[test]
 fn test_output_legacy_kafka_config_no_sasl() {
     let legacy = dfe_fetcher::config::KafkaConfig::default();
-    let rustlib = dfe_fetcher::output::build_rustlib_kafka_config(&legacy);
+    let scalo = dfe_fetcher::output::build_scalo_kafka_config(&legacy);
 
-    assert_eq!(rustlib.security_protocol, "plaintext");
-    assert!(rustlib.sasl_mechanism.is_none());
-    assert!(rustlib.sasl_username.is_none());
+    assert_eq!(scalo.security_protocol, "plaintext");
+    assert!(scalo.sasl_mechanism.is_none());
+    assert!(scalo.sasl_username.is_none());
 }
 
 /// Verify OutputConfig helper methods.
@@ -295,8 +295,8 @@ fn test_deployment_contract_structure() {
     assert_eq!(contract.metrics_port, 9090);
 
     // Health endpoints
-    assert_eq!(contract.health.liveness_path, "/health/live");
-    assert_eq!(contract.health.readiness_path, "/health/ready");
+    assert_eq!(contract.health.liveness_path, "/livez");
+    assert_eq!(contract.health.readiness_path, "/readyz");
     assert_eq!(contract.health.metrics_path, "/metrics");
 
     // Extra ports: ingest (8080) and vector-grpc (6000)
@@ -418,8 +418,8 @@ fn test_app_test_contract_mirrors_deployment_contract() {
     assert_eq!(app.app_name, "dfe-fetcher");
     assert_eq!(app.env_prefix, "DFE_FETCHER");
     assert_eq!(app.metrics_port, 9090);
-    assert_eq!(app.liveness_path, "/health/live");
-    assert_eq!(app.readiness_path, "/health/ready");
+    assert_eq!(app.liveness_path, "/livez");
+    assert_eq!(app.readiness_path, "/readyz");
     assert_eq!(app.metrics_path, "/metrics");
     assert_eq!(app.ingest_port, Some(8080));
     assert_eq!(app.vector_grpc_port, Some(6000));

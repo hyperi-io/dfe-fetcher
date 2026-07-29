@@ -6,7 +6,7 @@
 // License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
-//! Configuration management using hyperi-rustlib's 7-layer cascade.
+//! Configuration management using scalo's 7-layer cascade.
 //!
 //! Priority (highest to lowest):
 //! 1. CLI arguments
@@ -162,7 +162,7 @@ impl Config {
             return Self::load_from_file(path);
         }
 
-        // Otherwise, use hyperi-rustlib's 7-layer cascade
+        // Otherwise, use scalo's 7-layer cascade
         config::setup(ConfigOptions {
             env_prefix: ENV_PREFIX.to_string(),
             config_paths: Vec::new(),
@@ -3585,11 +3585,11 @@ impl Default for IngestConfig {
 
 /// Legacy Kafka producer configuration.
 ///
-/// **Deprecated:** Use `output.kafka` (rustlib `KafkaConfig`) instead.
+/// **Deprecated:** Use `output.kafka` (scalo `KafkaConfig`) instead.
 /// This struct is kept for backward compatibility with existing config files
 /// that use the top-level `kafka:` section. Will be removed in next major version.
 ///
-/// Migration: move your `kafka:` settings under `output.kafka:` using rustlib
+/// Migration: move your `kafka:` settings under `output.kafka:` using scalo
 /// `KafkaConfig` format (profiles, `librdkafka_overrides`, standard field names).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
@@ -3766,11 +3766,11 @@ pub struct OutputConfig {
     #[serde(rename = "type", default = "default_output_type")]
     pub output_type: String,
 
-    /// Kafka transport configuration (rustlib KafkaConfig).
+    /// Kafka transport configuration (scalo KafkaConfig).
     #[serde(default)]
     pub kafka: Option<scalo::transport::KafkaConfig>,
 
-    /// gRPC transport configuration (rustlib GrpcConfig, client mode).
+    /// gRPC transport configuration (scalo GrpcConfig, client mode).
     #[serde(default)]
     pub grpc: Option<scalo::transport::GrpcConfig>,
 

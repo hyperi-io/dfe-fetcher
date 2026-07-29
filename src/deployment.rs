@@ -9,7 +9,7 @@
 //! Deployment contract for dfe-fetcher.
 //!
 //! Builds a [`DeploymentContract`] that drives generation of Dockerfile,
-//! Helm chart, and Docker Compose fragments via `hyperi-rustlib`.
+//! Helm chart, and Docker Compose fragments via `scalo`.
 
 use scalo::deployment::{
     DeploymentContract, HealthContract, ImageProfile, KedaConfig, KedaContract, NativeDepsContract,
@@ -24,15 +24,15 @@ use scalo::deployment::{
 /// (`generate_dockerfile`, `generate_chart`, `generate_compose_fragment`)
 /// use this contract as their single source of truth.
 pub fn contract() -> DeploymentContract {
-    // Resolve base image + registry via the rustlib cascade helpers so
+    // Resolve base image + registry via the scalo cascade helpers so
     // org-wide overrides in deployment.* config keys (or env) win
-    // before we fall back to rustlib's DEFAULT_BASE_IMAGE / DEFAULT_IMAGE_REGISTRY.
+    // before we fall back to scalo's DEFAULT_BASE_IMAGE / DEFAULT_IMAGE_REGISTRY.
     let base_image = base_image_from_cascade();
     let image_registry = image_registry_from_cascade();
     DeploymentContract {
         app_name: "dfe-fetcher".into(),
         binary_name: "dfe-fetcher".into(),
-        native_deps: NativeDepsContract::for_rustlib_features(
+        native_deps: NativeDepsContract::for_scalo_features(
             &[
                 "config",
                 "config-reload",
@@ -57,8 +57,8 @@ pub fn contract() -> DeploymentContract {
         description: "Data fetcher for external services (AWS, Azure, M365, GCP)".into(),
         metrics_port: 9090,
         health: HealthContract {
-            liveness_path: "/health/live".into(),
-            readiness_path: "/health/ready".into(),
+            liveness_path: "/livez".into(),
+            readiness_path: "/readyz".into(),
             metrics_path: "/metrics".into(),
         },
         env_prefix: "DFE_FETCHER".into(),
@@ -179,7 +179,7 @@ pub fn contract() -> DeploymentContract {
             }
         })),
         depends_on: vec!["kafka".into()],
-        // `KedaContract` is `#[non_exhaustive]` (rustlib 2.8.13) so it can no
+        // `KedaContract` is `#[non_exhaustive]` (scalo 2.8.13) so it can no
         // longer be built via a struct literal. Construct a `KedaConfig` with
         // the fetcher's real KEDA values and convert via `from_config`;
         // `..Default::default()` fills the rest (the 2.8.12 scaling-pressure
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_contract_base_image() {
         // The cascade helper resolves to the org-wide `deployment.base_image`
-        // override (config or env) when set, else falls back to rustlib's
+        // override (config or env) when set, else falls back to scalo's
         // DEFAULT_BASE_IMAGE. In CI / local-dev with no overrides the
         // default applies. Just assert the value is non-empty and well-formed.
         let c = contract();
@@ -253,13 +253,13 @@ mod tests {
     #[test]
     fn test_contract_health_liveness_path() {
         let c = contract();
-        assert_eq!(c.health.liveness_path, "/health/live");
+        assert_eq!(c.health.liveness_path, "/livez");
     }
 
     #[test]
     fn test_contract_health_readiness_path() {
         let c = contract();
-        assert_eq!(c.health.readiness_path, "/health/ready");
+        assert_eq!(c.health.readiness_path, "/readyz");
     }
 
     #[test]
@@ -482,6 +482,26 @@ mod tests {
         assert!(
             c.entrypoint_args.contains(&"/etc/dfe/fetcher.yaml".into()),
             "entrypoint_args must contain the config mount path"
+        );
+    }
+
+    use scalo::deployment::generate_dockerfile;
+
+    #[test]
+    fn checked_in_dockerfile_matches_generated() {
+        // The committed Dockerfile is generated from this contract, and the
+        // image is built from the committed copy -- so if the two drift, CI
+        // ships whatever the stale file says. A contract change that never got
+        // regenerated (base image, licence label, health path) would otherwise
+        // reach production silently.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Dockerfile");
+        let on_disk = std::fs::read_to_string(&path).expect("read Dockerfile");
+        let generated = generate_dockerfile(&contract(), None);
+        assert_eq!(
+            on_disk.trim(),
+            generated.trim(),
+            "Dockerfile on disk does not match the contract -- regenerate with: \
+             `cargo run --bin dfe-fetcher -- emit-dockerfile > Dockerfile`",
         );
     }
 }

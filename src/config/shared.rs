@@ -10,13 +10,13 @@
 //!
 //! Re-exports `scalo::config::shared::SharedConfig<Config>` as
 //! `SharedConfig` for backward compatibility. All DFE components share
-//! the same generic abstraction from rustlib.
+//! the same generic abstraction from scalo.
 
 use super::Config;
 
 /// Thread-safe shared configuration with version tracking.
 ///
-/// This is a type alias for the generic `SharedConfig<T>` from rustlib,
+/// This is a type alias for the generic `SharedConfig<T>` from scalo,
 /// specialised to dfe-fetcher's `Config` struct.
 pub type SharedConfig = scalo::config::shared::SharedConfig<Config>;
 
