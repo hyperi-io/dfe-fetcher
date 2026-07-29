@@ -68,7 +68,7 @@ scalo = { version = ">=2.10.4, <3", features = [
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
-futures = ">=0.3.31"
+futures = ">=0.3.31, <0.4"
 futures-core = "0.3"
 
 # JSON
@@ -114,7 +114,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
-# Metrics (global recorder integration via rustlib MetricsManager)
+# Metrics (global recorder integration via scalo MetricsManager)
 metrics = ">=0.24, <0.25"
 
 # HTTP server (for metrics/health endpoints)
