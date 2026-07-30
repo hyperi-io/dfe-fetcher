@@ -106,11 +106,11 @@ impl ObjectStoreSource {
                 s3::list_new_objects(&self.client, cfg, bucket_name, &prefix.prefix, cutoff).await?
             }
             ObjectStoreBackendConfig::Gcs(_) => {
-                gcs_phase2_skip("list_new_objects", bucket_name, &prefix.prefix);
+                gcs_unimplemented_skip("list_new_objects", bucket_name, &prefix.prefix);
                 return Ok(None);
             }
             ObjectStoreBackendConfig::AzureBlob(_) => {
-                azure_blob_phase2_skip("list_new_objects", bucket_name, &prefix.prefix);
+                azure_blob_unimplemented_skip("list_new_objects", bucket_name, &prefix.prefix);
                 return Ok(None);
             }
         };
@@ -402,7 +402,7 @@ fn backend_provider_name(b: &ObjectStoreBackendConfig) -> &'static str {
     }
 }
 
-fn gcs_phase2_skip(op: &str, bucket: &str, prefix: &str) {
+fn gcs_unimplemented_skip(op: &str, bucket: &str, prefix: &str) {
     warn!(
         operation = op,
         bucket,
@@ -412,7 +412,7 @@ fn gcs_phase2_skip(op: &str, bucket: &str, prefix: &str) {
     );
 }
 
-fn azure_blob_phase2_skip(op: &str, bucket: &str, prefix: &str) {
+fn azure_blob_unimplemented_skip(op: &str, bucket: &str, prefix: &str) {
     warn!(
         operation = op,
         bucket,

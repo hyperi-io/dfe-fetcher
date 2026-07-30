@@ -22,8 +22,8 @@ emits one record per line. Typical feeds:
 - AWS CloudTrail -> S3
 - AWS VPC Flow Logs -> S3
 - AWS WAF logs -> S3
-- GCP Cloud Logging -> GCS storage sink (Phase 2)
-- Azure diagnostic settings -> Blob container (Phase 2)
+- GCP Cloud Logging -> GCS storage sink (backend not implemented)
+- Azure diagnostic settings -> Blob container (backend not implemented)
 
 The source is a family of backends selected per entry by a `provider`
 discriminator:
@@ -31,10 +31,10 @@ discriminator:
 - `s3` - FULLY IMPLEMENTED and tested live. SigV4-signed ListObjectsV2 +
   GetObject. Also works against S3-compatible stores (MinIO, Cloudflare
   R2, Backblaze B2) via `endpoint_override`.
-- `gcs` - PHASE 2 STUB. The config parses and the enum variant exists,
-  but listing and fetching return a "Phase 2" error and the driver
-  logs-and-skips the backend. NOT USABLE YET.
-- `azure_blob` - PHASE 2 STUB. Same status as `gcs`. NOT USABLE YET.
+- `gcs` - NOT IMPLEMENTED. The config parses and the enum variant exists,
+  but listing and fetching both return an error and the driver
+  logs-and-skips the backend. NOT USABLE.
+- `azure_blob` - NOT IMPLEMENTED. Same status as `gcs`. NOT USABLE.
 
 Supported object formats: `json_gz`, `jsonl`, `json`, `text_gz`, `text`.
 Per tick, each (bucket, prefix) is capped at 1000 objects and 10 list
@@ -56,10 +56,9 @@ For the live S3 backend:
   them). The S3 backend authenticates with SigV4 static credentials.
 - The bucket region (used for SigV4 signing and endpoint construction).
 
-For GCS / Azure Blob: nothing to do yet. Those backends are Phase 2 stubs
-and cannot fetch data. The permission notes below are documented now so
-the eventual rollout is unblocked, but leave those backends out of your
-config today.
+For GCS / Azure Blob: nothing to do. Those backends cannot fetch data. The
+permission notes below are documented so the eventual rollout is unblocked,
+but leave those backends out of your config.
 
 ## Required Permissions
 
@@ -79,14 +78,14 @@ All actions are read-only. No write, delete, or bucket-config actions are
 needed. For cross-account delivery buckets, the bucket policy on the
 target bucket must also allow the fetcher principal.
 
-### GCS (Phase 2 - not yet implemented)
+### GCS (not implemented)
 
 When the GCS backend ships, the service account needs
 `roles/storage.objectViewer` (read plus list) on the bucket or project.
 `roles/storage.legacyObjectReader` is the read-without-list variant if
-listing is not wanted. Do not configure a `gcs` backend today.
+listing is not wanted. Do not configure a `gcs` backend.
 
-### Azure Blob (Phase 2 - not yet implemented)
+### Azure Blob (not implemented)
 
 When the Azure Blob backend ships, the principal needs the data-plane
 role `Storage Blob Data Reader` on the storage account or container.
@@ -94,7 +93,7 @@ Note that Azure control-plane roles (Owner, Contributor, Reader) do NOT
 grant blob data access on their own - a data-plane role is required, and
 reading via Entra credentials without it returns
 `403 AuthorizationPermissionMismatch`. Role assignments can take up to 10
-minutes to propagate. Do not configure an `azure_blob` backend today.
+minutes to propagate. Do not configure an `azure_blob` backend.
 
 ## Source-Side Setup
 
@@ -113,11 +112,11 @@ prefix at it.
    - AWS WAF logs to S3: enable logging on the web ACL with an S3
      destination. See
      https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html
-   - (Phase 2) GCP Cloud Logging to GCS: create a log sink with a Cloud
-     Storage bucket destination. See
+   - GCP Cloud Logging to GCS (backend not implemented): create a log
+     sink with a Cloud Storage bucket destination. See
      https://cloud.google.com/logging/docs/export/configure_export_v2
-   - (Phase 2) Azure diagnostic settings to Blob: route resource logs to
-     a storage account. See
+   - Azure diagnostic settings to Blob (backend not implemented): route
+     resource logs to a storage account. See
      https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings
 
 2. Note the exact key prefix each producer writes under. The prefix is
@@ -210,7 +209,7 @@ sources:
 
 Field reference (S3 backend):
 
-- `provider` - `s3` (live), `gcs` / `azure_blob` (Phase 2 stubs only).
+- `provider` - `s3` (live), `gcs` / `azure_blob` (not implemented).
 - `region` - AWS region for SigV4 signing and endpoint construction.
 - `access_key_id`, `secret_access_key` - static credentials. Each may be
   an inline value, an `env:VAR` spec, or a `vault:` spec.
@@ -227,8 +226,8 @@ Field reference (S3 backend):
 - `buckets[].prefixes[].topic` - optional per-prefix topic override.
 
 The example config also documents `gcs` and `azure_blob` backend shapes,
-but they are PHASE 2 STUBS - if configured, the driver logs a Phase 2
-warning and skips them. Do not enable them today.
+but neither is implemented - if configured, the driver warns and skips
+them. Do not enable them.
 
 ### Environment Variables
 
@@ -316,13 +315,12 @@ The keys `AccessKeyId` / `SecretAccessKey` (AWS casing) are also accepted.
    counts.
 
 3. The source `health_check` reports healthy when at least one S3
-   backend's credentials resolve. GCS / Azure stub backends never
+   backend's credentials resolve. The unimplemented backends never
    participate in the health check.
 
 4. If you (incorrectly) configure a `gcs` or `azure_blob` backend, you
-   will see a warning like
-   `object_store: GCS backend is Phase 2 stub, skipping` - remove that
-   backend.
+   will see `object_store: the GCS backend is not implemented, skipping
+   this operation` - remove that backend.
 
 5. Emitted records carry a `_dfe_fetcher_object` envelope with
    `provider`, `bucket`, `key`, `last_modified`, and `size`, so you can
@@ -351,13 +349,13 @@ your own cloud agreement.
   https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3.html
 - AWS WAF logging to S3:
   https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html
-- GCP Cloud Storage IAM roles (Phase 2):
+- GCP Cloud Storage IAM roles:
   https://cloud.google.com/storage/docs/access-control/iam-roles
-- GCP log sink to Cloud Storage (Phase 2):
+- GCP log sink to Cloud Storage:
   https://cloud.google.com/logging/docs/export/configure_export_v2
-- Azure built-in Storage roles, Storage Blob Data Reader (Phase 2):
+- Azure built-in Storage roles, Storage Blob Data Reader:
   https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage
-- Azure assign a role for blob data access (Phase 2):
+- Azure assign a role for blob data access:
   https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access
-- Azure diagnostic settings (Phase 2):
+- Azure diagnostic settings:
   https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings

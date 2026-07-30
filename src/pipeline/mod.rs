@@ -264,24 +264,28 @@ impl PipelineState {
     }
 
     /// Get the CEL filter expression for a source, if configured.
+    ///
+    /// Routing lives on [`crate::config::SourcesConfig::filter_for_source`], the
+    /// same table `Config::validate` syntax-checks.
     fn get_filter_for_source(&self, source: &str, config: &Config) -> Option<String> {
-        if source.starts_with("aws") {
-            config.sources.aws.filter.clone()
-        } else if source.starts_with("azure") {
-            config.sources.azure.filter.clone()
-        } else if source.starts_with("m365") {
-            config.sources.m365.filter.clone()
-        } else if source.starts_with("gcp") {
-            config.sources.gcp.filter.clone()
-        } else {
-            None
-        }
+        config
+            .sources
+            .filter_for_source(source)
+            .map(str::to_string)
     }
 
     /// Evaluate a CEL filter expression against a JSON record.
     /// Returns true if record should be kept, false if it should be dropped.
-    /// Fail-open: non-JSON payloads, non-object JSON, and evaluation errors
-    /// all pass through (record is kept).
+    ///
+    /// Fail-open on SHAPE: a non-JSON payload or non-object JSON cannot be
+    /// filtered, so it passes through.
+    ///
+    /// Fail-CLOSED on EVALUATION: `scalo::expression::evaluate_condition`
+    /// returns false for a parse error, a type mismatch or a missing field, and
+    /// false drops the record. Syntax errors are caught earlier by
+    /// `Config::validate`, at startup and on every hot-reload; a type mismatch
+    /// on a field whose type varies per record is not, and those records are
+    /// dropped. Pinned by `test_evaluate_filter_with_type_mismatch_fails_closed`.
     fn evaluate_filter(expression: &str, payload: &Bytes) -> bool {
         let Ok(value): std::result::Result<serde_json::Value, _> = serde_json::from_slice(payload)
         else {
@@ -857,6 +861,63 @@ mod tests {
         assert_eq!(state.get_filter_for_source("something", &config), None);
     }
 
+    /// A filter on any source reaches the records. Only aws / azure / m365 /
+    /// gcp used to be routed, so a filter on the other fifteen sources was
+    /// accepted at startup, reported nowhere, and never applied -- every record
+    /// the operator asked to exclude shipped anyway.
+    #[test]
+    fn test_filter_routes_for_every_source() {
+        let mut config = Config::default();
+        let expr = r#"action == "x""#.to_string();
+        config.sources.github.filter = Some(expr.clone());
+        config.sources.okta.filter = Some(expr.clone());
+        config.sources.slack.filter = Some(expr.clone());
+        config.sources.object_store.filter = Some(expr.clone());
+        config.sources.salesforce.filter = Some(expr.clone());
+        config.sources.google_workspace.filter = Some(expr.clone());
+
+        let shared = SharedConfig::new(config.clone());
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
+
+        for tag in [
+            "github.audit_log",
+            "okta.system_log",
+            "slack.audit_logs",
+            "object_store.aws_cloudtrail",
+            "salesforce.event_log_file",
+            "google_workspace.login",
+        ] {
+            assert_eq!(
+                state.get_filter_for_source(tag, &config),
+                Some(expr.clone()),
+                "no filter routed for {tag}, so its records ship unfiltered"
+            );
+        }
+    }
+
+    /// `gcp_pubsub` records must not pick up the `gcp` audit-log filter. The
+    /// old routing was `source.starts_with("gcp")`, which matched both.
+    #[test]
+    fn test_gcp_prefix_does_not_capture_gcp_pubsub() {
+        let mut config = Config::default();
+        config.sources.gcp.filter = Some("gcp_only".to_string());
+
+        let shared = SharedConfig::new(config.clone());
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
+
+        assert_eq!(
+            state.get_filter_for_source("gcp.cloud_logging", &config),
+            Some("gcp_only".to_string())
+        );
+        assert_eq!(
+            state.get_filter_for_source("gcp_pubsub.my-sub", &config),
+            None,
+            "the gcp filter must not apply to gcp_pubsub records"
+        );
+    }
+
     // -- deliver() tests (no output configured) --
 
     #[tokio::test]
@@ -1114,15 +1175,37 @@ mod tests {
         );
     }
 
-    /// Exercise `evaluate_filter` with a nested field access expression.
+    /// An unparseable filter expression drops the record: it fails CLOSED.
+    /// `scalo::expression::evaluate_condition` returns `false` for a parse
+    /// error, and `false` means drop.
+    ///
+    /// `Config::validate` runs `scalo::expression::validate` over the aws /
+    /// azure / m365 / gcp filters at startup and on every hot-reload, and those
+    /// are the only four `get_filter_for_source` routes, so an unparseable
+    /// expression should not reach here. This pins which way it goes if one does.
     #[test]
-    fn test_evaluate_filter_with_invalid_expression_fails_open() {
-        // A syntactically invalid expression should fail-open (keep record)
+    fn test_evaluate_filter_with_invalid_expression_fails_closed() {
         let payload = Bytes::from(r#"{"key":"value"}"#);
-        let result = PipelineState::evaluate_filter("@@@invalid", &payload);
-        // evaluate_condition in scalo returns false on parse error,
-        // but we want to verify behaviour without panic
-        let _ = result; // don't panic
+        assert!(
+            !PipelineState::evaluate_filter("@@@invalid", &payload),
+            "an unparseable expression must drop the record; a flip to \
+             fail-open means evaluate_filter's doc comment and \
+             Config::validate's filter checks both need revisiting"
+        );
+    }
+
+    /// A type-mismatched comparison also drops the record, and unlike a syntax
+    /// error it is reachable in production: startup validates the expression,
+    /// not the per-record field types, so a field whose type varies only errors
+    /// at evaluation time and those records are dropped.
+    #[test]
+    fn test_evaluate_filter_with_type_mismatch_fails_closed() {
+        // `count` is a string, so `count > 100` cannot be evaluated.
+        let payload = Bytes::from(r#"{"count":"not-a-number"}"#);
+        assert!(
+            !PipelineState::evaluate_filter("count > 100", &payload),
+            "a type-mismatched comparison drops the record"
+        );
     }
 
     /// Exercise shared_config() getter.

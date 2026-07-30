@@ -469,9 +469,8 @@ $defs:
         description: |-
           Object-store source family configuration (S3 / GCS / Azure Blob).
 
-          Phase 1: S3 backend is live; GCS and Azure Blob are stubs that
-          log-and-skip until Phase 2. See
-          `docs/superpowers/specs/2026-05-21-object-store-source-design.md`.
+          The S3 backend is live; GCS and Azure Blob are stubs that log-and-skip,
+          so naming them here does not fail the tick.
         $ref: '#/$defs/ObjectStoreSourceConfig'
         default:
           enabled: false
@@ -2553,14 +2552,11 @@ $defs:
 
       Polls one or more bucket prefixes across S3 / GCS / Azure Blob,
       emitting one record per line of every new object since the cursor.
-      See `docs/superpowers/specs/2026-05-21-object-store-source-design.md`
-      for the full design.
 
-      **Phase 1:** S3 backend is fully implemented. GCS and Azure Blob
-      backends compile but their `list_new_objects` / `get_object` calls
-      return a "not yet implemented" error - configuring them today is
-      safe (the source skips them with a warning) but live use must wait
-      for Phase 2.
+      Only the S3 backend is implemented. GCS and Azure Blob compile but their
+      `list_new_objects` / `get_object` calls return a not-implemented error, so
+      configuring one is safe (the source skips it with a warning) and fetches
+      nothing.
     type: object
     properties:
       enabled:
@@ -2598,7 +2594,7 @@ $defs:
 
       Provider is selected by the `provider` discriminator (serde-tagged
       enum). Each provider variant carries its own auth shape; only S3 is
-      live in Phase 1.
+      implemented.
     oneOf:
     - description: 'Amazon S3 (or S3-compatible: MinIO, R2, B2 via endpoint_override).'
       type: object
@@ -2609,7 +2605,9 @@ $defs:
       $ref: '#/$defs/S3BackendConfig'
       required:
       - provider
-    - description: Google Cloud Storage. **Phase 2 - stub today.**
+    - description: |-
+        Google Cloud Storage. **Not implemented** - listing and fetching both
+        return an error.
       type: object
       properties:
         provider:
@@ -2618,7 +2616,9 @@ $defs:
       $ref: '#/$defs/GcsBackendConfig'
       required:
       - provider
-    - description: Azure Blob Storage. **Phase 2 - stub today.**
+    - description: |-
+        Azure Blob Storage. **Not implemented** - listing and fetching both
+        return an error.
       type: object
       properties:
         provider:
@@ -2684,14 +2684,11 @@ $defs:
       type: string
       const: json
     - description: |-
-        Gzipped plain text. Phase 1 emits each non-empty line as
-        `{"line": "..."}`; Phase 2 will add ALB / CloudFront / S3
-        access-log parsers.
+        Gzipped plain text. Emits each non-empty line as `{"line": "..."}` -
+        there is no ALB / CloudFront / S3 access-log parsing.
       type: string
       const: text_gz
-    - description: |-
-        Plain text. Same Phase 1 behaviour as `text_gz` minus the
-        gunzip step.
+    - description: Plain text. Same as `text_gz` minus the gunzip step.
       type: string
       const: text
   S3BackendConfig:
@@ -2737,7 +2734,7 @@ $defs:
     - region
     - buckets
   GcsBackendConfig:
-    description: GCS backend configuration. **Phase 2 stub.**
+    description: GCS backend configuration. **Not implemented.**
     type: object
     properties:
       service_account_key:
@@ -2758,7 +2755,7 @@ $defs:
     required:
     - buckets
   AzureBlobBackendConfig:
-    description: Azure Blob backend configuration. **Phase 2 stub.**
+    description: Azure Blob backend configuration. **Not implemented.**
     type: object
     properties:
       account:
@@ -3247,11 +3244,11 @@ $defs:
     description: |-
       Legacy Kafka producer configuration.
 
-      **Deprecated:** Use `output.kafka` (rustlib `KafkaConfig`) instead.
+      **Deprecated:** Use `output.kafka` (scalo `KafkaConfig`) instead.
       This struct is kept for backward compatibility with existing config files
       that use the top-level `kafka:` section. Will be removed in next major version.
 
-      Migration: move your `kafka:` settings under `output.kafka:` using rustlib
+      Migration: move your `kafka:` settings under `output.kafka:` using scalo
       `KafkaConfig` format (profiles, `librdkafka_overrides`, standard field names).
     type: object
     properties:
@@ -3517,13 +3514,13 @@ $defs:
         type: string
         default: kafka
       kafka:
-        description: Kafka transport configuration (rustlib KafkaConfig).
+        description: Kafka transport configuration (scalo KafkaConfig).
         anyOf:
         - $ref: '#/$defs/KafkaConfig2'
         - type: 'null'
         default: null
       grpc:
-        description: gRPC transport configuration (rustlib GrpcConfig, client mode).
+        description: gRPC transport configuration (scalo GrpcConfig, client mode).
         anyOf:
         - $ref: '#/$defs/GrpcConfig'
         - type: 'null'
