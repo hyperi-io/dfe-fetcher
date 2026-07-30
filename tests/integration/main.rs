@@ -19,6 +19,7 @@
 mod common;
 
 mod config;
+mod container_hygiene;
 mod credentials;
 mod deployment;
 mod output_kafka;

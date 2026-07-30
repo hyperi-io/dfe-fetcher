@@ -15,8 +15,8 @@
 //!
 //! - `POST /ingest/{source}` — Receive JSON payload for a source.
 //!   The topic is derived from the source name + configured suffix.
-//! - `GET /health/live` — Liveness check (via rustlib `HttpServer`).
-//! - `GET /health/ready` — Readiness check (via rustlib `HttpServer`).
+//! - `GET /livez` — Liveness check (via scalo `HttpServer`).
+//! - `GET /readyz` — Readiness check (via scalo `HttpServer`).
 //!
 //! ## Authentication
 //!
@@ -67,15 +67,19 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Bearer token authentication middleware.
 ///
-/// Skips auth for `/health` endpoints (K8s probes).
-/// When no token is configured, all requests pass through.
+/// Skips auth for the K8s probe endpoints. When no token is configured, all
+/// requests pass through.
 async fn auth_middleware(
     State(state): State<Arc<IngestState>>,
     request: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
-    // Health endpoints are always exempt from auth
-    if request.uri().path().starts_with("/health") {
+    // Probe endpoints are always exempt: kubelet sends no Authorization header,
+    // so a 401 here fails the liveness probe and restarts the pod in a loop.
+    // `/livez` and `/readyz` are the contract's probe paths (see
+    // deployment::contract); `/health` is kept for older callers.
+    let path = request.uri().path();
+    if path.starts_with("/health") || path.starts_with("/livez") || path.starts_with("/readyz") {
         return next.run(request).await;
     }
 
@@ -266,8 +270,8 @@ mod tests {
 
     /// Build a test app with optional auth token.
     ///
-    /// Adds `/health/live` and `/health/ready` manually to match
-    /// what rustlib `HttpServer::build_router` adds in production
+    /// Adds `/livez` and `/readyz` manually to match
+    /// what scalo `HttpServer::build_router` adds in production
     /// (that method is private, so we replicate the routes here).
     fn test_app_with_auth(auth_token: Option<String>) -> (Router, Arc<PipelineState>) {
         let config = Config::default();
@@ -296,8 +300,8 @@ mod tests {
         let app = Router::new()
             .route("/ingest/{source}", post(handle_ingest))
             .route("/ingest/{source}/{topic}", post(handle_ingest_with_topic))
-            .route("/health/live", get(|| async { "OK" }))
-            .route("/health/ready", get(|| async { "OK" }))
+            .route("/livez", get(|| async { "OK" }))
+            .route("/readyz", get(|| async { "OK" }))
             .with_state(state.clone())
             .layer(axum::middleware::from_fn_with_state(state, auth_middleware));
 
@@ -316,7 +320,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/health/live")
+                    .uri("/livez")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -450,7 +454,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/health/live")
+                    .uri("/livez")
                     .body(Body::empty())
                     .unwrap(),
             )

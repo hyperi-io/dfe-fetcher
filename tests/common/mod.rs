@@ -67,6 +67,19 @@ impl KafkaTestConfig {
         self.sasl_mechanism.is_some() && self.sasl_user.is_some()
     }
 
+    /// Is this config usable as-is: reachable AND coherent?
+    ///
+    /// `is_reachable` only proves a TCP port answered. A SASL protocol with no
+    /// credentials is not usable: the TCP probe answers on a PLAINTEXT broker
+    /// bound to the same port, and every produce then fails authentication.
+    /// Fall through to the container instead.
+    pub fn is_usable(&self) -> bool {
+        if self.security_protocol.to_uppercase().contains("SASL") && !self.has_sasl() {
+            return false;
+        }
+        self.is_reachable()
+    }
+
     /// Check if broker is reachable via TCP (3s timeout).
     pub fn is_reachable(&self) -> bool {
         use std::net::ToSocketAddrs;
@@ -81,8 +94,8 @@ impl KafkaTestConfig {
             .unwrap_or(false)
     }
 
-    /// Convert to rustlib KafkaConfig for use with KafkaTransport.
-    pub fn to_rustlib_config(&self) -> scalo::transport::KafkaConfig {
+    /// Convert to scalo KafkaConfig for use with KafkaTransport.
+    pub fn to_scalo_config(&self) -> scalo::transport::KafkaConfig {
         let mut config = scalo::transport::KafkaConfig {
             brokers: self
                 .brokers
@@ -205,6 +218,45 @@ pub struct VaultTestConfig {
     _container: Option<TestcontainerHolder>,
 }
 
+impl VaultTestConfig {
+    /// True when this config owns a container, false when it points at a live
+    /// external OpenBao. A naming assertion only applies to the former.
+    #[must_use]
+    pub fn manages_container(&self) -> bool {
+        self._container.is_some()
+    }
+}
+
+// =============================================================================
+// Test image pins
+// =============================================================================
+//
+// Pinned HERE rather than left to testcontainers-modules' defaults, which lag
+// badly: Kafka 3.8.0 and LocalStack 4.5, which predates its move to CalVer. A
+// tag baked into a dependency's source is invisible to dependency review --
+// Renovate reads Cargo.toml, correctly reports the crate current, and never
+// sees the image. Hoisting the tags out is what puts them back under review,
+// hence the annotations.
+
+/// renovate: datasource=docker depName=apache/kafka-native
+const KAFKA_TAG: &str = "4.3.1";
+
+/// SEMVER line only -- do NOT move this to the CalVer tags (`2026.07.0` etc).
+/// The CalVer images on `localstack/localstack` require a licence: they exit 55
+/// with "License activation failed! ... set the LOCALSTACK_AUTH_TOKEN
+/// variable", so every LocalStack test skips. 4.x is the newest line that boots
+/// with no token; reject a CalVer bump.
+///
+/// renovate: datasource=docker depName=localstack/localstack versioning=semver
+const LOCALSTACK_TAG: &str = "4.14";
+
+/// A floating `latest` was worse than a stale pin: the harness silently
+/// retargeted on every image refresh, so a break landed with nothing in the
+/// diff to explain it.
+///
+/// renovate: datasource=docker depName=openbao/openbao
+const OPENBAO_TAG: &str = "2.6.1";
+
 /// Holder for any auto-managed testcontainer. Drop stops the container.
 pub enum TestcontainerHolder {
     GenericVault(testcontainers::ContainerAsync<testcontainers::GenericImage>),
@@ -212,12 +264,131 @@ pub enum TestcontainerHolder {
     Kafka(testcontainers::ContainerAsync<testcontainers_modules::kafka::apache::Kafka>),
 }
 
+// ============================================================================
+// Container naming and cleanup
+// ============================================================================
+//
+// Every container this suite starts carries a name that says which repo, which
+// suite and which backing service it is, so an operator looking at `docker ps`
+// can tell what left it behind. testcontainers' default is a random hex name,
+// which is untraceable the moment one survives.
+//
+// Naming: `dfe-fetcher-test-integration-<test>-<service>`, because every
+// container here is owned by exactly ONE test. nextest runs each test in its own
+// process, so nothing is shared even when it looks like it should be -- four
+// tests calling `acquire_kafka()` start four brokers. That was already true with
+// testcontainers' random names; the only thing a single shared name would add is
+// a collision, where the first test wins and the rest fail with "name is already
+// in use" and skip. `container_name` still takes `None` for a container started
+// once for a whole binary, but no suite does that today.
+//
+// Cleanup is belt AND braces, because `Drop` alone is not enough:
+//
+//   - Normal completion and a panic both unwind, so `Drop` stops the container.
+//   - A SIGKILL, an abort, or Ctrl-C on the test run does NOT. `Drop` never
+//     runs and the container survives.
+//
+// testcontainers-rs 0.27 has no resource reaper (no Ryuk), so the second case
+// is the one that leaves crap behind. A deterministic name would then make it
+// WORSE than a random one -- the leaked container holds the name and every
+// later run fails with "name already in use". `reap_stale` closes that: remove
+// any container already holding the name before starting, so a leak costs the
+// next run nothing and self-heals.
+//
+// The label goes on as well, so a sweep can find these regardless of name:
+//   docker rm -f $(docker ps -aq --filter label=io.hyperi.test.suite=dfe-fetcher-integration)
+
+/// Label marking every container this suite starts, for bulk cleanup.
+pub const TEST_SUITE_LABEL: (&str, &str) = ("io.hyperi.test.suite", "dfe-fetcher-integration");
+
+/// Labels for a container this suite starts: what it is, and whose run owns it.
+///
+/// The name says what and why; these say WHO, which is what you need when
+/// several runs share a machine and one has left something behind. The pid is
+/// the owning test process -- `ps -p <pid>` answers "is that run still alive, or
+/// is this rubbish I can remove?".
+fn test_labels(service: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            TEST_SUITE_LABEL.0.to_string(),
+            TEST_SUITE_LABEL.1.to_string(),
+        ),
+        ("io.hyperi.test.repo".to_string(), "dfe-fetcher".to_string()),
+        ("io.hyperi.test.service".to_string(), service.to_string()),
+        (
+            "io.hyperi.test.owner-pid".to_string(),
+            std::process::id().to_string(),
+        ),
+    ]
+}
+
+/// Container name for a backing service in this suite.
+///
+/// Pass `Some(test)` -- the owning test -- for anything a test starts for itself,
+/// which is everything here. `None` is for a container started once for a whole
+/// test binary; nothing does that today, and using it from several tests would
+/// make them collide on the name rather than share the container.
+///
+/// Names are lowercased and non-alphanumerics collapse to `-`, because Docker
+/// only accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, and a Rust test path
+/// (`credentials::test_vault_resolve`) has colons in it.
+#[must_use]
+pub fn container_name(test: Option<&str>, service: &str) -> String {
+    let slug = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    };
+    match test {
+        Some(t) => format!("dfe-fetcher-test-integration-{}-{}", slug(t), slug(service)),
+        None => format!("dfe-fetcher-test-integration-{}", slug(service)),
+    }
+}
+
+/// Remove a DEAD container holding `name`, so a leak from a killed run cannot
+/// block this one.
+///
+/// Never touches a RUNNING container. Two concurrent runs of this suite on one
+/// machine share these names, and force-removing a live one would sabotage the
+/// other run -- a confusing mid-test failure in a process that did nothing
+/// wrong. Leaving it means the start below fails with "name is already in use",
+/// which says what actually happened.
+///
+/// Best-effort otherwise: no Docker, nothing to remove, or an already-gone
+/// container are all fine. A failure here must not fail the test -- the start
+/// that follows reports the real problem.
+pub fn reap_stale(name: &str) {
+    let running = std::process::Command::new("docker")
+        .args(["ps", "--quiet", "--filter", &format!("name=^{name}$")])
+        .output();
+    // Non-empty stdout means a container by this name is up. Leave it alone.
+    if let Ok(out) = &running
+        && !out.stdout.is_empty()
+    {
+        return;
+    }
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "--force", "--volumes", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 impl VaultTestConfig {
     /// Acquire a Vault test config: live (env) if available, else start a
     /// throwaway OpenBao container that is auto-stopped on `Drop`.
     ///
+    /// `test` names the calling test and goes into the container name, so
+    /// concurrent tests do not collide on it.
+    ///
     /// Returns `None` if no live Vault is configured AND Docker is unavailable.
-    pub async fn acquire() -> Option<Self> {
+    pub async fn acquire(test: &str) -> Option<Self> {
         load_dotenv();
 
         // Live mode: env vars present → use them, no container managed
@@ -238,18 +409,46 @@ impl VaultTestConfig {
         use testcontainers::runners::AsyncRunner;
         use testcontainers::{GenericImage, ImageExt};
 
-        let image = GenericImage::new("openbao/openbao", "latest")
+        // BAO_-prefixed, and the readiness line reads "OpenBao server started!".
+        // The VAULT_ spellings this used to carry are silently ignored: the
+        // server issues a RANDOM root token instead of the one asked for, and
+        // the wait strategy never matches, so the container start just times
+        // out. Neither failure names OpenBao as the cause.
+        let name = container_name(Some(test), "openbao");
+        reap_stale(&name);
+        let image = GenericImage::new("openbao/openbao", OPENBAO_TAG)
             .with_exposed_port(8200u16.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("Vault server started"))
-            .with_env_var("VAULT_DEV_ROOT_TOKEN_ID", "root")
-            .with_env_var("VAULT_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
-            .with_cmd(["server", "-dev"]);
+            .with_wait_for(WaitFor::message_on_stdout("OpenBao server started"))
+            .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "root")
+            .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
+            .with_cmd(["server", "-dev"])
+            .with_container_name(&name)
+            .with_labels(test_labels("openbao"));
 
-        let container = image.start().await.ok()?;
-        let host = container.get_host().await.ok()?;
-        let port = container.get_host_port_ipv4(8200u16).await.ok()?;
+        let container = match image.start().await {
+            Ok(c) => c,
+            Err(e) => {
+                require_container_path_in_ci("OpenBao", &e.to_string());
+                return None;
+            }
+        };
+        let host = match container.get_host().await {
+            Ok(h) => h,
+            Err(e) => {
+                require_container_path_in_ci("OpenBao", &format!("get_host: {e}"));
+                return None;
+            }
+        };
+        let port = match container.get_host_port_ipv4(8200u16).await {
+            Ok(p) => p,
+            Err(e) => {
+                require_container_path_in_ci("OpenBao", &format!("get_host_port: {e}"));
+                return None;
+            }
+        };
         let address = format!("http://{host}:{port}");
 
+        #[allow(clippy::used_underscore_binding)]
         Some(Self {
             address,
             token: "root".to_string(),
@@ -276,8 +475,12 @@ pub struct LocalStackConfig {
 
 impl LocalStackConfig {
     /// Acquire a LocalStack endpoint: live first, else start a testcontainer.
+    ///
+    /// `test` names the calling test and goes into the container name, so
+    /// concurrent tests do not collide on it.
+    ///
     /// Returns `None` if neither is available.
-    pub async fn acquire() -> Option<Self> {
+    pub async fn acquire(test: &str) -> Option<Self> {
         load_dotenv();
 
         // Live mode
@@ -294,12 +497,43 @@ impl LocalStackConfig {
         }
 
         // Fallback: testcontainer
+        use testcontainers::ImageExt;
         use testcontainers::runners::AsyncRunner;
         use testcontainers_modules::localstack::LocalStack;
 
-        let container = LocalStack::default().start().await.ok()?;
-        let host = container.get_host().await.ok()?;
-        let port = container.get_host_port_ipv4(4566).await.ok()?;
+        // Carry the start error through rather than `.ok()?`: a container that
+        // refuses to boot is indistinguishable from an absent Docker daemon
+        // once the reason is dropped, and both turn every test here into a
+        // silent no-op.
+        let name = container_name(Some(test), "localstack");
+        reap_stale(&name);
+        let container = match LocalStack::default()
+            .with_tag(LOCALSTACK_TAG)
+            .with_container_name(&name)
+            .with_labels(test_labels("localstack"))
+            .start()
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                require_container_path_in_ci("LocalStack", &e.to_string());
+                return None;
+            }
+        };
+        let host = match container.get_host().await {
+            Ok(h) => h,
+            Err(e) => {
+                require_container_path_in_ci("LocalStack", &format!("get_host: {e}"));
+                return None;
+            }
+        };
+        let port = match container.get_host_port_ipv4(4566).await {
+            Ok(p) => p,
+            Err(e) => {
+                require_container_path_in_ci("LocalStack", &format!("get_host_port: {e}"));
+                return None;
+            }
+        };
         let endpoint = format!("http://{host}:{port}");
 
         Some(Self {
@@ -318,20 +552,35 @@ impl LocalStackConfig {
 
 /// Acquire a Kafka config: live (env) if reachable, else testcontainer.
 ///
+/// `test` names the calling test and goes into the container name, so concurrent
+/// tests do not collide on it.
+///
 /// Returns `(KafkaTestConfig, holder)` — the holder must be kept alive for
 /// the test's duration; dropping it stops the container.
-pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHolder>)> {
+pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<TestcontainerHolder>)> {
     // Live: existing TestMode pattern
     let live = kafka_test_config();
-    if live.is_reachable() {
+    if live.is_usable() {
         return Some((live, None));
     }
 
     // Fallback: start an Apache Kafka testcontainer
+    use testcontainers::ImageExt;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::kafka::apache::Kafka;
 
-    let container = Kafka::default().start().await.ok()?;
+    let name = container_name(Some(test), "kafka");
+    reap_stale(&name);
+    let Ok(container) = Kafka::default()
+        .with_tag(KAFKA_TAG)
+        .with_container_name(&name)
+        .with_labels(test_labels("kafka"))
+        .start()
+        .await
+    else {
+        require_kafka_path_in_ci();
+        return None;
+    };
     let host = container.get_host().await.ok()?;
     let port = container
         .get_host_port_ipv4(testcontainers_modules::kafka::apache::KAFKA_PORT)
@@ -347,6 +596,33 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
         sasl_password: None,
     };
     Some((cfg, Some(TestcontainerHolder::Kafka(container))))
+}
+
+/// Panic if NEITHER a live service nor a container is available while in CI.
+///
+/// Scoped to "no path at all", not to "the live service is absent". CI is not
+/// promised an external Kafka / OpenBao / LocalStack, but it IS promised a
+/// container runtime, so an `acquire_*` helper should always find one of the
+/// two. If it finds neither, the test would pass VACUOUSLY -- green while
+/// exercising nothing.
+///
+/// The live-only probe in `skip_if_no_kafka!` stays a plain skip for the same
+/// reason: failing on it would assert an environment nobody agreed to provide.
+pub fn require_container_path_in_ci(service: &str, reason: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "no {service} available in CI -- no live endpoint and the container \
+         would not start ({reason}). Integration tests must RUN here, not \
+         skip; skipping would report green while testing nothing."
+    );
+    // Outside CI the skip is legitimate, but the reason still has to be
+    // visible -- it is the only signal that the test did not run.
+    eprintln!("{service} container unavailable, test will skip: {reason}");
+}
+
+/// Kafka spelling of [`require_container_path_in_ci`].
+pub fn require_kafka_path_in_ci() {
+    require_container_path_in_ci("Kafka", "testcontainer start failed");
 }
 
 /// Skip test if Kafka is not reachable in the current test mode.

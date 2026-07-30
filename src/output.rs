@@ -1,21 +1,21 @@
 // Project:   dfe-fetcher
 // File:      src/output.rs
-// Purpose:   Output transport layer using rustlib Transport trait
+// Purpose:   Output transport layer using scalo Transport trait
 // Language:  Rust
 //
 // License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
-//! Output transport layer using rustlib Transport trait.
+//! Output transport layer using scalo Transport trait.
 //!
-//! Replaces the custom Sink trait with rustlib's unified Transport.
+//! Replaces the custom Sink trait with scalo's unified Transport.
 //! Supports Kafka, gRPC, or both simultaneously via [`OutputManager`].
 //!
-//! All Kafka access via rustlib's `KafkaTransport` — no direct rdkafka dependency.
+//! All Kafka access via scalo's `KafkaTransport` — no direct rdkafka dependency.
 
 use bytes::Bytes;
 use scalo::transport::{
-    GrpcTransport, KafkaConfig as RustlibKafkaConfig, KafkaTransport, SendResult, TransportBase,
+    GrpcTransport, KafkaConfig as ScaloKafkaConfig, KafkaTransport, SendResult, TransportBase,
     TransportSender,
 };
 use tracing::{debug, error, info, trace};
@@ -25,13 +25,13 @@ use crate::error::{Error, Result};
 
 /// Wrapper enum for transport backends.
 ///
-/// Needed because rustlib's `Transport` traits carry an associated `Token`
+/// Needed because scalo's `Transport` traits carry an associated `Token`
 /// type, which prevents dynamic dispatch via a `dyn Transport`. Each variant
 /// delegates to the concrete transport implementation.
 pub enum OutputTransport {
-    /// Kafka transport (rustlib).
+    /// Kafka transport (scalo).
     Kafka(KafkaTransport),
-    /// gRPC transport (rustlib).
+    /// gRPC transport (scalo).
     Grpc(GrpcTransport),
 }
 
@@ -41,7 +41,7 @@ impl OutputTransport {
     /// Records per-transport send duration as
     /// `dfe_fetcher_transport_send_duration_seconds{transport="kafka"|"grpc"}`.
     ///
-    /// `payload` is a [`Bytes`] (rustlib's `TransportSender::send` takes it by
+    /// `payload` is a [`Bytes`] (scalo's `TransportSender::send` takes it by
     /// value); it is ref-counted, so the per-transport clone in `send_all` is
     /// cheap (no buffer copy).
     async fn send(&self, key: &str, payload: Bytes) -> Result<()> {
@@ -135,7 +135,7 @@ impl OutputManager {
     /// Create a new output manager from configuration.
     ///
     /// If `output.kafka` is set, uses that. Otherwise falls back to the
-    /// legacy top-level `kafka` section by building a rustlib `KafkaConfig`
+    /// legacy top-level `kafka` section by building a scalo `KafkaConfig`
     /// from the legacy fields.
     pub async fn new(output: &OutputConfig, legacy_kafka: &LegacyKafkaConfig) -> Result<Self> {
         let mut transports = Vec::new();
@@ -144,7 +144,7 @@ impl OutputManager {
             let mut kafka_config = if let Some(ref cfg) = output.kafka {
                 cfg.clone()
             } else {
-                build_rustlib_kafka_config(legacy_kafka)
+                build_scalo_kafka_config(legacy_kafka)
             };
             // Fetcher output is produce-only. scalo's KafkaConfig is now
             // profile-based (no `role`); an empty consumer group means no idle
@@ -239,14 +239,14 @@ impl OutputManager {
     }
 }
 
-/// Build a rustlib [`KafkaConfig`](RustlibKafkaConfig) from the legacy
+/// Build a scalo [`KafkaConfig`](ScaloKafkaConfig) from the legacy
 /// fetcher-specific [`KafkaConfig`](LegacyKafkaConfig) section.
 #[allow(clippy::module_name_repetitions)]
-pub fn build_rustlib_kafka_config(legacy: &LegacyKafkaConfig) -> RustlibKafkaConfig {
-    let mut config = RustlibKafkaConfig {
+pub fn build_scalo_kafka_config(legacy: &LegacyKafkaConfig) -> ScaloKafkaConfig {
+    let mut config = ScaloKafkaConfig {
         brokers: legacy.brokers.clone(),
         client_id: legacy.client_id.clone(),
-        ..RustlibKafkaConfig::default()
+        ..ScaloKafkaConfig::default()
     };
 
     // Map SASL settings
@@ -310,13 +310,13 @@ mod tests {
     use crate::config::*;
 
     #[test]
-    fn test_build_rustlib_kafka_config_defaults() {
+    fn test_build_scalo_kafka_config_defaults() {
         let legacy = KafkaConfig::default();
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
 
         assert_eq!(result.client_id, "dfe-fetcher");
         assert!(result.brokers.is_empty());
-        // No SASL configured, no TLS → security_protocol stays at rustlib default
+        // No SASL configured, no TLS → security_protocol stays at scalo default
         assert_eq!(result.security_protocol, "plaintext");
         assert!(result.sasl_mechanism.is_none());
         assert!(result.sasl_username.is_none());
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_rustlib_kafka_config_sasl_with_tls() {
+    fn test_build_scalo_kafka_config_sasl_with_tls() {
         let mut legacy = KafkaConfig::default();
         legacy.sasl = Some(SaslConfig {
             enabled: true,
@@ -334,14 +334,14 @@ mod tests {
         });
         legacy.tls.enabled = true;
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
         assert_eq!(result.security_protocol, "sasl_ssl");
         assert_eq!(result.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
         assert_eq!(result.sasl_username.as_deref(), Some("user1"));
     }
 
     #[test]
-    fn test_build_rustlib_kafka_config_sasl_no_tls() {
+    fn test_build_scalo_kafka_config_sasl_no_tls() {
         let mut legacy = KafkaConfig::default();
         legacy.sasl = Some(SaslConfig {
             enabled: true,
@@ -351,24 +351,24 @@ mod tests {
         });
         legacy.tls.enabled = false;
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
         assert_eq!(result.security_protocol, "sasl_plaintext");
     }
 
     #[test]
-    fn test_build_rustlib_kafka_config_tls_no_sasl() {
+    fn test_build_scalo_kafka_config_tls_no_sasl() {
         let mut legacy = KafkaConfig::default();
         legacy.tls.enabled = true;
         // No SASL configured
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
         assert_eq!(result.security_protocol, "ssl");
     }
 
     #[test]
-    fn test_build_rustlib_kafka_config_producer_overrides() {
+    fn test_build_scalo_kafka_config_producer_overrides() {
         let legacy = KafkaConfig::default();
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
 
         // Verify all producer settings mapped to librdkafka_overrides
         assert_eq!(
@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_rustlib_kafka_config_custom_brokers() {
+    fn test_build_scalo_kafka_config_custom_brokers() {
         let mut legacy = KafkaConfig::default();
         legacy.brokers = vec![
             "broker1:9092".to_string(),
@@ -406,19 +406,19 @@ mod tests {
             "broker3:9092".to_string(),
         ];
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
         assert_eq!(result.brokers, legacy.brokers);
     }
 
     #[test]
-    fn test_build_rustlib_kafka_config_tls_cert_files() {
+    fn test_build_scalo_kafka_config_tls_cert_files() {
         let mut legacy = KafkaConfig::default();
         legacy.tls.enabled = true;
         legacy.tls.ca_file = Some("/certs/ca.pem".to_string());
         legacy.tls.cert_file = Some("/certs/client.pem".to_string());
         legacy.tls.key_file = Some("/certs/client-key.pem".to_string());
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
         assert_eq!(result.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
         assert_eq!(
             result.ssl_certificate_location.as_deref(),
@@ -537,7 +537,7 @@ mod tests {
         let result = OutputManager::new(&output, &legacy).await;
 
         // librdkafka validates config but connects lazily, so typically Ok.
-        // If some future rustlib change validates brokers at construction,
+        // If some future scalo change validates brokers at construction,
         // it must surface as Error::Transport — never any other variant.
         match result {
             Ok(mgr) => {
@@ -555,12 +555,12 @@ mod tests {
         }
     }
 
-    // -- build_rustlib_kafka_config: SASL-disabled & edge cases --
+    // -- build_scalo_kafka_config: SASL-disabled & edge cases --
 
     /// When `sasl.enabled = false`, SASL fields must NOT be propagated to the
-    /// rustlib config, regardless of username/password/mechanism values.
+    /// scalo config, regardless of username/password/mechanism values.
     #[test]
-    fn test_build_rustlib_kafka_config_sasl_disabled() {
+    fn test_build_scalo_kafka_config_sasl_disabled() {
         let mut legacy = KafkaConfig::default();
         legacy.sasl = Some(SaslConfig {
             enabled: false,
@@ -569,24 +569,24 @@ mod tests {
             password: "would-be-pass".into(),
         });
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
 
         assert!(result.sasl_mechanism.is_none());
         assert!(result.sasl_username.is_none());
         assert!(result.sasl_password.is_none());
-        // Without TLS either, security_protocol stays at rustlib default.
+        // Without TLS either, security_protocol stays at scalo default.
         assert_eq!(result.security_protocol, "plaintext");
     }
 
     /// When `sasl` is None (not configured at all), SASL fields must remain
     /// unset. This is the common default case.
     #[test]
-    fn test_build_rustlib_kafka_config_sasl_none() {
+    fn test_build_scalo_kafka_config_sasl_none() {
         let mut legacy = KafkaConfig::default();
         legacy.sasl = None;
         legacy.tls.enabled = false;
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
 
         assert!(result.sasl_mechanism.is_none());
         assert!(result.sasl_username.is_none());
@@ -596,7 +596,7 @@ mod tests {
     /// When `sasl.enabled = false` AND TLS is enabled, security_protocol
     /// must be "ssl" (TLS-only path), not "sasl_ssl".
     #[test]
-    fn test_build_rustlib_kafka_config_sasl_disabled_with_tls() {
+    fn test_build_scalo_kafka_config_sasl_disabled_with_tls() {
         let mut legacy = KafkaConfig::default();
         legacy.sasl = Some(SaslConfig {
             enabled: false,
@@ -606,12 +606,12 @@ mod tests {
         });
         legacy.tls.enabled = true;
 
-        let result = build_rustlib_kafka_config(&legacy);
+        let result = build_scalo_kafka_config(&legacy);
 
         // With SASL disabled, current implementation only applies TLS when
         // sasl is None (the `else if` branch is not taken when sasl is Some).
         // This documents current behaviour: SASL disabled + TLS enabled
-        // leaves security_protocol at the rustlib default.
+        // leaves security_protocol at the scalo default.
         assert!(result.sasl_mechanism.is_none());
         assert!(result.sasl_username.is_none());
         // TLS cert locations should still be mapped when tls.enabled.
@@ -643,7 +643,7 @@ mod tests {
             match &mgr.transports[0] {
                 OutputTransport::Kafka(_) => {
                     // name() delegates to KafkaTransport::name(), which
-                    // rustlib documents as returning "kafka".
+                    // scalo documents as returning "kafka".
                     assert_eq!(mgr.transports[0].name(), "kafka");
                 }
                 OutputTransport::Grpc(_) => panic!("expected Kafka variant"),

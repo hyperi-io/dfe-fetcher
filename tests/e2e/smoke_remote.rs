@@ -1665,7 +1665,7 @@ async fn gcp_pubsub_pull_subscription() {
 }
 
 // =============================================================================
-// Object-store source family -- S3 backend live; GCS/Azure Blob Phase 2 stubs
+// Object-store source family -- S3 backend live; GCS/Azure Blob unimplemented
 // =============================================================================
 //
 // S3 tests use the existing AWS test credentials (.env-cloud AWS_*). To

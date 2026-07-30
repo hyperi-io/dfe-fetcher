@@ -9,21 +9,20 @@
 //! Object-store source family.
 //!
 //! Polls one or more bucket prefixes across S3 / GCS / Azure Blob, emitting
-//! one record per line of every new object since the cursor. See
-//! `docs/superpowers/specs/2026-05-21-object-store-source-design.md` for the
-//! full design.
+//! one record per line of every new object since the cursor.
 //!
-//! ## Phase 1 (this module today)
+//! ## What is implemented
 //!
 //! - **S3 backend:** fully implemented (ListObjectsV2 + GetObject via
 //!   SigV4-signed REST). Tested live against the dfe-test AWS account.
 //! - **GCS / Azure Blob backends:** structurally present (config shapes
 //!   parse, enum variants exist) but `list_new_objects` / `get_object`
-//!   return a "Phase 2" error. The driver logs-and-skips those backends
-//!   so a config with all three providers behaves predictably.
+//!   return a not-implemented error. The driver logs-and-skips those
+//!   backends so a config naming all three behaves predictably rather than
+//!   failing the whole tick.
 //! - **Formats:** `json_gz`, `json`, `jsonl`. Plain-text formats emit each
 //!   non-empty line as `{"line": "..."}`; native ALB/CloudFront/S3-access
-//!   parsers are Phase 2.
+//!   log parsers are not implemented.
 //!
 //! ## Cursor model
 //!
@@ -96,12 +95,10 @@ impl ObjectStoreSource {
         bucket_name: &str,
         prefix: &ObjectStorePrefix,
     ) -> Result<Option<FetchResult>> {
-        // Phase 1: cursor is derived from the prior tick's max LastModified
-        // attached to records. For now, fall back to "objects modified in
-        // the last 24h" - the scheduler-driven incremental cursor is wired
-        // up at the outer driver layer (FetchWindow).
-        // TODO Phase 2: integrate with the fetcher cursor store directly so
-        // the cursor is independent of FetchWindow's time-range model.
+        // Cutoff is a fixed 24h look-back, not a stored cursor: the
+        // incremental cursor lives at the outer driver layer (FetchWindow).
+        // TODO: read the fetcher cursor store directly so the cursor is
+        // independent of FetchWindow's time-range model.
         let cutoff = Utc::now() - chrono::Duration::hours(24);
 
         let objects = match backend {
@@ -109,11 +106,11 @@ impl ObjectStoreSource {
                 s3::list_new_objects(&self.client, cfg, bucket_name, &prefix.prefix, cutoff).await?
             }
             ObjectStoreBackendConfig::Gcs(_) => {
-                gcs_phase2_skip("list_new_objects", bucket_name, &prefix.prefix);
+                gcs_unimplemented_skip("list_new_objects", bucket_name, &prefix.prefix);
                 return Ok(None);
             }
             ObjectStoreBackendConfig::AzureBlob(_) => {
-                azure_blob_phase2_skip("list_new_objects", bucket_name, &prefix.prefix);
+                azure_blob_unimplemented_skip("list_new_objects", bucket_name, &prefix.prefix);
                 return Ok(None);
             }
         };
@@ -238,9 +235,10 @@ impl Source for ObjectStoreSource {
         if !self.config.enabled {
             return Ok(false);
         }
-        // A real cross-backend health check would require auth round-trips
-        // per backend. For Phase 1 we report healthy if at least one S3
-        // backend's credentials resolve. GCS/Azure stubs don't participate.
+        // Healthy if at least one S3 backend's credentials resolve. A real
+        // cross-backend check would need an auth round-trip per backend, which
+        // is too costly on a health path. The unimplemented backends do not
+        // participate.
         for backend in &self.config.backends {
             if let ObjectStoreBackendConfig::S3(cfg) = backend
                 && s3::resolve_credentials(cfg).await.is_ok()
@@ -404,28 +402,28 @@ fn backend_provider_name(b: &ObjectStoreBackendConfig) -> &'static str {
     }
 }
 
-fn gcs_phase2_skip(op: &str, bucket: &str, prefix: &str) {
+fn gcs_unimplemented_skip(op: &str, bucket: &str, prefix: &str) {
     warn!(
         operation = op,
         bucket,
         prefix,
-        "object_store: GCS backend is Phase 2 stub, skipping. See \
-         docs/superpowers/specs/2026-05-21-object-store-source-design.md"
+        "object_store: the GCS backend is not implemented, skipping this \
+         operation. Use the s3 backend, or an S3-compatible endpoint."
     );
 }
 
-fn azure_blob_phase2_skip(op: &str, bucket: &str, prefix: &str) {
+fn azure_blob_unimplemented_skip(op: &str, bucket: &str, prefix: &str) {
     warn!(
         operation = op,
         bucket,
         prefix,
-        "object_store: Azure Blob backend is Phase 2 stub, skipping. See \
-         docs/superpowers/specs/2026-05-21-object-store-source-design.md"
+        "object_store: the Azure Blob backend is not implemented, skipping this \
+         operation. Use the s3 backend, or an S3-compatible endpoint."
     );
 }
 
 // =============================================================================
-// GCS + Azure Blob Phase 2 stubs (parameter-typed but unimplemented)
+// GCS + Azure Blob stubs (parameter-typed but unimplemented)
 // =============================================================================
 //
 // These exist so the config + enum compile cleanly and so a future
@@ -449,8 +447,8 @@ mod gcs {
         _cutoff: DateTime<Utc>,
     ) -> Result<Vec<ListedObject>> {
         Err(Error::Source(
-            "object_store: GCS backend is Phase 2 (not implemented). See \
-             docs/superpowers/specs/2026-05-21-object-store-source-design.md"
+            "object_store: the GCS backend is not implemented. Use the s3 \
+             backend, or an S3-compatible endpoint."
                 .into(),
         ))
     }
@@ -461,7 +459,9 @@ mod gcs {
         _bucket: &str,
         _key: &str,
     ) -> Result<Bytes> {
-        Err(Error::Source("object_store: GCS backend is Phase 2".into()))
+        Err(Error::Source(
+            "object_store: the GCS backend is not implemented".into(),
+        ))
     }
 }
 
@@ -480,8 +480,8 @@ mod azure_blob {
         _cutoff: DateTime<Utc>,
     ) -> Result<Vec<ListedObject>> {
         Err(Error::Source(
-            "object_store: Azure Blob backend is Phase 2 (not implemented). See \
-             docs/superpowers/specs/2026-05-21-object-store-source-design.md"
+            "object_store: the Azure Blob backend is not implemented. Use the s3 \
+             backend, or an S3-compatible endpoint."
                 .into(),
         ))
     }
@@ -493,7 +493,7 @@ mod azure_blob {
         _key: &str,
     ) -> Result<Bytes> {
         Err(Error::Source(
-            "object_store: Azure Blob backend is Phase 2".into(),
+            "object_store: the Azure Blob backend is not implemented".into(),
         ))
     }
 }

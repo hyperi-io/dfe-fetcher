@@ -42,7 +42,7 @@ async fn test_e2e_produce_consume_roundtrip() {
     // Create OutputManager pointed at real Kafka
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
-        kafka: Some(kf.to_rustlib_config()),
+        kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
     };
@@ -66,8 +66,8 @@ async fn test_e2e_produce_consume_roundtrip() {
             .unwrap_or_else(|e| panic!("send {i} failed: {e}"));
     }
 
-    // Consume the messages back using a rustlib KafkaTransport in consumer mode
-    let mut consumer_config = kf.to_rustlib_config();
+    // Consume the messages back using a scalo KafkaTransport in consumer mode
+    let mut consumer_config = kf.to_scalo_config();
     consumer_config.topics = vec![topic.clone()];
     consumer_config.group = format!("e2e-consumer-{}", Utc::now().timestamp_millis());
     consumer_config.auto_offset_reset = "earliest".to_string();
@@ -126,7 +126,7 @@ async fn test_e2e_enriched_record_in_kafka() {
     let config = Config {
         output: OutputConfig {
             output_type: "kafka".to_string(),
-            kafka: Some(kf.to_rustlib_config()),
+            kafka: Some(kf.to_scalo_config()),
             grpc: None,
             topic_suffix: Some(String::new()), // no suffix — use topic as-is
         },
@@ -157,7 +157,7 @@ async fn test_e2e_enriched_record_in_kafka() {
         .expect("deliver should succeed");
 
     // Consume and verify enrichment fields
-    let mut consumer_config = kf.to_rustlib_config();
+    let mut consumer_config = kf.to_scalo_config();
     consumer_config.topics = vec![topic.clone()];
     consumer_config.group = format!("e2e-enriched-{}", Utc::now().timestamp_millis());
     consumer_config.auto_offset_reset = "earliest".to_string();
@@ -193,8 +193,12 @@ async fn test_e2e_enriched_record_in_kafka() {
 
 /// Cursor store -> FetchWindow integration: write cursor, verify next window starts
 /// from cursor.last_fetch_end.
+///
+/// Not `#[ignore]`d, despite living in the e2e file: a temp dir is all it needs,
+/// and no CI job passes `--run-ignored`. This covers the logic that decides
+/// which time range gets fetched, and so whether events are skipped or fetched
+/// twice.
 #[tokio::test]
-#[ignore = "requires filesystem (always available, marked ignore for e2e consistency)"]
 async fn test_e2e_cursor_drives_fetch_window() {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
 

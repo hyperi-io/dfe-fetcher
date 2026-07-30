@@ -20,7 +20,7 @@
 //!
 //! When [`Metrics::with_dfe()`] is used, fetcher-specific metrics are
 //! described and emitted through the `metrics` crate global recorder,
-//! alongside the standard DFE metrics from rustlib [`ServiceMetrics`].
+//! alongside the standard DFE metrics from scalo [`ServiceMetrics`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -31,11 +31,11 @@ use scalo::scaling::RateWindow;
 /// Metrics collector for dfe-fetcher.
 ///
 /// Maintains local atomic counters for fast hot-path access and optionally
-/// dual-emits to the `metrics` crate global recorder (via rustlib
+/// dual-emits to the `metrics` crate global recorder (via scalo
 /// [`ServiceMetrics`] for standard DFE metrics, and direct `metrics::counter!` /
 /// `metrics::gauge!` calls for fetcher-specific metrics).
 pub struct Metrics {
-    /// Optional rustlib ServiceMetrics for dual-emit to global `metrics` recorder.
+    /// Optional scalo ServiceMetrics for dual-emit to global `metrics` recorder.
     dfe: Option<ServiceMetrics>,
     // Fetch counters
     fetches_total: AtomicU64,
@@ -75,7 +75,7 @@ pub struct Metrics {
     memory_used_bytes: AtomicU64,
     memory_limit_bytes: AtomicU64,
 
-    // Rate tracking (rustlib RateWindow has internal RwLock)
+    // Rate tracking (scalo RateWindow has internal RwLock)
     rate_window: RateWindow,
     /// Records-per-second rate window (EPS — events per second).
     records_rate_window: RateWindow,

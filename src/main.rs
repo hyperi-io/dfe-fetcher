@@ -8,7 +8,7 @@
 
 //! dfe-fetcher CLI entry point.
 //!
-//! Uses hyperi-rustlib CLI module for standard arguments and subcommands.
+//! Uses the scalo CLI module for standard arguments and subcommands.
 //! Implements the [`ServiceApp`] trait for the standard DFE service lifecycle.
 
 // Jemalloc — DFE allocator policy 2026-04-17 (jemalloc only at every channel).
@@ -75,11 +75,11 @@ struct App {
 /// Application subcommands.
 ///
 /// Standard commands (`run`, `version`, `config-check`, `generate-artefacts`,
-/// `metrics-manifest`, `top`) are flattened from rustlib's [`StandardCommand`].
+/// `metrics-manifest`, `top`) are flattened from scalo's [`StandardCommand`].
 /// Local extensions handle only the legacy emit-* shortcuts.
 #[derive(Subcommand, Clone, Debug)]
 enum AppCommand {
-    /// Standard rustlib commands (run, version, config-check, generate-artefacts, metrics-manifest).
+    /// Standard scalo commands (run, version, config-check, generate-artefacts, metrics-manifest).
     #[command(flatten)]
     Standard(StandardCommand),
 
@@ -166,7 +166,7 @@ async fn main() {
                 // Identity = None: stdout shortcut for local inspection
                 // intentionally omits Contract Identity Annotation labels.
                 // The full ci/ pipeline (`generate-artefacts`) is where
-                // identity gets stamped in once rustlib wires it.
+                // identity gets stamped in once scalo wires it.
                 println!("{}", generate_dockerfile(&contract, None));
                 return;
             }
@@ -231,7 +231,7 @@ async fn run_fetcher_service(
     // Warn if using legacy kafka: config section instead of output.kafka:
     if !config.kafka.brokers.is_empty() && config.output.kafka.is_none() {
         warn!(
-            "Using legacy kafka: config section — migrate to output.kafka: (rustlib KafkaConfig format)"
+            "Using legacy kafka: config section — migrate to output.kafka: (scalo KafkaConfig format)"
         );
     }
 

@@ -19,7 +19,7 @@
 //!
 //! 2. **Vector extractors** (`vector/`) — Vector.dev instances configured as
 //!    sources that send data to the fetcher via native gRPC (Vector sink protocol).
-//!    Tightly coupled via hyperi-rustlib's gRPC support.
+//!    Tightly coupled via scalo's gRPC support.
 //!
 //! ## Design Philosophy
 //!

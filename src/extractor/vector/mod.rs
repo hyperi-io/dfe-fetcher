@@ -9,11 +9,11 @@
 //! Vector.dev extractor integration.
 //!
 //! Runs Vector instances as data extractors, receiving data via the native
-//! Vector gRPC sink protocol (supported in hyperi-rustlib).
+//! Vector gRPC sink protocol (supported in scalo).
 //!
 //! ## Architecture
 //!
-//! Uses hyperi-rustlib's `GrpcTransport` with `vector_compat` enabled to accept
+//! Uses scalo's `GrpcTransport` with `vector_compat` enabled to accept
 //! Vector's native `PushEvents` gRPC protocol. This allows any Vector instance
 //! configured with a `vector` sink to push data directly to the fetcher.
 //!
@@ -96,7 +96,7 @@ impl VectorManager {
             "Starting Vector extractor manager"
         );
 
-        // Start gRPC server using rustlib's Vector protocol support
+        // Start gRPC server using scalo's Vector protocol support
         let grpc_config = GrpcConfig::server(&self.config.grpc_bind_address).with_vector_compat();
 
         let transport = GrpcTransport::new(&grpc_config)
@@ -157,7 +157,7 @@ impl VectorManager {
                             batch_count += 1;
                             let msg_count = batch.len() as u64;
 
-                            // rustlib 2.8.13: `recv` yields a zero-copy `WorkBatch`;
+                            // scalo 2.8.13: `recv` yields a zero-copy `WorkBatch`;
                             // iterate its `records` (each carries `payload: Bytes`
                             // and `key: Option<Arc<str>>`). Deliver concurrently
                             // within the batch.

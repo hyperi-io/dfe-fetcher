@@ -6,7 +6,7 @@
 // License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
-//! Configuration management using hyperi-rustlib's 7-layer cascade.
+//! Configuration management using scalo's 7-layer cascade.
 //!
 //! Priority (highest to lowest):
 //! 1. CLI arguments
@@ -162,7 +162,7 @@ impl Config {
             return Self::load_from_file(path);
         }
 
-        // Otherwise, use hyperi-rustlib's 7-layer cascade
+        // Otherwise, use scalo's 7-layer cascade
         config::setup(ConfigOptions {
             env_prefix: ENV_PREFIX.to_string(),
             config_paths: Vec::new(),
@@ -174,8 +174,13 @@ impl Config {
         // Get the global config and unmarshal to our struct
         let cfg = config::get();
 
-        // Try to unmarshal the full config, falling back to defaults
-        let mut config: Config = cfg.unmarshal().unwrap_or_default();
+        // A deserialise failure is fatal. Defaulting instead discards the whole
+        // file over one mistyped value, leaving a fetcher with no sources
+        // enabled that reports healthy and fetches nothing. Every field is
+        // `#[serde(default)]`, so an absent config file deserialises cleanly.
+        let mut config: Config = cfg
+            .unmarshal()
+            .map_err(|e| Error::Config(format!("failed to parse configuration: {e}")))?;
 
         // Store config path for reload support
         config.config_path = config_path.map(String::from);
@@ -299,39 +304,15 @@ impl Config {
             )));
         }
 
-        // Validate source filter expressions (CEL)
-        if let Some(ref filter) = self.sources.aws.filter {
-            let errors = scalo::expression::validate(filter);
+        // Validate source filter expressions (CEL). Driven by the same table
+        // the pipeline routes on, so a filter cannot be validated here and then
+        // ignored at runtime, or applied at runtime without being checked.
+        for (source, filter) in self.sources.filters() {
+            let Some(expr) = filter else { continue };
+            let errors = scalo::expression::validate(expr);
             if !errors.is_empty() {
                 return Err(Error::Config(format!(
-                    "sources.aws.filter invalid: {}",
-                    errors.join(", ")
-                )));
-            }
-        }
-        if let Some(ref filter) = self.sources.azure.filter {
-            let errors = scalo::expression::validate(filter);
-            if !errors.is_empty() {
-                return Err(Error::Config(format!(
-                    "sources.azure.filter invalid: {}",
-                    errors.join(", ")
-                )));
-            }
-        }
-        if let Some(ref filter) = self.sources.m365.filter {
-            let errors = scalo::expression::validate(filter);
-            if !errors.is_empty() {
-                return Err(Error::Config(format!(
-                    "sources.m365.filter invalid: {}",
-                    errors.join(", ")
-                )));
-            }
-        }
-        if let Some(ref filter) = self.sources.gcp.filter {
-            let errors = scalo::expression::validate(filter);
-            if !errors.is_empty() {
-                return Err(Error::Config(format!(
-                    "sources.gcp.filter invalid: {}",
+                    "sources.{source}.filter invalid: {}",
                     errors.join(", ")
                 )));
             }
@@ -654,9 +635,8 @@ pub struct SourcesConfig {
 
     /// Object-store source family configuration (S3 / GCS / Azure Blob).
     ///
-    /// Phase 1: S3 backend is live; GCS and Azure Blob are stubs that
-    /// log-and-skip until Phase 2. See
-    /// `docs/superpowers/specs/2026-05-21-object-store-source-design.md`.
+    /// The S3 backend is live; GCS and Azure Blob are stubs that log-and-skip,
+    /// so naming them here does not fail the tick.
     pub object_store: ObjectStoreSourceConfig,
 
     /// Salesforce audit source configuration (SetupAuditTrail,
@@ -693,6 +673,59 @@ impl Default for SourcesConfig {
     }
 }
 
+impl SourcesConfig {
+    /// Every source's CEL `filter`, keyed by the record source-tag prefix that
+    /// source emits (`aws.cloudtrail` and `aws.guardduty` both key on `aws`).
+    ///
+    /// One table drives both `Config::validate` and the pipeline's per-record
+    /// routing. Keeping them on separate lists is what let a filter be accepted
+    /// at startup and then never applied: only aws / azure / m365 / gcp were
+    /// routed, so a filter on any of the other fifteen sources was silently
+    /// ignored and every record the operator asked to exclude shipped anyway.
+    ///
+    /// `test_filter_table_covers_every_source` fails if a new source's filter
+    /// is left out of the table.
+    #[must_use]
+    pub fn filters(&self) -> Vec<(&'static str, Option<&str>)> {
+        vec![
+            ("aws", self.aws.filter.as_deref()),
+            ("azure", self.azure.filter.as_deref()),
+            ("m365", self.m365.filter.as_deref()),
+            ("gcp", self.gcp.filter.as_deref()),
+            ("github", self.github.filter.as_deref()),
+            ("okta", self.okta.filter.as_deref()),
+            ("cloudflare", self.cloudflare.filter.as_deref()),
+            ("onepassword", self.onepassword.filter.as_deref()),
+            ("crowdstrike", self.crowdstrike.filter.as_deref()),
+            ("slack", self.slack.filter.as_deref()),
+            ("bitwarden", self.bitwarden.filter.as_deref()),
+            ("duo", self.duo.filter.as_deref()),
+            ("pypi", self.pypi.filter.as_deref()),
+            ("crates_io", self.crates_io.filter.as_deref()),
+            ("go_modules", self.go_modules.filter.as_deref()),
+            ("google_workspace", self.google_workspace.filter.as_deref()),
+            ("gcp_pubsub", self.gcp_pubsub.filter.as_deref()),
+            ("object_store", self.object_store.filter.as_deref()),
+            ("salesforce", self.salesforce.filter.as_deref()),
+        ]
+    }
+
+    /// The CEL filter for a record source tag, or `None` when that source has
+    /// no filter configured.
+    ///
+    /// Splits on the first `.` rather than prefix-matching the whole tag:
+    /// `starts_with("gcp")` also matches `gcp_pubsub.<subscription>`, which
+    /// would apply the GCP audit-log filter to Pub/Sub records.
+    #[must_use]
+    pub fn filter_for_source(&self, source: &str) -> Option<&str> {
+        let name = source.split('.').next()?;
+        self.filters()
+            .into_iter()
+            .find_map(|(n, filter)| (n == name).then_some(filter))
+            .flatten()
+    }
+}
+
 // =============================================================================
 // Multi-endpoint (GA 2.2) connection model
 // =============================================================================
@@ -704,8 +737,7 @@ impl Default for SourcesConfig {
 // every connection. Connection-specific fields (credentials, region, endpoints)
 // live per entry in `connections`. When `connections` is empty the top-level
 // fields define a single implicit connection (id = the type name), preserving
-// single-account configs and their cursor keys. See
-// `docs/superpowers/plans/2026-07-13-multi-endpoint-fetcher.md` (Part A).
+// single-account configs and their cursor keys.
 
 /// One resolved connection, ready to instantiate a source.
 ///
@@ -3119,14 +3151,11 @@ fn default_pubsub_return_immediately() -> bool {
 ///
 /// Polls one or more bucket prefixes across S3 / GCS / Azure Blob,
 /// emitting one record per line of every new object since the cursor.
-/// See `docs/superpowers/specs/2026-05-21-object-store-source-design.md`
-/// for the full design.
 ///
-/// **Phase 1:** S3 backend is fully implemented. GCS and Azure Blob
-/// backends compile but their `list_new_objects` / `get_object` calls
-/// return a "not yet implemented" error - configuring them today is
-/// safe (the source skips them with a warning) but live use must wait
-/// for Phase 2.
+/// Only the S3 backend is implemented. GCS and Azure Blob compile but their
+/// `list_new_objects` / `get_object` calls return a not-implemented error, so
+/// configuring one is safe (the source skips it with a warning) and fetches
+/// nothing.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ObjectStoreSourceConfig {
@@ -3165,17 +3194,19 @@ impl Default for ObjectStoreSourceConfig {
 ///
 /// Provider is selected by the `provider` discriminator (serde-tagged
 /// enum). Each provider variant carries its own auth shape; only S3 is
-/// live in Phase 1.
+/// implemented.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum ObjectStoreBackendConfig {
     /// Amazon S3 (or S3-compatible: MinIO, R2, B2 via endpoint_override).
     S3(S3BackendConfig),
 
-    /// Google Cloud Storage. **Phase 2 - stub today.**
+    /// Google Cloud Storage. **Not implemented** - listing and fetching both
+    /// return an error.
     Gcs(GcsBackendConfig),
 
-    /// Azure Blob Storage. **Phase 2 - stub today.**
+    /// Azure Blob Storage. **Not implemented** - listing and fetching both
+    /// return an error.
     AzureBlob(AzureBlobBackendConfig),
 }
 
@@ -3208,7 +3239,7 @@ pub struct S3BackendConfig {
     pub buckets: Vec<ObjectStoreBucket>,
 }
 
-/// GCS backend configuration. **Phase 2 stub.**
+/// GCS backend configuration. **Not implemented.**
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcsBackendConfig {
     /// Service account JSON key path.
@@ -3223,7 +3254,7 @@ pub struct GcsBackendConfig {
     pub buckets: Vec<ObjectStoreBucket>,
 }
 
-/// Azure Blob backend configuration. **Phase 2 stub.**
+/// Azure Blob backend configuration. **Not implemented.**
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AzureBlobBackendConfig {
     /// Storage account name (the `<name>` in
@@ -3303,12 +3334,10 @@ pub enum ObjectStoreFormat {
     /// Single JSON document (array -> one record per element,
     /// object -> one record).
     Json,
-    /// Gzipped plain text. Phase 1 emits each non-empty line as
-    /// `{"line": "..."}`; Phase 2 will add ALB / CloudFront / S3
-    /// access-log parsers.
+    /// Gzipped plain text. Emits each non-empty line as `{"line": "..."}` -
+    /// there is no ALB / CloudFront / S3 access-log parsing.
     TextGz,
-    /// Plain text. Same Phase 1 behaviour as `text_gz` minus the
-    /// gunzip step.
+    /// Plain text. Same as `text_gz` minus the gunzip step.
     Text,
 }
 
@@ -3585,11 +3614,11 @@ impl Default for IngestConfig {
 
 /// Legacy Kafka producer configuration.
 ///
-/// **Deprecated:** Use `output.kafka` (rustlib `KafkaConfig`) instead.
+/// **Deprecated:** Use `output.kafka` (scalo `KafkaConfig`) instead.
 /// This struct is kept for backward compatibility with existing config files
 /// that use the top-level `kafka:` section. Will be removed in next major version.
 ///
-/// Migration: move your `kafka:` settings under `output.kafka:` using rustlib
+/// Migration: move your `kafka:` settings under `output.kafka:` using scalo
 /// `KafkaConfig` format (profiles, `librdkafka_overrides`, standard field names).
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
@@ -3766,11 +3795,11 @@ pub struct OutputConfig {
     #[serde(rename = "type", default = "default_output_type")]
     pub output_type: String,
 
-    /// Kafka transport configuration (rustlib KafkaConfig).
+    /// Kafka transport configuration (scalo KafkaConfig).
     #[serde(default)]
     pub kafka: Option<scalo::transport::KafkaConfig>,
 
-    /// gRPC transport configuration (rustlib GrpcConfig, client mode).
+    /// gRPC transport configuration (scalo GrpcConfig, client mode).
     #[serde(default)]
     pub grpc: Option<scalo::transport::GrpcConfig>,
 
@@ -3985,6 +4014,75 @@ mod tests {
             err_msg.contains("sources.aws.filter invalid"),
             "Error should mention aws filter: {err_msg}"
         );
+    }
+
+    /// `SourcesConfig::filters()` must list every source that has a `filter`
+    /// field. A source missing from it is accepted at startup, unvalidated, and
+    /// never applied -- the operator's exclusions ship downstream silently.
+    ///
+    /// The expected set comes from the derived JSON Schema rather than a
+    /// hand-written list, so adding a source with a `filter` field fails this
+    /// test until the table is updated.
+    #[test]
+    fn test_filter_table_covers_every_source() {
+        let schema = serde_json::to_value(schemars::schema_for!(SourcesConfig))
+            .expect("SourcesConfig schema serialises");
+        let defs = schema
+            .get("$defs")
+            .and_then(serde_json::Value::as_object)
+            .expect("schema has $defs");
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("SourcesConfig schema has properties");
+
+        let mut with_filter_field: Vec<&str> = properties
+            .iter()
+            .filter(|(_, prop)| {
+                // Each source property is a `$ref` into `$defs`; the filter
+                // field lives on the referenced type, not the reference.
+                prop.get("$ref")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|r| r.rsplit('/').next())
+                    .and_then(|name| defs.get(name))
+                    .and_then(|def| def.get("properties"))
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|fields| fields.contains_key("filter"))
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        with_filter_field.sort_unstable();
+        assert!(
+            !with_filter_field.is_empty(),
+            "found no source with a filter field -- the schema walk is broken, \
+             not the table"
+        );
+
+        let sources = SourcesConfig::default();
+        let mut tabled: Vec<&str> = sources.filters().into_iter().map(|(n, _)| n).collect();
+        tabled.sort_unstable();
+
+        assert_eq!(
+            tabled, with_filter_field,
+            "SourcesConfig::filters() is out of step with the sources that have \
+             a filter field; add the missing source to the table so its filter \
+             is both validated and applied"
+        );
+    }
+
+    /// Every tabled source name must be a real record source-tag prefix, or
+    /// `filter_for_source` never matches it and the filter is dead config.
+    #[test]
+    fn test_filter_for_source_matches_on_the_first_tag_segment() {
+        let mut sources = SourcesConfig::default();
+        sources.crates_io.filter = Some("crates_filter".to_string());
+        assert_eq!(
+            sources.filter_for_source("crates_io.metadata"),
+            Some("crates_filter")
+        );
+        // An underscore in the source name must not be split on.
+        assert_eq!(sources.filter_for_source("crates"), None);
+        assert_eq!(sources.filter_for_source("unknown.source"), None);
     }
 
     #[test]
@@ -4223,6 +4321,53 @@ kafka:
 
         let result = Config::load_from_file(path.to_str().unwrap());
         assert!(result.is_err());
+    }
+
+    /// The cascade path (`Config::load(None)` -- no `--config`) must not swallow
+    /// a deserialise failure.
+    ///
+    /// One mistyped value in `settings.yaml` / `defaults.yaml` /
+    /// `/config/*.yaml` / a `DFE_FETCHER_*` env var is enough to fail the
+    /// unmarshal. Substituting defaults there is undetectable downstream:
+    /// `apply_flat_env` runs after the unmarshal, so env-supplied brokers land
+    /// on the defaulted config, `validate()` passes, and `config-check` reports
+    /// "configuration is valid" for a file it never read.
+    ///
+    /// Needs one process per test (`cargo nextest`), because `config::setup()`
+    /// writes a `OnceCell`.
+    #[test]
+    fn test_cascade_load_surfaces_deserialise_failure() {
+        with_env(
+            &[
+                // Reaches the config via apply_flat_env even when the unmarshal
+                // fails, which is what lets validate() pass on defaults.
+                ("DFE_FETCHER_KAFKA_BROKERS", "broker1:9092"),
+                // u64 field, so the figment extract cannot coerce it.
+                ("DFE_FETCHER_CONFIG_RELOAD_SECS", "not-a-number"),
+            ],
+            || {
+                // An already-initialised global makes Config::load fail at
+                // `config::setup` instead, which would pass the assertion below
+                // for the wrong reason.
+                assert!(
+                    config::try_get().is_none(),
+                    "the scalo config global is already initialised in this \
+                     process, so Config::load(None) cannot reach the unmarshal. \
+                     Run under `cargo nextest` (one process per test), not \
+                     `cargo test`."
+                );
+
+                let err = Config::load(None)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                assert!(
+                    err.contains("failed to parse configuration"),
+                    "a mistyped config value must fail the load, not silently \
+                     become Config::default(); got: {err:?}"
+                );
+            },
+        );
     }
 
     #[test]
