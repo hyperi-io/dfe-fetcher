@@ -459,7 +459,9 @@ mod gcs {
         _bucket: &str,
         _key: &str,
     ) -> Result<Bytes> {
-        Err(Error::Source("object_store: the GCS backend is not implemented".into()))
+        Err(Error::Source(
+            "object_store: the GCS backend is not implemented".into(),
+        ))
     }
 }
 

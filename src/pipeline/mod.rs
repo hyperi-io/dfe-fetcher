@@ -268,10 +268,7 @@ impl PipelineState {
     /// Routing lives on [`crate::config::SourcesConfig::filter_for_source`], the
     /// same table `Config::validate` syntax-checks.
     fn get_filter_for_source(&self, source: &str, config: &Config) -> Option<String> {
-        config
-            .sources
-            .filter_for_source(source)
-            .map(str::to_string)
+        config.sources.filter_for_source(source).map(str::to_string)
     }
 
     /// Evaluate a CEL filter expression against a JSON record.
