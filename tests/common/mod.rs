@@ -273,9 +273,14 @@ pub enum TestcontainerHolder {
 // can tell what left it behind. testcontainers' default is a random hex name,
 // which is untraceable the moment one survives.
 //
-// Naming: `dfe-fetcher-test-integration-<service>` for an instance shared by a
-// group of tests, or `dfe-fetcher-test-integration-<test>-<service>` when a
-// single test owns one. `container_name` builds both.
+// Naming: `dfe-fetcher-test-integration-<test>-<service>`, because every
+// container here is owned by exactly ONE test. nextest runs each test in its own
+// process, so nothing is shared even when it looks like it should be -- four
+// tests calling `acquire_kafka()` start four brokers. That was already true with
+// testcontainers' random names; the only thing a single shared name would add is
+// a collision, where the first test wins and the rest fail with "name is already
+// in use" and skip. `container_name` still takes `None` for a container started
+// once for a whole binary, but no suite does that today.
 //
 // Cleanup is belt AND braces, because `Drop` alone is not enough:
 //
@@ -319,10 +324,14 @@ fn test_labels(service: &str) -> Vec<(String, String)> {
 
 /// Container name for a backing service in this suite.
 ///
-/// Pass `Some(test)` when one test owns the container, `None` when a group
-/// shares it. Names are lowercased and non-alphanumerics collapse to `-`,
-/// because Docker only accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, and a Rust test
-/// path (`credentials::test_vault_resolve`) has colons in it.
+/// Pass `Some(test)` -- the owning test -- for anything a test starts for itself,
+/// which is everything here. `None` is for a container started once for a whole
+/// test binary; nothing does that today, and using it from several tests would
+/// make them collide on the name rather than share the container.
+///
+/// Names are lowercased and non-alphanumerics collapse to `-`, because Docker
+/// only accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, and a Rust test path
+/// (`credentials::test_vault_resolve`) has colons in it.
 #[must_use]
 pub fn container_name(test: Option<&str>, service: &str) -> String {
     let slug = |s: &str| {
@@ -375,8 +384,11 @@ impl VaultTestConfig {
     /// Acquire a Vault test config: live (env) if available, else start a
     /// throwaway OpenBao container that is auto-stopped on `Drop`.
     ///
+    /// `test` names the calling test and goes into the container name, so
+    /// concurrent tests do not collide on it.
+    ///
     /// Returns `None` if no live Vault is configured AND Docker is unavailable.
-    pub async fn acquire() -> Option<Self> {
+    pub async fn acquire(test: &str) -> Option<Self> {
         load_dotenv();
 
         // Live mode: env vars present → use them, no container managed
@@ -402,7 +414,7 @@ impl VaultTestConfig {
         // server issues a RANDOM root token instead of the one asked for, and
         // the wait strategy never matches, so the container start just times
         // out. Neither failure names OpenBao as the cause.
-        let name = container_name(None, "openbao");
+        let name = container_name(Some(test), "openbao");
         reap_stale(&name);
         let image = GenericImage::new("openbao/openbao", OPENBAO_TAG)
             .with_exposed_port(8200u16.tcp())
@@ -463,8 +475,12 @@ pub struct LocalStackConfig {
 
 impl LocalStackConfig {
     /// Acquire a LocalStack endpoint: live first, else start a testcontainer.
+    ///
+    /// `test` names the calling test and goes into the container name, so
+    /// concurrent tests do not collide on it.
+    ///
     /// Returns `None` if neither is available.
-    pub async fn acquire() -> Option<Self> {
+    pub async fn acquire(test: &str) -> Option<Self> {
         load_dotenv();
 
         // Live mode
@@ -489,7 +505,7 @@ impl LocalStackConfig {
         // refuses to boot is indistinguishable from an absent Docker daemon
         // once the reason is dropped, and both turn every test here into a
         // silent no-op.
-        let name = container_name(None, "localstack");
+        let name = container_name(Some(test), "localstack");
         reap_stale(&name);
         let container = match LocalStack::default()
             .with_tag(LOCALSTACK_TAG)
@@ -536,9 +552,12 @@ impl LocalStackConfig {
 
 /// Acquire a Kafka config: live (env) if reachable, else testcontainer.
 ///
+/// `test` names the calling test and goes into the container name, so concurrent
+/// tests do not collide on it.
+///
 /// Returns `(KafkaTestConfig, holder)` — the holder must be kept alive for
 /// the test's duration; dropping it stops the container.
-pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHolder>)> {
+pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<TestcontainerHolder>)> {
     // Live: existing TestMode pattern
     let live = kafka_test_config();
     if live.is_usable() {
@@ -550,7 +569,7 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::kafka::apache::Kafka;
 
-    let name = container_name(None, "kafka");
+    let name = container_name(Some(test), "kafka");
     reap_stale(&name);
     let Ok(container) = Kafka::default()
         .with_tag(KAFKA_TAG)

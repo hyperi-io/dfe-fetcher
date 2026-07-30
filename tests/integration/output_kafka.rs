@@ -40,7 +40,8 @@ use dfe_fetcher::pipeline::PipelineState;
 /// Round-trip a single message: produce via OutputManager, consume via raw KafkaTransport.
 #[tokio::test]
 async fn test_output_kafka_single_message_roundtrip() {
-    let Some((kf, _holder)) = common::acquire_kafka().await else {
+    let Some((kf, _holder)) = common::acquire_kafka("output-kafka-single-message-roundtrip").await
+    else {
         eprintln!("Skipping: no live Kafka and Docker unavailable for testcontainer");
         return;
     };
@@ -111,7 +112,9 @@ async fn test_output_kafka_single_message_roundtrip() {
 /// Pipeline-level round-trip: enrichment fields appear in delivered payload.
 #[tokio::test]
 async fn test_output_kafka_pipeline_enrichment_roundtrip() {
-    let Some((kf, _holder)) = common::acquire_kafka().await else {
+    let Some((kf, _holder)) =
+        common::acquire_kafka("output-kafka-pipeline-enrichment-roundtrip").await
+    else {
         eprintln!("Skipping: no live Kafka and Docker unavailable for testcontainer");
         return;
     };
@@ -192,7 +195,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
 /// Multiple messages: produce N, consume N, all distinct.
 #[tokio::test]
 async fn test_output_kafka_batch_roundtrip() {
-    let Some((kf, _holder)) = common::acquire_kafka().await else {
+    let Some((kf, _holder)) = common::acquire_kafka("output-kafka-batch-roundtrip").await else {
         eprintln!("Skipping: no live Kafka and Docker unavailable for testcontainer");
         return;
     };
@@ -266,7 +269,9 @@ async fn test_output_kafka_batch_roundtrip() {
 /// test over a transport that never connected proves nothing.
 #[tokio::test]
 async fn test_output_manager_close_when_already_closed() {
-    let Some((kf, _holder)) = common::acquire_kafka().await else {
+    let Some((kf, _holder)) =
+        common::acquire_kafka("output-manager-close-when-already-closed").await
+    else {
         eprintln!("Skipping: no live Kafka and Docker unavailable for testcontainer");
         return;
     };

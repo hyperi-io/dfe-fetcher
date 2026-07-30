@@ -674,7 +674,7 @@ fn make_localstack_config(ls: &common::LocalStackConfig) -> AwsSourceConfig {
 
 #[tokio::test]
 async fn test_aws_localstack_cloudtrail_lookup_events() {
-    let Some(ls) = common::LocalStackConfig::acquire().await else {
+    let Some(ls) = common::LocalStackConfig::acquire("aws-cloudtrail-lookup-events").await else {
         eprintln!("Skipping: no live LocalStack and Docker unavailable for testcontainer");
         return;
     };
@@ -716,7 +716,7 @@ async fn test_aws_localstack_cloudtrail_lookup_events() {
 
 #[tokio::test]
 async fn test_aws_localstack_health_check() {
-    let Some(ls) = common::LocalStackConfig::acquire().await else {
+    let Some(ls) = common::LocalStackConfig::acquire("aws-health-check").await else {
         eprintln!("Skipping: no live LocalStack and Docker unavailable for testcontainer");
         return;
     };
@@ -734,7 +734,7 @@ async fn test_aws_localstack_health_check() {
 
 #[tokio::test]
 async fn test_aws_localstack_with_time_window() {
-    let Some(ls) = common::LocalStackConfig::acquire().await else {
+    let Some(ls) = common::LocalStackConfig::acquire("aws-with-time-window").await else {
         eprintln!("Skipping: no live LocalStack and Docker unavailable for testcontainer");
         return;
     };

@@ -16,19 +16,33 @@
 use crate::common;
 use crate::common::{TEST_SUITE_LABEL, container_name};
 
-/// A shared instance is named for the repo, the suite and the service.
-#[test]
-fn shared_container_name_is_self_describing() {
-    let name = container_name(None, "clickhouse");
-    assert_eq!(name, "dfe-fetcher-test-integration-clickhouse");
-}
-
 /// A per-test instance carries the test name between the suite and the service,
 /// so two tests owning their own container do not collide.
 #[test]
 fn per_test_container_name_includes_the_test() {
     let name = container_name(Some("source_aws"), "localstack");
     assert_eq!(name, "dfe-fetcher-test-integration-source-aws-localstack");
+}
+
+/// The binary-scoped form, for a container started once for a whole test binary.
+#[test]
+fn binary_scoped_container_name_omits_the_test() {
+    let name = container_name(None, "clickhouse");
+    assert_eq!(name, "dfe-fetcher-test-integration-clickhouse");
+}
+
+/// Two tests asking for the same service must get DIFFERENT names.
+///
+/// nextest runs each test in its own process, so two tests calling the same
+/// `acquire_*` start two containers -- they do not share one. On a single name
+/// the first create wins and the rest fail with "name is already in use", and
+/// those tests then take their `else` branch and SKIP. Green, testing nothing.
+#[test]
+fn two_tests_wanting_one_service_do_not_collide() {
+    assert_ne!(
+        container_name(Some("first_test"), "kafka"),
+        container_name(Some("second_test"), "kafka"),
+    );
 }
 
 /// Docker only accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`. A Rust test path carries
@@ -84,7 +98,8 @@ fn suite_label_identifies_this_repo() {
 /// got created, and then that it was removed.
 #[tokio::test]
 async fn a_started_container_carries_the_name_and_label_then_goes_away() {
-    let expected = container_name(None, "openbao");
+    const TEST: &str = "container-hygiene-inspects-a-real-one";
+    let expected = container_name(Some(TEST), "openbao");
 
     let inspect = |field: &str| {
         std::process::Command::new("docker")
@@ -96,7 +111,7 @@ async fn a_started_container_carries_the_name_and_label_then_goes_away() {
     };
 
     {
-        let Some(vault) = common::VaultTestConfig::acquire().await else {
+        let Some(vault) = common::VaultTestConfig::acquire(TEST).await else {
             eprintln!("skipping: no Docker and no live OpenBao");
             return;
         };

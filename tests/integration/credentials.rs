@@ -143,7 +143,7 @@ async fn vault_get(cfg: &common::VaultTestConfig, path: &str, key: &str) -> Resu
 #[tokio::test]
 async fn test_vault_resolve_existing_secret() {
     // Auto-acquire vault: live or testcontainer; auto-stops on Drop
-    let Some(v) = common::VaultTestConfig::acquire().await else {
+    let Some(v) = common::VaultTestConfig::acquire("vault-resolve-existing-secret").await else {
         eprintln!("Skipping: no live Vault and Docker unavailable for testcontainer");
         return;
     };
@@ -200,7 +200,7 @@ async fn test_vault_resolve_existing_secret() {
 /// error is what makes the assertion say something about the path.
 #[tokio::test]
 async fn test_vault_resolve_missing_path_returns_error() {
-    let Some(v) = common::VaultTestConfig::acquire().await else {
+    let Some(v) = common::VaultTestConfig::acquire("vault-resolve-missing-path").await else {
         eprintln!("Skipping: no live Vault and Docker unavailable for testcontainer");
         return;
     };
