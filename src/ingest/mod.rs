@@ -67,15 +67,19 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Bearer token authentication middleware.
 ///
-/// Skips auth for `/health` endpoints (K8s probes).
-/// When no token is configured, all requests pass through.
+/// Skips auth for the K8s probe endpoints. When no token is configured, all
+/// requests pass through.
 async fn auth_middleware(
     State(state): State<Arc<IngestState>>,
     request: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
-    // Health endpoints are always exempt from auth
-    if request.uri().path().starts_with("/health") {
+    // Probe endpoints are always exempt: kubelet sends no Authorization header,
+    // so a 401 here fails the liveness probe and restarts the pod in a loop.
+    // `/livez` and `/readyz` are the contract's probe paths (see
+    // deployment::contract); `/health` is kept for older callers.
+    let path = request.uri().path();
+    if path.starts_with("/health") || path.starts_with("/livez") || path.starts_with("/readyz") {
         return next.run(request).await;
     }
 
