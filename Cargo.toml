@@ -86,7 +86,7 @@ schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std
 # `default-features = false` drops the `default-tls` feature (which pulls
 # native-tls + openssl). We use rustls exclusively. Re-enable charset/http2/
 # system-proxy explicitly to preserve previous behaviour.
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
     "charset",
     "http2",
     "system-proxy",
@@ -100,7 +100,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 # Performance
 fastrand = "2"
 rustc-hash = "2"
-compact_str = "0.9"
+compact_str = "0.10"
 parking_lot = "0.12"
 
 # Error handling
@@ -129,7 +129,7 @@ url = "2"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 
 # AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
-reqsign = { version = "0.16", default-features = false, features = ["services-aws"] }
+reqsign = { version = "0.20", default-features = false, features = ["services-aws"] }
 sha2 = "0.11"
 hex = "0.4"
 
@@ -140,9 +140,9 @@ hex = "0.4"
 # Bumping sha1 to 0.11 silently switches to digest 0.11 and breaks the
 # `Hmac<Sha1>` instantiation. Re-evaluate when hmac releases 0.13+ with
 # digest 0.11 support.
-hmac = "0.12"
-sha1 = "0.10"
-base64 = "0.22"
+hmac = "0.13"
+sha1 = "0.11"
+base64 = "0.23"
 
 # Gzip decompression for the object_store source family. Most bucket-
 # delivered log feeds (CloudTrail, VPC Flow Logs, WAF, Cloud Logging
@@ -152,7 +152,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 
 # Small XML parser for AWS S3 ListObjectsV2 responses (the only XML the
 # fetcher consumes; everything else is JSON). Stays out of the hot path.
-quick-xml = "0.39"
+quick-xml = "0.41"
 
 # CSV parser for the Salesforce EventLogFile source. EventLogFile bodies
 # are downloaded as CSV with a header row and quoted fields; hand-parsing
@@ -161,11 +161,11 @@ quick-xml = "0.39"
 csv = "1.3"
 
 # OpenTelemetry proto types (for OTLP metric output)
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
+opentelemetry-proto = { version = "0.32", features = ["gen-tonic-messages", "metrics"] }
 prost = "0.14"
 
 # Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -176,7 +176,7 @@ wiremock = "0.6"
 # `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
 # ships ZERO default features, so this must be explicit (not transitive on axum).
 tower = { version = "0.5", features = ["util"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
+opentelemetry-proto = { version = "0.32", features = ["gen-tonic-messages", "metrics"] }
 prost = "0.14"
 # Auto-managed Docker containers for integration tests (start + stop lifecycle).
 testcontainers = "0.27"
