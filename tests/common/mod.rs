@@ -218,6 +218,15 @@ pub struct VaultTestConfig {
     _container: Option<TestcontainerHolder>,
 }
 
+impl VaultTestConfig {
+    /// True when this config owns a container, false when it points at a live
+    /// external OpenBao. A naming assertion only applies to the former.
+    #[must_use]
+    pub fn manages_container(&self) -> bool {
+        self._container.is_some()
+    }
+}
+
 // =============================================================================
 // Test image pins
 // =============================================================================
@@ -255,6 +264,113 @@ pub enum TestcontainerHolder {
     Kafka(testcontainers::ContainerAsync<testcontainers_modules::kafka::apache::Kafka>),
 }
 
+// ============================================================================
+// Container naming and cleanup
+// ============================================================================
+//
+// Every container this suite starts carries a name that says which repo, which
+// suite and which backing service it is, so an operator looking at `docker ps`
+// can tell what left it behind. testcontainers' default is a random hex name,
+// which is untraceable the moment one survives.
+//
+// Naming: `dfe-fetcher-test-integration-<service>` for an instance shared by a
+// group of tests, or `dfe-fetcher-test-integration-<test>-<service>` when a
+// single test owns one. `container_name` builds both.
+//
+// Cleanup is belt AND braces, because `Drop` alone is not enough:
+//
+//   - Normal completion and a panic both unwind, so `Drop` stops the container.
+//   - A SIGKILL, an abort, or Ctrl-C on the test run does NOT. `Drop` never
+//     runs and the container survives.
+//
+// testcontainers-rs 0.27 has no resource reaper (no Ryuk), so the second case
+// is the one that leaves crap behind. A deterministic name would then make it
+// WORSE than a random one -- the leaked container holds the name and every
+// later run fails with "name already in use". `reap_stale` closes that: remove
+// any container already holding the name before starting, so a leak costs the
+// next run nothing and self-heals.
+//
+// The label goes on as well, so a sweep can find these regardless of name:
+//   docker rm -f $(docker ps -aq --filter label=io.hyperi.test.suite=dfe-fetcher-integration)
+
+/// Label marking every container this suite starts, for bulk cleanup.
+pub const TEST_SUITE_LABEL: (&str, &str) = ("io.hyperi.test.suite", "dfe-fetcher-integration");
+
+/// Labels for a container this suite starts: what it is, and whose run owns it.
+///
+/// The name says what and why; these say WHO, which is what you need when
+/// several runs share a machine and one has left something behind. The pid is
+/// the owning test process -- `ps -p <pid>` answers "is that run still alive, or
+/// is this rubbish I can remove?".
+fn test_labels(service: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            TEST_SUITE_LABEL.0.to_string(),
+            TEST_SUITE_LABEL.1.to_string(),
+        ),
+        ("io.hyperi.test.repo".to_string(), "dfe-fetcher".to_string()),
+        ("io.hyperi.test.service".to_string(), service.to_string()),
+        (
+            "io.hyperi.test.owner-pid".to_string(),
+            std::process::id().to_string(),
+        ),
+    ]
+}
+
+/// Container name for a backing service in this suite.
+///
+/// Pass `Some(test)` when one test owns the container, `None` when a group
+/// shares it. Names are lowercased and non-alphanumerics collapse to `-`,
+/// because Docker only accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, and a Rust test
+/// path (`credentials::test_vault_resolve`) has colons in it.
+#[must_use]
+pub fn container_name(test: Option<&str>, service: &str) -> String {
+    let slug = |s: &str| {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    };
+    match test {
+        Some(t) => format!("dfe-fetcher-test-integration-{}-{}", slug(t), slug(service)),
+        None => format!("dfe-fetcher-test-integration-{}", slug(service)),
+    }
+}
+
+/// Remove a DEAD container holding `name`, so a leak from a killed run cannot
+/// block this one.
+///
+/// Never touches a RUNNING container. Two concurrent runs of this suite on one
+/// machine share these names, and force-removing a live one would sabotage the
+/// other run -- a confusing mid-test failure in a process that did nothing
+/// wrong. Leaving it means the start below fails with "name is already in use",
+/// which says what actually happened.
+///
+/// Best-effort otherwise: no Docker, nothing to remove, or an already-gone
+/// container are all fine. A failure here must not fail the test -- the start
+/// that follows reports the real problem.
+pub fn reap_stale(name: &str) {
+    let running = std::process::Command::new("docker")
+        .args(["ps", "--quiet", "--filter", &format!("name=^{name}$")])
+        .output();
+    // Non-empty stdout means a container by this name is up. Leave it alone.
+    if let Ok(out) = &running
+        && !out.stdout.is_empty()
+    {
+        return;
+    }
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "--force", "--volumes", name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 impl VaultTestConfig {
     /// Acquire a Vault test config: live (env) if available, else start a
     /// throwaway OpenBao container that is auto-stopped on `Drop`.
@@ -286,12 +402,16 @@ impl VaultTestConfig {
         // server issues a RANDOM root token instead of the one asked for, and
         // the wait strategy never matches, so the container start just times
         // out. Neither failure names OpenBao as the cause.
+        let name = container_name(None, "openbao");
+        reap_stale(&name);
         let image = GenericImage::new("openbao/openbao", OPENBAO_TAG)
             .with_exposed_port(8200u16.tcp())
             .with_wait_for(WaitFor::message_on_stdout("OpenBao server started"))
             .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "root")
             .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
-            .with_cmd(["server", "-dev"]);
+            .with_cmd(["server", "-dev"])
+            .with_container_name(&name)
+            .with_labels(test_labels("openbao"));
 
         let container = match image.start().await {
             Ok(c) => c,
@@ -316,6 +436,7 @@ impl VaultTestConfig {
         };
         let address = format!("http://{host}:{port}");
 
+        #[allow(clippy::used_underscore_binding)]
         Some(Self {
             address,
             token: "root".to_string(),
@@ -368,7 +489,15 @@ impl LocalStackConfig {
         // refuses to boot is indistinguishable from an absent Docker daemon
         // once the reason is dropped, and both turn every test here into a
         // silent no-op.
-        let container = match LocalStack::default().with_tag(LOCALSTACK_TAG).start().await {
+        let name = container_name(None, "localstack");
+        reap_stale(&name);
+        let container = match LocalStack::default()
+            .with_tag(LOCALSTACK_TAG)
+            .with_container_name(&name)
+            .with_labels(test_labels("localstack"))
+            .start()
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 require_container_path_in_ci("LocalStack", &e.to_string());
@@ -421,7 +550,15 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::kafka::apache::Kafka;
 
-    let Ok(container) = Kafka::default().with_tag(KAFKA_TAG).start().await else {
+    let name = container_name(None, "kafka");
+    reap_stale(&name);
+    let Ok(container) = Kafka::default()
+        .with_tag(KAFKA_TAG)
+        .with_container_name(&name)
+        .with_labels(test_labels("kafka"))
+        .start()
+        .await
+    else {
         require_kafka_path_in_ci();
         return None;
     };
