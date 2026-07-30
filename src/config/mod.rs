@@ -174,8 +174,14 @@ impl Config {
         // Get the global config and unmarshal to our struct
         let cfg = config::get();
 
-        // Try to unmarshal the full config, falling back to defaults
-        let mut config: Config = cfg.unmarshal().unwrap_or_default();
+        // Unmarshal the full config. A deserialise failure is fatal: falling
+        // back to defaults would discard the WHOLE file over one mistyped
+        // value, leaving a fetcher with no sources enabled that reports
+        // healthy and fetches nothing. Every field is `#[serde(default)]`, so
+        // an absent config file still deserialises cleanly.
+        let mut config: Config = cfg
+            .unmarshal()
+            .map_err(|e| Error::Config(format!("failed to parse configuration: {e}")))?;
 
         // Store config path for reload support
         config.config_path = config_path.map(String::from);
@@ -654,9 +660,8 @@ pub struct SourcesConfig {
 
     /// Object-store source family configuration (S3 / GCS / Azure Blob).
     ///
-    /// Phase 1: S3 backend is live; GCS and Azure Blob are stubs that
-    /// log-and-skip until Phase 2. See
-    /// `docs/superpowers/specs/2026-05-21-object-store-source-design.md`.
+    /// The S3 backend is live; GCS and Azure Blob are stubs that log-and-skip,
+    /// so naming them here does not fail the tick.
     pub object_store: ObjectStoreSourceConfig,
 
     /// Salesforce audit source configuration (SetupAuditTrail,
@@ -704,8 +709,7 @@ impl Default for SourcesConfig {
 // every connection. Connection-specific fields (credentials, region, endpoints)
 // live per entry in `connections`. When `connections` is empty the top-level
 // fields define a single implicit connection (id = the type name), preserving
-// single-account configs and their cursor keys. See
-// `docs/superpowers/plans/2026-07-13-multi-endpoint-fetcher.md` (Part A).
+// single-account configs and their cursor keys.
 
 /// One resolved connection, ready to instantiate a source.
 ///
@@ -3119,8 +3123,6 @@ fn default_pubsub_return_immediately() -> bool {
 ///
 /// Polls one or more bucket prefixes across S3 / GCS / Azure Blob,
 /// emitting one record per line of every new object since the cursor.
-/// See `docs/superpowers/specs/2026-05-21-object-store-source-design.md`
-/// for the full design.
 ///
 /// **Phase 1:** S3 backend is fully implemented. GCS and Azure Blob
 /// backends compile but their `list_new_objects` / `get_object` calls
@@ -4223,6 +4225,55 @@ kafka:
 
         let result = Config::load_from_file(path.to_str().unwrap());
         assert!(result.is_err());
+    }
+
+    /// The cascade path (`Config::load(None)` -- no `--config`) must not swallow
+    /// a deserialise failure.
+    ///
+    /// It used to end in `cfg.unmarshal().unwrap_or_default()`, so ONE mistyped
+    /// value anywhere in `settings.yaml` / `defaults.yaml` / `/config/*.yaml` /
+    /// a `DFE_FETCHER_*` env var threw away the ENTIRE config and substituted
+    /// defaults: no sources enabled, so the fetcher fetched nothing. Nothing
+    /// caught it downstream either -- `apply_flat_env` runs AFTER the unmarshal,
+    /// so env-supplied brokers get re-applied to the defaulted config and
+    /// `validate()` passes, and `dfe-fetcher config-check` then prints
+    /// "configuration is valid" about a file it never managed to read.
+    ///
+    /// Runs one process per test under nextest, which is what keeps the
+    /// `config::setup()` global (a `OnceCell`) usable from a test at all.
+    #[test]
+    fn test_cascade_load_surfaces_deserialise_failure() {
+        with_env(
+            &[
+                // Survives the failure via apply_flat_env -- this is what made
+                // validate() pass on the silently-defaulted config.
+                ("DFE_FETCHER_KAFKA_BROKERS", "broker1:9092"),
+                // u64 field, so the figment extract cannot coerce it.
+                ("DFE_FETCHER_CONFIG_RELOAD_SECS", "not-a-number"),
+            ],
+            || {
+                // Without this, an already-initialised global would make
+                // Config::load fail at `config::setup` instead, and the test
+                // would pass for the wrong reason.
+                assert!(
+                    config::try_get().is_none(),
+                    "the scalo config global is already initialised in this \
+                     process, so Config::load(None) cannot reach the unmarshal. \
+                     Run under `cargo nextest` (one process per test), not \
+                     `cargo test`."
+                );
+
+                let err = Config::load(None)
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                assert!(
+                    err.contains("failed to parse configuration"),
+                    "a mistyped config value must fail the load, not silently \
+                     become Config::default(); got: {err:?}"
+                );
+            },
+        );
     }
 
     #[test]
