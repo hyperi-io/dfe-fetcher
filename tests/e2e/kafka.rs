@@ -193,8 +193,12 @@ async fn test_e2e_enriched_record_in_kafka() {
 
 /// Cursor store -> FetchWindow integration: write cursor, verify next window starts
 /// from cursor.last_fetch_end.
+///
+/// Not `#[ignore]`d, despite living in the e2e file: a temp dir is all it needs,
+/// and no CI job passes `--run-ignored`. This covers the logic that decides
+/// which time range gets fetched, and so whether events are skipped or fetched
+/// twice.
 #[tokio::test]
-#[ignore = "requires filesystem (always available, marked ignore for e2e consistency)"]
 async fn test_e2e_cursor_drives_fetch_window() {
     let tmp = tempfile::TempDir::new().expect("create temp dir");
 

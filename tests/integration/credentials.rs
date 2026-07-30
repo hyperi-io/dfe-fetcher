@@ -108,7 +108,42 @@ async fn vault_put(
     Ok(())
 }
 
+/// Read a secret back over the HTTP API. Lets a test separate a bad fixture
+/// from a bad resolver.
+async fn vault_get(cfg: &common::VaultTestConfig, path: &str, key: &str) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/{}/data/{}", cfg.address, cfg.mount_path, path);
+    let resp = client
+        .get(&url)
+        .header("X-Vault-Token", &cfg.token)
+        .send()
+        .await
+        .map_err(|e| format!("vault get request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("vault get returned {}", resp.status()));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("vault get body not JSON: {e}"))?;
+    body["data"]["data"][key]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("key '{key}' absent from kv-v2 response"))
+}
+
+/// `vault:path:key` credential specs must resolve to the stored secret.
+///
+/// Blocked on an upstream defect: scalo 2.10.6
+/// `src/secrets/resolve.rs::resolve_vault` builds
+/// `SecretsConfig { sources, ..Default::default() }`, and `openbao` is an
+/// `Option<OpenBaoConfig>` that `Default` leaves `None`. `SecretsManager::new`
+/// therefore constructs no vault provider and every lookup is refused with
+/// `provider not configured: openbao` before an address or token is consulted,
+/// which `VAULT_ADDR` / `BAO_ADDR` cannot influence. The fix is to populate
+/// `openbao` from the env or the config cascade in `resolve_vault`, in scalo.
 #[tokio::test]
+#[ignore = "blocked upstream: scalo 2.10.6 secrets/resolve.rs::resolve_vault leaves SecretsConfig::openbao = None, so every vault: spec fails with 'provider not configured: openbao'. Un-ignore when scalo configures the provider"]
 async fn test_vault_resolve_existing_secret() {
     // Auto-acquire vault: live or testcontainer; auto-stops on Drop
     let Some(v) = common::VaultTestConfig::acquire().await else {
@@ -117,10 +152,16 @@ async fn test_vault_resolve_existing_secret() {
     };
 
     let path = format!("dfe-fetcher-test-{}", chrono::Utc::now().timestamp_millis());
-    if let Err(e) = vault_put(&v, &path, "api-key", "super-secret-value").await {
-        eprintln!("Skipping: vault put failed (Vault not ready or perms): {e}");
-        return;
-    }
+    vault_put(&v, &path, "api-key", "super-secret-value")
+        .await
+        .unwrap_or_else(|e| panic!("fixture: write the secret to {}: {e}", v.address));
+
+    // Establish the fixture independently, so a resolver failure below cannot
+    // be confused with a secret that was never stored.
+    let readback = vault_get(&v, &path, "api-key")
+        .await
+        .unwrap_or_else(|e| panic!("fixture: read the secret back from {}: {e}", v.address));
+    assert_eq!(readback, "super-secret-value", "fixture readback");
 
     let _guard = VAULT_ENV_LOCK
         .lock()
@@ -145,16 +186,23 @@ async fn test_vault_resolve_existing_secret() {
     }
     drop(_guard);
 
-    match result {
-        Ok(value) => assert_eq!(value, "super-secret-value", "resolved value must match"),
-        Err(e) => {
-            // SecretsManager may use a different auth path; log but don't fail the suite
-            eprintln!("vault resolve failed (env/auth mismatch acceptable): {e}");
-        }
-    }
+    let value = result.unwrap_or_else(|e| {
+        panic!(
+            "resolve vault:{path}:api-key against {}, whose readback above \
+             returned the secret with the same token: {e}",
+            v.address
+        )
+    });
+    assert_eq!(value, "super-secret-value", "resolved value must match");
 }
 
+/// A missing vault path must error, and for the right reason.
+///
+/// `assert!(result.is_err())` alone is vacuous: `provider not configured`
+/// satisfies it without a lookup ever leaving the process. Excluding that
+/// error is what makes the assertion say something about the path.
 #[tokio::test]
+#[ignore = "blocked upstream: same scalo resolve_vault defect as test_vault_resolve_existing_secret, which makes 'path missing' indistinguishable from 'no provider'"]
 async fn test_vault_resolve_missing_path_returns_error() {
     let Some(v) = common::VaultTestConfig::acquire().await else {
         eprintln!("Skipping: no live Vault and Docker unavailable for testcontainer");
@@ -184,8 +232,17 @@ async fn test_vault_resolve_missing_path_returns_error() {
     }
     drop(_guard);
 
+    let err = result
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| panic!("missing vault path must return an error"));
     assert!(
-        result.is_err(),
-        "missing vault path must return error, got {result:?}"
+        !err.contains("provider not configured"),
+        "the lookup never reached OpenBao, so this says nothing about a \
+         missing path: {err}"
+    );
+    assert!(
+        err.contains("lookup failed"),
+        "expected a vault lookup failure, got: {err}"
     );
 }

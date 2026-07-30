@@ -12,9 +12,15 @@
 //! - Live: `KAFKA_BROKERS` etc. set in `.env` or environment
 //! - Docker fallback: `localhost:19092` (dfe-docker infra profile)
 //!
-//! Skips cleanly with `eprintln!` when no broker is reachable, so the suite
-//! always passes locally without infra. Unlike `tests/e2e/kafka.rs`, these
-//! tests are NOT marked `#[ignore]` — they self-skip via `skip_if_no_kafka!`.
+//! Skips cleanly with `eprintln!` when NO broker path exists at all -- no live
+//! broker and no container runtime -- so the suite still passes on a laptop
+//! without infra. `common::require_kafka_path_in_ci` turns that same case into
+//! a hard failure under CI, where a container runtime is promised.
+//!
+//! Once `acquire_kafka()` has returned a broker, every subsequent failure fails
+//! the test. A transport that will not initialise, a produce that times out and
+//! a consumer that cannot subscribe are all defects in what these tests cover,
+//! not environment gaps, so none of them may be downgraded to a skip.
 
 use crate::common;
 
@@ -48,15 +54,9 @@ async fn test_output_kafka_single_message_roundtrip() {
     };
     let legacy = dfe_fetcher::config::KafkaConfig::default();
 
-    let output = match dfe_fetcher::output::OutputManager::new(&output_config, &legacy).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!(
-                "Skipping: OutputManager init failed (broker reachable but auth/config wrong): {e}"
-            );
-            return;
-        }
-    };
+    let output = dfe_fetcher::output::OutputManager::new(&output_config, &legacy)
+        .await
+        .unwrap_or_else(|e| panic!("OutputManager init against {}: {e}", kf.brokers));
 
     // Send 1 message
     let payload = serde_json::to_vec(&json!({
@@ -66,9 +66,8 @@ async fn test_output_kafka_single_message_roundtrip() {
     .unwrap();
 
     if let Err(e) = output.send_all(&topic, Bytes::from(payload)).await {
-        eprintln!("Skipping: send failed (likely broker auth/topic ACL): {e}");
         output.close_all().await;
-        return;
+        panic!("produce to {topic} on {}: {e}", kf.brokers);
     }
 
     // Consume back
@@ -81,9 +80,8 @@ async fn test_output_kafka_single_message_roundtrip() {
     let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Skipping consume: consumer init failed: {e}");
             output.close_all().await;
-            return;
+            panic!("consumer init against {}: {e}", kf.brokers);
         }
     };
 
@@ -130,16 +128,9 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
 
-    let output =
-        match dfe_fetcher::output::OutputManager::new(&shared.get().output, &shared.get().kafka)
-            .await
-        {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("Skipping: OutputManager init failed: {e}");
-                return;
-            }
-        };
+    let output = dfe_fetcher::output::OutputManager::new(&shared.get().output, &shared.get().kafka)
+        .await
+        .unwrap_or_else(|e| panic!("OutputManager init against {}: {e}", kf.brokers));
 
     let state = PipelineState::new(
         shared,
@@ -153,10 +144,10 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);
     let enriched = state.enrich_record(raw, "aws.cloudtrail");
 
-    if let Err(e) = state.deliver_ingest(&topic, enriched).await {
-        eprintln!("Skipping: deliver failed: {e}");
-        return;
-    }
+    state
+        .deliver_ingest(&topic, enriched)
+        .await
+        .unwrap_or_else(|e| panic!("pipeline deliver to {topic} on {}: {e}", kf.brokers));
 
     // Consume and verify enrichment
     let mut consumer_config = kf.to_scalo_config();
@@ -165,13 +156,9 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     consumer_config.auto_offset_reset = "earliest".to_string();
     consumer_config.enable_auto_commit = true;
 
-    let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Skipping consume: consumer init failed: {e}");
-            return;
-        }
-    };
+    let consumer = scalo::transport::KafkaTransport::new(&consumer_config)
+        .await
+        .unwrap_or_else(|e| panic!("consumer init against {}: {e}", kf.brokers));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut enriched_found = false;
@@ -219,21 +206,16 @@ async fn test_output_kafka_batch_roundtrip() {
     };
     let legacy = dfe_fetcher::config::KafkaConfig::default();
 
-    let output = match dfe_fetcher::output::OutputManager::new(&output_config, &legacy).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("Skipping: OutputManager init failed: {e}");
-            return;
-        }
-    };
+    let output = dfe_fetcher::output::OutputManager::new(&output_config, &legacy)
+        .await
+        .unwrap_or_else(|e| panic!("OutputManager init against {}: {e}", kf.brokers));
 
     const N: u64 = 10;
     for i in 0..N {
         let payload = serde_json::to_vec(&json!({"seq": i, "tag": "batch-test"})).unwrap();
         if let Err(e) = output.send_all(&topic, Bytes::from(payload)).await {
-            eprintln!("Skipping: send {i} failed: {e}");
             output.close_all().await;
-            return;
+            panic!("produce message {i} to {topic} on {}: {e}", kf.brokers);
         }
     }
 
@@ -246,9 +228,8 @@ async fn test_output_kafka_batch_roundtrip() {
     let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Skipping consume: consumer init failed: {e}");
             output.close_all().await;
-            return;
+            panic!("consumer init against {}: {e}", kf.brokers);
         }
     };
 
@@ -280,7 +261,9 @@ async fn test_output_kafka_batch_roundtrip() {
     );
 }
 
-/// OutputManager close_all() with no transports — never panics.
+/// `close_all()` is idempotent: closing an active transport twice must not
+/// panic. The transport is asserted active first, because a "does not panic"
+/// test over a transport that never connected proves nothing.
 #[tokio::test]
 async fn test_output_manager_close_when_already_closed() {
     let Some((kf, _holder)) = common::acquire_kafka().await else {
@@ -297,21 +280,23 @@ async fn test_output_manager_close_when_already_closed() {
     };
     let legacy = dfe_fetcher::config::KafkaConfig::default();
 
-    let output = match dfe_fetcher::output::OutputManager::new(&output_config, &legacy).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("Skipping: OutputManager init failed: {e}");
-            return;
-        }
-    };
+    let output = dfe_fetcher::output::OutputManager::new(&output_config, &legacy)
+        .await
+        .unwrap_or_else(|e| panic!("OutputManager init against {}: {e}", kf.brokers));
 
     // Send one message so the producer is in active state, then close twice.
     let payload = serde_json::to_vec(&json!({"closing": "test"})).unwrap();
-    let _ = output.send_all(&topic, Bytes::from(payload)).await;
+    if let Err(e) = output.send_all(&topic, Bytes::from(payload)).await {
+        output.close_all().await;
+        panic!("produce to {topic} on {}: {e}", kf.brokers);
+    }
 
-    // Health checks before close
-    let _ = output.all_healthy();
-    let _ = output.any_healthy();
+    // The double-close below only means something over a live transport.
+    assert!(
+        output.any_healthy(),
+        "transport must be healthy after a successful produce, else the \
+         double-close below closes nothing"
+    );
 
     output.close_all().await;
     output.close_all().await; // Second close should be a no-op, not panic

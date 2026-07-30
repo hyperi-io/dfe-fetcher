@@ -67,6 +67,19 @@ impl KafkaTestConfig {
         self.sasl_mechanism.is_some() && self.sasl_user.is_some()
     }
 
+    /// Is this config usable as-is: reachable AND coherent?
+    ///
+    /// `is_reachable` only proves a TCP port answered. A SASL protocol with no
+    /// credentials is not usable: the TCP probe answers on a PLAINTEXT broker
+    /// bound to the same port, and every produce then fails authentication.
+    /// Fall through to the container instead.
+    pub fn is_usable(&self) -> bool {
+        if self.security_protocol.to_uppercase().contains("SASL") && !self.has_sasl() {
+            return false;
+        }
+        self.is_reachable()
+    }
+
     /// Check if broker is reachable via TCP (3s timeout).
     pub fn is_reachable(&self) -> bool {
         use std::net::ToSocketAddrs;
@@ -219,8 +232,14 @@ pub struct VaultTestConfig {
 /// renovate: datasource=docker depName=apache/kafka-native
 const KAFKA_TAG: &str = "4.3.1";
 
-/// renovate: datasource=docker depName=localstack/localstack
-const LOCALSTACK_TAG: &str = "2026.07.0";
+/// SEMVER line only -- do NOT move this to the CalVer tags (`2026.07.0` etc).
+/// The CalVer images on `localstack/localstack` require a licence: they exit 55
+/// with "License activation failed! ... set the LOCALSTACK_AUTH_TOKEN
+/// variable", so every LocalStack test skips. 4.x is the newest line that boots
+/// with no token; reject a CalVer bump.
+///
+/// renovate: datasource=docker depName=localstack/localstack versioning=semver
+const LOCALSTACK_TAG: &str = "4.14";
 
 /// A floating `latest` was worse than a stale pin: the harness silently
 /// retargeted on every image refresh, so a break landed with nothing in the
@@ -274,9 +293,27 @@ impl VaultTestConfig {
             .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
             .with_cmd(["server", "-dev"]);
 
-        let container = image.start().await.ok()?;
-        let host = container.get_host().await.ok()?;
-        let port = container.get_host_port_ipv4(8200u16).await.ok()?;
+        let container = match image.start().await {
+            Ok(c) => c,
+            Err(e) => {
+                require_container_path_in_ci("OpenBao", &e.to_string());
+                return None;
+            }
+        };
+        let host = match container.get_host().await {
+            Ok(h) => h,
+            Err(e) => {
+                require_container_path_in_ci("OpenBao", &format!("get_host: {e}"));
+                return None;
+            }
+        };
+        let port = match container.get_host_port_ipv4(8200u16).await {
+            Ok(p) => p,
+            Err(e) => {
+                require_container_path_in_ci("OpenBao", &format!("get_host_port: {e}"));
+                return None;
+            }
+        };
         let address = format!("http://{host}:{port}");
 
         Some(Self {
@@ -327,13 +364,31 @@ impl LocalStackConfig {
         use testcontainers::runners::AsyncRunner;
         use testcontainers_modules::localstack::LocalStack;
 
-        let container = LocalStack::default()
-            .with_tag(LOCALSTACK_TAG)
-            .start()
-            .await
-            .ok()?;
-        let host = container.get_host().await.ok()?;
-        let port = container.get_host_port_ipv4(4566).await.ok()?;
+        // Carry the start error through rather than `.ok()?`: a container that
+        // refuses to boot is indistinguishable from an absent Docker daemon
+        // once the reason is dropped, and both turn every test here into a
+        // silent no-op.
+        let container = match LocalStack::default().with_tag(LOCALSTACK_TAG).start().await {
+            Ok(c) => c,
+            Err(e) => {
+                require_container_path_in_ci("LocalStack", &e.to_string());
+                return None;
+            }
+        };
+        let host = match container.get_host().await {
+            Ok(h) => h,
+            Err(e) => {
+                require_container_path_in_ci("LocalStack", &format!("get_host: {e}"));
+                return None;
+            }
+        };
+        let port = match container.get_host_port_ipv4(4566).await {
+            Ok(p) => p,
+            Err(e) => {
+                require_container_path_in_ci("LocalStack", &format!("get_host_port: {e}"));
+                return None;
+            }
+        };
         let endpoint = format!("http://{host}:{port}");
 
         Some(Self {
@@ -357,7 +412,7 @@ impl LocalStackConfig {
 pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHolder>)> {
     // Live: existing TestMode pattern
     let live = kafka_test_config();
-    if live.is_reachable() {
+    if live.is_usable() {
         return Some((live, None));
     }
 
@@ -387,22 +442,31 @@ pub async fn acquire_kafka() -> Option<(KafkaTestConfig, Option<TestcontainerHol
     Some((cfg, Some(TestcontainerHolder::Kafka(container))))
 }
 
-/// Panic if NEITHER a live broker nor Docker is available while running in CI.
+/// Panic if NEITHER a live service nor a container is available while in CI.
 ///
-/// Scoped to "no path at all", not to "the live broker is absent". CI is not
-/// promised an external Kafka, but it does provide a container runtime, so
-/// `acquire_kafka()` should always find one of the two. If it finds neither,
-/// the test would pass VACUOUSLY -- green while exercising nothing.
+/// Scoped to "no path at all", not to "the live service is absent". CI is not
+/// promised an external Kafka / OpenBao / LocalStack, but it IS promised a
+/// container runtime, so an `acquire_*` helper should always find one of the
+/// two. If it finds neither, the test would pass VACUOUSLY -- green while
+/// exercising nothing.
 ///
-/// The live-only probe below stays a plain skip for the same reason: failing
-/// on it would assert an environment nobody agreed to provide.
-pub fn require_kafka_path_in_ci() {
+/// The live-only probe in `skip_if_no_kafka!` stays a plain skip for the same
+/// reason: failing on it would assert an environment nobody agreed to provide.
+pub fn require_container_path_in_ci(service: &str, reason: &str) {
     assert!(
         std::env::var_os("CI").is_none(),
-        "no Kafka available in CI -- neither a live broker nor Docker. \
-         Integration tests must RUN here, not skip; skipping would report \
-         green while testing nothing."
+        "no {service} available in CI -- no live endpoint and the container \
+         would not start ({reason}). Integration tests must RUN here, not \
+         skip; skipping would report green while testing nothing."
     );
+    // Outside CI the skip is legitimate, but the reason still has to be
+    // visible -- it is the only signal that the test did not run.
+    eprintln!("{service} container unavailable, test will skip: {reason}");
+}
+
+/// Kafka spelling of [`require_container_path_in_ci`].
+pub fn require_kafka_path_in_ci() {
+    require_container_path_in_ci("Kafka", "testcontainer start failed");
 }
 
 /// Skip test if Kafka is not reachable in the current test mode.

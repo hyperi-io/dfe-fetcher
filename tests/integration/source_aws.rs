@@ -639,11 +639,19 @@ async fn test_aws_fetch_cloudwatch_metrics_otlp() {
 // LocalStack integration tests (live → docker fallback)
 //
 // LocalStack emulates AWS APIs. CloudTrail's LookupEvents endpoint is supported
-// in the community image. These tests exercise the real reqsign SigV4 path
-// against a real HTTP server, validating signature generation end-to-end.
+// in the community image. These tests drive the real request path against a
+// real HTTP server: URL construction, headers, query encoding, the SigV4
+// signing code executing, and response parsing.
 //
-// To run:  docker run --rm -p 4566:4566 localstack/localstack
+// They do NOT prove the signature is correct. LocalStack does not verify SigV4
+// -- a request signed with a wrong secret is accepted, with or without
+// ENFORCE_IAM=1 -- so a bad signature is only caught against a real AWS
+// endpoint, in tests/e2e/smoke_remote.rs.
+//
+// To run:  docker run --rm -p 4566:4566 localstack/localstack:4.14
 //          OR set LOCALSTACK_ENDPOINT to a remote LocalStack instance.
+// The pinned tag must stay on the 4.x SEMVER line; see LOCALSTACK_TAG in
+// tests/common/mod.rs.
 // =============================================================================
 
 use crate::common;
@@ -677,31 +685,31 @@ async fn test_aws_localstack_cloudtrail_lookup_events() {
     // The fetch should succeed (empty events list is fine for a fresh LocalStack).
     let result = source.fetch(None).await;
 
-    match result {
-        Ok(results) => {
-            // CloudTrail service returns at most one FetchResult
+    // A fetch error is the failure this test exists to catch, so it must not be
+    // downgraded to an infrastructure excuse: LocalStack serves LookupEvents,
+    // and an empty event list from a fresh instance is still `Ok`.
+    let results = result.unwrap_or_else(|e| {
+        panic!(
+            "CloudTrail LookupEvents against LocalStack at {}: {e}",
+            ls.endpoint
+        )
+    });
+
+    // CloudTrail service returns at most one FetchResult
+    assert!(
+        results.len() <= 1,
+        "expected at most 1 FetchResult, got {}",
+        results.len()
+    );
+    // If records present, each should be valid JSON
+    for fr in &results {
+        for record in &fr.records {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(record).expect("record must be valid JSON");
             assert!(
-                results.len() <= 1,
-                "expected at most 1 FetchResult, got {}",
-                results.len()
+                parsed.is_object(),
+                "record must be a JSON object, got: {parsed:?}"
             );
-            // If records present, each should be valid JSON
-            for fr in &results {
-                for record in &fr.records {
-                    let parsed: serde_json::Value =
-                        serde_json::from_slice(record).expect("record must be valid JSON");
-                    assert!(
-                        parsed.is_object(),
-                        "record must be a JSON object, got: {parsed:?}"
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            // LocalStack may return service-specific errors that we treat as test
-            // infrastructure issues, not test failures (e.g., service not enabled
-            // in LocalStack community edition).
-            eprintln!("LocalStack CloudTrail call returned error (treating as infra issue): {e}");
         }
     }
 }
@@ -739,8 +747,13 @@ async fn test_aws_localstack_with_time_window() {
         end: chrono::Utc::now(),
     };
 
-    let result = source.fetch(Some(&window)).await;
-    // We don't assert success because LocalStack may return errors, but the
-    // SigV4 signing path must execute without panic.
-    let _ = result;
+    // A window-scoped request is signed exactly like an unscoped one, so it
+    // must succeed too. Discarding the result would leave a test that can only
+    // fail on a panic, and an error return is not a panic.
+    source.fetch(Some(&window)).await.unwrap_or_else(|e| {
+        panic!(
+            "window-scoped CloudTrail fetch against LocalStack at {}: {e}",
+            ls.endpoint
+        )
+    });
 }

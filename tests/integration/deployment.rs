@@ -200,10 +200,7 @@ fn test_output_legacy_kafka_config_mapping() {
 
     // Producer overrides
     assert_eq!(
-        scalo
-            .librdkafka_overrides
-            .get("compression.type")
-            .unwrap(),
+        scalo.librdkafka_overrides.get("compression.type").unwrap(),
         "zstd"
     );
     assert_eq!(scalo.librdkafka_overrides.get("acks").unwrap(), "all");
