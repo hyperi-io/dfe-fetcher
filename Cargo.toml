@@ -32,7 +32,7 @@ required-features = ["pgo-driver"]
 
 [dependencies]
 # scalo shared library (crates.io).
-scalo = { version = ">=2.10.4, <3", features = [
+scalo = { version = ">=2.10.7, <3", features = [
     "config",
     "config-reload",
     "logger",

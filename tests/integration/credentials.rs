@@ -134,16 +134,13 @@ async fn vault_get(cfg: &common::VaultTestConfig, path: &str, key: &str) -> Resu
 
 /// `vault:path:key` credential specs must resolve to the stored secret.
 ///
-/// Blocked on an upstream defect: scalo 2.10.6
-/// `src/secrets/resolve.rs::resolve_vault` builds
-/// `SecretsConfig { sources, ..Default::default() }`, and `openbao` is an
-/// `Option<OpenBaoConfig>` that `Default` leaves `None`. `SecretsManager::new`
-/// therefore constructs no vault provider and every lookup is refused with
-/// `provider not configured: openbao` before an address or token is consulted,
-/// which `VAULT_ADDR` / `BAO_ADDR` cannot influence. The fix is to populate
-/// `openbao` from the env or the config cascade in `resolve_vault`, in scalo.
+/// This went nowhere until scalo 2.10.7. `resolve_vault` built
+/// `SecretsConfig { sources, ..Default::default() }`, leaving `openbao` at
+/// `None`, so `SecretsManager` constructed no vault provider and every lookup
+/// was refused with `provider not configured: openbao` before an address or
+/// token was read -- `VAULT_ADDR` could not influence it. Hence the floor of
+/// `>=2.10.7` on the scalo dependency: below that this test cannot pass.
 #[tokio::test]
-#[ignore = "blocked upstream: scalo 2.10.6 secrets/resolve.rs::resolve_vault leaves SecretsConfig::openbao = None, so every vault: spec fails with 'provider not configured: openbao'. Un-ignore when scalo configures the provider"]
 async fn test_vault_resolve_existing_secret() {
     // Auto-acquire vault: live or testcontainer; auto-stops on Drop
     let Some(v) = common::VaultTestConfig::acquire().await else {
@@ -202,7 +199,6 @@ async fn test_vault_resolve_existing_secret() {
 /// satisfies it without a lookup ever leaving the process. Excluding that
 /// error is what makes the assertion say something about the path.
 #[tokio::test]
-#[ignore = "blocked upstream: same scalo resolve_vault defect as test_vault_resolve_existing_secret, which makes 'path missing' indistinguishable from 'no provider'"]
 async fn test_vault_resolve_missing_path_returns_error() {
     let Some(v) = common::VaultTestConfig::acquire().await else {
         eprintln!("Skipping: no live Vault and Docker unavailable for testcontainer");
