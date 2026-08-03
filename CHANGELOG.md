@@ -1,3 +1,10 @@
+# Changelog
+
+Rendered by CI and committed back at the end of a release -- do not edit by
+hand. Release notes also appear on the GitHub Releases page, one per tag.
+
+## [1.4.6](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.5...v1.4.6) (2026-08-03)
+
 # [1.3.0](https://github.com/hyperi-io/dfe-fetcher/compare/v1.2.3...v1.3.0) (2026-05-27)
 
 
