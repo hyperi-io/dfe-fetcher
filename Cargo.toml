@@ -86,6 +86,10 @@ schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std
 # `default-features = false` drops the `default-tls` feature (which pulls
 # native-tls + openssl). We use rustls exclusively. Re-enable charset/http2/
 # system-proxy explicitly to preserve previous behaviour.
+#
+# HELD on 0.12: reqwest and reqsign move together. reqsign 0.16 implements
+# SignableRequest for reqwest 0.12's Request, so bumping reqwest alone stops
+# every SigV4 call site compiling. See the tracking issue.
 reqwest = { version = "0.12", default-features = false, features = [
     "charset",
     "http2",
@@ -100,7 +104,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 # Performance
 fastrand = "2"
 rustc-hash = "2"
-compact_str = "0.9"
+compact_str = "0.10"
 parking_lot = "0.12"
 
 # Error handling
@@ -138,11 +142,15 @@ hex = "0.4"
 #
 # sha1 stays on the 0.10.x line (digest 0.10) for compat with hmac 0.12.
 # Bumping sha1 to 0.11 silently switches to digest 0.11 and breaks the
-# `Hmac<Sha1>` instantiation. Re-evaluate when hmac releases 0.13+ with
-# digest 0.11 support.
+# `Hmac<Sha1>` instantiation.
+#
+# hmac 0.13 IS out and still does not close this. Taking the pair to 0.13/0.11
+# fails to compile: `Hmac::<Sha1>::new_from_slice` is gone, because KeyInit
+# moved in digest 0.11. It needs a call-site migration in src/source/duo, not a
+# version bump -- see the tracking issue.
 hmac = "0.12"
 sha1 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 
 # Gzip decompression for the object_store source family. Most bucket-
 # delivered log feeds (CloudTrail, VPC Flow Logs, WAF, Cloud Logging
@@ -152,7 +160,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 
 # Small XML parser for AWS S3 ListObjectsV2 responses (the only XML the
 # fetcher consumes; everything else is JSON). Stays out of the hot path.
-quick-xml = "0.39"
+quick-xml = "0.41"
 
 # CSV parser for the Salesforce EventLogFile source. EventLogFile bodies
 # are downloaded as CSV with a header row and quoted fields; hand-parsing
@@ -165,7 +173,7 @@ opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "met
 prost = "0.14"
 
 # Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
