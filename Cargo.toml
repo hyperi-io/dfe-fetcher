@@ -51,6 +51,9 @@ scalo = { version = ">=2.10.7, <3", features = [
     # former hyperi-rustlib `credential` feature carried vault support.
     "secrets-vault",
     "dlq",
+    # dlq-kafka: the file backend is an EROFS no-op on the charts' read-only
+    # rootfs, so kafka is the only DLQ backend that works deployed.
+    "dlq-kafka",
     "deployment",
     # Reflectable config schema + capability catalog (scalo-rs#6): derive
     # JsonSchema on Config and emit config-schema.* / capability-catalog.*.

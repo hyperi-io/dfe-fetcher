@@ -235,6 +235,13 @@
           "rotation": "hourly",
           "max_age_days": 30,
           "compress_rotated": true
+        },
+        "kafka": {
+          "enabled": true,
+          "routing": "per_table",
+          "topic_suffix": ".dlq",
+          "common_topic": "dfe.dlq",
+          "send_timeout_ms": 5000
         }
       }
     },
@@ -3977,6 +3984,17 @@
             "max_age_days": 30,
             "compress_rotated": true
           }
+        },
+        "kafka": {
+          "description": "Kafka backend configuration.",
+          "$ref": "#/$defs/KafkaDlqConfig",
+          "default": {
+            "enabled": true,
+            "routing": "per_table",
+            "topic_suffix": ".dlq",
+            "common_topic": "dfe.dlq",
+            "send_timeout_ms": 5000
+          }
         }
       }
     },
@@ -4050,6 +4068,54 @@
           "description": "Rotate files every day.",
           "type": "string",
           "const": "daily"
+        }
+      ]
+    },
+    "KafkaDlqConfig": {
+      "description": "Kafka-based DLQ configuration.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable the Kafka backend.",
+          "type": "boolean",
+          "default": true
+        },
+        "routing": {
+          "description": "Topic routing strategy.",
+          "$ref": "#/$defs/DlqRouting",
+          "default": "per_table"
+        },
+        "topic_suffix": {
+          "description": "Suffix appended to destination for per-table routing.",
+          "type": "string",
+          "default": ".dlq"
+        },
+        "common_topic": {
+          "description": "Common topic when routing is `Common` or destination is unknown.",
+          "type": "string",
+          "default": "dfe.dlq"
+        },
+        "send_timeout_ms": {
+          "description": "Send timeout in milliseconds.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 5000
+        }
+      }
+    },
+    "DlqRouting": {
+      "description": "Kafka DLQ topic routing strategy.",
+      "oneOf": [
+        {
+          "description": "Route to topic matching destination with suffix.\ne.g. \"acme.auth\" → \"acme.auth.dlq\"",
+          "type": "string",
+          "const": "per_table"
+        },
+        {
+          "description": "Route all failures to a single common topic.",
+          "type": "string",
+          "const": "common"
         }
       ]
     },

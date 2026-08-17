@@ -530,12 +530,27 @@ impl ApplyFlatEnv for Config {
             self.config_reload_secs = v;
         }
 
-        // DLQ
+        // DLQ (fleet-uniform names: DLQ_ENABLED / DLQ_TOPIC / DLQ_MODE).
+        // TOPIC routes every entry to one fixed topic (the per-app standard,
+        // e.g. dfe_fetcher_dlq) rather than per-destination suffix topics.
         if let Some(v) = flat_env::flat_env_bool(prefix, "DLQ_ENABLED") {
             self.dlq.enabled = v;
         }
         if let Some(v) = flat_env::flat_env_string(prefix, "DLQ_PATH") {
             self.dlq.file.path = v.into();
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "DLQ_TOPIC") {
+            self.dlq.kafka.routing = scalo::dlq::DlqRouting::Common;
+            self.dlq.kafka.common_topic = v;
+        }
+        if let Some(v) = flat_env::flat_env_string(prefix, "DLQ_MODE") {
+            use scalo::dlq::DlqMode;
+            self.dlq.mode = match v.as_str() {
+                "fan_out" => DlqMode::FanOut,
+                "file_only" => DlqMode::FileOnly,
+                "kafka_only" => DlqMode::KafkaOnly,
+                _ => DlqMode::Cascade,
+            };
         }
     }
 }
@@ -4609,6 +4624,23 @@ sources:
                 cfg.apply_flat_env("DFE_FETCHER");
                 assert!(cfg.dlq.enabled);
                 assert_eq!(cfg.dlq.file.path.to_str().unwrap(), "/data/dlq");
+            },
+        );
+    }
+
+    #[test]
+    fn test_env_override_dlq_topic_and_mode() {
+        with_env(
+            &[
+                ("DFE_FETCHER_DLQ_TOPIC", "dfe_fetcher_dlq"),
+                ("DFE_FETCHER_DLQ_MODE", "kafka_only"),
+            ],
+            || {
+                let mut cfg = Config::default();
+                cfg.apply_flat_env("DFE_FETCHER");
+                assert_eq!(cfg.dlq.kafka.common_topic, "dfe_fetcher_dlq");
+                assert_eq!(cfg.dlq.kafka.routing, scalo::dlq::DlqRouting::Common);
+                assert_eq!(cfg.dlq.mode, scalo::dlq::DlqMode::KafkaOnly);
             },
         );
     }
