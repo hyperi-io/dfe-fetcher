@@ -141,15 +141,7 @@ impl OutputManager {
         let mut transports = Vec::new();
 
         if output.includes_kafka() {
-            let mut kafka_config = if let Some(ref cfg) = output.kafka {
-                cfg.clone()
-            } else {
-                build_scalo_kafka_config(legacy_kafka)
-            };
-            // Fetcher output is produce-only. scalo's KafkaConfig is now
-            // profile-based (no `role`); an empty consumer group means no idle
-            // consumer is built for a producer-only transport.
-            kafka_config.group = String::new();
+            let kafka_config = resolve_kafka_config(output, legacy_kafka);
 
             let transport = KafkaTransport::new(&kafka_config)
                 .await
@@ -237,6 +229,24 @@ impl OutputManager {
             }
         }
     }
+}
+
+/// Resolve the effective scalo Kafka config: `output.kafka` when set, else
+/// built from the legacy top-level `kafka` section. Produce-only (empty
+/// consumer group, so scalo builds no idle consumer). ONE resolution shared
+/// by the output transport and the DLQ producer -- if they ever diverge,
+/// dead-letters go to a different broker than the data.
+pub fn resolve_kafka_config(
+    output: &OutputConfig,
+    legacy_kafka: &LegacyKafkaConfig,
+) -> ScaloKafkaConfig {
+    let mut kafka_config = if let Some(ref cfg) = output.kafka {
+        cfg.clone()
+    } else {
+        build_scalo_kafka_config(legacy_kafka)
+    };
+    kafka_config.group = String::new();
+    kafka_config
 }
 
 /// Build a scalo [`KafkaConfig`](ScaloKafkaConfig) from the legacy

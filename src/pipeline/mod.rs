@@ -79,9 +79,12 @@ impl PipelineState {
         }
         let memory_guard = Arc::new(MemoryGuard::new(mg_config));
 
-        // Initialise DLQ if enabled
+        // Initialise DLQ if enabled. The Kafka backend rides the SAME resolved
+        // producer config as the output transport (resolve_kafka_config) --
+        // dead-letters must land on the broker the data uses.
         let dlq = if config.dlq.enabled {
-            match Dlq::spawn(&config.dlq, "dfe-fetcher", None, shutdown) {
+            let dlq_kafka = crate::output::resolve_kafka_config(&config.output, &config.kafka);
+            match Dlq::spawn(&config.dlq, "dfe-fetcher", Some(&dlq_kafka), shutdown) {
                 Ok(d) => Some(d),
                 Err(e) => {
                     warn!(error = %e, "Failed to initialise DLQ, continuing without it");
