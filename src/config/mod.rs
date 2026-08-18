@@ -142,7 +142,17 @@ impl Default for Config {
             kafka: KafkaConfig::default(),
             buffer: BufferConfig::default(),
             metrics: MetricsConfig::default(),
-            dlq: DlqConfig::default(),
+            // Fleet DLQ standard defaults: fixed per-app topic, routing=common.
+            // Fetcher entries carry topic destinations, so scalo's per-table
+            // default would target `{topic}.dlq` names nothing creates.
+            // Applies when the config file has no `dlq:` key; a partial `dlq:`
+            // block reverts nested fields to scalo's own defaults.
+            dlq: {
+                let mut dlq = DlqConfig::default();
+                dlq.kafka.routing = scalo::dlq::DlqRouting::Common;
+                dlq.kafka.common_topic = "dfe_fetcher_dlq".to_string();
+                dlq
+            },
             config_reload_secs: 0,
             instance_id: None,
             output: OutputConfig::default(),
@@ -549,7 +559,13 @@ impl ApplyFlatEnv for Config {
                 "fan_out" => DlqMode::FanOut,
                 "file_only" => DlqMode::FileOnly,
                 "kafka_only" => DlqMode::KafkaOnly,
-                _ => DlqMode::Cascade,
+                "cascade" => DlqMode::Cascade,
+                other => {
+                    // A typo'd mode must not silently pick a backend -- cascade
+                    // includes the file backend, an EROFS no-op deployed.
+                    tracing::warn!(mode = %other, "unknown DLQ_MODE, using cascade");
+                    DlqMode::Cascade
+                }
             };
         }
     }
@@ -4626,6 +4642,22 @@ sources:
                 assert_eq!(cfg.dlq.file.path.to_str().unwrap(), "/data/dlq");
             },
         );
+    }
+
+    #[test]
+    fn test_default_dlq_routes_common_to_standard_topic() {
+        let cfg = Config::default();
+        assert_eq!(cfg.dlq.kafka.routing, scalo::dlq::DlqRouting::Common);
+        assert_eq!(cfg.dlq.kafka.common_topic, "dfe_fetcher_dlq");
+    }
+
+    #[test]
+    fn test_env_override_dlq_unknown_mode_falls_back_to_cascade() {
+        with_env(&[("DFE_FETCHER_DLQ_MODE", "kafka-only")], || {
+            let mut cfg = Config::default();
+            cfg.apply_flat_env("DFE_FETCHER");
+            assert_eq!(cfg.dlq.mode, scalo::dlq::DlqMode::Cascade);
+        });
     }
 
     #[test]
