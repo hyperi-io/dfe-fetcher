@@ -3658,12 +3658,14 @@ $defs:
         description: |-
           Regex patterns for topic exclude filtering.
           Topics matching any pattern are excluded. Exclude wins over include.
-          Default: `["^__"]` (excludes Kafka internal topics like `__consumer_offsets`).
+          Default: `["^__", "_dlq$"]` -- Kafka internal topics and the DFE
+          standard's dead-letter topics (a DLQ consumer sets its own include).
         type: array
         items:
           type: string
         default:
         - ^__
+        - _dlq$
       topic_refresh_secs:
         description: |-
           Periodic topic refresh interval in seconds (0 = disabled).

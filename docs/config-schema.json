@@ -4221,13 +4221,14 @@
           "default": []
         },
         "topic_exclude": {
-          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: `[\"^__\"]` (excludes Kafka internal topics like `__consumer_offsets`).",
+          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: `[\"^__\", \"_dlq$\"]` -- Kafka internal topics and the DFE\nstandard's dead-letter topics (a DLQ consumer sets its own include).",
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [
-            "^__"
+            "^__",
+            "_dlq$"
           ]
         },
         "topic_refresh_secs": {
