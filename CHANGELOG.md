@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.11](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.10...v1.4.11) (2026-08-23)
+
+### Bug Fixes
+
+* **deps:** adopt scalo 2.10.13 and clear every rustsec advisory ([e4705fc](https://github.com/hyperi-io/dfe-fetcher/commit/e4705fc982a4962b0e012aebdc0beadb1c87d0ac))
+
 ## [1.4.10](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.9...v1.4.10) (2026-08-18)
 
 ## [1.4.9](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.8...v1.4.9) (2026-08-18)
