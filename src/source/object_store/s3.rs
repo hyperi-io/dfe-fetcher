@@ -25,13 +25,13 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use reqsign::{AwsCredential, AwsV4Signer};
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
 use crate::config::S3BackendConfig;
 use crate::credential;
 use crate::error::{Error, Result};
+use crate::source::sigv4;
 
 use super::{ListedObject, MAX_LIST_PAGES, MAX_OBJECTS_PER_TICK};
 
@@ -94,16 +94,15 @@ async fn signed_get(
         .build()
         .map_err(|e| Error::Source(format!("object_store.s3: build request failed: {e}")))?;
 
-    let cred = AwsCredential {
-        access_key_id: access_key,
-        secret_access_key: secret_key,
-        session_token: None,
-        expires_in: None,
-    };
-    let signer = AwsV4Signer::new("s3", &cfg.region);
-    signer
-        .sign(&mut req, &cred)
-        .map_err(|e| Error::Source(format!("object_store.s3: SigV4 signing failed: {e}")))?;
+    sigv4::sign_static(
+        &mut req,
+        "object_store.s3",
+        "s3",
+        &cfg.region,
+        &access_key,
+        &secret_key,
+    )
+    .await?;
 
     client
         .execute(req)

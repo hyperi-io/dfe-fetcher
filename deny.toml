@@ -11,10 +11,7 @@ targets = []
 all-features = true
 
 [advisories]
-ignore = [
-    # paste is a transitive dep via rustlib — upstream will migrate to pastey
-    "RUSTSEC-2024-0436",
-]
+ignore = []
 
 [licenses]
 allow = [

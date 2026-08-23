@@ -31,6 +31,7 @@ pub mod okta;
 pub mod onepassword;
 pub mod pypi;
 pub mod salesforce;
+pub mod sigv4;
 pub mod slack;
 
 use async_trait::async_trait;

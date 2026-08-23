@@ -19,6 +19,7 @@
 //! Authentication: Static credentials, assume role, or secrets manager.
 //! Uses AWS REST APIs with SigV4 signing via the `reqsign` crate.
 
+use crate::source::sigv4;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -29,7 +30,6 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use prost::Message;
-use reqsign::{AwsCredential, AwsV4Signer};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
@@ -195,16 +195,7 @@ impl AwsSource {
             .map_err(|e| Error::Source(format!("failed to build AWS request: {e}")))?;
 
         // Sign with SigV4 using reqsign — handles date, signature, and all canonical headers
-        let cred = AwsCredential {
-            access_key_id: access_key,
-            secret_access_key: secret_key,
-            session_token: None,
-            expires_in: None,
-        };
-        let signer = AwsV4Signer::new(service, region);
-        signer
-            .sign(&mut req, &cred)
-            .map_err(|e| Error::Source(format!("SigV4 signing failed: {e}")))?;
+        sigv4::sign_static(&mut req, "aws", service, region, &access_key, &secret_key).await?;
 
         let resp = self
             .client
@@ -259,16 +250,7 @@ impl AwsSource {
             .build()
             .map_err(|e| Error::Source(format!("failed to build AWS request: {e}")))?;
 
-        let cred = AwsCredential {
-            access_key_id: access_key,
-            secret_access_key: secret_key,
-            session_token: None,
-            expires_in: None,
-        };
-        let signer = AwsV4Signer::new(service, region);
-        signer
-            .sign(&mut req, &cred)
-            .map_err(|e| Error::Source(format!("SigV4 signing failed: {e}")))?;
+        sigv4::sign_static(&mut req, "aws", service, region, &access_key, &secret_key).await?;
 
         let resp = self
             .client
