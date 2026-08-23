@@ -3645,7 +3645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -3666,7 +3666,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -4536,9 +4536,9 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.10.12"
+version = "2.10.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7956e8fef863caadcdc340afd999672bdc6c7bbb8340d20301d9e37ae42890a6"
+checksum = "354e743f39c1ea9d29108bdc94f35909cd9faaefe1eb998db27c1e2765dfb193"
 dependencies = [
  "aes-gcm",
  "axum",
