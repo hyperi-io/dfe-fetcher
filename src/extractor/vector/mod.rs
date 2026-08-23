@@ -111,7 +111,7 @@ impl VectorManager {
         // Start managed container instances
         for instance in &self.config.instances {
             if instance.mode == "container" {
-                self.start_vector_container(instance).await;
+                self.start_vector_container(instance);
             }
         }
 
@@ -232,7 +232,7 @@ impl VectorManager {
     }
 
     /// Start a managed Vector container instance.
-    async fn start_vector_container(&self, instance: &crate::config::VectorInstance) {
+    fn start_vector_container(&self, instance: &crate::config::VectorInstance) {
         let image = instance
             .image
             .as_deref()

@@ -27,7 +27,7 @@ doctest = false
 # Default builds skip this binary because of `required-features`.
 [[bin]]
 name = "pgo-driver"
-path = "src/bin/pgo-driver.rs"
+path = "src/bin/pgo_driver.rs"
 required-features = ["pgo-driver"]
 
 [dependencies]
@@ -90,9 +90,9 @@ schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std
 # native-tls + openssl). We use rustls exclusively. Re-enable charset/http2/
 # system-proxy explicitly to preserve previous behaviour.
 #
-# HELD on 0.12: reqwest and reqsign move together. reqsign 0.16 implements
-# SignableRequest for reqwest 0.12's Request, so bumping reqwest alone stops
-# every SigV4 call site compiling. See the tracking issue.
+# HELD on 0.12: reqwest and reqsign move together. reqsign signs an
+# http::request::Parts and its default context sends over reqwest 0.12, so
+# bumping reqwest alone stops every SigV4 call site compiling.
 reqwest = { version = "0.12", default-features = false, features = [
     "charset",
     "http2",
@@ -136,7 +136,9 @@ url = "2"
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 
 # AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
-reqsign = { version = "0.16", default-features = false, features = ["services-aws"] }
+reqsign = { version = "0.20", default-features = false, features = ["aws", "default-context"] }
+# reqsign signs an http::request::Parts, so the SigV4 seam builds one directly.
+http = "1"
 sha2 = "0.11"
 hex = "0.4"
 
