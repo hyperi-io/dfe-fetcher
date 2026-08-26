@@ -14,7 +14,7 @@ rust-version = "1.95"
 description = "Pulls audit and activity logs from AWS, Azure, M365, GCP and SaaS APIs into Kafka. Runs standalone or as part of the HyperI Data Fusion Engine."
 license = "BUSL-1.1"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
-exclude = [".github/", "chart/", "docs/", "infra/", "reference/", "schemas/", "benches/"]
+exclude = [".github/", "chart/", "docs/", "infra/", "reference/", "benches/"]
 
 [lib]
 name = "dfe_fetcher"
