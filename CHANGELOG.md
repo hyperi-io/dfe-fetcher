@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.12](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.11...v1.4.12) (2026-08-27)
+
+### Bug Fixes
+
+* adopt scalo 2.10.14 ([e524995](https://github.com/hyperi-io/dfe-fetcher/commit/e52499504544b8facb523f247147c121c115840e))
+* drop the schemas submodule the fetcher never read ([#51](https://github.com/hyperi-io/dfe-fetcher/issues/51)) ([15ae1eb](https://github.com/hyperi-io/dfe-fetcher/commit/15ae1eb0ec4a969419814cf8e279aaaa4141f8fb))
+
 ## [1.4.11](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.10...v1.4.11) (2026-08-23)
 
 ### Bug Fixes
