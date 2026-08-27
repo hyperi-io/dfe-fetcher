@@ -4798,9 +4798,9 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.10.13"
+version = "2.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "354e743f39c1ea9d29108bdc94f35909cd9faaefe1eb998db27c1e2765dfb193"
+checksum = "df410e29657a99d273fbe9bc1fc9b0d061b93c2b6d5a278c4bfe282abf54ead6"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -4860,6 +4860,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-throttle",
+ "uuid",
  "vaultrs",
  "yaque",
  "zstd",
@@ -5129,6 +5130,12 @@ dependencies = [
  "cpufeatures 0.3.0",
  "digest 0.11.2",
 ]
+
+[[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
@@ -6343,6 +6350,7 @@ dependencies = [
  "atomic",
  "getrandom 0.4.2",
  "js-sys",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 
