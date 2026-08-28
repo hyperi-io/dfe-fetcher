@@ -5,5 +5,5 @@ metadata:
   labels:
     {{- include "dfe-fetcher.labels" . | nindent 4 }}
 data:
-  config.yaml: |
+  fetcher.yaml: |
     {{- toYaml .Values.config | nindent 4 }}

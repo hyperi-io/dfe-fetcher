@@ -1,5 +1,5 @@
 {{- if and .Values.autoscaling.enabled (not .Values.keda.enabled) }}
-# Standard HPA fallback — use when KEDA operator is not installed.
+# Standard HPA fallback -- use when KEDA operator is not installed.
 # Mutually exclusive with keda.enabled (KEDA creates its own HPA).
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

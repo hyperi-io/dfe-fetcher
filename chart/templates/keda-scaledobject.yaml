@@ -13,26 +13,31 @@ spec:
   pollingInterval: {{ .Values.keda.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
   triggers:
-    # dfe-fetcher is a PRODUCER (cloud-API pull -> Kafka): it has no consumer
-    # group, so there is no consumer-group lag to scale on. CPU is the always-on
-    # baseline trigger; the rustlib scaling-pressure composite (CPU + the
-    # fetcher's self-normalised fetch-backlog + upstream-throttle signals) is the
-    # rich opt-in trigger below.
+    # Kafka consumer group lag (primary scaler)
+    - type: kafka
+      authenticationRef:
+        name: {{ include "dfe-fetcher.fullname" . }}-kafka-auth
+      metadata:
+        bootstrapServers: {{ .Values.config.kafka.brokers | quote }}
+        consumerGroup: {{ .Values.keda.kafka.consumerGroup | default .Values.config.kafka.group_id | quote }}
+        {{- /* `default (index X 0)` would eagerly evaluate `index nil 0` and fail
+            lint when no topics are set. Use explicit conditional instead. */}}
+        {{- if .Values.keda.kafka.topic }}
+        topic: {{ .Values.keda.kafka.topic | quote }}
+        {{- else if .Values.config.kafka.topics }}
+        topic: {{ (index .Values.config.kafka.topics 0) | quote }}
+        {{- else }}
+        topic: ""
+        {{- end }}
+        lagThreshold: {{ .Values.keda.kafka.lagThreshold | quote }}
+        activationLagThreshold: {{ .Values.keda.kafka.activationLagThreshold | quote }}
+        saslType: scram_sha512
+        tls: disable
+    {{- if .Values.keda.cpu.enabled }}
+    # CPU utilisation (secondary scaler)
     - type: cpu
       metricType: Utilization
       metadata:
         value: {{ .Values.keda.cpu.threshold | quote }}
-    {{- if .Values.keda.scalingPressure.enabled }}
-    # Horizontal scaling-pressure engine (rustlib): correlated composite of CPU
-    # + the fetcher's self-normalised domain signals (fetch backlog + throttle).
-    # avg()+Value -- this is a 0-100 composite, NOT a per-partition lag.
-    - type: prometheus
-      metricType: Value
-      metadata:
-        serverAddress: {{ required "keda.scalingPressure.serverAddress is cluster-specific and must be set" .Values.keda.scalingPressure.serverAddress | quote }}
-        metricName: dfe_fetcher_scaling_pressure
-        query: avg(dfe_fetcher_scaling_pressure{name="fetch"})
-        threshold: {{ .Values.keda.scalingPressure.threshold | quote }}
-        activationThreshold: {{ .Values.keda.scalingPressure.activationThreshold | quote }}
     {{- end }}
 {{- end }}

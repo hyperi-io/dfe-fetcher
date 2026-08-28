@@ -151,6 +151,15 @@ impl ServiceApp for App {
     fn deployment_contract(&self) -> Option<scalo::deployment::DeploymentContract> {
         Some(crate::deployment::contract())
     }
+
+    fn version_check_defaults(&self) -> scalo::version_check::VersionCheckConfig {
+        // The runtime overlays the version_check cascade keys on this, so a
+        // deployment's explicit enabled: false always wins.
+        scalo::version_check::VersionCheckConfig {
+            api_url: "https://releases.hyperi.io/api/v1/check".into(),
+            ..Default::default()
+        }
+    }
 }
 
 #[tokio::main]
@@ -294,16 +303,6 @@ async fn run_fetcher_service(
             interval_secs = config.sources.gcp.interval_secs,
             "GCP source config"
         );
-    }
-
-    // Fire-and-forget version check against crates.io
-    {
-        use scalo::version_check::{VersionCheck, VersionCheckConfig};
-        let checker = VersionCheck::new(VersionCheckConfig::from_cascade(
-            "dfe-fetcher",
-            env!("CARGO_PKG_VERSION"),
-        ));
-        checker.check_on_startup();
     }
 
     // Use ServiceRuntime's pre-wired MetricsManager (already started, serving /metrics)
