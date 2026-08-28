@@ -6,9 +6,4 @@ version: 0.1.0
 appVersion: "1.0.0"
 
 keywords:
-  - hyperi
-  - dfe
-
-maintainers:
-  - name: HyperI
-    url: https://github.com/hyperi-io
+  - dfe-fetcher

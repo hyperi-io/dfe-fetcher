@@ -61,7 +61,7 @@ Service account name.
 {{- end }}
 
 {{/*
-kafka secret name — use existing or generate from fullname.
+kafka secret name -- use existing or generate from fullname.
 */}}
 {{- define "dfe-fetcher.kafkaSecretName" -}}
 {{- if .Values.kafka.existingSecret }}
@@ -72,7 +72,7 @@ kafka secret name — use existing or generate from fullname.
 {{- end }}
 
 {{/*
-aws secret name — use existing or generate from fullname.
+aws secret name -- use existing or generate from fullname.
 */}}
 {{- define "dfe-fetcher.awsSecretName" -}}
 {{- if .Values.aws.existingSecret }}
@@ -83,7 +83,7 @@ aws secret name — use existing or generate from fullname.
 {{- end }}
 
 {{/*
-azure secret name — use existing or generate from fullname.
+azure secret name -- use existing or generate from fullname.
 */}}
 {{- define "dfe-fetcher.azureSecretName" -}}
 {{- if .Values.azure.existingSecret }}
@@ -94,7 +94,7 @@ azure secret name — use existing or generate from fullname.
 {{- end }}
 
 {{/*
-m365 secret name — use existing or generate from fullname.
+m365 secret name -- use existing or generate from fullname.
 */}}
 {{- define "dfe-fetcher.m365SecretName" -}}
 {{- if .Values.m365.existingSecret }}
@@ -105,7 +105,7 @@ m365 secret name — use existing or generate from fullname.
 {{- end }}
 
 {{/*
-gcp secret name — use existing or generate from fullname.
+gcp secret name -- use existing or generate from fullname.
 */}}
 {{- define "dfe-fetcher.gcpSecretName" -}}
 {{- if .Values.gcp.existingSecret }}
