@@ -221,7 +221,8 @@ impl PipelineState {
                 to_send.push(enriched);
             }
 
-            // One at a time, in order -- each send awaits the transport.
+            // Each send awaits the transport, so a slow broker slows the batch
+            // rather than the whole batch landing in the memory guard at once.
             for enriched in to_send {
                 self.send_to_transports(&topic, enriched).await?;
                 passed += 1;
@@ -689,6 +690,42 @@ mod tests {
             state.memory_guard.current_bytes(),
             before,
             "drop must return the tracked bytes to baseline"
+        );
+    }
+
+    #[test]
+    fn memory_lease_releases_when_a_suspended_future_is_dropped() {
+        // Bytes must stay tracked across a pending await and come back when the
+        // future is dropped there. `Box::pin` owns the future, so the scope exit
+        // drops it; `std::pin::pin!` yields a borrow whose drop is a no-op, and
+        // the test would pass while proving nothing.
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let state = make_pipeline_state();
+        let before = state.memory_guard.current_bytes();
+        let mut cx = Context::from_waker(Waker::noop());
+
+        {
+            let mut in_flight = Box::pin(async {
+                let _lease = MemoryLease::acquire(&state.memory_guard, 4096);
+                std::future::pending::<()>().await;
+            });
+            assert!(
+                in_flight.as_mut().poll(&mut cx).is_pending(),
+                "the send must still be in flight for this to test anything"
+            );
+            assert_eq!(
+                state.memory_guard.current_bytes(),
+                before + 4096,
+                "bytes must stay tracked while the send is in flight"
+            );
+        }
+
+        assert_eq!(
+            state.memory_guard.current_bytes(),
+            before,
+            "cancelling the send must return the tracked bytes"
         );
     }
 
