@@ -44,25 +44,23 @@ use scalo::memory::MemoryGuard;
 
 /// Tracked bytes released on drop, so a cancelled send cannot leak them.
 ///
-/// Shutdown or a dropped fetch drops the in-flight future between `add_bytes`
-/// and `release`, and the counter never decays: the guard then reports pressure
-/// forever and `is_ready()` stays false while the process keeps running.
-struct MemoryLease {
-    guard: Arc<MemoryGuard>,
+/// Dropping the in-flight future between `add_bytes` and `release` leaves the
+/// counter high for the life of the process: an ingest client that disconnects
+/// mid-send is the live path. The stuck count then fails the readiness probe
+/// via `is_ready()` and inflates the scaling pressure served to KEDA.
+struct MemoryLease<'a> {
+    guard: &'a MemoryGuard,
     bytes: u64,
 }
 
-impl MemoryLease {
-    fn acquire(guard: &Arc<MemoryGuard>, bytes: u64) -> Self {
+impl<'a> MemoryLease<'a> {
+    fn acquire(guard: &'a MemoryGuard, bytes: u64) -> Self {
         guard.add_bytes(bytes);
-        Self {
-            guard: Arc::clone(guard),
-            bytes,
-        }
+        Self { guard, bytes }
     }
 }
 
-impl Drop for MemoryLease {
+impl Drop for MemoryLease<'_> {
     fn drop(&mut self) {
         self.guard.release(self.bytes);
     }
@@ -223,7 +221,7 @@ impl PipelineState {
                 to_send.push(enriched);
             }
 
-            // Send all passing records concurrently (bounded by transport backpressure)
+            // One at a time, in order -- each send awaits the transport.
             for enriched in to_send {
                 self.send_to_transports(&topic, enriched).await?;
                 passed += 1;
@@ -673,8 +671,8 @@ mod tests {
 
     #[test]
     fn memory_lease_releases_on_every_drop_path() {
-        // The lease is dropped however the send ends, so its Drop contract is
-        // what covers cancellation.
+        // Pins the Drop contract only. Whether `send_to_transports` still holds
+        // a lease is NOT covered -- that needs a transport that stays pending.
         let state = make_pipeline_state();
         let before = state.memory_guard.current_bytes();
 
