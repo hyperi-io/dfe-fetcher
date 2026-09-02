@@ -580,7 +580,7 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
     {
         Ok(container) => container,
         Err(e) => {
-            require_kafka_path_in_ci(&e.to_string());
+            require_container_path_in_ci("Kafka", &e.to_string());
             return None;
         }
     };
@@ -621,11 +621,6 @@ pub fn require_container_path_in_ci(service: &str, reason: &str) {
     // Outside CI the skip is legitimate, but the reason still has to be
     // visible -- it is the only signal that the test did not run.
     eprintln!("{service} container unavailable, test will skip: {reason}");
-}
-
-/// Kafka spelling of [`require_container_path_in_ci`].
-pub fn require_kafka_path_in_ci(reason: &str) {
-    require_container_path_in_ci("Kafka", reason);
 }
 
 /// Skip test if Kafka is not reachable in the current test mode.

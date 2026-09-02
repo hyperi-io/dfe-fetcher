@@ -14,8 +14,9 @@
 //!
 //! Skips cleanly with `eprintln!` when NO broker path exists at all -- no live
 //! broker and no container runtime -- so the suite still passes on a laptop
-//! without infra. `common::require_kafka_path_in_ci` turns that same case into
-//! a hard failure under CI, where a container runtime is promised.
+//! without infra. `common::require_container_path_in_ci` turns that same case
+//! into a hard failure under CI, where a container runtime is promised, and
+//! reports the start error that caused it.
 //!
 //! Once `acquire_kafka()` has returned a broker, every subsequent failure fails
 //! the test. A transport that will not initialise, a produce that times out and
