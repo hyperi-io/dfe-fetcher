@@ -571,15 +571,18 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
 
     let name = container_name(Some(test), "kafka");
     reap_stale(&name);
-    let Ok(container) = Kafka::default()
+    let container = match Kafka::default()
         .with_tag(KAFKA_TAG)
         .with_container_name(&name)
         .with_labels(test_labels("kafka"))
         .start()
         .await
-    else {
-        require_kafka_path_in_ci();
-        return None;
+    {
+        Ok(container) => container,
+        Err(e) => {
+            require_kafka_path_in_ci(&e.to_string());
+            return None;
+        }
     };
     let host = container.get_host().await.ok()?;
     let port = container
@@ -621,8 +624,8 @@ pub fn require_container_path_in_ci(service: &str, reason: &str) {
 }
 
 /// Kafka spelling of [`require_container_path_in_ci`].
-pub fn require_kafka_path_in_ci() {
-    require_container_path_in_ci("Kafka", "testcontainer start failed");
+pub fn require_kafka_path_in_ci(reason: &str) {
+    require_container_path_in_ci("Kafka", reason);
 }
 
 /// Skip test if Kafka is not reachable in the current test mode.
