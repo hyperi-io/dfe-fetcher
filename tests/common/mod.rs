@@ -584,11 +584,26 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
             return None;
         }
     };
-    let host = container.get_host().await.ok()?;
-    let port = container
+    // A started container whose address cannot be read is still "no Kafka
+    // path": same CI guard as a start failure, so a silent None cannot turn
+    // the suite green while asserting nothing.
+    let host = match container.get_host().await {
+        Ok(h) => h,
+        Err(e) => {
+            require_container_path_in_ci("Kafka", &format!("get_host: {e}"));
+            return None;
+        }
+    };
+    let port = match container
         .get_host_port_ipv4(testcontainers_modules::kafka::apache::KAFKA_PORT)
         .await
-        .ok()?;
+    {
+        Ok(p) => p,
+        Err(e) => {
+            require_container_path_in_ci("Kafka", &format!("get_host_port: {e}"));
+            return None;
+        }
+    };
     let brokers = format!("{host}:{port}");
 
     let cfg = KafkaTestConfig {
