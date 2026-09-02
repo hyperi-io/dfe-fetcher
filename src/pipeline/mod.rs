@@ -42,6 +42,32 @@ use crate::output::OutputManager;
 use crate::source::FetchResult;
 use scalo::memory::MemoryGuard;
 
+/// Tracked bytes released on drop, so a cancelled send cannot leak them.
+///
+/// Shutdown or a dropped fetch drops the in-flight future between `add_bytes`
+/// and `release`, and the counter never decays: the guard then reports pressure
+/// forever and `is_ready()` stays false while the process keeps running.
+struct MemoryLease {
+    guard: Arc<MemoryGuard>,
+    bytes: u64,
+}
+
+impl MemoryLease {
+    fn acquire(guard: &Arc<MemoryGuard>, bytes: u64) -> Self {
+        guard.add_bytes(bytes);
+        Self {
+            guard: Arc::clone(guard),
+            bytes,
+        }
+    }
+}
+
+impl Drop for MemoryLease {
+    fn drop(&mut self) {
+        self.guard.release(self.bytes);
+    }
+}
+
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
@@ -314,13 +340,13 @@ impl PipelineState {
             payload_bytes = payload_size,
             "Sending record to output transport"
         );
-        self.memory_guard.add_bytes(payload_size);
+        let lease = MemoryLease::acquire(&self.memory_guard, payload_size);
 
         let send_start = std::time::Instant::now();
         let result = output.send_all(topic, payload.clone()).await;
         let send_duration_ms = send_start.elapsed().as_millis();
 
-        self.memory_guard.release(payload_size);
+        drop(lease);
 
         if result.is_ok() {
             tracing::trace!(
@@ -643,6 +669,29 @@ mod tests {
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
         PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap()
+    }
+
+    #[test]
+    fn memory_lease_releases_on_every_drop_path() {
+        // The lease is dropped however the send ends, so its Drop contract is
+        // what covers cancellation.
+        let state = make_pipeline_state();
+        let before = state.memory_guard.current_bytes();
+
+        {
+            let _lease = MemoryLease::acquire(&state.memory_guard, 4096);
+            assert_eq!(
+                state.memory_guard.current_bytes(),
+                before + 4096,
+                "acquire must track the bytes"
+            );
+        }
+
+        assert_eq!(
+            state.memory_guard.current_bytes(),
+            before,
+            "drop must return the tracked bytes to baseline"
+        );
     }
 
     #[test]
