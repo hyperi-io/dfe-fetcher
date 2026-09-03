@@ -422,3 +422,97 @@ fn test_app_test_contract_mirrors_deployment_contract() {
     assert_eq!(app.vector_grpc_port, Some(6000));
     assert_eq!(app.config_mount_path, "/etc/dfe/fetcher.yaml");
 }
+
+// =============================================================================
+// Committed chart vs the generator
+// =============================================================================
+
+/// Collect a chart directory as relative-path -> contents.
+fn chart_files(root: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    fn walk(
+        dir: &std::path::Path,
+        root: &std::path::Path,
+        out: &mut std::collections::BTreeMap<String, String>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read chart dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(&path, root, out);
+            } else {
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("path under root")
+                    .to_string_lossy()
+                    .into_owned();
+                out.insert(
+                    rel,
+                    std::fs::read_to_string(&path).expect("read chart file"),
+                );
+            }
+        }
+    }
+
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// The committed chart IS the generator's output, and nothing regenerates it at
+/// deploy time -- so a template missing from the commit is absent from every
+/// deployment. That is not hypothetical: `keda-triggerauth.yaml` was dropped
+/// while `keda-scaledobject.yaml` kept its unconditional `authenticationRef` to
+/// the object that file creates, leaving KEDA unable to resolve the reference
+/// whenever `keda.enabled` was set.
+#[test]
+fn committed_chart_matches_the_generator() {
+    let out = tempfile::tempdir().expect("tempdir");
+    scalo::deployment::generate_chart(&dfe_fetcher::deployment::contract(), out.path(), None)
+        .expect("generate chart");
+
+    let generated = chart_files(out.path());
+    let chart_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("chart");
+    let committed = chart_files(&chart_dir);
+
+    let missing: Vec<_> = generated
+        .keys()
+        .filter(|k| !committed.contains_key(*k))
+        .collect();
+    let extra: Vec<_> = committed
+        .keys()
+        .filter(|k| !generated.contains_key(*k))
+        .collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "chart/ is out of step with the generator -- regenerate with `dfe-fetcher emit-chart chart`\n  \
+         generated but not committed: {missing:?}\n  committed but not generated: {extra:?}"
+    );
+
+    for (name, want) in &generated {
+        let have = committed.get(name).expect("presence checked above");
+        if have == want {
+            continue;
+        }
+        // Report the first differing line: dumping two whole charts at a
+        // reader is the same as reporting nothing.
+        let (line_no, from_generator, from_commit) = want
+            .lines()
+            .zip(have.lines())
+            .enumerate()
+            .find(|(_, (w, h))| w != h)
+            .map_or_else(
+                || {
+                    (
+                        0,
+                        format!("{} lines", want.lines().count()),
+                        format!("{} lines", have.lines().count()),
+                    )
+                },
+                |(i, (w, h))| (i + 1, w.to_string(), h.to_string()),
+            );
+        panic!(
+            "chart/{name} differs from the generator at line {line_no} -- \
+             regenerate with `dfe-fetcher emit-chart chart`\n  \
+             generator: {from_generator}\n  committed: {from_commit}"
+        );
+    }
+}
