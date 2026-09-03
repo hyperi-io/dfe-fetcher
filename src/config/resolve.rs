@@ -28,6 +28,11 @@ pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialE
             conn.region = Some(resolve(region).await?);
         }
     }
+    // Unresolved, a `vault:`/`env:` spec here becomes the literal bearer token
+    // the server accepts -- an auth setting that reads as configured and is not.
+    if let Some(token) = &config.ingest.auth_token {
+        config.ingest.auth_token = Some(resolve(token).await?);
+    }
     Ok(())
 }
 
@@ -59,6 +64,29 @@ mod tests {
         assert_eq!(cfg.sources.aws.region, "eu-west-1");
 
         unsafe { std::env::remove_var("DFE_FETCHER_TEST_AWS_REGION") };
+    }
+
+    #[tokio::test]
+    async fn ingest_auth_token_resolves() {
+        // Unresolved, the spec string itself became the accepted bearer token,
+        // so a deployment that configured auth had none.
+        // SAFETY: test-only; unique var name so parallel tests do not collide.
+        unsafe { std::env::set_var("DFE_FETCHER_TEST_INGEST_TOKEN", "s3cret") };
+
+        let mut cfg = base_config();
+        cfg.ingest.auth_token = Some("env:DFE_FETCHER_TEST_INGEST_TOKEN".to_string());
+        resolve_config_specs(&mut cfg).await.unwrap();
+        assert_eq!(cfg.ingest.auth_token.as_deref(), Some("s3cret"));
+
+        unsafe { std::env::remove_var("DFE_FETCHER_TEST_INGEST_TOKEN") };
+    }
+
+    #[tokio::test]
+    async fn ingest_off_by_default() {
+        assert!(
+            !base_config().ingest.enabled,
+            "a fetcher offers no send-to surface unless asked"
+        );
     }
 
     #[tokio::test]
