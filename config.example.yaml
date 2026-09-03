@@ -358,10 +358,8 @@ sources:
   # deliver via bucket (CloudTrail, VPC Flow Logs, WAF, Cloud Logging storage
   # sinks, Azure diagnostic-to-blob).
   #
-  # Phase 1: S3 backend is fully implemented. GCS and Azure Blob backends are
-  # stubs that log-and-skip; do not enable them today. See
-  # docs/superpowers/specs/2026-05-21-object-store-source-design.md for the
-  # Phase 2 plan.
+  # The S3 backend is implemented. GCS and Azure Blob are stubs that log and
+  # skip, so enabling them fetches nothing.
   #
   # Formats: json_gz | jsonl | json | text_gz | text
   # ---------------------------------------------------------------------------
@@ -657,13 +655,16 @@ buffer:
 # =============================================================================
 # Messages that fail Kafka delivery are routed to the DLQ for later replay.
 # File-only mode writes DLQ entries to local disk as JSON lines.
+# Values below are the DEFAULTS scalo applies when the key is absent, except
+# `enabled`, which this file turns off. An unparseable value here is FATAL at
+# boot (config/mod.rs:191), so `rotation` takes only the two variants named.
 dlq:
-  enabled: false
-  # mode: file_only               # file_only (default), cascade, fan_out, kafka_only
+  enabled: false                  # scalo's own default is true
+  # mode: cascade                 # cascade (default), file_only, fan_out, kafka_only
   # file:
-  #   path: "/var/lib/dfe-fetcher/dlq"
-  #   rotation: daily              # daily, hourly, size_mb
-  #   max_age_days: 7
+  #   path: "/var/spool/dfe/dlq"
+  #   rotation: hourly             # hourly (default) or daily -- nothing else
+  #   max_age_days: 30
   #   compress_rotated: true
 
 # =============================================================================
@@ -674,16 +675,36 @@ metrics:
   address: "0.0.0.0:9090"
 
 # =============================================================================
+# Version check (PHONES HOME) — REQUIRES RESTART
+# =============================================================================
+# ON BY DEFAULT. At startup the fetcher POSTs its product, version and a
+# generated instance id to https://releases.hyperi.io/api/v1/check. Both
+# `enabled` and `send_instance_id` default to true, so a deployment that
+# never configures this section still calls out.
+#
+# KNOWN GAP (#60): the opt-out is read from the config CASCADE, and the
+# cascade is only built when the binary starts WITHOUT `--config`. The chart,
+# the container entrypoint and the Quick Start all pass `--config`, so
+# `enabled: false` written here may not be read on exactly the paths most
+# deployments use. Until that is fixed, treat the network policy as the
+# reliable control.
+version_check:
+  enabled: true                  # false to stop the startup call
+  send_instance_id: true         # false keeps the check, drops the identifier
+  # api_url: "https://releases.hyperi.io/api/v1/check"
+
+# =============================================================================
 # Cursor Store (incremental fetching)
 # =============================================================================
 # Tracks the last successful fetch window per source so restarts resume
 # from where they left off instead of re-fetching the same time range.
-# Single JSON file on a PVC-backed path. Persists across pod restarts.
-# file_path REQUIRES RESTART (cursor store created at startup).
+# One file PER KEY under a PVC-backed directory. Persists across pod restarts.
+# directory REQUIRES RESTART (cursor store created at startup).
 # default_window_hours is HOT-RELOADED (re-read when no cursor exists).
+# Unset, the store falls back to the directory holding the config file.
 # cursor:
-#   file_path: "/var/lib/dfe-fetcher/cursors.json"  # REQUIRES RESTART
-#   default_window_hours: 1                          # hot-reloaded
+#   directory: "/var/lib/dfe-fetcher/cursors"  # REQUIRES RESTART
+#   default_window_hours: 1                     # hot-reloaded
 
 # =============================================================================
 # Horizontal scaling pressure (rustlib 2.8.10+ engine) — REQUIRES RESTART
@@ -703,25 +724,13 @@ metrics:
 # dead sink). Emits dfe_fetcher_scaling_pressure{name="fetch"}.
 scaling:
   enabled: true
-  interval_secs: 15
-  transport:
-    inbound: other            # cloud-API pull, not a rustlib transport
-    outbound: kafka           # producer (downstream-bound; not in the default max)
-  params:
-    cpu_target: 0.70
-    # NOTE: no lag_target — fetcher has NO kafka INBOUND (it is a producer).
-    # NOTE: fetch_pressure + throttle_ratio are self-normalised, so they need
-    #       NO target param. Add one ONLY if you switch to an absolute signal.
-  pressures:
-    - name: fetch
-      # 100 * max(cpu/cpu_target, max(fetch_pressure, throttle_ratio)), gated by circuit.
-      expression: >
-        circuit_open ? 0.0 :
-        100.0 * (
-          cpu_utilisation_ratio / params.cpu_target >
-            (custom.fetch_pressure > custom.throttle_ratio
-               ? custom.fetch_pressure : custom.throttle_ratio)
-          ? cpu_utilisation_ratio / params.cpu_target
-          : (custom.fetch_pressure > custom.throttle_ratio
-               ? custom.fetch_pressure : custom.throttle_ratio)
-        )
+  memory_gate_threshold: 0.8  # pressure jumps to 100 at this memory ratio
+
+# NOT IMPLEMENTED as at scalo 2.11.1, and previously documented here as if it
+# were: scalo's ScalingPressureConfig (scaling/config.rs:28) carries `enabled`
+# and `memory_gate_threshold` and nothing else. `interval_secs`, `transport`,
+# `params` and `pressures[].expression` are accepted by serde and discarded, so
+# a CEL composite written here never runs and emits no gauge. The domain signals
+# the fetch loop pushes (fetch_pressure, throttle_ratio) have nowhere to land.
+# Deployments therefore scale on CPU. Removing the block rather than leaving a
+# design that silently does nothing; the intent is recorded in #66.

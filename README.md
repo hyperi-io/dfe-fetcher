@@ -82,8 +82,8 @@ setting. Configuration loads through a layered cascade (CLI, then
 `SIGHUP` to reload the hot-reloadable settings without a restart. The cascade is
 diagrammed in [docs/DESIGN.md](docs/DESIGN.md).
 
-Default service ports: metrics and health on `9090` (`/health/live`,
-`/health/ready`), the ingest HTTP endpoint on `8080`, and the Vector gRPC
+Default service ports: metrics and health on `9090` (`/livez`, `/readyz`,
+`/metrics`), the ingest HTTP endpoint on `8080`, and the Vector gRPC
 receiver on `6000`.
 
 ### Credential resolution
