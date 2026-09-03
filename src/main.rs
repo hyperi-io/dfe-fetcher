@@ -424,9 +424,11 @@ async fn run_fetcher_service(
     // check and scaling pressure callbacks here.
     {
         let ready_state = Arc::clone(&pipeline_state);
+        // probe_ready, not is_ready: the probe must not fail this pod for an
+        // output outage every replica shares, which would also stall a rollout.
         runtime
             .metrics
-            .set_readiness_check(move || ready_state.is_ready());
+            .set_readiness_check(move || ready_state.probe_ready());
         runtime
             .metrics
             .set_scaling_pressure(Arc::clone(&scaling_pressure));
