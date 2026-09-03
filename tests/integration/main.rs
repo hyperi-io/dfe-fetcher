@@ -19,6 +19,7 @@
 mod common;
 
 mod config;
+mod config_reachability;
 mod container_hygiene;
 mod credentials;
 mod deployment;

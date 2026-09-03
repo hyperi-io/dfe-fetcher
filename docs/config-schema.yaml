@@ -3297,28 +3297,47 @@ $defs:
           acks: all
           retries: 5
   SaslConfig:
-    description: SASL authentication configuration.
+    description: |-
+      SASL authentication configuration.
+
+      Every field defaults, so the two secret env vars the chart injects are a
+      complete SASL block on their own -- which is what the chart claims they are.
+      Without that, a partial block was a startup parse error.
     type: object
     properties:
       enabled:
-        description: Enable SASL.
+        description: |-
+          Enable SASL. Defaults to TRUE, because reaching this struct at all means
+          a `kafka.sasl` block exists -- written by hand or built out of the two
+          secret env vars the chart injects -- and that is a request for SASL.
+          `enabled: false` still switches it off and is never inferred away.
+          `kafka.sasl` itself defaults to absent, so a config that says nothing
+          gets no SASL.
         type: boolean
+        default: true
       mechanism:
-        description: SASL mechanism (plain, scram_sha_256, scram_sha_512).
+        description: |-
+          SASL mechanism, in librdkafka's spelling: `PLAIN`, `SCRAM-SHA-256`,
+          `SCRAM-SHA-512`, `GSSAPI`, `OAUTHBEARER`. Passed through verbatim, so
+          anything else is refused by the client at connect.
         type: string
+        default: SCRAM-SHA-512
       username:
         description: Username.
         type: string
+        default: ''
       password:
-        description: Password (always redacted in serialisation/debug output).
+        description: |-
+          Password (always redacted in serialisation/debug output).
+
+          The schema default is pinned to the empty string: serialising the real
+          default outside an expose window yields the mask, and a UI that
+          pre-filled a password box with `***REDACTED***` would send that as the
+          password.
         type: string
         x-dfe-secret: true
         writeOnly: true
-    required:
-    - enabled
-    - mechanism
-    - username
-    - password
+        default: ''
   KafkaTlsConfig:
     description: Kafka TLS configuration.
     type: object

@@ -3796,34 +3796,32 @@
       }
     },
     "SaslConfig": {
-      "description": "SASL authentication configuration.",
+      "description": "SASL authentication configuration.\n\nEvery field defaults, so the two secret env vars the chart injects are a\ncomplete SASL block on their own -- which is what the chart claims they are.\nWithout that, a partial block was a startup parse error.",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Enable SASL.",
-          "type": "boolean"
+          "description": "Enable SASL. Defaults to TRUE, because reaching this struct at all means\na `kafka.sasl` block exists -- written by hand or built out of the two\nsecret env vars the chart injects -- and that is a request for SASL.\n`enabled: false` still switches it off and is never inferred away.\n`kafka.sasl` itself defaults to absent, so a config that says nothing\ngets no SASL.",
+          "type": "boolean",
+          "default": true
         },
         "mechanism": {
-          "description": "SASL mechanism (plain, scram_sha_256, scram_sha_512).",
-          "type": "string"
+          "description": "SASL mechanism, in librdkafka's spelling: `PLAIN`, `SCRAM-SHA-256`,\n`SCRAM-SHA-512`, `GSSAPI`, `OAUTHBEARER`. Passed through verbatim, so\nanything else is refused by the client at connect.",
+          "type": "string",
+          "default": "SCRAM-SHA-512"
         },
         "username": {
           "description": "Username.",
-          "type": "string"
+          "type": "string",
+          "default": ""
         },
         "password": {
-          "description": "Password (always redacted in serialisation/debug output).",
+          "description": "Password (always redacted in serialisation/debug output).\n\nThe schema default is pinned to the empty string: serialising the real\ndefault outside an expose window yields the mask, and a UI that\npre-filled a password box with `***REDACTED***` would send that as the\npassword.",
           "type": "string",
           "x-dfe-secret": true,
-          "writeOnly": true
+          "writeOnly": true,
+          "default": ""
         }
-      },
-      "required": [
-        "enabled",
-        "mechanism",
-        "username",
-        "password"
-      ]
+      }
     },
     "KafkaTlsConfig": {
       "description": "Kafka TLS configuration.",
