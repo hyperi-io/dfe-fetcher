@@ -104,7 +104,11 @@ config:
       compression: zstd
       acks: all
   ingest:
-    enabled: true
+    # Off: a fetcher pulls. /ingest/{source}/{topic} takes the destination from
+    # the URL, so an enabled listener with no token lets anything that reaches
+    # the port write to any topic. Container extractors in HTTP mode are the
+    # only consumer and turn it on.
+    enabled: false
     bind_address: 0.0.0.0:8080
   metrics:
     enabled: true

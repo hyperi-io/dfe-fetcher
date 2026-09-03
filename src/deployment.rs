@@ -170,7 +170,7 @@ pub fn contract() -> DeploymentContract {
                 }
             },
             "ingest": {
-                "enabled": true,
+                "enabled": false,
                 "bind_address": "0.0.0.0:8080"
             },
             "metrics": {
@@ -284,6 +284,28 @@ mod tests {
     fn test_contract_extra_ports_count() {
         let c = contract();
         assert_eq!(c.extra_ports.len(), 2);
+    }
+
+    #[test]
+    fn the_contract_default_agrees_with_the_code_default_on_ingest() {
+        // Changing IngestConfig::default() alone changes nothing a deployment
+        // sees: the chart's config block and this contract default both
+        // override it. Flipping one and not the others is how a security
+        // default gets fixed on paper and left open in the cluster.
+        let c = contract();
+        let default_config = c
+            .default_config
+            .as_ref()
+            .expect("contract must carry a default config");
+        let contract_enabled = default_config["ingest"]["enabled"]
+            .as_bool()
+            .expect("ingest.enabled must be a bool in the contract default");
+
+        assert_eq!(
+            contract_enabled,
+            crate::config::IngestConfig::default().enabled,
+            "the contract's ingest.enabled must track IngestConfig::default()"
+        );
     }
 
     #[test]
