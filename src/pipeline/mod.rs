@@ -572,7 +572,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert!(parsed.get("_timestamp_fetcher").is_some());
         assert!(parsed.get("_timestamp_received").is_some());
-        assert_eq!(parsed.get("_source").unwrap().as_str().unwrap(), "cloudtrail");
+        assert_eq!(
+            parsed.get("_source").unwrap().as_str().unwrap(),
+            "cloudtrail"
+        );
         assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "aws.cloudtrail"

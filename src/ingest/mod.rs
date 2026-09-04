@@ -202,7 +202,11 @@ async fn handle_ingest(
 
     state.metrics.add_records_fetched(1);
 
-    match state.pipeline.deliver_ingest(&source, "ingest", &topic, body).await {
+    match state
+        .pipeline
+        .deliver_ingest(&source, "ingest", &topic, body)
+        .await
+    {
         Ok(()) => {
             state.metrics.record_ingest_duration(start.elapsed());
             state.metrics.inc_ingest_request("success");
@@ -242,7 +246,11 @@ async fn handle_ingest_with_topic(
 
     state.metrics.add_records_fetched(1);
 
-    match state.pipeline.deliver_ingest(&source, "ingest", &topic, body).await {
+    match state
+        .pipeline
+        .deliver_ingest(&source, "ingest", &topic, body)
+        .await
+    {
         Ok(()) => {
             state.metrics.record_ingest_duration(start.elapsed());
             state.metrics.inc_ingest_request("success");
