@@ -42,6 +42,54 @@ use crate::output::OutputManager;
 use crate::source::FetchResult;
 use scalo::memory::MemoryGuard;
 
+/// Metadata keys `enrich_record` stamps on every record.
+///
+/// They are reserved: a payload that already carries one has its value moved
+/// aside rather than duplicated. Two top-level keys of the same name make the
+/// loader's ClickHouse JSON column reject the whole record ("Duplicate path
+/// found during parsing JSON object"), and a rejected record is not
+/// dead-lettered -- it is lost.
+const RESERVED_KEYS: [&str; 4] = [
+    "_timestamp_fetcher",
+    "_timestamp_received",
+    "_source",
+    "_source_fetcher",
+];
+
+/// Cheap pre-filter for [`rewrite_reserved_keys`]: true when the raw bytes
+/// contain the opening quote of a reserved key name anywhere. A nested field or
+/// a string value matches too -- a false positive costs the slower rewrite
+/// path, never correctness.
+fn may_carry_reserved_key(raw: &[u8]) -> bool {
+    raw.windows(8).any(|w| w == b"\"_source".as_slice())
+        || raw.windows(12).any(|w| w == b"\"_timestamp_".as_slice())
+}
+
+/// Rebuild a record that already carries one or more [`RESERVED_KEYS`].
+///
+/// Every reserved key the payload brought is renamed to `<key>_original` and
+/// the fetcher's value takes the name, so each key appears exactly once.
+/// Returns `None` when the payload is not a JSON object, leaving the caller on
+/// the append fast path.
+fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str) -> Option<Bytes> {
+    let serde_json::Value::Object(mut map) = serde_json::from_slice(raw).ok()? else {
+        return None;
+    };
+
+    for key in RESERVED_KEYS {
+        if let Some(existing) = map.remove(key) {
+            map.insert(format!("{key}_original"), existing);
+        }
+    }
+
+    map.insert("_timestamp_fetcher".to_string(), now_ms.into());
+    map.insert("_timestamp_received".to_string(), now_ms.into());
+    map.insert("_source".to_string(), dfe_source.into());
+    map.insert("_source_fetcher".to_string(), source.into());
+
+    serde_json::to_vec(&map).ok().map(Bytes::from)
+}
+
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
@@ -236,11 +284,19 @@ impl PipelineState {
     ///
     /// `_source` is the DFE source name (the topic without its suffix), the field
     /// dfe-loader routes and filters on; `_source_fetcher` names the producer.
+    ///
+    /// The fetcher's value wins for every key in [`RESERVED_KEYS`] -- the loader
+    /// routes on `_source`, so the DFE source name must be the one that survives
+    /// -- and whatever the payload carried under that name is kept as
+    /// `<key>_original`.
     pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
 
         let raw = payload.as_ref();
         let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') else {
@@ -251,6 +307,20 @@ impl PipelineState {
             );
             return payload;
         };
+
+        // Appending blind would emit a second copy of any reserved key the
+        // payload already has, so a collision takes the parse-and-rewrite path.
+        if may_carry_reserved_key(raw)
+            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, dfe_source, source)
+        {
+            tracing::trace!(
+                source,
+                original_bytes = raw.len(),
+                enriched_bytes = rewritten.len(),
+                "Record enriched, reserved keys rewritten"
+            );
+            return rewritten;
+        }
 
         let mut buf = Vec::with_capacity(raw.len() + 160);
         buf.extend_from_slice(&raw[..insert_pos]);
@@ -1117,35 +1187,109 @@ mod tests {
         );
     }
 
-    // -- enrich_record with pre-existing _timestamp_received --
+    // -- enrich_record against payloads that already carry a reserved key --
+
+    /// Count the top-level occurrences of a key name in the raw output. A
+    /// `serde_json` parse cannot see a duplicate (it keeps the last), so
+    /// duplicate-key assertions have to be made on the bytes.
+    fn key_occurrences(enriched: &Bytes, key: &str) -> usize {
+        let needle = format!("\"{key}\":");
+        std::str::from_utf8(enriched)
+            .unwrap()
+            .matches(&needle)
+            .count()
+    }
 
     #[test]
     fn test_enrich_record_with_existing_timestamp_received() {
-        // The enrich path appends new fields before the final `}`; if the
-        // caller has already stamped `_timestamp_received` we still add
-        // `_timestamp_fetcher` and `_source_fetcher`. The result has two
-        // `_timestamp_received` keys (JSON allows duplicates; most parsers
-        // keep the last).
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_timestamp_received":12345}"#);
         let enriched = state.enrich_record(payload, "ingest", "ingest.source");
-        let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
-        assert!(
-            enriched_str.contains("\"_timestamp_fetcher\":"),
-            "should add _timestamp_fetcher"
-        );
-        assert!(
-            enriched_str.contains("\"_source_fetcher\":\"ingest.source\""),
-            "should add _source_fetcher"
-        );
-        // Original event field preserved
+        assert_eq!(key_occurrences(&enriched, "_timestamp_received"), 1);
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert_eq!(parsed["event"], "x");
         assert_eq!(parsed["_source"], "ingest");
         assert_eq!(parsed["_source_fetcher"], "ingest.source");
-        assert!(parsed.get("_timestamp_fetcher").is_some());
-        assert!(parsed.get("_timestamp_received").is_some());
+        assert!(parsed["_timestamp_fetcher"].is_number());
+        assert!(parsed["_timestamp_received"].is_number());
+        // The caller's stamp is kept beside ours, not dropped.
+        assert_eq!(parsed["_timestamp_received_original"], 12345);
+    }
+
+    #[test]
+    fn test_enrich_record_with_existing_source() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x","_source":"producer-set"}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        assert_eq!(
+            key_occurrences(&enriched, "_source"),
+            1,
+            "two _source keys make ClickHouse reject the record"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["event"], "x");
+        // The DFE source name wins -- it is what dfe-loader routes on.
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["_source_original"], "producer-set");
+        assert_eq!(parsed["_source_fetcher"], "ingest.source");
+    }
+
+    #[test]
+    fn test_enrich_record_with_existing_source_fetcher() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x","_source_fetcher":"producer-set"}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        assert_eq!(key_occurrences(&enriched, "_source_fetcher"), 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source_fetcher"], "ingest.source");
+        assert_eq!(parsed["_source_fetcher_original"], "producer-set");
+        assert_eq!(parsed["_source"], "ingest");
+    }
+
+    #[test]
+    fn test_enrich_record_with_every_reserved_key_present() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(
+            r#"{"event":"x","_source":"a","_source_fetcher":"b","_timestamp_fetcher":1,"_timestamp_received":2}"#,
+        );
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        for key in RESERVED_KEYS {
+            assert_eq!(key_occurrences(&enriched, key), 1, "duplicate {key}");
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["_source_fetcher"], "ingest.source");
+        assert_eq!(parsed["_source_original"], "a");
+        assert_eq!(parsed["_source_fetcher_original"], "b");
+        assert_eq!(parsed["_timestamp_fetcher_original"], 1);
+        assert_eq!(parsed["_timestamp_received_original"], 2);
+    }
+
+    #[test]
+    fn test_enrich_record_reserved_key_nested_only_takes_fast_path() {
+        // A nested `_source` is not a top-level collision. The pre-filter
+        // matches it, the rewrite leaves it where it is, and the record still
+        // ends up with exactly one top-level `_source`.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"inner":{"_source":"nested"}}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["inner"]["_source"], "nested");
+        assert!(parsed.get("_source_original").is_none());
+    }
+
+    #[test]
+    fn test_may_carry_reserved_key() {
+        assert!(may_carry_reserved_key(br#"{"_source":"x"}"#));
+        assert!(may_carry_reserved_key(br#"{"_timestamp_received":1}"#));
+        assert!(!may_carry_reserved_key(br#"{"event":"x","id":7}"#));
+        assert!(!may_carry_reserved_key(b"{}"));
     }
 
     /// Exercise PipelineState::new with DLQ enabled to cover the DLQ init branch.
