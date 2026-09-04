@@ -143,6 +143,12 @@ name: the loader routes on `_source`, so the DFE source name has to be the one
 that survives, and a record carrying the same top-level key twice is rejected
 outright by ClickHouse rather than dead-lettered.
 
+`<key>_original` is never overwritten. A payload that already carries both the
+reserved name and its `_original` -- a replayed record on a second enrich pass,
+say -- keeps the `_original` it arrived with, and the colliding value is parked
+under the next free `<key>_original_<n>` counting from 2, with a warning naming
+the key.
+
 ## Container Extractor Lifecycle
 
 ```mermaid
