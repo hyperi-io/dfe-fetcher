@@ -65,14 +65,17 @@ async fn test_startup_pipeline_state_no_output() {
 
     // Enrichment should work without output
     let raw = Bytes::from(r#"{"test":true}"#);
-    let enriched = state.enrich_record(raw, "test.source");
+    let enriched = state.enrich_record(raw.clone(), "test", "test.source");
     let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
     assert_eq!(parsed["test"], true);
     assert!(parsed["_timestamp_fetcher"].is_number());
+    assert_eq!(parsed["_source"], "test");
     assert!(parsed["_source_fetcher"].is_string());
 
     // Deliver should fail gracefully (no output configured)
-    let result = state.deliver_ingest("test-topic", enriched).await;
+    let result = state
+        .deliver_ingest("test", "test.source", "test-topic", raw)
+        .await;
     assert!(
         result.is_err(),
         "deliver should fail without output transport"

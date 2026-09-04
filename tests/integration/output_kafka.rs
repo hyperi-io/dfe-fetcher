@@ -143,12 +143,12 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     )
     .expect("pipeline state");
 
-    // Enrich a record and deliver via the pipeline
+    // Deliver via the pipeline, which enriches on the way through. No suffix,
+    // so the DFE source is the topic itself.
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);
-    let enriched = state.enrich_record(raw, "aws.cloudtrail");
 
     state
-        .deliver_ingest(&topic, enriched)
+        .deliver_ingest(&topic, "aws.cloudtrail", &topic, raw)
         .await
         .unwrap_or_else(|e| panic!("pipeline deliver to {topic} on {}: {e}", kf.brokers));
 
@@ -171,6 +171,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
             for record in batch.records {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
                     && parsed.get("_timestamp_fetcher").is_some()
+                    && parsed["_source"] == topic.as_str()
                     && parsed["_source_fetcher"] == "aws.cloudtrail"
                     && parsed["eventName"] == "CreateUser"
                 {
