@@ -333,10 +333,11 @@ impl PipelineState {
     /// `_source` is the DFE source name (the topic without its suffix), the field
     /// dfe-loader routes and filters on; `_source_fetcher` names the producer.
     ///
-    /// The fetcher's value wins for every key in [`RESERVED_KEYS`] -- the loader
+    /// The fetcher's value wins for every reserved metadata key -- the loader
     /// routes on `_source`, so the DFE source name must be the one that survives
     /// -- and whatever the payload carried under that name is kept as
-    /// `<key>_original`.
+    /// `<key>_original`, or the next free `<key>_original_<n>` when that name is
+    /// taken too.
     pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
