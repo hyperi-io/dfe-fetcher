@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.15](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.14...v1.4.15) (2026-09-04)
+
+### Bug Fixes
+
+* **ingest:** a payload that already carries _source no longer reaches the loader with two of them ([#77](https://github.com/hyperi-io/dfe-fetcher/issues/77)) ([751f6e5](https://github.com/hyperi-io/dfe-fetcher/commit/751f6e5d92ad94468b9743c25bd0a733c40cb09e)), closes [#75](https://github.com/hyperi-io/dfe-fetcher/issues/75)
+
 ## [1.4.14](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.13...v1.4.14) (2026-09-04)
 
 ### Bug Fixes
