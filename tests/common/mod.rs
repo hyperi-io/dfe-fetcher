@@ -595,7 +595,10 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
         }
     }
     let Some(container) = container else {
-        require_container_path_in_ci("Kafka", &format!("testcontainer start failed, {last_error}"));
+        require_container_path_in_ci(
+            "Kafka",
+            &format!("testcontainer start failed, {last_error}"),
+        );
         return None;
     };
     let host = container.get_host().await.ok()?;
