@@ -175,7 +175,7 @@ impl PipelineState {
                 } else {
                     record
                 };
-                let enriched = self.enrich_record(record, &result.source);
+                let enriched = self.enrich_record(record, &result.topic, &result.source);
 
                 // Apply CEL filter if configured — drop records that don't match
                 if let Some(ref expr) = filter_expr {
@@ -218,12 +218,25 @@ impl PipelineState {
     }
 
     /// Deliver a single ingest message (from container/HTTP extractors).
-    pub async fn deliver_ingest(&self, topic: &str, payload: Bytes) -> Result<()> {
-        self.send_to_transports(topic, payload).await
+    ///
+    /// `source` is the DFE source name the loader routes on, `fetcher_source`
+    /// the extractor that produced the record.
+    pub async fn deliver_ingest(
+        &self,
+        source: &str,
+        fetcher_source: &str,
+        topic: &str,
+        payload: Bytes,
+    ) -> Result<()> {
+        let enriched = self.enrich_record(payload, source, fetcher_source);
+        self.send_to_transports(topic, enriched).await
     }
 
     /// Enrich a record with fetcher metadata.
-    pub fn enrich_record(&self, payload: Bytes, source: &str) -> Bytes {
+    ///
+    /// `_source` is the DFE source name (the topic without its suffix), the field
+    /// dfe-loader routes and filters on; `_source_fetcher` names the producer.
+    pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -239,7 +252,7 @@ impl PipelineState {
             return payload;
         };
 
-        let mut buf = Vec::with_capacity(raw.len() + 120);
+        let mut buf = Vec::with_capacity(raw.len() + 160);
         buf.extend_from_slice(&raw[..insert_pos]);
 
         // Add comma if not empty object
@@ -251,7 +264,7 @@ impl PipelineState {
             buf.push(b',');
         }
         buf.extend_from_slice(
-            format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
+            format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source\":\"{dfe_source}\",\"_source_fetcher\":\"{source}\"").as_bytes(),
         );
         buf.extend_from_slice(&raw[insert_pos..]);
 
@@ -547,17 +560,22 @@ mod tests {
             });
 
         let payload = Bytes::from(r#"{"key": "value"}"#);
-        let enriched = state.enrich_record(payload, "aws.cloudtrail");
+        let enriched = state.enrich_record(payload, "cloudtrail", "aws.cloudtrail");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         assert!(enriched_str.contains("\"_timestamp_fetcher\":"));
         assert!(enriched_str.contains("\"_timestamp_received\":"));
+        assert!(enriched_str.contains("\"_source\":\"cloudtrail\""));
         assert!(enriched_str.contains("\"_source_fetcher\":\"aws.cloudtrail\""));
 
         // Verify it's still valid JSON
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert!(parsed.get("_timestamp_fetcher").is_some());
         assert!(parsed.get("_timestamp_received").is_some());
+        assert_eq!(
+            parsed.get("_source").unwrap().as_str().unwrap(),
+            "cloudtrail"
+        );
         assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "aws.cloudtrail"
@@ -649,13 +667,14 @@ mod tests {
     fn test_enrich_record_empty_object() {
         let state = make_pipeline_state();
         let payload = Bytes::from("{}");
-        let enriched = state.enrich_record(payload, "test.source");
+        let enriched = state.enrich_record(payload, "test", "test.source");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         // Should be valid JSON
         let parsed: serde_json::Value = serde_json::from_str(enriched_str).unwrap();
         assert!(parsed.get("_timestamp_fetcher").is_some());
         assert!(parsed.get("_timestamp_received").is_some());
+        assert_eq!(parsed.get("_source").unwrap().as_str().unwrap(), "test");
         assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "test.source"
@@ -667,7 +686,7 @@ mod tests {
         let state = make_pipeline_state();
         let raw = "this is not json at all";
         let payload = Bytes::from(raw);
-        let enriched = state.enrich_record(payload, "src");
+        let enriched = state.enrich_record(payload, "src", "src.fetcher");
         // Non-JSON payload has no closing brace so should be returned unchanged
         assert_eq!(enriched.as_ref(), raw.as_bytes());
     }
@@ -676,13 +695,14 @@ mod tests {
     fn test_enrich_record_nested_json() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"outer":{"inner":42}}"#);
-        let enriched = state.enrich_record(payload, "nested.src");
+        let enriched = state.enrich_record(payload, "nested", "nested.src");
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Original nested data preserved
         assert_eq!(parsed["outer"]["inner"], 42);
         // Metadata at top level
         assert!(parsed.get("_timestamp_fetcher").is_some());
+        assert_eq!(parsed["_source"], "nested");
         assert_eq!(parsed["_source_fetcher"], "nested.src");
     }
 
@@ -704,11 +724,12 @@ mod tests {
         assert!(big.len() > 10_000, "Test payload should exceed 10KB");
 
         let payload = Bytes::from(big);
-        let enriched = state.enrich_record(payload, "large.source");
+        let enriched = state.enrich_record(payload, "large", "large.source");
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Metadata added
         assert!(parsed.get("_timestamp_fetcher").is_some());
+        assert_eq!(parsed["_source"], "large");
         assert_eq!(parsed["_source_fetcher"], "large.source");
         // Original fields preserved
         assert!(parsed.get("field_0").is_some());
@@ -719,7 +740,7 @@ mod tests {
     fn test_enrich_record_unicode_content() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"name":"日本語テスト","emoji":"🚀🔥"}"#);
-        let enriched = state.enrich_record(payload, "unicode.src");
+        let enriched = state.enrich_record(payload, "unicode", "unicode.src");
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Unicode preserved
@@ -733,7 +754,7 @@ mod tests {
     fn test_enrich_record_special_chars_in_source() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"key":"val"}"#);
-        let enriched = state.enrich_record(payload, "source/with\"special");
+        let enriched = state.enrich_record(payload, "special", "source/with\"special");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
         // The source name is inserted as a JSON string value — verify it's present
         assert!(
@@ -945,7 +966,7 @@ mod tests {
     async fn test_deliver_ingest_without_output_returns_config_error() {
         let state = make_pipeline_state();
         let err = state
-            .deliver_ingest("any.topic", Bytes::from(r#"{"key":"val"}"#))
+            .deliver_ingest("any", "test", "any_land", Bytes::from(r#"{"key":"val"}"#))
             .await
             .expect_err("deliver_ingest without output must fail");
         match err {
@@ -1107,7 +1128,7 @@ mod tests {
         // keep the last).
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_timestamp_received":12345}"#);
-        let enriched = state.enrich_record(payload, "ingest.source");
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         assert!(
@@ -1121,6 +1142,7 @@ mod tests {
         // Original event field preserved
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert_eq!(parsed["event"], "x");
+        assert_eq!(parsed["_source"], "ingest");
         assert_eq!(parsed["_source_fetcher"], "ingest.source");
         assert!(parsed.get("_timestamp_fetcher").is_some());
         assert!(parsed.get("_timestamp_received").is_some());

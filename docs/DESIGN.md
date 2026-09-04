@@ -129,7 +129,7 @@ sequenceDiagram
     S->>S: API call (with pagination)
     S-->>Sch: Vec<FetchResult>
     Sch->>P: deliver(results)
-    P->>P: Enrich: add _timestamp_fetcher, _source_fetcher, _timestamp_received
+    P->>P: Enrich: add _timestamp_fetcher, _timestamp_received, _source (topic base), _source_fetcher
     P->>P: CEL filter: evaluate per-source filter expression
     P->>O: send(topic + suffix, payload)
     O->>T: Produce message (Kafka and/or gRPC)

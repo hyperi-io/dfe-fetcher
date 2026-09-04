@@ -58,15 +58,15 @@ fn bench_enrich_record(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("small_100b", |b| {
-        b.iter(|| state.enrich_record(black_box(small.clone()), "aws.cloudtrail"));
+        b.iter(|| state.enrich_record(black_box(small.clone()), "cloudtrail", "aws.cloudtrail"));
     });
 
     group.bench_function("medium_1kb", |b| {
-        b.iter(|| state.enrich_record(black_box(medium.clone()), "azure.sentinel"));
+        b.iter(|| state.enrich_record(black_box(medium.clone()), "sentinel", "azure.sentinel"));
     });
 
     group.bench_function("large_10kb", |b| {
-        b.iter(|| state.enrich_record(black_box(large.clone()), "gcp.audit"));
+        b.iter(|| state.enrich_record(black_box(large.clone()), "audit", "gcp.audit"));
     });
 
     // Batch of 1000 small records
@@ -74,7 +74,7 @@ fn bench_enrich_record(c: &mut Criterion) {
     group.bench_function("batch_1000_small", |b| {
         b.iter(|| {
             for _ in 0..1_000 {
-                let _ = state.enrich_record(black_box(small.clone()), "m365.audit");
+                let _ = state.enrich_record(black_box(small.clone()), "audit", "m365.audit");
             }
         });
     });

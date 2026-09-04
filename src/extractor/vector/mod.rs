@@ -173,7 +173,10 @@ impl VectorManager {
                                     let payload = record.payload;
                                     let pipeline = Arc::clone(&pipeline);
                                     async move {
-                                        if let Err(e) = pipeline.deliver_ingest(&topic, payload).await {
+                                        // The DFE source is the topic without its suffix.
+                                        let suffix = pipeline.config().kafka.topic_suffix.clone();
+                                        let source = topic.strip_suffix(suffix.as_str()).unwrap_or(&topic).to_string();
+                                        if let Err(e) = pipeline.deliver_ingest(&source, "vector", &topic, payload).await {
                                             error!(
                                                 topic = %topic,
                                                 error = %e,
