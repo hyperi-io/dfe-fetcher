@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -56,13 +57,60 @@ const RESERVED_KEYS: [&str; 4] = [
     "_source_fetcher",
 ];
 
+/// Prefixes the pre-filter searches for, one per reserved-key family.
+static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 2]> = LazyLock::new(|| {
+    [
+        memchr::memmem::Finder::new(b"\"_source"),
+        memchr::memmem::Finder::new(b"\"_timestamp_"),
+    ]
+});
+
 /// Cheap pre-filter for [`rewrite_reserved_keys`]: true when the raw bytes
 /// contain the opening quote of a reserved key name anywhere. A nested field or
 /// a string value matches too -- a false positive costs the slower rewrite
 /// path, never correctness.
 fn may_carry_reserved_key(raw: &[u8]) -> bool {
-    raw.windows(8).any(|w| w == b"\"_source".as_slice())
-        || raw.windows(12).any(|w| w == b"\"_timestamp_".as_slice())
+    RESERVED_KEY_FINDERS.iter().any(|f| f.find(raw).is_some())
+}
+
+/// Park a reserved key's incoming value beside the fetcher's own.
+///
+/// `<key>_original` is the first choice; when the payload already carries that
+/// name too the parked value goes to the next free `<key>_original_<n>`, so a
+/// replayed record cannot overwrite the original it was enriched with first.
+fn park_original(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: serde_json::Value,
+) {
+    let preferred = format!("{key}_original");
+    if !map.contains_key(&preferred) {
+        map.insert(preferred, value);
+        return;
+    }
+
+    let mut n = 2u32;
+    let parked = loop {
+        let candidate = format!("{preferred}_{n}");
+        if !map.contains_key(&candidate) {
+            break candidate;
+        }
+        n += 1;
+    };
+    warn!(
+        reserved_key = key,
+        parked_as = parked.as_str(),
+        "Reserved key collided with an existing _original, parked under a numbered name"
+    );
+    map.insert(parked, value);
+}
+
+/// Render a value as a quoted JSON string literal.
+///
+/// The append path interpolates the source names into JSON text, so serde has
+/// to own the escaping or a quote or backslash in a name breaks the record.
+fn json_string_literal(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""))
 }
 
 /// Rebuild a record that already carries one or more [`RESERVED_KEYS`].
@@ -78,7 +126,7 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
 
     for key in RESERVED_KEYS {
         if let Some(existing) = map.remove(key) {
-            map.insert(format!("{key}_original"), existing);
+            park_original(&mut map, key, existing);
         }
     }
 
@@ -334,7 +382,12 @@ impl PipelineState {
             buf.push(b',');
         }
         buf.extend_from_slice(
-            format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source\":\"{dfe_source}\",\"_source_fetcher\":\"{source}\"").as_bytes(),
+            format!(
+                "\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source\":{},\"_source_fetcher\":{}",
+                json_string_literal(dfe_source),
+                json_string_literal(source)
+            )
+            .as_bytes(),
         );
         buf.extend_from_slice(&raw[insert_pos..]);
 
@@ -826,11 +879,13 @@ mod tests {
         let payload = Bytes::from(r#"{"key":"val"}"#);
         let enriched = state.enrich_record(payload, "special", "source/with\"special");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
-        // The source name is inserted as a JSON string value — verify it's present
+        // The quote is escaped in the bytes, so the record still parses.
         assert!(
-            enriched_str.contains("source/with\\\"special")
-                || enriched_str.contains("source/with\"special")
+            enriched_str.contains(r#"source/with\"special"#),
+            "{enriched_str}"
         );
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source_fetcher"], "source/with\"special");
     }
 
     // -- PipelineState tests --
@@ -1270,10 +1325,10 @@ mod tests {
     }
 
     #[test]
-    fn test_enrich_record_reserved_key_nested_only_takes_fast_path() {
-        // A nested `_source` is not a top-level collision. The pre-filter
-        // matches it, the rewrite leaves it where it is, and the record still
-        // ends up with exactly one top-level `_source`.
+    fn test_enrich_record_nested_reserved_key_takes_the_rewrite_path() {
+        // A nested `_source` is not a top-level collision, but the pre-filter
+        // matches it, so the record is parsed and rebuilt. The rewrite leaves
+        // the nested key where it is and adds exactly one top-level `_source`.
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"inner":{"_source":"nested"}}"#);
         let enriched = state.enrich_record(payload, "ingest", "ingest.source");
@@ -1282,6 +1337,107 @@ mod tests {
         assert_eq!(parsed["_source"], "ingest");
         assert_eq!(parsed["inner"]["_source"], "nested");
         assert!(parsed.get("_source_original").is_none());
+    }
+
+    #[test]
+    fn test_enrich_record_without_a_reserved_key_takes_the_append_path() {
+        // No reserved key means no parse: the payload is copied byte for byte
+        // and the envelope is appended before the closing brace.
+        let state = make_pipeline_state();
+        let raw = r#"{"event":"x","id":7,"nested":{"a":[1,2]},"unicode":"caf\u00e9"}"#;
+        let enriched = state.enrich_record(Bytes::from(raw), "ingest", "ingest.source");
+        let enriched_str = std::str::from_utf8(&enriched).unwrap();
+
+        let head = &raw[..raw.len() - 1];
+        assert!(
+            enriched_str.starts_with(head),
+            "append path must not re-serialise the payload: {enriched_str}"
+        );
+        let envelope = &enriched_str[head.len()..];
+        assert!(
+            envelope.starts_with(",\"_timestamp_fetcher\":"),
+            "{envelope}"
+        );
+        assert!(envelope.ends_with('}'), "{envelope}");
+        assert!(!envelope.contains("_original"), "{envelope}");
+    }
+
+    #[test]
+    fn test_enrich_record_append_path_escapes_the_source_names() {
+        // A quote or backslash in a source name has to be escaped by serde or
+        // the append path emits a record no parser accepts.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x"}"#);
+        let enriched = state.enrich_record(payload, r#"in"gest"#, r#"c:\logs\"a""#);
+
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], r#"in"gest"#);
+        assert_eq!(parsed["_source_fetcher"], r#"c:\logs\"a""#);
+    }
+
+    #[test]
+    fn test_enrich_record_keeps_an_existing_original() {
+        // A payload carrying both `_source` and `_source_original` must not
+        // lose the one it already had.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"_source":"producer-set","_source_original":"first-hop"}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["_source_original"], "first-hop");
+        assert_eq!(parsed["_source_original_2"], "producer-set");
+    }
+
+    #[test]
+    fn test_enrich_record_replay_keeps_the_first_original() {
+        // Enriching an already-enriched record is the replay case: the second
+        // pass parks its value under _original_2 rather than overwriting.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x","_source":"producer-set"}"#);
+        let once = state.enrich_record(payload, "ingest", "ingest.source");
+        let twice = state.enrich_record(once, "replay", "replay.source");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&twice).unwrap();
+        assert_eq!(parsed["_source"], "replay");
+        assert_eq!(parsed["_source_original"], "producer-set");
+        assert_eq!(parsed["_source_original_2"], "ingest");
+        assert_eq!(parsed["_source_fetcher_original"], "ingest.source");
+    }
+
+    #[test]
+    fn test_enrich_record_every_reserved_key_keeps_its_existing_original() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(
+            r#"{"_source":"a","_source_original":"a0","_source_fetcher":"b","_source_fetcher_original":"b0","_timestamp_fetcher":1,"_timestamp_fetcher_original":10,"_timestamp_received":2,"_timestamp_received_original":20}"#,
+        );
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        for key in RESERVED_KEYS {
+            assert_eq!(key_occurrences(&enriched, key), 1, "duplicate {key}");
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source_original"], "a0");
+        assert_eq!(parsed["_source_original_2"], "a");
+        assert_eq!(parsed["_source_fetcher_original"], "b0");
+        assert_eq!(parsed["_source_fetcher_original_2"], "b");
+        assert_eq!(parsed["_timestamp_fetcher_original"], 10);
+        assert_eq!(parsed["_timestamp_fetcher_original_2"], 1);
+        assert_eq!(parsed["_timestamp_received_original"], 20);
+        assert_eq!(parsed["_timestamp_received_original_2"], 2);
+    }
+
+    #[test]
+    fn test_park_original_walks_past_every_taken_name() {
+        let mut map = serde_json::Map::new();
+        map.insert("_source_original".to_string(), "a".into());
+        map.insert("_source_original_2".to_string(), "b".into());
+        map.insert("_source_original_3".to_string(), "c".into());
+
+        park_original(&mut map, "_source", "d".into());
+
+        assert_eq!(map["_source_original"], "a");
+        assert_eq!(map["_source_original_4"], "d");
     }
 
     #[test]

@@ -1328,6 +1328,7 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "jsonwebtoken",
+ "memchr",
  "metrics",
  "opentelemetry-proto",
  "parking_lot",
