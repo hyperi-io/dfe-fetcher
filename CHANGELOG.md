@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.16](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.15...v1.4.16) (2026-09-04)
+
+### Bug Fixes
+
+* **pipeline:** a reserved-key rename never clobbers an existing <key>_original ([#78](https://github.com/hyperi-io/dfe-fetcher/issues/78)) ([de5506c](https://github.com/hyperi-io/dfe-fetcher/commit/de5506cc0535a1dedff7e38dd9a3c06e7b261055)), closes [#77](https://github.com/hyperi-io/dfe-fetcher/issues/77)
+
 ## [1.4.15](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.14...v1.4.15) (2026-09-04)
 
 ### Bug Fixes
