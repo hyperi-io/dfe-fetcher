@@ -137,6 +137,12 @@ sequenceDiagram
     Note over T: topic = "{source}{topic_suffix}"<br>e.g. "aws_land"
 ```
 
+Those four enrichment names are reserved. A payload that already carries one
+keeps its own value under `<key>_original` and the fetcher's value takes the
+name: the loader routes on `_source`, so the DFE source name has to be the one
+that survives, and a record carrying the same top-level key twice is rejected
+outright by ClickHouse rather than dead-lettered.
+
 ## Container Extractor Lifecycle
 
 ```mermaid
