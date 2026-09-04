@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.14](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.13...v1.4.14) (2026-09-04)
+
+### Bug Fixes
+
+* **pipeline:** stamp _source with the DFE source name on every delivery path ([#75](https://github.com/hyperi-io/dfe-fetcher/issues/75)) ([ed87b2d](https://github.com/hyperi-io/dfe-fetcher/commit/ed87b2d423e2d49d345d185e3992af8ee97b38cf)), closes [#74](https://github.com/hyperi-io/dfe-fetcher/issues/74)
+* **tests:** retry a Kafka testcontainer start and say why when it still fails ([#76](https://github.com/hyperi-io/dfe-fetcher/issues/76)) ([e130a2a](https://github.com/hyperi-io/dfe-fetcher/commit/e130a2a81bbc6a1ebadcf731f444af641d04c185)), closes [#75](https://github.com/hyperi-io/dfe-fetcher/issues/75) [#75](https://github.com/hyperi-io/dfe-fetcher/issues/75)
+
 ## [1.4.13](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.12...v1.4.13) (2026-08-28)
 
 ### Bug Fixes
