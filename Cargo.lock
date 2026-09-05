@@ -1327,6 +1327,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "http",
+ "itoa",
  "jsonwebtoken",
  "memchr",
  "metrics",

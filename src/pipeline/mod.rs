@@ -89,14 +89,21 @@ fn park_original(
         return;
     }
 
+    // The probe is bounded by map.len(), so one buffer is reused rather than a
+    // String allocated per candidate.
+    let mut parked = String::with_capacity(preferred.len() + 5);
+    let mut digits = itoa::Buffer::new();
     let mut n = 2u32;
-    let parked = loop {
-        let candidate = format!("{preferred}_{n}");
-        if !map.contains_key(&candidate) {
-            break candidate;
+    loop {
+        parked.clear();
+        parked.push_str(&preferred);
+        parked.push('_');
+        parked.push_str(digits.format(n));
+        if !map.contains_key(&parked) {
+            break;
         }
         n += 1;
-    };
+    }
     warn!(
         reserved_key = key,
         parked_as = parked.as_str(),
@@ -105,12 +112,43 @@ fn park_original(
     map.insert(parked, value);
 }
 
-/// Render a value as a quoted JSON string literal.
+/// Render a string as a quoted JSON string literal, escaping included.
 ///
 /// The append path interpolates the source names into JSON text, so serde has
 /// to own the escaping or a quote or backslash in a name breaks the record.
 fn json_string_literal(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| String::from("\"\""))
+    // Value's Display has no failure case, so nothing here can fall back to an
+    // empty literal and blank `_source`, the field dfe-loader routes on.
+    serde_json::Value::String(s.to_owned()).to_string()
+}
+
+/// The two source names one enrich pass stamps, escaped once as JSON literals.
+///
+/// The names are constant for a whole batch while [`PipelineState::enrich_record_with`]
+/// runs per record, so the escaping is done here and the append path borrows
+/// the result.
+pub struct SourceNames<'a> {
+    /// The DFE source name, the value of `_source`.
+    dfe_source: &'a str,
+    /// The producing fetcher source, the value of `_source_fetcher`.
+    source: &'a str,
+    /// `dfe_source` as a quoted, escaped JSON string literal.
+    dfe_source_literal: String,
+    /// `source` as a quoted, escaped JSON string literal.
+    source_literal: String,
+}
+
+impl<'a> SourceNames<'a> {
+    /// Escape both names as JSON string literals, once for the batch.
+    #[must_use]
+    pub fn new(dfe_source: &'a str, source: &'a str) -> Self {
+        Self {
+            dfe_source,
+            source,
+            dfe_source_literal: json_string_literal(dfe_source),
+            source_literal: json_string_literal(source),
+        }
+    }
 }
 
 /// Rebuild a record that already carries one or more [`RESERVED_KEYS`].
@@ -265,13 +303,15 @@ impl PipelineState {
             // Enrich and filter records, collecting those that pass
             let mut to_send: Vec<Bytes> = Vec::with_capacity(record_count);
             let unwrap_json = config.unwrap_nested_json;
+            // Both names are constant for the batch, so escape them once here.
+            let names = SourceNames::new(&result.topic, &result.source);
             for record in result.records {
                 let record = if unwrap_json {
                     unwrap_nested_json(&record)
                 } else {
                     record
                 };
-                let enriched = self.enrich_record(record, &result.topic, &result.source);
+                let enriched = self.enrich_record_with(record, &names);
 
                 // Apply CEL filter if configured — drop records that don't match
                 if let Some(ref expr) = filter_expr {
@@ -338,7 +378,18 @@ impl PipelineState {
     /// -- and whatever the payload carried under that name is kept as
     /// `<key>_original`, or the next free `<key>_original_<n>` when that name is
     /// taken too.
+    ///
+    /// This escapes the two names on every call; a batch that shares them should
+    /// build a [`SourceNames`] once and call [`Self::enrich_record_with`].
     pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
+        self.enrich_record_with(payload, &SourceNames::new(dfe_source, source))
+    }
+
+    /// Enrich a record against names already escaped for the whole batch.
+    ///
+    /// Same contract as [`Self::enrich_record`], minus the per-record escaping.
+    pub fn enrich_record_with(&self, payload: Bytes, names: &SourceNames<'_>) -> Bytes {
+        let source = names.source;
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -360,7 +411,7 @@ impl PipelineState {
         // Appending blind would emit a second copy of any reserved key the
         // payload already has, so a collision takes the parse-and-rewrite path.
         if may_carry_reserved_key(raw)
-            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, dfe_source, source)
+            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, names.dfe_source, source)
         {
             tracing::trace!(
                 source,
@@ -382,14 +433,19 @@ impl PipelineState {
         {
             buf.push(b',');
         }
-        buf.extend_from_slice(
-            format!(
-                "\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source\":{},\"_source_fetcher\":{}",
-                json_string_literal(dfe_source),
-                json_string_literal(source)
-            )
-            .as_bytes(),
-        );
+        // Written straight into the record buffer, so the fast path allocates
+        // once: the literals are escaped per batch and the timestamp formats
+        // into a stack buffer.
+        let mut digits = itoa::Buffer::new();
+        let now_str = digits.format(now_ms);
+        buf.extend_from_slice(b"\"_timestamp_fetcher\":");
+        buf.extend_from_slice(now_str.as_bytes());
+        buf.extend_from_slice(b",\"_timestamp_received\":");
+        buf.extend_from_slice(now_str.as_bytes());
+        buf.extend_from_slice(b",\"_source\":");
+        buf.extend_from_slice(names.dfe_source_literal.as_bytes());
+        buf.extend_from_slice(b",\"_source_fetcher\":");
+        buf.extend_from_slice(names.source_literal.as_bytes());
         buf.extend_from_slice(&raw[insert_pos..]);
 
         let enriched = Bytes::from(buf);
@@ -1439,6 +1495,35 @@ mod tests {
 
         assert_eq!(map["_source_original"], "a");
         assert_eq!(map["_source_original_4"], "d");
+    }
+
+    #[test]
+    fn test_park_original_with_many_taken_names_parks_at_the_first_free_slot() {
+        // The walk reuses one buffer, so a long run of taken names must still
+        // land on the first free slot rather than skipping or reusing one.
+        let mut map = serde_json::Map::new();
+        map.insert("_source_original".to_string(), "a".into());
+        for n in 2..=2_000u32 {
+            map.insert(format!("_source_original_{n}"), n.into());
+        }
+
+        park_original(&mut map, "_source", "parked".into());
+
+        assert_eq!(map["_source_original"], "a");
+        assert_eq!(map["_source_original_2000"], 2_000);
+        assert_eq!(map["_source_original_2001"], "parked");
+    }
+
+    #[test]
+    fn test_source_names_escape_the_literals_once() {
+        // The literals the append path writes carry serde's escaping, quotes
+        // included, so a quote or backslash in a name cannot break the record.
+        let names = SourceNames::new(r#"in"gest"#, r#"c:\logs"#);
+
+        assert_eq!(names.dfe_source_literal, r#""in\"gest""#);
+        assert_eq!(names.source_literal, r#""c:\\logs""#);
+        assert_eq!(names.dfe_source, r#"in"gest"#);
+        assert_eq!(names.source, r#"c:\logs"#);
     }
 
     #[test]
