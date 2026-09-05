@@ -422,7 +422,11 @@ impl PipelineState {
             return rewritten;
         }
 
-        let mut buf = Vec::with_capacity(raw.len() + 160);
+        // The fixed envelope text is 101 bytes plus two timestamps and the two
+        // escaped names; sizing for them keeps this the fast path's only allocation.
+        let mut buf = Vec::with_capacity(
+            raw.len() + 128 + names.dfe_source_literal.len() + names.source_literal.len(),
+        );
         buf.extend_from_slice(&raw[..insert_pos]);
 
         // Add comma if not empty object
