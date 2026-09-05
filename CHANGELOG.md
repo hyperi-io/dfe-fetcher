@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.17](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.16...v1.4.17) (2026-09-05)
+
+### Bug Fixes
+
+* **pipeline:** the append path escapes source names once per batch, not per record ([#79](https://github.com/hyperi-io/dfe-fetcher/issues/79)) ([b0858bc](https://github.com/hyperi-io/dfe-fetcher/commit/b0858bc42080d08c3317fd89aa495255cd02acfa)), closes [#78](https://github.com/hyperi-io/dfe-fetcher/issues/78)
+
 ## [1.4.16](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.15...v1.4.16) (2026-09-04)
 
 ### Bug Fixes
