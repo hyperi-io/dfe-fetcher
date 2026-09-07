@@ -198,7 +198,7 @@ tower = { version = "0.5", features = ["util"] }
 opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
 prost = "0.14"
 # Auto-managed Docker containers for integration tests (start + stop lifecycle).
-testcontainers = "0.27"
+testcontainers = "0.28.0"
 testcontainers-modules = { version = "0.15", features = ["localstack", "kafka"] }
 
 [features]
