@@ -186,12 +186,7 @@ async fn handle_ingest(
     }
 
     let config = state.pipeline.config();
-    let topic_suffix = config
-        .output
-        .topic_suffix
-        .as_deref()
-        .unwrap_or(&config.kafka.topic_suffix);
-    let topic = format!("{}{}", source, topic_suffix);
+    let topic = format!("{}{}", source, config.topic_suffix());
 
     debug!(
         source = %source,

@@ -201,7 +201,7 @@ impl ContainerExtractor {
                 let topic = format!(
                     "{}{}",
                     self.config.topic,
-                    self.pipeline.config().kafka.topic_suffix
+                    self.pipeline.config().topic_suffix()
                 );
                 let fetcher_source = format!("container.{}", self.config.name);
                 if let Err(e) = self
@@ -296,7 +296,7 @@ impl ContainerExtractor {
                                     let line = line.trim().to_string();
                                     if line.is_empty() { continue; }
                                     let payload = Bytes::from(line);
-                                    let topic = format!("{}{}", config_topic, pipeline.config().kafka.topic_suffix);
+                                    let topic = format!("{}{}", config_topic, pipeline.config().topic_suffix());
                                     let fetcher_source = format!("container.{config_name}");
                                     if let Err(e) = pipeline.deliver_ingest(&config_topic, &fetcher_source, &topic, payload).await {
                                         error!(name = %config_name, error = %e, "Failed to deliver container output");

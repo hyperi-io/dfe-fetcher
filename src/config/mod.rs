@@ -165,6 +165,21 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The output topic suffix in force, `output.topic_suffix` over the legacy
+    /// `kafka.topic_suffix`.
+    ///
+    /// Every path that builds a topic or derives `_source` from one must use
+    /// this: a caller that reads `kafka.topic_suffix` directly publishes to a
+    /// different topic than the native sources do once `output.topic_suffix`
+    /// is set, and leaves the suffix on `_source`, which the receiver routes on.
+    #[must_use]
+    pub fn topic_suffix(&self) -> &str {
+        self.output
+            .topic_suffix
+            .as_deref()
+            .unwrap_or(&self.kafka.topic_suffix)
+    }
+
     /// Load configuration with cascade: CLI -> ENV -> .env -> file -> defaults
     pub fn load(config_path: Option<&str>) -> Result<Self> {
         // If an explicit config file is provided, load it directly
@@ -4005,6 +4020,26 @@ mod tests {
             config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.kafka.topic_suffix, "_raw");
         });
+    }
+
+    #[test]
+    fn test_topic_suffix_defaults_to_the_kafka_value() {
+        let config = Config::default();
+        assert_eq!(config.topic_suffix(), "_land");
+    }
+
+    #[test]
+    fn test_topic_suffix_prefers_the_output_value() {
+        let mut config = Config::default();
+        config.output.topic_suffix = Some("_raw".to_string());
+        assert_eq!(config.topic_suffix(), "_raw");
+    }
+
+    #[test]
+    fn test_topic_suffix_honours_an_empty_output_value() {
+        let mut config = Config::default();
+        config.output.topic_suffix = Some(String::new());
+        assert_eq!(config.topic_suffix(), "");
     }
 
     #[test]

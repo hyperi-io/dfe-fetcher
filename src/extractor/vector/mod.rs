@@ -57,6 +57,18 @@ use crate::error::{Error, Result};
 use crate::metrics::Metrics;
 use crate::pipeline::PipelineState;
 
+/// The DFE source name behind an output topic: the topic minus the suffix.
+///
+/// `_source` carries this value and the receiver routes a fetcher-origin source
+/// on it, so the suffix must come off with the same string the topic was built
+/// from -- `Config::topic_suffix`, not the legacy `kafka.topic_suffix` alone.
+fn source_from_topic<'a>(topic: &'a str, suffix: &str) -> &'a str {
+    if suffix.is_empty() {
+        return topic;
+    }
+    topic.strip_suffix(suffix).unwrap_or(topic)
+}
+
 /// Vector extractor manager.
 ///
 /// Manages a gRPC server that accepts Vector protocol events and delivers
@@ -173,9 +185,8 @@ impl VectorManager {
                                     let payload = record.payload;
                                     let pipeline = Arc::clone(&pipeline);
                                     async move {
-                                        // The DFE source is the topic without its suffix.
-                                        let suffix = pipeline.config().kafka.topic_suffix.clone();
-                                        let source = topic.strip_suffix(suffix.as_str()).unwrap_or(&topic).to_string();
+                                        let config = pipeline.config();
+                                        let source = source_from_topic(&topic, config.topic_suffix()).to_string();
                                         if let Err(e) = pipeline.deliver_ingest(&source, "vector", &topic, payload).await {
                                             error!(
                                                 topic = %topic,
@@ -218,7 +229,8 @@ impl VectorManager {
     /// Build topic mapping from Vector instance configs.
     fn build_topic_map(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
-        let suffix = &self.pipeline.config().kafka.topic_suffix;
+        let config = self.pipeline.config();
+        let suffix = config.topic_suffix();
 
         for instance in &self.config.instances {
             let topic = format!("{}{}", instance.topic, suffix);
@@ -230,8 +242,8 @@ impl VectorManager {
 
     /// Get the default topic for unmapped Vector events.
     fn default_topic(&self) -> String {
-        let suffix = &self.pipeline.config().kafka.topic_suffix;
-        format!("vector{suffix}")
+        let config = self.pipeline.config();
+        format!("vector{}", config.topic_suffix())
     }
 
     /// Start a managed Vector container instance.
@@ -320,5 +332,36 @@ impl VectorManager {
     /// Check if Vector manager is enabled.
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_from_topic;
+
+    #[test]
+    fn test_source_from_topic_strips_the_suffix() {
+        assert_eq!(
+            source_from_topic("crates_audit_land", "_land"),
+            "crates_audit"
+        );
+    }
+
+    #[test]
+    fn test_source_from_topic_keeps_a_topic_without_the_suffix() {
+        assert_eq!(source_from_topic("crates_audit", "_land"), "crates_audit");
+    }
+
+    #[test]
+    fn test_source_from_topic_with_an_empty_suffix() {
+        assert_eq!(source_from_topic("crates_audit", ""), "crates_audit");
+    }
+
+    #[test]
+    fn test_source_from_topic_strips_only_the_trailing_occurrence() {
+        assert_eq!(
+            source_from_topic("_land_audit_land", "_land"),
+            "_land_audit"
+        );
     }
 }
