@@ -257,7 +257,7 @@ async fn run_fetcher_service(
         scheduler_jitter_pct = config.scheduler.jitter_percent,
         scheduler_max_concurrent = config.scheduler.max_concurrent_fetches,
         output_type = %config.output.output_type,
-        output_topic_suffix = config.output.topic_suffix.as_deref().unwrap_or(&config.kafka.topic_suffix),
+        output_topic_suffix = config.topic_suffix(),
         cursor_dir = %config.cursor.directory,
         cursor_window_hours = config.cursor.default_window_hours,
         dlq_enabled = config.dlq.enabled,
