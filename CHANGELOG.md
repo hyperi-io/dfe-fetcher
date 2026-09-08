@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.18](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.17...v1.4.18) (2026-09-08)
+
+### Bug Fixes
+
+* **config:** container and vector paths honour output.topic_suffix ([015a9e5](https://github.com/hyperi-io/dfe-fetcher/commit/015a9e5d3ca8dd323e82a027d46a81abc2125ff4))
+
 ## [1.4.17](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.16...v1.4.17) (2026-09-05)
 
 ### Bug Fixes
