@@ -689,3 +689,76 @@ fn reload_config_from_path(
     security::config_changed("config_reload", "system", "configuration reloaded");
     Ok(config)
 }
+
+#[cfg(test)]
+// Matches the library crate's test posture (src/lib.rs): an assertion reads
+// better than a match on a Result the test would fail on anyway.
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use scalo::lifecycle::WorkState;
+
+    /// The output stanza every fetcher config carries. The default output type
+    /// is the bus, and a bus output with no broker is a structural fault, so it
+    /// is present in both configs below and neither test is about it.
+    const OUTPUT: &str = "output:\n  type: kafka\n  kafka:\n    brokers: [localhost:9092]\n";
+
+    /// The loop scalo's idle gate runs: re-read the config through the app's
+    /// own `load_config`, then ask `work_state` again.
+    fn state_of(app: &App, path: &std::path::Path) -> WorkState {
+        let config = app
+            .load_config(Some(path.to_str().expect("utf-8 path")))
+            .expect("config loads");
+        app.work_state(&config)
+    }
+
+    /// A fetcher with nothing to poll and nothing to receive idles rather than
+    /// refusing, and the first enabled source takes it out of idle. The gate
+    /// re-reads the config through this same `load_config`, so the predicate
+    /// sees a rewritten file exactly as a fresh start would.
+    #[test]
+    fn the_first_enabled_source_takes_the_fetcher_out_of_idle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fetcher.yaml");
+        let no_work =
+            format!("{OUTPUT}ingest:\n  enabled: false\nsources:\n  aws:\n    enabled: false\n");
+        let with_source = format!(
+            "{OUTPUT}ingest:\n  enabled: false\nsources:\n  aws:\n    enabled: true\n    region: us-east-1\n"
+        );
+        std::fs::write(&path, &no_work).expect("write config");
+
+        let app = App::parse_from(["dfe-fetcher", "--config", path.to_str().expect("utf-8")]);
+
+        let idle = state_of(&app, &path);
+        assert!(
+            idle.is_idle(),
+            "no enabled source idles, it does not refuse"
+        );
+        assert_eq!(
+            idle.reason(),
+            Some("no enabled sources, container extractors or ingest listener")
+        );
+
+        std::fs::write(&path, &with_source).expect("rewrite config");
+
+        assert_eq!(
+            state_of(&app, &path),
+            WorkState::Active,
+            "the first enabled source gives the fetcher work"
+        );
+    }
+
+    /// The ingest listener is work in its own right, and it is on by default:
+    /// a fetcher deployed to receive from container extractors must not sit
+    /// idle waiting for a source nobody is going to write. A deployment that
+    /// wants the idle gate to fire on sources alone turns the listener off.
+    #[test]
+    fn the_default_configuration_has_work_because_the_ingest_listener_is_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fetcher.yaml");
+        std::fs::write(&path, OUTPUT).expect("write config");
+
+        let app = App::parse_from(["dfe-fetcher", "--config", path.to_str().expect("utf-8")]);
+        assert_eq!(state_of(&app, &path), WorkState::Active);
+    }
+}
