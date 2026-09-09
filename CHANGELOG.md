@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.19](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.18...v1.4.19) (2026-09-09)
+
+### Bug Fixes
+
+* output destinations with data-match routes and hold on backpressure ([73828ec](https://github.com/hyperi-io/dfe-fetcher/commit/73828ec442717aeeb187df08dd4d865091e269df))
+* rebuild on scalo 2.12.1 ([e19bfad](https://github.com/hyperi-io/dfe-fetcher/commit/e19bfad634e680ca57a3d467ff63f951ee2f7bbf))
+
 ## [1.4.18](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.17...v1.4.18) (2026-09-08)
 
 ### Bug Fixes
