@@ -45,6 +45,7 @@ async fn test_e2e_produce_consume_roundtrip() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
+        ..Default::default()
     };
     let legacy_kafka = dfe_fetcher::config::KafkaConfig::default();
     let output = dfe_fetcher::output::OutputManager::new(&output_config, &legacy_kafka)
@@ -129,6 +130,7 @@ async fn test_e2e_enriched_record_in_kafka() {
             kafka: Some(kf.to_scalo_config()),
             grpc: None,
             topic_suffix: Some(String::new()), // no suffix — use topic as-is
+            ..Default::default()
         },
         ..Default::default()
     };

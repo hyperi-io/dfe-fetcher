@@ -35,13 +35,14 @@ use scalo::logger::security;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{Config, SharedConfig};
+use crate::config::{Config, OutputRoute, SharedConfig};
 use crate::error::{Error, Result};
 use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::Metrics;
 use crate::output::OutputManager;
 use crate::source::FetchResult;
 use scalo::memory::MemoryGuard;
+use scalo::transport::PayloadFormat;
 
 /// Metadata keys `enrich_record` stamps on every record.
 ///
@@ -328,9 +329,17 @@ impl PipelineState {
                 to_send.push(enriched);
             }
 
-            // Send all passing records concurrently (bounded by transport backpressure)
+            // Send every passing record to whichever destinations its route
+            // names, or to the source's own transports when none matches.
             for enriched in to_send {
-                self.send_to_transports(&topic, enriched).await?;
+                let route = Self::match_route(&config.output.routes, &enriched);
+                match route {
+                    Some(names) => {
+                        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                        self.send_routed(&topic, enriched, &names).await?;
+                    }
+                    None => self.send_to_transports(&topic, enriched).await?,
+                }
                 passed += 1;
             }
 
@@ -494,8 +503,44 @@ impl PipelineState {
         scalo::expression::evaluate_condition(expression, &context)
     }
 
-    /// Send a message to output transports. On failure, routes to DLQ if available.
+    /// Whether a failed send is dead-lettered, or held for the caller to retry.
+    ///
+    /// Backpressure is held: the records are good, the cursor must not advance
+    /// past them, and on the direct transport there is no broker holding a DLQ
+    /// to lose them in.
+    fn should_dead_letter(err: &Error) -> bool {
+        !matches!(err, Error::Backpressured(_))
+    }
+
+    /// Which named destinations take this record, if a route matches it.
+    ///
+    /// First match wins, on a top-level field -- the same shape the receiver's
+    /// destination rules use, so one source definition compiles to both.
+    fn match_route<'a>(routes: &'a [OutputRoute], payload: &Bytes) -> Option<&'a [String]> {
+        if routes.is_empty() {
+            return None;
+        }
+        let parsed = scalo::transport::codec::parse(payload, PayloadFormat::Auto).ok()?;
+        routes
+            .iter()
+            .find(|route| {
+                parsed
+                    .field_str(&route.match_field)
+                    .is_some_and(|value| value == route.match_value)
+            })
+            .map(|route| route.destination.names())
+    }
+
+    /// Send a message to its destination. On failure, routes to DLQ if available.
+    ///
+    /// `route` names the destinations a matching rule chose; with none, the
+    /// record takes the source's own default transports.
     async fn send_to_transports(&self, topic: &str, payload: Bytes) -> Result<()> {
+        self.send_routed(topic, payload, &[]).await
+    }
+
+    /// Deliver one record, to named destinations when a route chose them.
+    async fn send_routed(&self, topic: &str, payload: Bytes, destinations: &[&str]) -> Result<()> {
         let Some(ref output) = self.output else {
             return Err(Error::Config("Output transport not configured".into()));
         };
@@ -509,7 +554,11 @@ impl PipelineState {
         self.memory_guard.add_bytes(payload_size);
 
         let send_start = std::time::Instant::now();
-        let result = output.send_all(topic, payload.clone()).await;
+        let result = if destinations.is_empty() {
+            output.send_all(topic, payload.clone()).await
+        } else {
+            output.send_to(destinations, topic, payload.clone()).await
+        };
         let send_duration_ms = send_start.elapsed().as_millis();
 
         self.memory_guard.release(payload_size);
@@ -523,14 +572,16 @@ impl PipelineState {
             );
         }
 
-        if let Err(ref transport_err) = result {
-            // Track transport health metrics
-            let err_str = transport_err.to_string();
-            if err_str.contains("backpressured") {
-                self.metrics.inc_transport_backpressured();
-            } else {
-                self.metrics.inc_transport_send_errors();
-            }
+        if let Err(ref e) = result
+            && !Self::should_dead_letter(e)
+        {
+            self.metrics.inc_transport_backpressured();
+            debug!(topic, reason = %e, "Output backpressured, holding the batch");
+            return result;
+        }
+
+        if result.is_err() {
+            self.metrics.inc_transport_send_errors();
         }
 
         if let Err(ref transport_err) = result
@@ -760,6 +811,83 @@ mod tests {
             "aws.cloudtrail"
         );
         assert_eq!(parsed.get("key").unwrap(), "value");
+    }
+
+    fn route(match_value: &str, destination: crate::config::DestinationRef) -> OutputRoute {
+        OutputRoute {
+            match_field: "_source".to_string(),
+            match_value: match_value.to_string(),
+            destination,
+        }
+    }
+
+    #[test]
+    fn test_routes_pick_the_named_destination_first_match_wins() {
+        let routes = vec![
+            route("orders", "transform_orders".into()),
+            route("audit", "archiver".into()),
+        ];
+
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"orders"}"#)),
+            Some(["transform_orders".to_string()].as_slice())
+        );
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"audit"}"#)),
+            Some(["archiver".to_string()].as_slice())
+        );
+        // Unmatched records take the source's own default transports.
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"other"}"#)),
+            None
+        );
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"no_source":1}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_a_route_destination_list_fans_out() {
+        let routes = vec![route(
+            "orders",
+            crate::config::DestinationRef::Many(vec!["loader".to_string(), "archiver".to_string()]),
+        )];
+
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"orders"}"#)),
+            Some(["loader".to_string(), "archiver".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_backpressure_is_held_and_never_dead_lettered() {
+        assert!(
+            !PipelineState::should_dead_letter(&Error::Backpressured("full".into())),
+            "a held batch must not be dead-lettered -- the cursor has not advanced past it"
+        );
+        assert!(PipelineState::should_dead_letter(&Error::Transport(
+            "connection refused".into()
+        )));
+        assert!(PipelineState::should_dead_letter(&Error::Config(
+            "no destination".into()
+        )));
+    }
+
+    #[test]
+    fn test_no_routes_means_no_matching_work_per_record() {
+        assert_eq!(
+            PipelineState::match_route(&[], &Bytes::from(r#"{"_source":"orders"}"#)),
+            None
+        );
+        // A payload that is not a JSON object cannot match a field rule.
+        assert_eq!(
+            PipelineState::match_route(
+                &[route("orders", "transform_orders".into())],
+                &Bytes::from("not json")
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1227,7 +1355,7 @@ mod tests {
         let config = Config::default(); // No brokers, no output.kafka, no output.grpc
         let metrics = Arc::new(Metrics::new());
         let shutdown = CancellationToken::new();
-        let orchestrator = Orchestrator::new(config, metrics, shutdown)
+        let orchestrator = Box::pin(Orchestrator::new(config, metrics, shutdown))
             .await
             .expect("Orchestrator should construct without output");
 
@@ -1249,7 +1377,7 @@ mod tests {
         let config = Config::default();
         let metrics = Arc::new(Metrics::new());
         let shutdown = CancellationToken::new();
-        let orchestrator = Orchestrator::new(config, metrics, shutdown.clone())
+        let orchestrator = Box::pin(Orchestrator::new(config, metrics, shutdown.clone()))
             .await
             .expect("Orchestrator::new should succeed");
 
