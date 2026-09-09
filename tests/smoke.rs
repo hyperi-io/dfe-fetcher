@@ -26,7 +26,12 @@ async fn test_startup_orchestrator_boots_with_default_config() {
 
     // Default config has no Kafka brokers, so Orchestrator should start
     // without output transports (info log: "No output transports configured")
-    let result = dfe_fetcher::pipeline::Orchestrator::new(config, metrics, shutdown.clone()).await;
+    let result = Box::pin(dfe_fetcher::pipeline::Orchestrator::new(
+        config,
+        metrics,
+        shutdown.clone(),
+    ))
+    .await;
 
     assert!(
         result.is_ok(),

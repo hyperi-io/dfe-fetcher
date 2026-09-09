@@ -140,6 +140,18 @@ impl ServiceApp for App {
         Ok(config)
     }
 
+    /// The fetcher has work when something can produce records: an enabled
+    /// source, a container extractor, or the ingest listener.
+    fn work_state(&self, config: &Config) -> scalo::lifecycle::WorkState {
+        let has_work = config.sources.any_enabled()
+            || !config.extractors.containers.is_empty()
+            || config.ingest.enabled;
+        scalo::lifecycle::WorkState::idle_if(
+            !has_work,
+            "no enabled sources, container extractors or ingest listener",
+        )
+    }
+
     async fn run_service(&self, config: Config, runtime: ServiceRuntime) -> Result<(), CliError> {
         // Box::pin keeps the run_service future small (21KB+ otherwise);
         // run_fetcher_service stack-allocates large state.
@@ -320,8 +332,14 @@ async fn run_fetcher_service(
     metrics.set_concurrency_cap(config.scheduler.max_concurrent_fetches);
 
     // Create and run the pipeline orchestrator
-    let orchestrator =
-        Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
+    // Box::pin: the future holds a whole Config, which is past clippy's
+    // large-future threshold.
+    let orchestrator = Box::pin(Orchestrator::new(
+        config.clone(),
+        metrics.clone(),
+        shutdown_token.clone(),
+    ))
+    .await?;
     let pipeline_state = orchestrator.state();
 
     // Build scaling pressure calculator for KEDA autoscaling with fetcher-specific components.

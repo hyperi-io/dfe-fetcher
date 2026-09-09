@@ -52,6 +52,7 @@ async fn test_output_kafka_single_message_roundtrip() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
+        ..Default::default()
     };
     let legacy = dfe_fetcher::config::KafkaConfig::default();
 
@@ -126,6 +127,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: Some(String::new()), // no suffix — use topic as-is
+        ..Default::default()
     };
 
     let shared = SharedConfig::new(config);
@@ -207,6 +209,7 @@ async fn test_output_kafka_batch_roundtrip() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
+        ..Default::default()
     };
     let legacy = dfe_fetcher::config::KafkaConfig::default();
 
@@ -283,6 +286,7 @@ async fn test_output_manager_close_when_already_closed() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
+        ..Default::default()
     };
     let legacy = dfe_fetcher::config::KafkaConfig::default();
 
