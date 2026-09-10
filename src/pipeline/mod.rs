@@ -177,6 +177,30 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
     serde_json::to_vec(&map).ok().map(Bytes::from)
 }
 
+/// Tracked bytes released on drop, so a cancelled send cannot leak them.
+///
+/// Dropping the in-flight future between `add_bytes` and `release` leaves the
+/// counter high for the life of the process: an ingest client that disconnects
+/// mid-send is the live path. The stuck count then fails the readiness probe
+/// via `is_ready()` and inflates the scaling pressure served to KEDA.
+struct MemoryLease<'a> {
+    guard: &'a MemoryGuard,
+    bytes: u64,
+}
+
+impl<'a> MemoryLease<'a> {
+    fn acquire(guard: &'a MemoryGuard, bytes: u64) -> Self {
+        guard.add_bytes(bytes);
+        Self { guard, bytes }
+    }
+}
+
+impl Drop for MemoryLease<'_> {
+    fn drop(&mut self) {
+        self.guard.release(self.bytes);
+    }
+}
+
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
@@ -565,7 +589,7 @@ impl PipelineState {
             payload_bytes = payload_size,
             "Sending record to output transport"
         );
-        self.memory_guard.add_bytes(payload_size);
+        let lease = MemoryLease::acquire(&self.memory_guard, payload_size);
 
         let send_start = std::time::Instant::now();
         let result = if destinations.is_empty() {
@@ -575,7 +599,7 @@ impl PipelineState {
         };
         let send_duration_ms = send_start.elapsed().as_millis();
 
-        self.memory_guard.release(payload_size);
+        drop(lease);
 
         if result.is_ok() {
             tracing::trace!(
@@ -982,6 +1006,65 @@ mod tests {
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
         PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap()
+    }
+
+    #[test]
+    fn memory_lease_releases_on_every_drop_path() {
+        // Pins the Drop contract only. Whether `send_to_transports` still holds
+        // a lease is NOT covered -- that needs a transport that stays pending.
+        let state = make_pipeline_state();
+        let before = state.memory_guard.current_bytes();
+
+        {
+            let _lease = MemoryLease::acquire(&state.memory_guard, 4096);
+            assert_eq!(
+                state.memory_guard.current_bytes(),
+                before + 4096,
+                "acquire must track the bytes"
+            );
+        }
+
+        assert_eq!(
+            state.memory_guard.current_bytes(),
+            before,
+            "drop must return the tracked bytes to baseline"
+        );
+    }
+
+    #[test]
+    fn memory_lease_releases_when_a_suspended_future_is_dropped() {
+        // Bytes must stay tracked across a pending await and come back when the
+        // future is dropped there. `Box::pin` owns the future, so the scope exit
+        // drops it; `std::pin::pin!` yields a borrow whose drop is a no-op, and
+        // the test would pass while proving nothing.
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let state = make_pipeline_state();
+        let before = state.memory_guard.current_bytes();
+        let mut cx = Context::from_waker(Waker::noop());
+
+        {
+            let mut in_flight = Box::pin(async {
+                let _lease = MemoryLease::acquire(&state.memory_guard, 4096);
+                std::future::pending::<()>().await;
+            });
+            assert!(
+                in_flight.as_mut().poll(&mut cx).is_pending(),
+                "the send must still be in flight for this to test anything"
+            );
+            assert_eq!(
+                state.memory_guard.current_bytes(),
+                before + 4096,
+                "bytes must stay tracked while the send is in flight"
+            );
+        }
+
+        assert_eq!(
+            state.memory_guard.current_bytes(),
+            before,
+            "cancelling the send must return the tracked bytes"
+        );
     }
 
     #[test]
