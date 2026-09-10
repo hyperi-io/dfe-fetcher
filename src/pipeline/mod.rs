@@ -252,17 +252,31 @@ impl PipelineState {
 
     /// Check if the pipeline is ready.
     pub fn is_ready(&self) -> bool {
-        if !self.ready.load(Ordering::Relaxed) {
-            return false;
-        }
-
-        if self.memory_guard.under_pressure() {
+        if !self.probe_ready() {
             return false;
         }
 
         if let Some(ref output) = self.output
             && !output.any_healthy()
         {
+            return false;
+        }
+
+        true
+    }
+
+    /// What `/readyz` answers: startup state and pressure, NOT output health.
+    ///
+    /// Every replica shares the output, so failing the probe on it fails them
+    /// all at once -- and an unready pod blocks a Deployment rollout, so an
+    /// output outage during a rollout stalls it indefinitely. Stalling the
+    /// fetch loop is [`is_ready`]'s job and stays where it is.
+    pub fn probe_ready(&self) -> bool {
+        if !self.ready.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        if self.memory_guard.under_pressure() {
             return false;
         }
 
@@ -1108,6 +1122,20 @@ mod tests {
             state.output_healthy(),
             "No output configured should be considered healthy"
         );
+    }
+
+    #[test]
+    fn pressure_fails_the_probe_as_well_as_the_fetch_stall() {
+        // Output health is the only divergence and is not covered here: this
+        // state configures no output, so `output_healthy()` is true always.
+        let state = make_pipeline_state();
+        assert!(state.probe_ready(), "a fresh pipeline must pass the probe");
+        assert!(state.is_ready(), "and must not stall the fetch loop");
+
+        state.memory_guard.add_bytes(u64::MAX / 2);
+
+        assert!(!state.probe_ready(), "pressure must fail the probe");
+        assert!(!state.is_ready(), "and must stall the fetch loop");
     }
 
     // -- evaluate_filter tests --
