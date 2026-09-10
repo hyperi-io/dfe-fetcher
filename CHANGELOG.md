@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.20](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.19...v1.4.20) (2026-09-10)
+
+### Bug Fixes
+
+* idle a fetcher with no work instead of refusing its own default config ([73859d2](https://github.com/hyperi-io/dfe-fetcher/commit/73859d2fa947622ef879064dca421ffe94312796)), closes [#269](https://github.com/hyperi-io/dfe-fetcher/issues/269) [#84](https://github.com/hyperi-io/dfe-fetcher/issues/84)
+* prove the first enabled source starts fetching without a restart ([c968727](https://github.com/hyperi-io/dfe-fetcher/commit/c96872749cde135939e1fe9461af6524c04a291b))
+
 ## [1.4.19](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.18...v1.4.19) (2026-09-09)
 
 ### Bug Fixes
