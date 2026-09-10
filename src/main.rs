@@ -140,6 +140,17 @@ impl ServiceApp for App {
         Ok(config)
     }
 
+    /// The fetcher has work when something can produce records: an enabled
+    /// source, a container extractor, or the ingest listener. `Config::validate`
+    /// reads the same predicate, so a config that idles here is never refused
+    /// there for want of the transport it will not use.
+    fn work_state(&self, config: &Config) -> scalo::lifecycle::WorkState {
+        scalo::lifecycle::WorkState::idle_if(
+            !config.has_work(),
+            "no enabled sources, container extractors or ingest listener",
+        )
+    }
+
     async fn run_service(&self, config: Config, runtime: ServiceRuntime) -> Result<(), CliError> {
         // Box::pin keeps the run_service future small (21KB+ otherwise);
         // run_fetcher_service stack-allocates large state.
@@ -286,7 +297,7 @@ async fn run_fetcher_service(
         scheduler_jitter_pct = config.scheduler.jitter_percent,
         scheduler_max_concurrent = config.scheduler.max_concurrent_fetches,
         output_type = %config.output.output_type,
-        output_topic_suffix = config.output.topic_suffix.as_deref().unwrap_or(&config.kafka.topic_suffix),
+        output_topic_suffix = config.topic_suffix(),
         cursor_dir = %config.cursor.directory,
         cursor_window_hours = config.cursor.default_window_hours,
         dlq_enabled = config.dlq.enabled,
@@ -349,8 +360,14 @@ async fn run_fetcher_service(
     metrics.set_concurrency_cap(config.scheduler.max_concurrent_fetches);
 
     // Create and run the pipeline orchestrator
-    let orchestrator =
-        Orchestrator::new(config.clone(), metrics.clone(), shutdown_token.clone()).await?;
+    // Box::pin: the future holds a whole Config, which is past clippy's
+    // large-future threshold.
+    let orchestrator = Box::pin(Orchestrator::new(
+        config.clone(),
+        metrics.clone(),
+        shutdown_token.clone(),
+    ))
+    .await?;
     let pipeline_state = orchestrator.state();
 
     // Build scaling pressure calculator for KEDA autoscaling with fetcher-specific components.
@@ -453,9 +470,11 @@ async fn run_fetcher_service(
     // check and scaling pressure callbacks here.
     {
         let ready_state = Arc::clone(&pipeline_state);
+        // probe_ready, not is_ready: the probe must not fail this pod for an
+        // output outage every replica shares, which would also stall a rollout.
         runtime
             .metrics
-            .set_readiness_check(move || ready_state.is_ready());
+            .set_readiness_check(move || ready_state.probe_ready());
         runtime
             .metrics
             .set_scaling_pressure(Arc::clone(&scaling_pressure));
@@ -699,4 +718,84 @@ fn reload_config_from_path(
 
     security::config_changed("config_reload", "system", "configuration reloaded");
     Ok(config)
+}
+
+#[cfg(test)]
+// Matches the library crate's test posture (src/lib.rs): an assertion reads
+// better than a match on a Result the test would fail on anyway.
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use scalo::lifecycle::WorkState;
+
+    /// A bus output with a broker, so the active half of the first test has a
+    /// transport to name. Neither test is about the transport itself.
+    const OUTPUT: &str = "output:\n  type: kafka\n  kafka:\n    brokers: [localhost:9092]\n";
+
+    /// The loop scalo's idle gate runs: re-read the config through the app's
+    /// own `load_config`, then ask `work_state` again.
+    fn state_of(app: &App, path: &std::path::Path) -> WorkState {
+        let config = app
+            .load_config(Some(path.to_str().expect("utf-8 path")))
+            .expect("config loads");
+        app.work_state(&config)
+    }
+
+    /// A fetcher with nothing to poll and nothing to receive idles rather than
+    /// refusing, and the first enabled source takes it out of idle. The gate
+    /// re-reads the config through this same `load_config`, so the predicate
+    /// sees a rewritten file exactly as a fresh start would.
+    #[test]
+    fn the_first_enabled_source_takes_the_fetcher_out_of_idle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fetcher.yaml");
+        let no_work =
+            format!("{OUTPUT}ingest:\n  enabled: false\nsources:\n  aws:\n    enabled: false\n");
+        let with_source = format!(
+            "{OUTPUT}ingest:\n  enabled: false\nsources:\n  aws:\n    enabled: true\n    region: us-east-1\n"
+        );
+        std::fs::write(&path, &no_work).expect("write config");
+
+        let app = App::parse_from(["dfe-fetcher", "--config", path.to_str().expect("utf-8")]);
+
+        let idle = state_of(&app, &path);
+        assert!(
+            idle.is_idle(),
+            "no enabled source idles, it does not refuse"
+        );
+        assert_eq!(
+            idle.reason(),
+            Some("no enabled sources, container extractors or ingest listener")
+        );
+
+        std::fs::write(&path, &with_source).expect("rewrite config");
+
+        assert_eq!(
+            state_of(&app, &path),
+            WorkState::Active,
+            "the first enabled source gives the fetcher work"
+        );
+    }
+
+    /// The shape a fetcher is deployed in before anything gives it a source: an
+    /// empty config file, no transport named, no listener. `load_config`
+    /// validates, so this covers the default bus output with no broker too.
+    #[test]
+    fn the_default_configuration_loads_and_idles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fetcher.yaml");
+        std::fs::write(&path, "{}\n").expect("write config");
+
+        let app = App::parse_from(["dfe-fetcher", "--config", path.to_str().expect("utf-8")]);
+
+        let state = state_of(&app, &path);
+        assert!(
+            state.is_idle(),
+            "a fetcher deployed with no sources idles, it does not refuse"
+        );
+        assert_eq!(
+            state.reason(),
+            Some("no enabled sources, container extractors or ingest listener")
+        );
+    }
 }

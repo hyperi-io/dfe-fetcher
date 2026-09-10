@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -34,13 +35,171 @@ use scalo::logger::security;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{Config, SharedConfig};
+use crate::config::{Config, OutputRoute, SharedConfig};
 use crate::error::{Error, Result};
 use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::Metrics;
 use crate::output::OutputManager;
 use crate::source::FetchResult;
 use scalo::memory::MemoryGuard;
+use scalo::transport::PayloadFormat;
+
+/// Metadata keys `enrich_record` stamps on every record.
+///
+/// They are reserved: a payload that already carries one has its value moved
+/// aside rather than duplicated. Two top-level keys of the same name make the
+/// loader's ClickHouse JSON column reject the whole record ("Duplicate path
+/// found during parsing JSON object"), and a rejected record is not
+/// dead-lettered -- it is lost.
+const RESERVED_KEYS: [&str; 4] = [
+    "_timestamp_fetcher",
+    "_timestamp_received",
+    "_source",
+    "_source_fetcher",
+];
+
+/// Prefixes the pre-filter searches for, one per reserved-key family.
+static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 2]> = LazyLock::new(|| {
+    [
+        memchr::memmem::Finder::new(b"\"_source"),
+        memchr::memmem::Finder::new(b"\"_timestamp_"),
+    ]
+});
+
+/// Cheap pre-filter for [`rewrite_reserved_keys`]: true when the raw bytes
+/// contain the opening quote of a reserved key name anywhere. A nested field or
+/// a string value matches too -- a false positive costs the slower rewrite
+/// path, never correctness.
+fn may_carry_reserved_key(raw: &[u8]) -> bool {
+    RESERVED_KEY_FINDERS.iter().any(|f| f.find(raw).is_some())
+}
+
+/// Park a reserved key's incoming value beside the fetcher's own.
+///
+/// `<key>_original` is the first choice; when the payload already carries that
+/// name too the parked value goes to the next free `<key>_original_<n>`, so a
+/// replayed record cannot overwrite the original it was enriched with first.
+fn park_original(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: serde_json::Value,
+) {
+    let preferred = format!("{key}_original");
+    if !map.contains_key(&preferred) {
+        map.insert(preferred, value);
+        return;
+    }
+
+    // The probe is bounded by map.len(), so one buffer is reused rather than a
+    // String allocated per candidate.
+    let mut parked = String::with_capacity(preferred.len() + 5);
+    let mut digits = itoa::Buffer::new();
+    let mut n = 2u32;
+    loop {
+        parked.clear();
+        parked.push_str(&preferred);
+        parked.push('_');
+        parked.push_str(digits.format(n));
+        if !map.contains_key(&parked) {
+            break;
+        }
+        n += 1;
+    }
+    warn!(
+        reserved_key = key,
+        parked_as = parked.as_str(),
+        "Reserved key collided with an existing _original, parked under a numbered name"
+    );
+    map.insert(parked, value);
+}
+
+/// Render a string as a quoted JSON string literal, escaping included.
+///
+/// The append path interpolates the source names into JSON text, so serde has
+/// to own the escaping or a quote or backslash in a name breaks the record.
+fn json_string_literal(s: &str) -> String {
+    // Value's Display has no failure case, so nothing here can fall back to an
+    // empty literal and blank `_source`, the field dfe-loader routes on.
+    serde_json::Value::String(s.to_owned()).to_string()
+}
+
+/// The two source names one enrich pass stamps, escaped once as JSON literals.
+///
+/// The names are constant for a whole batch while [`PipelineState::enrich_record_with`]
+/// runs per record, so the escaping is done here and the append path borrows
+/// the result.
+pub struct SourceNames<'a> {
+    /// The DFE source name, the value of `_source`.
+    dfe_source: &'a str,
+    /// The producing fetcher source, the value of `_source_fetcher`.
+    source: &'a str,
+    /// `dfe_source` as a quoted, escaped JSON string literal.
+    dfe_source_literal: String,
+    /// `source` as a quoted, escaped JSON string literal.
+    source_literal: String,
+}
+
+impl<'a> SourceNames<'a> {
+    /// Escape both names as JSON string literals, once for the batch.
+    #[must_use]
+    pub fn new(dfe_source: &'a str, source: &'a str) -> Self {
+        Self {
+            dfe_source,
+            source,
+            dfe_source_literal: json_string_literal(dfe_source),
+            source_literal: json_string_literal(source),
+        }
+    }
+}
+
+/// Rebuild a record that already carries one or more [`RESERVED_KEYS`].
+///
+/// Every reserved key the payload brought is renamed to `<key>_original` and
+/// the fetcher's value takes the name, so each key appears exactly once.
+/// Returns `None` when the payload is not a JSON object, leaving the caller on
+/// the append fast path.
+fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str) -> Option<Bytes> {
+    let serde_json::Value::Object(mut map) = serde_json::from_slice(raw).ok()? else {
+        return None;
+    };
+
+    for key in RESERVED_KEYS {
+        if let Some(existing) = map.remove(key) {
+            park_original(&mut map, key, existing);
+        }
+    }
+
+    map.insert("_timestamp_fetcher".to_string(), now_ms.into());
+    map.insert("_timestamp_received".to_string(), now_ms.into());
+    map.insert("_source".to_string(), dfe_source.into());
+    map.insert("_source_fetcher".to_string(), source.into());
+
+    serde_json::to_vec(&map).ok().map(Bytes::from)
+}
+
+/// Tracked bytes released on drop, so a cancelled send cannot leak them.
+///
+/// Dropping the in-flight future between `add_bytes` and `release` leaves the
+/// counter high for the life of the process: an ingest client that disconnects
+/// mid-send is the live path. The stuck count then fails the readiness probe
+/// via `is_ready()` and inflates the scaling pressure served to KEDA.
+struct MemoryLease<'a> {
+    guard: &'a MemoryGuard,
+    bytes: u64,
+}
+
+impl<'a> MemoryLease<'a> {
+    fn acquire(guard: &'a MemoryGuard, bytes: u64) -> Self {
+        guard.add_bytes(bytes);
+        Self { guard, bytes }
+    }
+}
+
+impl Drop for MemoryLease<'_> {
+    fn drop(&mut self) {
+        self.guard.release(self.bytes);
+    }
+}
 
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
@@ -117,11 +276,7 @@ impl PipelineState {
 
     /// Check if the pipeline is ready.
     pub fn is_ready(&self) -> bool {
-        if !self.ready.load(Ordering::Relaxed) {
-            return false;
-        }
-
-        if self.memory_guard.under_pressure() {
+        if !self.probe_ready() {
             return false;
         }
 
@@ -134,15 +289,28 @@ impl PipelineState {
         true
     }
 
+    /// What `/readyz` answers: startup state and pressure, NOT output health.
+    ///
+    /// Every replica shares the output, so failing the probe on it fails them
+    /// all at once -- and an unready pod blocks a Deployment rollout, so an
+    /// output outage during a rollout stalls it indefinitely. Stalling the
+    /// fetch loop is [`is_ready`]'s job and stays where it is.
+    pub fn probe_ready(&self) -> bool {
+        if !self.ready.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        if self.memory_guard.under_pressure() {
+            return false;
+        }
+
+        true
+    }
+
     /// Deliver a batch of fetch results to output transports.
     pub async fn deliver(&self, results: Vec<FetchResult>) -> Result<()> {
         let config = self.shared_config.get();
-        // Prefer output.topic_suffix (new); fall back to legacy kafka.topic_suffix
-        let topic_suffix = config
-            .output
-            .topic_suffix
-            .as_deref()
-            .unwrap_or(&config.kafka.topic_suffix);
+        let topic_suffix = config.topic_suffix();
 
         let total_records: usize = results.iter().map(|r| r.records.len()).sum();
         debug!(
@@ -169,13 +337,15 @@ impl PipelineState {
             // Enrich and filter records, collecting those that pass
             let mut to_send: Vec<Bytes> = Vec::with_capacity(record_count);
             let unwrap_json = config.unwrap_nested_json;
+            // Both names are constant for the batch, so escape them once here.
+            let names = SourceNames::new(&result.topic, &result.source);
             for record in result.records {
                 let record = if unwrap_json {
                     unwrap_nested_json(&record)
                 } else {
                     record
                 };
-                let enriched = self.enrich_record(record, &result.source);
+                let enriched = self.enrich_record_with(record, &names);
 
                 // Apply CEL filter if configured — drop records that don't match
                 if let Some(ref expr) = filter_expr {
@@ -197,9 +367,17 @@ impl PipelineState {
                 to_send.push(enriched);
             }
 
-            // Send all passing records concurrently (bounded by transport backpressure)
+            // Send every passing record to whichever destinations its route
+            // names, or to the source's own transports when none matches.
             for enriched in to_send {
-                self.send_to_transports(&topic, enriched).await?;
+                let route = Self::match_route(&config.output.routes, &enriched);
+                match route {
+                    Some(names) => {
+                        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                        self.send_routed(&topic, enriched, &names).await?;
+                    }
+                    None => self.send_to_transports(&topic, enriched).await?,
+                }
                 passed += 1;
             }
 
@@ -218,16 +396,49 @@ impl PipelineState {
     }
 
     /// Deliver a single ingest message (from container/HTTP extractors).
-    pub async fn deliver_ingest(&self, topic: &str, payload: Bytes) -> Result<()> {
-        self.send_to_transports(topic, payload).await
+    ///
+    /// `source` is the DFE source name the loader routes on, `fetcher_source`
+    /// the extractor that produced the record.
+    pub async fn deliver_ingest(
+        &self,
+        source: &str,
+        fetcher_source: &str,
+        topic: &str,
+        payload: Bytes,
+    ) -> Result<()> {
+        let enriched = self.enrich_record(payload, source, fetcher_source);
+        self.send_to_transports(topic, enriched).await
     }
 
     /// Enrich a record with fetcher metadata.
-    pub fn enrich_record(&self, payload: Bytes, source: &str) -> Bytes {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
+    ///
+    /// `_source` is the DFE source name (the topic without its suffix), the field
+    /// dfe-loader routes and filters on; `_source_fetcher` names the producer.
+    ///
+    /// The fetcher's value wins for every reserved metadata key -- the loader
+    /// routes on `_source`, so the DFE source name must be the one that survives
+    /// -- and whatever the payload carried under that name is kept as
+    /// `<key>_original`, or the next free `<key>_original_<n>` when that name is
+    /// taken too.
+    ///
+    /// This escapes the two names on every call; a batch that shares them should
+    /// build a [`SourceNames`] once and call [`Self::enrich_record_with`].
+    pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
+        self.enrich_record_with(payload, &SourceNames::new(dfe_source, source))
+    }
+
+    /// Enrich a record against names already escaped for the whole batch.
+    ///
+    /// Same contract as [`Self::enrich_record`], minus the per-record escaping.
+    pub fn enrich_record_with(&self, payload: Bytes, names: &SourceNames<'_>) -> Bytes {
+        let source = names.source;
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
 
         let raw = payload.as_ref();
         let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') else {
@@ -239,7 +450,25 @@ impl PipelineState {
             return payload;
         };
 
-        let mut buf = Vec::with_capacity(raw.len() + 120);
+        // Appending blind would emit a second copy of any reserved key the
+        // payload already has, so a collision takes the parse-and-rewrite path.
+        if may_carry_reserved_key(raw)
+            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, names.dfe_source, source)
+        {
+            tracing::trace!(
+                source,
+                original_bytes = raw.len(),
+                enriched_bytes = rewritten.len(),
+                "Record enriched, reserved keys rewritten"
+            );
+            return rewritten;
+        }
+
+        // The fixed envelope text is 101 bytes plus two timestamps and the two
+        // escaped names; sizing for them keeps this the fast path's only allocation.
+        let mut buf = Vec::with_capacity(
+            raw.len() + 128 + names.dfe_source_literal.len() + names.source_literal.len(),
+        );
         buf.extend_from_slice(&raw[..insert_pos]);
 
         // Add comma if not empty object
@@ -250,9 +479,19 @@ impl PipelineState {
         {
             buf.push(b',');
         }
-        buf.extend_from_slice(
-            format!("\"_timestamp_fetcher\":{now_ms},\"_timestamp_received\":{now_ms},\"_source_fetcher\":\"{source}\"").as_bytes(),
-        );
+        // Written straight into the record buffer, so the fast path allocates
+        // once: the literals are escaped per batch and the timestamp formats
+        // into a stack buffer.
+        let mut digits = itoa::Buffer::new();
+        let now_str = digits.format(now_ms);
+        buf.extend_from_slice(b"\"_timestamp_fetcher\":");
+        buf.extend_from_slice(now_str.as_bytes());
+        buf.extend_from_slice(b",\"_timestamp_received\":");
+        buf.extend_from_slice(now_str.as_bytes());
+        buf.extend_from_slice(b",\"_source\":");
+        buf.extend_from_slice(names.dfe_source_literal.as_bytes());
+        buf.extend_from_slice(b",\"_source_fetcher\":");
+        buf.extend_from_slice(names.source_literal.as_bytes());
         buf.extend_from_slice(&raw[insert_pos..]);
 
         let enriched = Bytes::from(buf);
@@ -302,8 +541,44 @@ impl PipelineState {
         scalo::expression::evaluate_condition(expression, &context)
     }
 
-    /// Send a message to output transports. On failure, routes to DLQ if available.
+    /// Whether a failed send is dead-lettered, or held for the caller to retry.
+    ///
+    /// Backpressure is held: the records are good, the cursor must not advance
+    /// past them, and on the direct transport there is no broker holding a DLQ
+    /// to lose them in.
+    fn should_dead_letter(err: &Error) -> bool {
+        !matches!(err, Error::Backpressured(_))
+    }
+
+    /// Which named destinations take this record, if a route matches it.
+    ///
+    /// First match wins, on a top-level field -- the same shape the receiver's
+    /// destination rules use, so one source definition compiles to both.
+    fn match_route<'a>(routes: &'a [OutputRoute], payload: &Bytes) -> Option<&'a [String]> {
+        if routes.is_empty() {
+            return None;
+        }
+        let parsed = scalo::transport::codec::parse(payload, PayloadFormat::Auto).ok()?;
+        routes
+            .iter()
+            .find(|route| {
+                parsed
+                    .field_str(&route.match_field)
+                    .is_some_and(|value| value == route.match_value)
+            })
+            .map(|route| route.destination.names())
+    }
+
+    /// Send a message to its destination. On failure, routes to DLQ if available.
+    ///
+    /// `route` names the destinations a matching rule chose; with none, the
+    /// record takes the source's own default transports.
     async fn send_to_transports(&self, topic: &str, payload: Bytes) -> Result<()> {
+        self.send_routed(topic, payload, &[]).await
+    }
+
+    /// Deliver one record, to named destinations when a route chose them.
+    async fn send_routed(&self, topic: &str, payload: Bytes, destinations: &[&str]) -> Result<()> {
         let Some(ref output) = self.output else {
             return Err(Error::Config("Output transport not configured".into()));
         };
@@ -314,13 +589,17 @@ impl PipelineState {
             payload_bytes = payload_size,
             "Sending record to output transport"
         );
-        self.memory_guard.add_bytes(payload_size);
+        let lease = MemoryLease::acquire(&self.memory_guard, payload_size);
 
         let send_start = std::time::Instant::now();
-        let result = output.send_all(topic, payload.clone()).await;
+        let result = if destinations.is_empty() {
+            output.send_all(topic, payload.clone()).await
+        } else {
+            output.send_to(destinations, topic, payload.clone()).await
+        };
         let send_duration_ms = send_start.elapsed().as_millis();
 
-        self.memory_guard.release(payload_size);
+        drop(lease);
 
         if result.is_ok() {
             tracing::trace!(
@@ -331,14 +610,16 @@ impl PipelineState {
             );
         }
 
-        if let Err(ref transport_err) = result {
-            // Track transport health metrics
-            let err_str = transport_err.to_string();
-            if err_str.contains("backpressured") {
-                self.metrics.inc_transport_backpressured();
-            } else {
-                self.metrics.inc_transport_send_errors();
-            }
+        if let Err(ref e) = result
+            && !Self::should_dead_letter(e)
+        {
+            self.metrics.inc_transport_backpressured();
+            debug!(topic, reason = %e, "Output backpressured, holding the batch");
+            return result;
+        }
+
+        if result.is_err() {
+            self.metrics.inc_transport_send_errors();
         }
 
         if let Err(ref transport_err) = result
@@ -547,11 +828,12 @@ mod tests {
             });
 
         let payload = Bytes::from(r#"{"key": "value"}"#);
-        let enriched = state.enrich_record(payload, "aws.cloudtrail");
+        let enriched = state.enrich_record(payload, "cloudtrail", "aws.cloudtrail");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         assert!(enriched_str.contains("\"_timestamp_fetcher\":"));
         assert!(enriched_str.contains("\"_timestamp_received\":"));
+        assert!(enriched_str.contains("\"_source\":\"cloudtrail\""));
         assert!(enriched_str.contains("\"_source_fetcher\":\"aws.cloudtrail\""));
 
         // Verify it's still valid JSON
@@ -559,10 +841,91 @@ mod tests {
         assert!(parsed.get("_timestamp_fetcher").is_some());
         assert!(parsed.get("_timestamp_received").is_some());
         assert_eq!(
+            parsed.get("_source").unwrap().as_str().unwrap(),
+            "cloudtrail"
+        );
+        assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "aws.cloudtrail"
         );
         assert_eq!(parsed.get("key").unwrap(), "value");
+    }
+
+    fn route(match_value: &str, destination: crate::config::DestinationRef) -> OutputRoute {
+        OutputRoute {
+            match_field: "_source".to_string(),
+            match_value: match_value.to_string(),
+            destination,
+        }
+    }
+
+    #[test]
+    fn test_routes_pick_the_named_destination_first_match_wins() {
+        let routes = vec![
+            route("orders", "transform_orders".into()),
+            route("audit", "archiver".into()),
+        ];
+
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"orders"}"#)),
+            Some(["transform_orders".to_string()].as_slice())
+        );
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"audit"}"#)),
+            Some(["archiver".to_string()].as_slice())
+        );
+        // Unmatched records take the source's own default transports.
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"other"}"#)),
+            None
+        );
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"no_source":1}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_a_route_destination_list_fans_out() {
+        let routes = vec![route(
+            "orders",
+            crate::config::DestinationRef::Many(vec!["loader".to_string(), "archiver".to_string()]),
+        )];
+
+        assert_eq!(
+            PipelineState::match_route(&routes, &Bytes::from(r#"{"_source":"orders"}"#)),
+            Some(["loader".to_string(), "archiver".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_backpressure_is_held_and_never_dead_lettered() {
+        assert!(
+            !PipelineState::should_dead_letter(&Error::Backpressured("full".into())),
+            "a held batch must not be dead-lettered -- the cursor has not advanced past it"
+        );
+        assert!(PipelineState::should_dead_letter(&Error::Transport(
+            "connection refused".into()
+        )));
+        assert!(PipelineState::should_dead_letter(&Error::Config(
+            "no destination".into()
+        )));
+    }
+
+    #[test]
+    fn test_no_routes_means_no_matching_work_per_record() {
+        assert_eq!(
+            PipelineState::match_route(&[], &Bytes::from(r#"{"_source":"orders"}"#)),
+            None
+        );
+        // A payload that is not a JSON object cannot match a field rule.
+        assert_eq!(
+            PipelineState::match_route(
+                &[route("orders", "transform_orders".into())],
+                &Bytes::from("not json")
+            ),
+            None
+        );
     }
 
     #[test]
@@ -646,16 +1009,76 @@ mod tests {
     }
 
     #[test]
+    fn memory_lease_releases_on_every_drop_path() {
+        // Pins the Drop contract only. Whether `send_to_transports` still holds
+        // a lease is NOT covered -- that needs a transport that stays pending.
+        let state = make_pipeline_state();
+        let before = state.memory_guard.current_bytes();
+
+        {
+            let _lease = MemoryLease::acquire(&state.memory_guard, 4096);
+            assert_eq!(
+                state.memory_guard.current_bytes(),
+                before + 4096,
+                "acquire must track the bytes"
+            );
+        }
+
+        assert_eq!(
+            state.memory_guard.current_bytes(),
+            before,
+            "drop must return the tracked bytes to baseline"
+        );
+    }
+
+    #[test]
+    fn memory_lease_releases_when_a_suspended_future_is_dropped() {
+        // Bytes must stay tracked across a pending await and come back when the
+        // future is dropped there. `Box::pin` owns the future, so the scope exit
+        // drops it; `std::pin::pin!` yields a borrow whose drop is a no-op, and
+        // the test would pass while proving nothing.
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let state = make_pipeline_state();
+        let before = state.memory_guard.current_bytes();
+        let mut cx = Context::from_waker(Waker::noop());
+
+        {
+            let mut in_flight = Box::pin(async {
+                let _lease = MemoryLease::acquire(&state.memory_guard, 4096);
+                std::future::pending::<()>().await;
+            });
+            assert!(
+                in_flight.as_mut().poll(&mut cx).is_pending(),
+                "the send must still be in flight for this to test anything"
+            );
+            assert_eq!(
+                state.memory_guard.current_bytes(),
+                before + 4096,
+                "bytes must stay tracked while the send is in flight"
+            );
+        }
+
+        assert_eq!(
+            state.memory_guard.current_bytes(),
+            before,
+            "cancelling the send must return the tracked bytes"
+        );
+    }
+
+    #[test]
     fn test_enrich_record_empty_object() {
         let state = make_pipeline_state();
         let payload = Bytes::from("{}");
-        let enriched = state.enrich_record(payload, "test.source");
+        let enriched = state.enrich_record(payload, "test", "test.source");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         // Should be valid JSON
         let parsed: serde_json::Value = serde_json::from_str(enriched_str).unwrap();
         assert!(parsed.get("_timestamp_fetcher").is_some());
         assert!(parsed.get("_timestamp_received").is_some());
+        assert_eq!(parsed.get("_source").unwrap().as_str().unwrap(), "test");
         assert_eq!(
             parsed.get("_source_fetcher").unwrap().as_str().unwrap(),
             "test.source"
@@ -667,7 +1090,7 @@ mod tests {
         let state = make_pipeline_state();
         let raw = "this is not json at all";
         let payload = Bytes::from(raw);
-        let enriched = state.enrich_record(payload, "src");
+        let enriched = state.enrich_record(payload, "src", "src.fetcher");
         // Non-JSON payload has no closing brace so should be returned unchanged
         assert_eq!(enriched.as_ref(), raw.as_bytes());
     }
@@ -676,13 +1099,14 @@ mod tests {
     fn test_enrich_record_nested_json() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"outer":{"inner":42}}"#);
-        let enriched = state.enrich_record(payload, "nested.src");
+        let enriched = state.enrich_record(payload, "nested", "nested.src");
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Original nested data preserved
         assert_eq!(parsed["outer"]["inner"], 42);
         // Metadata at top level
         assert!(parsed.get("_timestamp_fetcher").is_some());
+        assert_eq!(parsed["_source"], "nested");
         assert_eq!(parsed["_source_fetcher"], "nested.src");
     }
 
@@ -704,11 +1128,12 @@ mod tests {
         assert!(big.len() > 10_000, "Test payload should exceed 10KB");
 
         let payload = Bytes::from(big);
-        let enriched = state.enrich_record(payload, "large.source");
+        let enriched = state.enrich_record(payload, "large", "large.source");
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Metadata added
         assert!(parsed.get("_timestamp_fetcher").is_some());
+        assert_eq!(parsed["_source"], "large");
         assert_eq!(parsed["_source_fetcher"], "large.source");
         // Original fields preserved
         assert!(parsed.get("field_0").is_some());
@@ -719,7 +1144,7 @@ mod tests {
     fn test_enrich_record_unicode_content() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"name":"日本語テスト","emoji":"🚀🔥"}"#);
-        let enriched = state.enrich_record(payload, "unicode.src");
+        let enriched = state.enrich_record(payload, "unicode", "unicode.src");
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Unicode preserved
@@ -733,13 +1158,15 @@ mod tests {
     fn test_enrich_record_special_chars_in_source() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"key":"val"}"#);
-        let enriched = state.enrich_record(payload, "source/with\"special");
+        let enriched = state.enrich_record(payload, "special", "source/with\"special");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
-        // The source name is inserted as a JSON string value — verify it's present
+        // The quote is escaped in the bytes, so the record still parses.
         assert!(
-            enriched_str.contains("source/with\\\"special")
-                || enriched_str.contains("source/with\"special")
+            enriched_str.contains(r#"source/with\"special"#),
+            "{enriched_str}"
         );
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source_fetcher"], "source/with\"special");
     }
 
     // -- PipelineState tests --
@@ -778,6 +1205,20 @@ mod tests {
             state.output_healthy(),
             "No output configured should be considered healthy"
         );
+    }
+
+    #[test]
+    fn pressure_fails_the_probe_as_well_as_the_fetch_stall() {
+        // Output health is the only divergence and is not covered here: this
+        // state configures no output, so `output_healthy()` is true always.
+        let state = make_pipeline_state();
+        assert!(state.probe_ready(), "a fresh pipeline must pass the probe");
+        assert!(state.is_ready(), "and must not stall the fetch loop");
+
+        state.memory_guard.add_bytes(u64::MAX / 2);
+
+        assert!(!state.probe_ready(), "pressure must fail the probe");
+        assert!(!state.is_ready(), "and must stall the fetch loop");
     }
 
     // -- evaluate_filter tests --
@@ -945,7 +1386,7 @@ mod tests {
     async fn test_deliver_ingest_without_output_returns_config_error() {
         let state = make_pipeline_state();
         let err = state
-            .deliver_ingest("any.topic", Bytes::from(r#"{"key":"val"}"#))
+            .deliver_ingest("any", "test", "any_land", Bytes::from(r#"{"key":"val"}"#))
             .await
             .expect_err("deliver_ingest without output must fail");
         match err {
@@ -1025,7 +1466,7 @@ mod tests {
         let config = Config::default(); // No brokers, no output.kafka, no output.grpc
         let metrics = Arc::new(Metrics::new());
         let shutdown = CancellationToken::new();
-        let orchestrator = Orchestrator::new(config, metrics, shutdown)
+        let orchestrator = Box::pin(Orchestrator::new(config, metrics, shutdown))
             .await
             .expect("Orchestrator should construct without output");
 
@@ -1047,7 +1488,7 @@ mod tests {
         let config = Config::default();
         let metrics = Arc::new(Metrics::new());
         let shutdown = CancellationToken::new();
-        let orchestrator = Orchestrator::new(config, metrics, shutdown.clone())
+        let orchestrator = Box::pin(Orchestrator::new(config, metrics, shutdown.clone()))
             .await
             .expect("Orchestrator::new should succeed");
 
@@ -1096,34 +1537,239 @@ mod tests {
         );
     }
 
-    // -- enrich_record with pre-existing _timestamp_received --
+    // -- enrich_record against payloads that already carry a reserved key --
+
+    /// Count the top-level occurrences of a key name in the raw output. A
+    /// `serde_json` parse cannot see a duplicate (it keeps the last), so
+    /// duplicate-key assertions have to be made on the bytes.
+    fn key_occurrences(enriched: &Bytes, key: &str) -> usize {
+        let needle = format!("\"{key}\":");
+        std::str::from_utf8(enriched)
+            .unwrap()
+            .matches(&needle)
+            .count()
+    }
 
     #[test]
     fn test_enrich_record_with_existing_timestamp_received() {
-        // The enrich path appends new fields before the final `}`; if the
-        // caller has already stamped `_timestamp_received` we still add
-        // `_timestamp_fetcher` and `_source_fetcher`. The result has two
-        // `_timestamp_received` keys (JSON allows duplicates; most parsers
-        // keep the last).
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_timestamp_received":12345}"#);
-        let enriched = state.enrich_record(payload, "ingest.source");
-        let enriched_str = std::str::from_utf8(&enriched).unwrap();
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
 
-        assert!(
-            enriched_str.contains("\"_timestamp_fetcher\":"),
-            "should add _timestamp_fetcher"
-        );
-        assert!(
-            enriched_str.contains("\"_source_fetcher\":\"ingest.source\""),
-            "should add _source_fetcher"
-        );
-        // Original event field preserved
+        assert_eq!(key_occurrences(&enriched, "_timestamp_received"), 1);
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert_eq!(parsed["event"], "x");
+        assert_eq!(parsed["_source"], "ingest");
         assert_eq!(parsed["_source_fetcher"], "ingest.source");
-        assert!(parsed.get("_timestamp_fetcher").is_some());
-        assert!(parsed.get("_timestamp_received").is_some());
+        assert!(parsed["_timestamp_fetcher"].is_number());
+        assert!(parsed["_timestamp_received"].is_number());
+        // The caller's stamp is kept beside ours, not dropped.
+        assert_eq!(parsed["_timestamp_received_original"], 12345);
+    }
+
+    #[test]
+    fn test_enrich_record_with_existing_source() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x","_source":"producer-set"}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        assert_eq!(
+            key_occurrences(&enriched, "_source"),
+            1,
+            "two _source keys make ClickHouse reject the record"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["event"], "x");
+        // The DFE source name wins -- it is what dfe-loader routes on.
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["_source_original"], "producer-set");
+        assert_eq!(parsed["_source_fetcher"], "ingest.source");
+    }
+
+    #[test]
+    fn test_enrich_record_with_existing_source_fetcher() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x","_source_fetcher":"producer-set"}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        assert_eq!(key_occurrences(&enriched, "_source_fetcher"), 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source_fetcher"], "ingest.source");
+        assert_eq!(parsed["_source_fetcher_original"], "producer-set");
+        assert_eq!(parsed["_source"], "ingest");
+    }
+
+    #[test]
+    fn test_enrich_record_with_every_reserved_key_present() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(
+            r#"{"event":"x","_source":"a","_source_fetcher":"b","_timestamp_fetcher":1,"_timestamp_received":2}"#,
+        );
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        for key in RESERVED_KEYS {
+            assert_eq!(key_occurrences(&enriched, key), 1, "duplicate {key}");
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["_source_fetcher"], "ingest.source");
+        assert_eq!(parsed["_source_original"], "a");
+        assert_eq!(parsed["_source_fetcher_original"], "b");
+        assert_eq!(parsed["_timestamp_fetcher_original"], 1);
+        assert_eq!(parsed["_timestamp_received_original"], 2);
+    }
+
+    #[test]
+    fn test_enrich_record_nested_reserved_key_takes_the_rewrite_path() {
+        // A nested `_source` is not a top-level collision, but the pre-filter
+        // matches it, so the record is parsed and rebuilt. The rewrite leaves
+        // the nested key where it is and adds exactly one top-level `_source`.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"inner":{"_source":"nested"}}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["inner"]["_source"], "nested");
+        assert!(parsed.get("_source_original").is_none());
+    }
+
+    #[test]
+    fn test_enrich_record_without_a_reserved_key_takes_the_append_path() {
+        // No reserved key means no parse: the payload is copied byte for byte
+        // and the envelope is appended before the closing brace.
+        let state = make_pipeline_state();
+        let raw = r#"{"event":"x","id":7,"nested":{"a":[1,2]},"unicode":"caf\u00e9"}"#;
+        let enriched = state.enrich_record(Bytes::from(raw), "ingest", "ingest.source");
+        let enriched_str = std::str::from_utf8(&enriched).unwrap();
+
+        let head = &raw[..raw.len() - 1];
+        assert!(
+            enriched_str.starts_with(head),
+            "append path must not re-serialise the payload: {enriched_str}"
+        );
+        let envelope = &enriched_str[head.len()..];
+        assert!(
+            envelope.starts_with(",\"_timestamp_fetcher\":"),
+            "{envelope}"
+        );
+        assert!(envelope.ends_with('}'), "{envelope}");
+        assert!(!envelope.contains("_original"), "{envelope}");
+    }
+
+    #[test]
+    fn test_enrich_record_append_path_escapes_the_source_names() {
+        // A quote or backslash in a source name has to be escaped by serde or
+        // the append path emits a record no parser accepts.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x"}"#);
+        let enriched = state.enrich_record(payload, r#"in"gest"#, r#"c:\logs\"a""#);
+
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], r#"in"gest"#);
+        assert_eq!(parsed["_source_fetcher"], r#"c:\logs\"a""#);
+    }
+
+    #[test]
+    fn test_enrich_record_keeps_an_existing_original() {
+        // A payload carrying both `_source` and `_source_original` must not
+        // lose the one it already had.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"_source":"producer-set","_source_original":"first-hop"}"#);
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source"], "ingest");
+        assert_eq!(parsed["_source_original"], "first-hop");
+        assert_eq!(parsed["_source_original_2"], "producer-set");
+    }
+
+    #[test]
+    fn test_enrich_record_replay_keeps_the_first_original() {
+        // Enriching an already-enriched record is the replay case: the second
+        // pass parks its value under _original_2 rather than overwriting.
+        let state = make_pipeline_state();
+        let payload = Bytes::from(r#"{"event":"x","_source":"producer-set"}"#);
+        let once = state.enrich_record(payload, "ingest", "ingest.source");
+        let twice = state.enrich_record(once, "replay", "replay.source");
+
+        let parsed: serde_json::Value = serde_json::from_slice(&twice).unwrap();
+        assert_eq!(parsed["_source"], "replay");
+        assert_eq!(parsed["_source_original"], "producer-set");
+        assert_eq!(parsed["_source_original_2"], "ingest");
+        assert_eq!(parsed["_source_fetcher_original"], "ingest.source");
+    }
+
+    #[test]
+    fn test_enrich_record_every_reserved_key_keeps_its_existing_original() {
+        let state = make_pipeline_state();
+        let payload = Bytes::from(
+            r#"{"_source":"a","_source_original":"a0","_source_fetcher":"b","_source_fetcher_original":"b0","_timestamp_fetcher":1,"_timestamp_fetcher_original":10,"_timestamp_received":2,"_timestamp_received_original":20}"#,
+        );
+        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+
+        for key in RESERVED_KEYS {
+            assert_eq!(key_occurrences(&enriched, key), 1, "duplicate {key}");
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_source_original"], "a0");
+        assert_eq!(parsed["_source_original_2"], "a");
+        assert_eq!(parsed["_source_fetcher_original"], "b0");
+        assert_eq!(parsed["_source_fetcher_original_2"], "b");
+        assert_eq!(parsed["_timestamp_fetcher_original"], 10);
+        assert_eq!(parsed["_timestamp_fetcher_original_2"], 1);
+        assert_eq!(parsed["_timestamp_received_original"], 20);
+        assert_eq!(parsed["_timestamp_received_original_2"], 2);
+    }
+
+    #[test]
+    fn test_park_original_walks_past_every_taken_name() {
+        let mut map = serde_json::Map::new();
+        map.insert("_source_original".to_string(), "a".into());
+        map.insert("_source_original_2".to_string(), "b".into());
+        map.insert("_source_original_3".to_string(), "c".into());
+
+        park_original(&mut map, "_source", "d".into());
+
+        assert_eq!(map["_source_original"], "a");
+        assert_eq!(map["_source_original_4"], "d");
+    }
+
+    #[test]
+    fn test_park_original_with_many_taken_names_parks_at_the_first_free_slot() {
+        // The walk reuses one buffer, so a long run of taken names must still
+        // land on the first free slot rather than skipping or reusing one.
+        let mut map = serde_json::Map::new();
+        map.insert("_source_original".to_string(), "a".into());
+        for n in 2..=2_000u32 {
+            map.insert(format!("_source_original_{n}"), n.into());
+        }
+
+        park_original(&mut map, "_source", "parked".into());
+
+        assert_eq!(map["_source_original"], "a");
+        assert_eq!(map["_source_original_2000"], 2_000);
+        assert_eq!(map["_source_original_2001"], "parked");
+    }
+
+    #[test]
+    fn test_source_names_escape_the_literals_once() {
+        // The literals the append path writes carry serde's escaping, quotes
+        // included, so a quote or backslash in a name cannot break the record.
+        let names = SourceNames::new(r#"in"gest"#, r#"c:\logs"#);
+
+        assert_eq!(names.dfe_source_literal, r#""in\"gest""#);
+        assert_eq!(names.source_literal, r#""c:\\logs""#);
+        assert_eq!(names.dfe_source, r#"in"gest"#);
+        assert_eq!(names.source, r#"c:\logs"#);
+    }
+
+    #[test]
+    fn test_may_carry_reserved_key() {
+        assert!(may_carry_reserved_key(br#"{"_source":"x"}"#));
+        assert!(may_carry_reserved_key(br#"{"_timestamp_received":1}"#));
+        assert!(!may_carry_reserved_key(br#"{"event":"x","id":7}"#));
+        assert!(!may_carry_reserved_key(b"{}"));
     }
 
     /// Exercise PipelineState::new with DLQ enabled to cover the DLQ init branch.

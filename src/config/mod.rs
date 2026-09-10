@@ -173,6 +173,32 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The output topic suffix in force, `output.topic_suffix` over the legacy
+    /// `kafka.topic_suffix`.
+    ///
+    /// Every path that builds a topic or derives `_source` from one must use
+    /// this: a caller that reads `kafka.topic_suffix` directly publishes to a
+    /// different topic than the native sources do once `output.topic_suffix`
+    /// is set, and leaves the suffix on `_source`, which the receiver routes on.
+    #[must_use]
+    pub fn topic_suffix(&self) -> &str {
+        self.output
+            .topic_suffix
+            .as_deref()
+            .unwrap_or(&self.kafka.topic_suffix)
+    }
+
+    /// Whether anything in this config can produce a record: an enabled source,
+    /// a container extractor, or the ingest listener.
+    ///
+    /// The idle gate's `work_state` and the transport checks in
+    /// [`validate`](Self::validate) read the same predicate, so an empty config
+    /// cannot idle by one definition and be refused by another.
+    #[must_use]
+    pub fn has_work(&self) -> bool {
+        self.sources.any_enabled() || !self.extractors.containers.is_empty() || self.ingest.enabled
+    }
+
     /// Load configuration with cascade: CLI -> ENV -> .env -> file -> defaults
     pub fn load(config_path: Option<&str>) -> Result<Self> {
         // If an explicit config file is provided, load it directly
@@ -250,39 +276,50 @@ impl Config {
 
     /// Validate the configuration.
     pub fn validate(&self) -> Result<()> {
-        // At least one source must be enabled
-        if !self.sources.aws.enabled
-            && !self.sources.azure.enabled
-            && !self.sources.m365.enabled
-            && !self.sources.gcp.enabled
-        {
-            // Not an error — just a warning scenario (no sources to fetch)
-            // Allow startup with no sources for config validation
-        }
-
-        // Validate output transport config
-        if self.output.includes_kafka() {
-            // Check output.kafka first, then legacy kafka section
-            let has_output_brokers = self
-                .output
-                .kafka
-                .as_ref()
-                .is_some_and(|k| !k.brokers.is_empty());
-            if !has_output_brokers && self.kafka.brokers.is_empty() {
+        // A missing broker or endpoint is a contradiction only once something
+        // would send to it; with nothing to send, the config is valid but empty
+        // of work and the idle gate holds it (main.rs `work_state`).
+        if self.has_work() {
+            if self.output.includes_kafka() {
+                // Check output.kafka first, then legacy kafka section
+                let has_output_brokers = self
+                    .output
+                    .kafka
+                    .as_ref()
+                    .is_some_and(|k| !k.brokers.is_empty());
+                if !has_output_brokers && self.kafka.brokers.is_empty() {
+                    return Err(Error::Config(
+                        "kafka brokers required when output.type includes kafka".into(),
+                    ));
+                }
+            }
+            if self.output.includes_grpc()
+                && self
+                    .output
+                    .grpc
+                    .as_ref()
+                    .is_none_or(|g| g.endpoint.is_none())
+            {
                 return Err(Error::Config(
-                    "kafka brokers required when output.type includes kafka".into(),
+                    "grpc.endpoint required when output.type includes grpc".into(),
                 ));
             }
         }
-        if self.output.includes_grpc()
-            && self
-                .output
-                .grpc
-                .as_ref()
-                .is_none_or(|g| g.endpoint.is_none())
+
+        self.output.validate_routes()?;
+
+        // A DLQ that only writes to Kafka has nowhere to go on a deployment
+        // with no broker, and a silently dropped dead-letter is worse than a
+        // refused config.
+        if self.dlq.enabled
+            && self.dlq.mode == scalo::dlq::DlqMode::KafkaOnly
+            && !self.output.uses_bus()
         {
             return Err(Error::Config(
-                "grpc.endpoint required when output.type includes grpc".into(),
+                "dlq.mode: kafka_only has no broker to write to when the output is gRPC-only; \
+                 set dlq.enabled: false (backpressure holds the batch instead) or give the \
+                 DLQ its own brokers"
+                    .into(),
             ));
         }
 
@@ -814,6 +851,42 @@ impl SourcesConfig {
             ("object_store", self.object_store.filter.as_deref()),
             ("salesforce", self.salesforce.filter.as_deref()),
         ]
+    }
+
+    /// Every source's `enabled` flag, keyed by the same names as
+    /// [`filters`](Self::filters).
+    ///
+    /// `test_enabled_table_matches_the_filter_table` fails if a new source is
+    /// added to one table and not the other.
+    #[must_use]
+    pub fn enabled_flags(&self) -> Vec<(&'static str, bool)> {
+        vec![
+            ("aws", self.aws.enabled),
+            ("azure", self.azure.enabled),
+            ("m365", self.m365.enabled),
+            ("gcp", self.gcp.enabled),
+            ("github", self.github.enabled),
+            ("okta", self.okta.enabled),
+            ("cloudflare", self.cloudflare.enabled),
+            ("onepassword", self.onepassword.enabled),
+            ("crowdstrike", self.crowdstrike.enabled),
+            ("slack", self.slack.enabled),
+            ("bitwarden", self.bitwarden.enabled),
+            ("duo", self.duo.enabled),
+            ("pypi", self.pypi.enabled),
+            ("crates_io", self.crates_io.enabled),
+            ("go_modules", self.go_modules.enabled),
+            ("google_workspace", self.google_workspace.enabled),
+            ("gcp_pubsub", self.gcp_pubsub.enabled),
+            ("object_store", self.object_store.enabled),
+            ("salesforce", self.salesforce.enabled),
+        ]
+    }
+
+    /// Whether any source is enabled.
+    #[must_use]
+    pub fn any_enabled(&self) -> bool {
+        self.enabled_flags().iter().any(|(_, enabled)| *enabled)
     }
 
     /// The CEL filter for a record source tag, or `None` when that source has
@@ -3706,7 +3779,10 @@ pub struct IngestConfig {
 impl Default for IngestConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Off unless a deployment asks for it: the listener is work in its
+            // own right, so defaulting it on holds every fetcher out of idle
+            // and binds a port no deployment publishes.
+            enabled: false,
             bind_address: "0.0.0.0:8080".to_string(),
             max_body_size: 10 * 1024 * 1024, // 10MB
             auth_token: None,
@@ -3942,6 +4018,84 @@ pub struct OutputConfig {
     /// If set, takes precedence over legacy `kafka.topic_suffix`.
     #[serde(default)]
     pub topic_suffix: Option<String>,
+
+    /// Named destinations beyond the default transports, keyed by name.
+    ///
+    /// The default destination is the source's own -- its topic on the bus,
+    /// the configured endpoint on the direct transport. A destination declared
+    /// here is reached by a [`route`](Self::routes) naming it, so a record can
+    /// go to a transform instead of, or as well as, the default.
+    #[serde(default)]
+    pub destinations: std::collections::HashMap<String, DestinationSpec>,
+
+    /// Per-record routes over the named destinations (first match wins).
+    #[serde(default)]
+    pub routes: Vec<OutputRoute>,
+}
+
+/// A declared destination: exactly one transport block.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct DestinationSpec {
+    /// Deliver over gRPC to a scalo Push listener (a transform, the loader,
+    /// the archiver).
+    pub grpc: Option<scalo::transport::GrpcConfig>,
+
+    /// Deliver over the bus.
+    pub kafka: Option<KafkaDestination>,
+}
+
+/// A bus destination.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct KafkaDestination {
+    /// Broker settings for this destination. Unset reuses the output's own.
+    pub config: Option<scalo::transport::KafkaConfig>,
+
+    /// Fixed topic. Unset means the record's own source topic.
+    pub topic: Option<String>,
+}
+
+/// A per-record route: matched records go to the named destination(s) instead
+/// of the default.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct OutputRoute {
+    /// Top-level field to match.
+    pub match_field: String,
+
+    /// Value to match.
+    pub match_value: String,
+
+    /// Destination for matched records: one name, or a list to fan out.
+    pub destination: DestinationRef,
+}
+
+/// One destination name, or a list of them to fan a matched record out to.
+///
+/// A fan-out is delivered when every destination has accepted it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum DestinationRef {
+    /// A single destination name.
+    One(String),
+    /// Several destination names -- the record goes to all of them.
+    Many(Vec<String>),
+}
+
+impl DestinationRef {
+    /// The names, one or many.
+    pub fn names(&self) -> &[String] {
+        match self {
+            Self::One(name) => std::slice::from_ref(name),
+            Self::Many(names) => names,
+        }
+    }
+}
+
+impl From<&str> for DestinationRef {
+    fn from(name: &str) -> Self {
+        Self::One(name.to_string())
+    }
 }
 
 fn default_output_type() -> String {
@@ -3955,6 +4109,8 @@ impl Default for OutputConfig {
             kafka: None,
             grpc: None,
             topic_suffix: None,
+            destinations: std::collections::HashMap::new(),
+            routes: Vec::new(),
         }
     }
 }
@@ -3968,6 +4124,41 @@ impl OutputConfig {
     /// Check if output includes gRPC transport.
     pub fn includes_grpc(&self) -> bool {
         self.output_type == "grpc" || self.output_type == "both"
+    }
+
+    /// Whether anything the output can reach is on the bus -- the default
+    /// transports or a declared destination. A deployment where this is false
+    /// has no broker, so nothing may fall back to a Kafka topic.
+    pub fn uses_bus(&self) -> bool {
+        self.includes_kafka() || self.destinations.values().any(|d| d.kafka.is_some())
+    }
+
+    /// Validate the named destinations and the routes over them.
+    ///
+    /// # Errors
+    /// A destination without exactly one transport block, or a route naming a
+    /// destination that was never declared.
+    pub fn validate_routes(&self) -> Result<()> {
+        for (name, spec) in &self.destinations {
+            match (&spec.grpc, &spec.kafka) {
+                (Some(_), None) | (None, Some(_)) => {}
+                _ => {
+                    return Err(Error::Config(format!(
+                        "output.destinations.{name} needs exactly one of grpc or kafka"
+                    )));
+                }
+            }
+        }
+        for route in &self.routes {
+            for name in route.destination.names() {
+                if !self.destinations.contains_key(name) {
+                    return Err(Error::Config(format!(
+                        "output.routes names destination '{name}', which is not declared under output.destinations"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4027,12 +4218,6 @@ mod tests {
         let mut config = Config::default();
         config.kafka.brokers = vec!["localhost:9092".to_string()];
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_config_validation_no_brokers() {
-        let config = Config::default();
-        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -4109,6 +4294,26 @@ mod tests {
             config.apply_flat_env("DFE_FETCHER");
             assert_eq!(config.kafka.topic_suffix, "_raw");
         });
+    }
+
+    #[test]
+    fn test_topic_suffix_defaults_to_the_kafka_value() {
+        let config = Config::default();
+        assert_eq!(config.topic_suffix(), "_land");
+    }
+
+    #[test]
+    fn test_topic_suffix_prefers_the_output_value() {
+        let mut config = Config::default();
+        config.output.topic_suffix = Some("_raw".to_string());
+        assert_eq!(config.topic_suffix(), "_raw");
+    }
+
+    #[test]
+    fn test_topic_suffix_honours_an_empty_output_value() {
+        let mut config = Config::default();
+        config.output.topic_suffix = Some(String::new());
+        assert_eq!(config.topic_suffix(), "");
     }
 
     #[test]
@@ -4205,6 +4410,34 @@ mod tests {
         );
     }
 
+    /// The idle gate reads `enabled_flags()`, so a source missing from it is a
+    /// source that cannot wake the fetcher up.
+    #[test]
+    fn test_enabled_table_matches_the_filter_table() {
+        let sources = SourcesConfig::default();
+        let mut enabled: Vec<&str> = sources
+            .enabled_flags()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        let mut filtered: Vec<&str> = sources.filters().into_iter().map(|(n, _)| n).collect();
+        enabled.sort_unstable();
+        filtered.sort_unstable();
+        assert_eq!(
+            enabled, filtered,
+            "SourcesConfig::enabled_flags() is out of step with filters(); add the \
+             missing source so it can take the fetcher out of idle"
+        );
+    }
+
+    #[test]
+    fn test_no_source_enabled_by_default() {
+        assert!(
+            !SourcesConfig::default().any_enabled(),
+            "a fetcher with a default config has no work, and must idle rather than run"
+        );
+    }
+
     /// Every tabled source name must be a real record source-tag prefix, or
     /// `filter_for_source` never matches it and the filter is dead config.
     #[test]
@@ -4251,6 +4484,8 @@ mod tests {
     #[test]
     fn test_validate_grpc_output_without_endpoint() {
         let mut cfg = valid_config();
+        // The transport checks only fire on a config with work to send.
+        cfg.sources.aws.enabled = true;
         cfg.output.output_type = "grpc".to_string();
         cfg.output.grpc = None;
         let err = cfg.validate().unwrap_err().to_string();
@@ -4263,6 +4498,7 @@ mod tests {
     #[test]
     fn test_validate_both_output_kafka_ok_grpc_missing() {
         let mut cfg = valid_config();
+        cfg.sources.aws.enabled = true;
         cfg.output.output_type = "both".to_string();
         // kafka brokers are set via valid_config(), but no grpc endpoint
         cfg.output.grpc = None;
@@ -4270,6 +4506,45 @@ mod tests {
         assert!(
             err.contains("grpc.endpoint required"),
             "Expected grpc endpoint error, got: {err}"
+        );
+    }
+
+    /// The shape a fetcher is deployed in before an operator writes a source:
+    /// the default output is the bus and no broker is named anywhere. It is
+    /// valid but empty of work, which the idle gate holds -- so validate must
+    /// not refuse it.
+    #[test]
+    fn test_validate_accepts_the_default_config_with_no_broker() {
+        let cfg = Config::default();
+        assert!(cfg.kafka.brokers.is_empty(), "the default names no broker");
+        assert!(!cfg.has_work(), "the default config has nothing to send");
+        cfg.validate()
+            .expect("a valid-but-empty config idles, it is not refused");
+    }
+
+    /// The first enabled source turns the broker requirement back on: something
+    /// would now produce records, and there is nowhere to put them.
+    #[test]
+    fn test_validate_refuses_an_enabled_source_with_no_broker() {
+        let mut cfg = Config::default();
+        cfg.sources.aws.enabled = true;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("kafka brokers required"),
+            "Expected kafka brokers error, got: {err}"
+        );
+    }
+
+    /// The ingest listener is a producer too, so turning it on demands the same
+    /// broker an enabled source would.
+    #[test]
+    fn test_validate_refuses_an_enabled_ingest_listener_with_no_broker() {
+        let mut cfg = Config::default();
+        cfg.ingest.enabled = true;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("kafka brokers required"),
+            "Expected kafka brokers error, got: {err}"
         );
     }
 

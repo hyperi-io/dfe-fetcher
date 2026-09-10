@@ -605,8 +605,10 @@ extractors:
 # Ingest server — REQUIRES RESTART
 # =============================================================================
 # HTTP server binds at startup; auth token resolved once.
+# Off by default: the listener counts as work, so turning it on holds this
+# fetcher out of idle whether or not anything ever posts to it.
 ingest:
-  enabled: true
+  enabled: false
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
   # auth_token: "vault:secret/dfe:ingest_token"
@@ -616,6 +618,13 @@ ingest:
 # =============================================================================
 # Transport connections are established at startup.
 # Default: kafka (backward compatible with top-level kafka: section)
+#
+# Every record goes to the transports under `type` -- its own topic on the bus,
+# the configured endpoint on the direct transport. `destinations` declares other
+# places a record can go, and `routes` sends matching records there instead: a
+# transform, an archiver, or several at once. A backpressured destination HOLDS
+# the batch and stalls the scheduler; the cursor does not advance and nothing is
+# dead-lettered.
 # output:
 #   type: kafka            # "kafka" | "grpc" | "both"
 #   kafka:
@@ -623,7 +632,18 @@ ingest:
 #     brokers: ["kafka:9092"]
 #     client_id: "dfe-fetcher"
 #   grpc:
-#     endpoint: "http://dfe-receiver:6000"
+#     endpoint: "http://dfe-loader:6000"
+#   destinations:
+#     transform_orders:
+#       grpc:
+#         endpoint: "http://dfe-transform-orders:6000"
+#     archiver:
+#       grpc:
+#         endpoint: "http://dfe-archiver:6000"
+#   routes:
+#     - match_field: "_source"
+#       match_value: "orders"
+#       destination: ["transform_orders", "archiver"]
 
 # Kafka — transport config REQUIRES RESTART; topic_suffix is hot-reloaded.
 kafka:
@@ -657,7 +677,10 @@ buffer:
 # =============================================================================
 # Dead Letter Queue — REQUIRES RESTART
 # =============================================================================
-# Messages that fail Kafka delivery are routed to the DLQ for later replay.
+# Records that cannot be delivered are routed to the DLQ for later replay. A
+# BACKPRESSURED destination is not a delivery failure and never comes here: the
+# batch is held instead. `kafka_only` is refused when the output has no bus, so
+# a deployment on the direct transport runs with the DLQ off.
 # File-only mode writes DLQ entries to local disk as JSON lines.
 dlq:
   enabled: false

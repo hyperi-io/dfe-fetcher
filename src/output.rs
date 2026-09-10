@@ -15,8 +15,8 @@
 
 use bytes::Bytes;
 use scalo::transport::{
-    GrpcTransport, KafkaConfig as ScaloKafkaConfig, KafkaTransport, SendResult, TransportBase,
-    TransportSender,
+    GrpcTransport, KafkaConfig as ScaloKafkaConfig, KafkaTransport, RoutedSender, SendResult,
+    TransportBase, TransportConfig, TransportSender, TransportType,
 };
 use tracing::{debug, error, info, trace};
 
@@ -81,9 +81,12 @@ impl OutputTransport {
                 debug!(
                     transport = self.name(),
                     topic = key,
-                    "Transport backpressured — caller will route to DLQ"
+                    "Transport backpressured -- caller holds the batch"
                 );
-                Err(Error::Transport("transport backpressured".into()))
+                Err(Error::Backpressured(format!(
+                    "{} transport backpressured",
+                    self.name()
+                )))
             }
             SendResult::Fatal(e) => Err(Error::Transport(format!("transport fatal: {e}"))),
             SendResult::FilteredDlq => {
@@ -123,12 +126,17 @@ impl OutputTransport {
     }
 }
 
-/// Manages one or more output transports for delivering pipeline data.
+/// Manages the fetcher's outputs: the default transports every record takes,
+/// plus the NAMED destination set a route can send a record to instead.
 ///
 /// Created from [`OutputConfig`] (with legacy [`KafkaConfig`](LegacyKafkaConfig)
-/// fallback). Sends to all configured transports simultaneously.
+/// fallback). The default sends to all configured transports simultaneously;
+/// the named set is scalo's [`RoutedSender`], the same mechanism the receiver's
+/// destinations use.
 pub struct OutputManager {
     transports: Vec<OutputTransport>,
+    /// Named destinations, keyed by name. `None` when none are declared.
+    destinations: Option<RoutedSender>,
 }
 
 impl OutputManager {
@@ -168,8 +176,45 @@ impl OutputManager {
             return Err(Error::Config("no output transports configured".into()));
         }
 
-        debug!(count = transports.len(), "Output manager ready");
-        Ok(Self { transports })
+        let destinations = build_destinations(output, legacy_kafka).await?;
+
+        debug!(
+            count = transports.len(),
+            named = destinations.as_ref().map_or(0, |d| d.route_keys().len()),
+            "Output manager ready"
+        );
+        Ok(Self {
+            transports,
+            destinations,
+        })
+    }
+
+    /// Send a record to named destinations instead of the default transports.
+    ///
+    /// `key` is the wire key for a bus destination (the record's topic); a gRPC
+    /// listener ignores it. Delivered only when every named destination has
+    /// accepted -- see [`RoutedSender::send_fanout`].
+    pub async fn send_to(&self, destinations: &[&str], key: &str, payload: Bytes) -> Result<()> {
+        let Some(ref set) = self.destinations else {
+            return Err(Error::Config(
+                "output.routes names a destination but none are declared".into(),
+            ));
+        };
+        match set.send_fanout(destinations, key, payload).await {
+            SendResult::Ok | SendResult::FilteredDlq => Ok(()),
+            SendResult::Backpressured => Err(Error::Backpressured(format!(
+                "destination {} backpressured",
+                destinations.join(",")
+            ))),
+            SendResult::Fatal(e) => Err(Error::Transport(format!("destination send failed: {e}"))),
+        }
+    }
+
+    /// Whether a named destination exists.
+    pub fn has_destination(&self, name: &str) -> bool {
+        self.destinations
+            .as_ref()
+            .is_some_and(|set| set.has_route(name))
     }
 
     /// Send a message to all configured transports.
@@ -207,12 +252,19 @@ impl OutputManager {
         }
     }
 
-    /// Check if all transports are healthy.
+    /// Check if all transports and named destinations are healthy.
     pub fn all_healthy(&self) -> bool {
         self.transports.iter().all(OutputTransport::is_healthy)
+            && self
+                .destinations
+                .as_ref()
+                .is_none_or(scalo::transport::RoutedSender::is_healthy)
     }
 
     /// Check if any transport is healthy.
+    ///
+    /// The scheduler stalls on this, so it stays a whole-output signal: one
+    /// sick named destination must not stop every source fetching.
     pub fn any_healthy(&self) -> bool {
         self.transports.iter().any(OutputTransport::is_healthy)
     }
@@ -228,7 +280,60 @@ impl OutputManager {
                 );
             }
         }
+        if let Some(ref set) = self.destinations
+            && let Err(e) = set.close().await
+        {
+            error!(error = %e, "Failed to close named destinations");
+        }
     }
+}
+
+/// Build the named destination set from `output.destinations`.
+///
+/// Each declared destination becomes one route in a scalo [`RoutedSender`];
+/// a bus destination without its own broker settings reuses the output's.
+async fn build_destinations(
+    output: &OutputConfig,
+    legacy_kafka: &LegacyKafkaConfig,
+) -> Result<Option<RoutedSender>> {
+    if output.destinations.is_empty() {
+        return Ok(None);
+    }
+
+    let mut routes = std::collections::HashMap::with_capacity(output.destinations.len());
+    for (name, spec) in &output.destinations {
+        let config = match (&spec.grpc, &spec.kafka) {
+            (Some(grpc), None) => TransportConfig {
+                transport_type: TransportType::Grpc,
+                grpc: Some(grpc.clone()),
+                ..TransportConfig::default()
+            },
+            (None, Some(bus)) => TransportConfig {
+                transport_type: TransportType::Kafka,
+                kafka: Some(
+                    bus.config
+                        .clone()
+                        .unwrap_or_else(|| resolve_kafka_config(output, legacy_kafka)),
+                ),
+                ..TransportConfig::default()
+            },
+            _ => {
+                return Err(Error::Config(format!(
+                    "output.destinations.{name} needs exactly one of grpc or kafka"
+                )));
+            }
+        };
+        routes.insert(name.clone(), config);
+    }
+
+    let sender = RoutedSender::from_route_configs(routes, None)
+        .await
+        .map_err(|e| Error::Transport(format!("named destinations init failed: {e}")))?;
+    info!(
+        destinations = ?sender.route_keys(),
+        "Named output destinations initialised"
+    );
+    Ok(Some(sender))
 }
 
 /// Resolve the effective scalo Kafka config: `output.kafka` when set, else
@@ -488,6 +593,7 @@ mod tests {
             kafka: None,
             grpc: None,
             topic_suffix: None,
+            ..Default::default()
         };
         let legacy = KafkaConfig::default();
 
@@ -514,6 +620,7 @@ mod tests {
             kafka: None,
             grpc: None,
             topic_suffix: None,
+            ..Default::default()
         };
         let legacy = KafkaConfig::default();
 
@@ -542,6 +649,7 @@ mod tests {
             kafka: None, // force legacy path
             grpc: None,
             topic_suffix: None,
+            ..Default::default()
         };
         let mut legacy = KafkaConfig::default();
         legacy.brokers = vec!["not-a-real-broker:19092".to_string()];
@@ -648,6 +756,7 @@ mod tests {
             kafka: None,
             grpc: None,
             topic_suffix: None,
+            ..Default::default()
         };
         let legacy = KafkaConfig::default();
 
