@@ -267,7 +267,9 @@
         "type": "kafka",
         "kafka": null,
         "grpc": null,
-        "topic_suffix": null
+        "topic_suffix": null,
+        "destinations": {},
+        "routes": []
       }
     },
     "cursor": {
@@ -4159,6 +4161,22 @@
             "null"
           ],
           "default": null
+        },
+        "destinations": {
+          "description": "Named destinations beyond the default transports, keyed by name.\n\nThe default destination is the source's own -- its topic on the bus,\nthe configured endpoint on the direct transport. A destination declared\nhere is reached by a [`route`](Self::routes) naming it, so a record can\ngo to a transform instead of, or as well as, the default.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/DestinationSpec"
+          },
+          "default": {}
+        },
+        "routes": {
+          "description": "Per-record routes over the named destinations (first match wins).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputRoute"
+          },
+          "default": []
         }
       }
     },
@@ -4806,6 +4824,101 @@
           "default": []
         }
       }
+    },
+    "DestinationSpec": {
+      "description": "A declared destination: exactly one transport block.",
+      "type": "object",
+      "properties": {
+        "grpc": {
+          "description": "Deliver over gRPC to a scalo Push listener (a transform, the loader,\nthe archiver).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GrpcConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kafka": {
+          "description": "Deliver over the bus.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KafkaDestination"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
+    "KafkaDestination": {
+      "description": "A bus destination.",
+      "type": "object",
+      "properties": {
+        "config": {
+          "description": "Broker settings for this destination. Unset reuses the output's own.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KafkaConfig2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "topic": {
+          "description": "Fixed topic. Unset means the record's own source topic.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      }
+    },
+    "OutputRoute": {
+      "description": "A per-record route: matched records go to the named destination(s) instead\nof the default.",
+      "type": "object",
+      "properties": {
+        "match_field": {
+          "description": "Top-level field to match.",
+          "type": "string"
+        },
+        "match_value": {
+          "description": "Value to match.",
+          "type": "string"
+        },
+        "destination": {
+          "description": "Destination for matched records: one name, or a list to fan out.",
+          "$ref": "#/$defs/DestinationRef"
+        }
+      },
+      "required": [
+        "match_field",
+        "match_value",
+        "destination"
+      ]
+    },
+    "DestinationRef": {
+      "description": "One destination name, or a list of them to fan a matched record out to.\n\nA fan-out is delivered when every destination has accepted it.",
+      "anyOf": [
+        {
+          "description": "A single destination name.",
+          "type": "string"
+        },
+        {
+          "description": "Several destination names -- the record goes to all of them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "CursorConfig": {
       "description": "Cursor store configuration for incremental fetching.\n\nCursors are stored as individual JSON files in `directory`, one per\nsource service (e.g., `aws.cloudtrail.cursor.json`). The directory\nshould be PVC-backed for pod restart persistence.\n\nIf `directory` is empty, the cursor store falls back to the config\nfile's parent directory with a warning.",

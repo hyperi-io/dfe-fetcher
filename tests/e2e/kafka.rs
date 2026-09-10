@@ -45,6 +45,7 @@ async fn test_e2e_produce_consume_roundtrip() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
+        ..Default::default()
     };
     let legacy_kafka = dfe_fetcher::config::KafkaConfig::default();
     let output = dfe_fetcher::output::OutputManager::new(&output_config, &legacy_kafka)
@@ -129,6 +130,7 @@ async fn test_e2e_enriched_record_in_kafka() {
             kafka: Some(kf.to_scalo_config()),
             grpc: None,
             topic_suffix: Some(String::new()), // no suffix — use topic as-is
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -148,11 +150,11 @@ async fn test_e2e_enriched_record_in_kafka() {
     )
     .expect("pipeline state");
 
-    // Deliver a raw record through the pipeline (enrichment happens here)
+    // Deliver a raw record through the pipeline (enrichment happens here). No
+    // suffix, so the DFE source is the topic itself.
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);
-    let enriched = state.enrich_record(raw, "aws.cloudtrail");
     state
-        .deliver_ingest(&topic, enriched)
+        .deliver_ingest(&topic, "aws.cloudtrail", &topic, raw)
         .await
         .expect("deliver should succeed");
 
@@ -177,6 +179,7 @@ async fn test_e2e_enriched_record_in_kafka() {
                 if parsed.get("_timestamp_fetcher").is_some() {
                     assert!(parsed["_timestamp_fetcher"].is_number());
                     assert!(parsed["_timestamp_received"].is_number());
+                    assert_eq!(parsed["_source"], topic.as_str());
                     assert_eq!(parsed["_source_fetcher"], "aws.cloudtrail");
                     assert_eq!(parsed["eventName"], "CreateUser");
                     found = true;

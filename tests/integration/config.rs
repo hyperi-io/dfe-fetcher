@@ -31,10 +31,10 @@ fn test_config_from_example_yaml() {
 
 #[test]
 fn test_config_validation_passes_for_default() {
+    // The default config names no broker and nothing that would use one, so it
+    // is valid but empty of work -- the idle gate's case, not a refusal.
     let config = Config::default();
-    // Default config has no brokers, which should fail validation
-    let result = config.validate();
-    assert!(result.is_err()); // no brokers
+    config.validate().expect("the default config is valid");
 }
 
 #[test]
