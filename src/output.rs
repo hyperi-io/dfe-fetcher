@@ -364,22 +364,24 @@ pub fn build_scalo_kafka_config(legacy: &LegacyKafkaConfig) -> ScaloKafkaConfig 
         ..ScaloKafkaConfig::default()
     };
 
-    // Map SASL settings
-    if let Some(ref sasl) = legacy.sasl {
-        if sasl.enabled {
-            config.sasl_mechanism = Some(sasl.mechanism.clone());
-            config.sasl_username = Some(sasl.username.clone());
-            config.sasl_password = Some(sasl.password.clone());
-
-            config.security_protocol = if legacy.tls.enabled {
-                "sasl_ssl".to_string()
-            } else {
-                "sasl_plaintext".to_string()
-            };
-        }
-    } else if legacy.tls.enabled {
-        config.security_protocol = "ssl".to_string();
+    // Map SASL settings. The security protocol is decided by the PAIR
+    // (SASL active, TLS on) -- keying it off `sasl.is_some()` left a
+    // `sasl: {enabled: false}` block plus `tls.enabled: true` on plaintext,
+    // with the ssl_* paths below set and ignored by librdkafka.
+    let sasl_active = legacy.sasl.as_ref().is_some_and(|s| s.enabled);
+    if let Some(ref sasl) = legacy.sasl
+        && sasl.enabled
+    {
+        config.sasl_mechanism = Some(sasl.mechanism.clone());
+        config.sasl_username = Some(sasl.username.clone());
+        config.sasl_password = Some(sasl.password.clone());
     }
+    config.security_protocol = match (sasl_active, legacy.tls.enabled) {
+        (true, true) => "sasl_ssl".to_string(),
+        (true, false) => "sasl_plaintext".to_string(),
+        (false, true) => "ssl".to_string(),
+        (false, false) => config.security_protocol,
+    };
 
     // Map TLS settings
     if legacy.tls.enabled {
@@ -711,8 +713,13 @@ mod tests {
         assert!(result.sasl_password.is_none());
     }
 
-    /// When `sasl.enabled = false` AND TLS is enabled, security_protocol
-    /// must be "ssl" (TLS-only path), not "sasl_ssl".
+    /// `sasl.enabled = false` plus `tls.enabled = true` is the TLS-only
+    /// (mTLS / server-cert) shape and must produce `ssl`.
+    ///
+    /// It used to leave `security_protocol` at plaintext, because the TLS
+    /// branch was an `else if` on `sasl.is_none()`. The ssl_* paths were still
+    /// handed to librdkafka, which ignores them under plaintext -- so a config
+    /// that said TLS produced an unencrypted connection with no warning.
     #[test]
     fn test_build_scalo_kafka_config_sasl_disabled_with_tls() {
         let mut legacy = KafkaConfig::default();
@@ -723,17 +730,14 @@ mod tests {
             password: "p".into(),
         });
         legacy.tls.enabled = true;
+        legacy.tls.ca_file = Some("/certs/ca.pem".to_string());
 
         let result = build_scalo_kafka_config(&legacy);
 
-        // With SASL disabled, current implementation only applies TLS when
-        // sasl is None (the `else if` branch is not taken when sasl is Some).
-        // This documents current behaviour: SASL disabled + TLS enabled
-        // leaves security_protocol at the scalo default.
+        assert_eq!(result.security_protocol, "ssl");
         assert!(result.sasl_mechanism.is_none());
         assert!(result.sasl_username.is_none());
-        // TLS cert locations should still be mapped when tls.enabled.
-        // (they're mapped in a separate block at the end of the function).
+        assert_eq!(result.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
     }
 
     /// Verify `OutputTransport::name()` returns the expected static strings

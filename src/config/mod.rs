@@ -10,12 +10,20 @@
 //!
 //! Priority (highest to lowest):
 //! 1. CLI arguments
-//! 2. Environment variables (DFE_FETCHER_*)
-//! 3. .env file
-//! 4. settings.{env}.yaml
-//! 5. settings.yaml
-//! 6. defaults.yaml
-//! 7. Hard-coded defaults
+//! 2. Flat env overrides (`DFE_FETCHER_KAFKA_BROKERS`, see [`ApplyFlatEnv`])
+//! 3. Nested env vars, `__` between levels, either separator after the prefix:
+//!    `DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID` (the chart / deployment-contract
+//!    form) and `DFE_FETCHER_SOURCES__AWS__ACCESS_KEY_ID` (the docs form) reach
+//!    the same key
+//! 4. .env file
+//! 5. The file named by `--config`, else settings.{env}.yaml / settings.yaml /
+//!    defaults.yaml from the scalo cascade
+//! 6. Hard-coded defaults
+//!
+//! Layer 3 applies on BOTH load paths. `--config` bypasses the scalo cascade
+//! (it discovers files by name, and the container mounts `fetcher.yaml`), so
+//! without the env merge in `apply_nested_env` every env var above would be
+//! silently dropped in exactly the deployment that sets them.
 
 pub mod resolve;
 mod shared;
@@ -221,6 +229,11 @@ impl Config {
         // Store config path for reload support
         config.config_path = config_path.map(String::from);
 
+        // scalo's own merge strips exactly `DFE_FETCHER_`, so the chart's
+        // `DFE_FETCHER__...` form lands on `_sources.aws....` and is dropped.
+        // Re-run the merge with the separator trimmed so both forms reach the key.
+        apply_nested_env(&mut config)?;
+
         // Apply flat env var overrides (DFE_FETCHER_*)
         config.apply_flat_env("DFE_FETCHER");
 
@@ -228,12 +241,18 @@ impl Config {
     }
 
     /// Load configuration from a YAML file directly.
+    ///
+    /// This is the path every container takes: the entrypoint passes
+    /// `--config /etc/dfe/fetcher.yaml`, and the scalo cascade can only
+    /// discover files it names itself. Env layering therefore has to happen
+    /// here too, or the deployment's env vars reach nothing.
     pub fn load_from_file(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
 
         let mut config: Config = serde_yaml_ng::from_str(&content)?;
         config.config_path = Some(path.to_string());
+        apply_nested_env(&mut config)?;
         config.apply_flat_env("DFE_FETCHER");
         Ok(config)
     }
@@ -300,6 +319,20 @@ impl Config {
                 "dlq.mode: kafka_only has no broker to write to when the output is gRPC-only; \
                  set dlq.enabled: false (backpressure holds the batch instead) or give the \
                  DLQ its own brokers"
+                    .into(),
+            ));
+        }
+
+        // `metrics.enabled` reaches nothing: the runtime always starts the
+        // metrics server, and the same listener serves /livez and /readyz, so
+        // there is no build in which switching it off is honoured. Say so
+        // rather than accepting the key and serving metrics anyway.
+        if !self.metrics.enabled {
+            return Err(Error::Config(
+                "metrics.enabled: false is not honoured -- the metrics listener also serves \
+                 /livez and /readyz, so it always starts. Remove the key, or keep the port \
+                 off the network (the chart's Service and the Prometheus scrape annotations \
+                 are what expose it)."
                     .into(),
             ));
         }
@@ -424,6 +457,62 @@ impl Config {
     }
 }
 
+/// Merge `DFE_FETCHER...` env vars onto an already-loaded config, `__` nesting.
+///
+/// figment's `prefixed` strips exactly `DFE_FETCHER_`, so the chart and the
+/// deployment contract's `DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID` arrives as
+/// the key `_sources.aws.access_key_id`, which matches no field and serde drops
+/// without a word. Trimming the separator figment leaves behind is what makes
+/// that form reach the same key as `DFE_FETCHER_SOURCES__AWS__ACCESS_KEY_ID`;
+/// no section starts with `_`.
+///
+/// An empty value counts as unset, matching `scalo::config::flat_env`. The
+/// chart declares every secret env var whether or not the operator supplied a
+/// value, so without this an unset credential would arrive as `Some("")` and
+/// sign requests with an empty key instead of failing on the missing one.
+///
+/// `config_path` is `#[serde(skip)]`, so the round trip through serde loses it --
+/// it is carried across by hand.
+fn apply_nested_env(config: &mut Config) -> Result<()> {
+    use figment::Figment;
+    use figment::providers::{Env, Serialized};
+    use scalo::config::sensitive::expose_during;
+
+    let config_path = config.config_path.clone();
+    let prefix = format!("{ENV_PREFIX}_");
+
+    // Secrets already in the config serialise as `***REDACTED***` outside an
+    // expose window, which would overwrite them with the mask.
+    let merged = expose_during(|| {
+        // `Env::raw` hands over the untouched variable name, which is what
+        // makes the value reachable for the empty check.
+        let env = Env::raw()
+            .filter_map(move |key| {
+                if !key.starts_with(&prefix)
+                    || std::env::var(key.as_str()).is_ok_and(|v| v.is_empty())
+                {
+                    return None;
+                }
+                Some(key.as_str()[prefix.len()..].trim_start_matches('_').into())
+            })
+            .split("__");
+        // `figment::Error` is 200+ bytes; carry the message, not the value.
+        Figment::from(Serialized::defaults(&*config))
+            .merge(env)
+            .extract::<Config>()
+            .map_err(|e| e.to_string())
+    })
+    .map_err(|e| {
+        Error::Config(format!(
+            "failed to apply {ENV_PREFIX} environment overrides: {e}"
+        ))
+    })?;
+
+    *config = merged;
+    config.config_path = config_path;
+    Ok(())
+}
+
 /// Overlay a per-connection optional field onto the resolved config: when the
 /// connection sets it, its value wins; when unset, the shared type-level value
 /// stays. Used by every `<Type>SourceConfig::resolved()`.
@@ -518,34 +607,20 @@ impl ApplyFlatEnv for Config {
             self.kafka.client_id = v;
         }
         if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_SASL_MECHANISM") {
-            let sasl = self.kafka.sasl.get_or_insert_with(|| SaslConfig {
-                enabled: true,
-                mechanism: String::new(),
-                username: String::new(),
-                password: SensitiveString::default(),
-            });
+            let sasl = self.kafka.sasl.get_or_insert_with(SaslConfig::default);
+            // No `enabled = true` here: an existing block keeps whatever it
+            // set, and a block created by this line already defaults to on.
             sasl.mechanism = v;
-            sasl.enabled = true;
         }
         if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_SECURITY_PROTOCOL") {
             self.kafka.tls.enabled = v.to_uppercase().contains("SSL");
         }
         if let Some(v) = flat_env::flat_env_string(prefix, "KAFKA_SASL_USER") {
-            let sasl = self.kafka.sasl.get_or_insert_with(|| SaslConfig {
-                enabled: true,
-                mechanism: String::new(),
-                username: String::new(),
-                password: SensitiveString::default(),
-            });
+            let sasl = self.kafka.sasl.get_or_insert_with(SaslConfig::default);
             sasl.username = v;
         }
         if let Some(v) = flat_env::flat_env_string_sensitive(prefix, "KAFKA_SASL_PASSWORD") {
-            let sasl = self.kafka.sasl.get_or_insert_with(|| SaslConfig {
-                enabled: true,
-                mechanism: String::new(),
-                username: String::new(),
-                password: SensitiveString::default(),
-            });
+            let sasl = self.kafka.sasl.get_or_insert_with(SaslConfig::default);
             sasl.password = SensitiveString::from(v);
         }
 
@@ -3767,19 +3842,48 @@ impl Default for KafkaConfig {
 }
 
 /// SASL authentication configuration.
+///
+/// Every field defaults, so the two secret env vars the chart injects are a
+/// complete SASL block on their own -- which is what the chart claims they are.
+/// Without that, a partial block was a startup parse error.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub struct SaslConfig {
-    /// Enable SASL.
+    /// Enable SASL. Defaults to TRUE, because reaching this struct at all means
+    /// a `kafka.sasl` block exists -- written by hand or built out of the two
+    /// secret env vars the chart injects -- and that is a request for SASL.
+    /// `enabled: false` still switches it off and is never inferred away.
+    /// `kafka.sasl` itself defaults to absent, so a config that says nothing
+    /// gets no SASL.
     pub enabled: bool,
 
-    /// SASL mechanism (plain, scram_sha_256, scram_sha_512).
+    /// SASL mechanism, in librdkafka's spelling: `PLAIN`, `SCRAM-SHA-256`,
+    /// `SCRAM-SHA-512`, `GSSAPI`, `OAUTHBEARER`. Passed through verbatim, so
+    /// anything else is refused by the client at connect.
     pub mechanism: String,
 
     /// Username.
     pub username: String,
 
     /// Password (always redacted in serialisation/debug output).
+    ///
+    /// The schema default is pinned to the empty string: serialising the real
+    /// default outside an expose window yields the mask, and a UI that
+    /// pre-filled a password box with `***REDACTED***` would send that as the
+    /// password.
+    #[schemars(extend("default" = ""))]
     pub password: SensitiveString,
+}
+
+impl Default for SaslConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mechanism: "SCRAM-SHA-512".to_string(),
+            username: String::new(),
+            password: SensitiveString::default(),
+        }
+    }
 }
 
 /// Kafka TLS configuration.

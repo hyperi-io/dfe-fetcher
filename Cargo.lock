@@ -1321,6 +1321,7 @@ dependencies = [
  "csv",
  "dotenvy",
  "fastrand",
+ "figment",
  "flate2",
  "futures",
  "futures-core",

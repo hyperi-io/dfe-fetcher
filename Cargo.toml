@@ -79,6 +79,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 
+# Env-var layering over an explicit --config file (scalo's cascade only merges
+# env for files it discovers itself). Same range scalo pins, so cargo unifies to
+# one figment in the graph.
+figment = { version = ">=0.10, <0.11", features = ["env"] }
+
 # JSON Schema derivation for the reflectable config-schema capability
 # (scalo-rs#6). Same version range as scalo so cargo unifies to ONE schemars in
 # the graph -- so scalo's `SensitiveString` x-dfe-secret impl and the fetcher's

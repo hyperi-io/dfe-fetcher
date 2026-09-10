@@ -173,9 +173,38 @@ impl ServiceApp for App {
     }
 }
 
+/// Carry `metrics.address` from an explicit `--config` file onto the runtime's
+/// metrics bind address.
+///
+/// scalo resolves that address from ITS cascade, which `--config` never
+/// populates (the cascade discovers files by name and the container mounts
+/// `fetcher.yaml`). So on the one path every deployment takes, `metrics.address`
+/// -- shipped in chart/values.yaml, in the deployment contract's default config
+/// and in config.example.yaml -- was read by nothing and the listener bound the
+/// hard-coded default.
+///
+/// `--metrics-addr` / `METRICS_ADDR` still win: this only fills an unset value.
+fn apply_config_metrics_addr(app: &mut App) {
+    if app.common.metrics_addr.is_some() {
+        return;
+    }
+    let Some(path) = app.common.config.clone() else {
+        // No --config: scalo's cascade is populated and resolves it already.
+        return;
+    };
+    // A load failure is not reported here -- the lifecycle loads the same file
+    // a moment later and reports it properly.
+    if let Ok(config) = Config::load_from_file(&path)
+        && !config.metrics.address.is_empty()
+    {
+        app.common.metrics_addr = Some(config.metrics.address);
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    let app = App::parse();
+    let mut app = App::parse();
+    apply_config_metrics_addr(&mut app);
 
     // Handle non-standard subcommands locally before entering the ServiceApp lifecycle
     // (these don't need config or logging). Standard subcommands fall through to run_app.
