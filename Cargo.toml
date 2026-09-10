@@ -32,7 +32,7 @@ required-features = ["pgo-driver"]
 
 [dependencies]
 # scalo shared library (crates.io).
-scalo = { version = ">=2.10.14, <3", features = [
+scalo = { version = ">=2.12.1, <3", features = [
     "config",
     "config-reload",
     "logger",
@@ -68,27 +68,27 @@ scalo = { version = ">=2.10.14, <3", features = [
 ] }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tokio-stream = "0.1"
-futures = ">=0.3.31, <0.4"
-futures-core = "0.3"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+tokio-stream = "0.1.19"
+futures = ">=0.3.34, <0.4"
+futures-core = "0.3.34"
 
 # JSON
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 serde_yaml_ng = "0.10"
 
 # Env-var layering over an explicit --config file (scalo's cascade only merges
 # env for files it discovers itself). Same range scalo pins, so cargo unifies to
 # one figment in the graph.
-figment = { version = ">=0.10, <0.11", features = ["env"] }
+figment = { version = ">=0.10.19, <0.11", features = ["env"] }
 
 # JSON Schema derivation for the reflectable config-schema capability
 # (scalo-rs#6). Same version range as scalo so cargo unifies to ONE schemars in
 # the graph -- so scalo's `SensitiveString` x-dfe-secret impl and the fetcher's
 # derives resolve against the same `JsonSchema` trait.
-schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
+schemars = { version = ">=1.2.2, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
 
 # HTTP client (for API calls to external services).
 # `default-features = false` drops the `default-tls` feature (which pulls
@@ -98,7 +98,7 @@ schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std
 # HELD on 0.12: reqwest and reqsign move together. reqsign signs an
 # http::request::Parts and its default context sends over reqwest 0.12, so
 # bumping reqwest alone stops every SigV4 call site compiling.
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13.4", default-features = false, features = [
     "charset",
     "http2",
     "system-proxy",
@@ -110,48 +110,48 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 
 # Performance
-fastrand = "2"
-rustc-hash = "2"
+fastrand = "2.5.0"
+rustc-hash = "2.1.3"
 # SIMD substring search for the enrich pre-filter; already in the graph
 # transitively, declared here because src/pipeline calls it directly.
-memchr = "2.8"
+memchr = "2.8.3"
 # Allocation-free integer formatting for the enrich append path; already in the
 # graph transitively, declared here because src/pipeline calls it directly.
 itoa = "1.0.18"
 compact_str = "0.10"
-parking_lot = "0.12"
+parking_lot = "0.12.5"
 
 # Error handling
-thiserror = "2"
-anyhow = "1"
+thiserror = "2.0.20"
+anyhow = "1.0.104"
 
 # CLI
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4.6.6", features = ["derive", "env"] }
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 
 # Metrics (global recorder integration via scalo MetricsManager)
-metrics = ">=0.24, <0.25"
+metrics = ">=0.24.6, <0.25"
 
 # HTTP server (for metrics/health endpoints)
-axum = "0.8"
-bytes = "1"
+axum = "0.8.9"
+bytes = "1.12.1"
 
 # Utilities
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
-async-trait = "0.1"
-url = "2"
+chrono = { version = "0.4.45", features = ["serde"] }
+uuid = { version = "1.26.0", features = ["v4"] }
+async-trait = "0.1.92"
+url = "2.5.8"
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 
 # AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
-reqsign = { version = "0.20", default-features = false, features = ["aws", "default-context"] }
+reqsign = { version = "0.20.6", default-features = false, features = ["aws", "default-context"] }
 # reqsign signs an http::request::Parts, so the SigV4 seam builds one directly.
-http = "1"
+http = "1.5.0"
 sha2 = "0.11"
-hex = "0.4"
+hex = "0.4.3"
 
 # Crypto for the Duo Admin API HMAC-SHA1 request signature scheme.
 # Used only by src/source/duo. Other sources stick to SigV4 / OAuth bearer.
@@ -164,44 +164,44 @@ hex = "0.4"
 # fails to compile: `Hmac::<Sha1>::new_from_slice` is gone, because KeyInit
 # moved in digest 0.11. It needs a call-site migration in src/source/duo, not a
 # version bump -- see the tracking issue.
-hmac = "0.12"
-sha1 = "0.10"
-base64 = "0.23"
+hmac = "0.13.0"
+sha1 = "0.11.0"
+base64 = "0.23.1"
 
 # Gzip decompression for the object_store source family. Most bucket-
 # delivered log feeds (CloudTrail, VPC Flow Logs, WAF, Cloud Logging
 # storage sinks) gzip every object. miniz_oxide backend keeps the
 # dependency surface small (no C zlib).
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 
 # Small XML parser for AWS S3 ListObjectsV2 responses (the only XML the
 # fetcher consumes; everything else is JSON). Stays out of the hot path.
-quick-xml = "0.41"
+quick-xml = "0.42.0"
 
 # CSV parser for the Salesforce EventLogFile source. EventLogFile bodies
 # are downloaded as CSV with a header row and quoted fields; hand-parsing
 # quoting/escaping is error-prone, so use the mature `csv` crate (same
 # call as quick-xml for S3 XML). Only used by src/source/salesforce.
-csv = "1.3"
+csv = "1.4.0"
 
 # OpenTelemetry proto types (for OTLP metric output)
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.14"
+opentelemetry-proto = { version = "0.32.0", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.14.4"
 
 # Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
 tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
-tempfile = "3"
-tokio-test = "0.4"
-dotenvy = "0.15"
-wiremock = "0.6"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+tempfile = "3.27.0"
+tokio-test = "0.4.5"
+dotenvy = "0.15.7"
+wiremock = "0.6.5"
 # `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
 # ships ZERO default features, so this must be explicit (not transitive on axum).
-tower = { version = "0.5", features = ["util"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.14"
+tower = { version = "0.5.3", features = ["util"] }
+opentelemetry-proto = { version = "0.32.0", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.14.4"
 # Auto-managed Docker containers for integration tests (start + stop lifecycle).
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["localstack", "kafka"] }
