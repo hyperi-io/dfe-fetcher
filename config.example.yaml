@@ -603,8 +603,10 @@ extractors:
 # Ingest server — REQUIRES RESTART
 # =============================================================================
 # HTTP server binds at startup; auth token resolved once.
+# Off by default: the listener counts as work, so turning it on holds this
+# fetcher out of idle whether or not anything ever posts to it.
 ingest:
-  enabled: true
+  enabled: false
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
   # auth_token: "vault:secret/dfe:ingest_token"
