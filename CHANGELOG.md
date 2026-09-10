@@ -3,6 +3,57 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.20](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.19...v1.4.20) (2026-09-10)
+
+### Bug Fixes
+
+* idle a fetcher with no work instead of refusing its own default config ([73859d2](https://github.com/hyperi-io/dfe-fetcher/commit/73859d2fa947622ef879064dca421ffe94312796)), closes [#269](https://github.com/hyperi-io/dfe-fetcher/issues/269) [#84](https://github.com/hyperi-io/dfe-fetcher/issues/84)
+* prove the first enabled source starts fetching without a restart ([c968727](https://github.com/hyperi-io/dfe-fetcher/commit/c96872749cde135939e1fe9461af6524c04a291b))
+
+## [1.4.19](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.18...v1.4.19) (2026-09-09)
+
+### Bug Fixes
+
+* output destinations with data-match routes and hold on backpressure ([73828ec](https://github.com/hyperi-io/dfe-fetcher/commit/73828ec442717aeeb187df08dd4d865091e269df))
+* rebuild on scalo 2.12.1 ([e19bfad](https://github.com/hyperi-io/dfe-fetcher/commit/e19bfad634e680ca57a3d467ff63f951ee2f7bbf))
+
+## [1.4.18](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.17...v1.4.18) (2026-09-08)
+
+### Bug Fixes
+
+* **config:** container and vector paths honour output.topic_suffix ([015a9e5](https://github.com/hyperi-io/dfe-fetcher/commit/015a9e5d3ca8dd323e82a027d46a81abc2125ff4))
+
+## [1.4.17](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.16...v1.4.17) (2026-09-05)
+
+### Bug Fixes
+
+* **pipeline:** the append path escapes source names once per batch, not per record ([#79](https://github.com/hyperi-io/dfe-fetcher/issues/79)) ([b0858bc](https://github.com/hyperi-io/dfe-fetcher/commit/b0858bc42080d08c3317fd89aa495255cd02acfa)), closes [#78](https://github.com/hyperi-io/dfe-fetcher/issues/78)
+
+## [1.4.16](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.15...v1.4.16) (2026-09-04)
+
+### Bug Fixes
+
+* **pipeline:** a reserved-key rename never clobbers an existing <key>_original ([#78](https://github.com/hyperi-io/dfe-fetcher/issues/78)) ([de5506c](https://github.com/hyperi-io/dfe-fetcher/commit/de5506cc0535a1dedff7e38dd9a3c06e7b261055)), closes [#77](https://github.com/hyperi-io/dfe-fetcher/issues/77)
+
+## [1.4.15](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.14...v1.4.15) (2026-09-04)
+
+### Bug Fixes
+
+* **ingest:** a payload that already carries _source no longer reaches the loader with two of them ([#77](https://github.com/hyperi-io/dfe-fetcher/issues/77)) ([751f6e5](https://github.com/hyperi-io/dfe-fetcher/commit/751f6e5d92ad94468b9743c25bd0a733c40cb09e)), closes [#75](https://github.com/hyperi-io/dfe-fetcher/issues/75)
+
+## [1.4.14](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.13...v1.4.14) (2026-09-04)
+
+### Bug Fixes
+
+* **pipeline:** stamp _source with the DFE source name on every delivery path ([#75](https://github.com/hyperi-io/dfe-fetcher/issues/75)) ([ed87b2d](https://github.com/hyperi-io/dfe-fetcher/commit/ed87b2d423e2d49d345d185e3992af8ee97b38cf)), closes [#74](https://github.com/hyperi-io/dfe-fetcher/issues/74)
+* **tests:** retry a Kafka testcontainer start and say why when it still fails ([#76](https://github.com/hyperi-io/dfe-fetcher/issues/76)) ([e130a2a](https://github.com/hyperi-io/dfe-fetcher/commit/e130a2a81bbc6a1ebadcf731f444af641d04c185)), closes [#75](https://github.com/hyperi-io/dfe-fetcher/issues/75) [#75](https://github.com/hyperi-io/dfe-fetcher/issues/75)
+
+## [1.4.13](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.12...v1.4.13) (2026-08-28)
+
+### Bug Fixes
+
+* version check on by default via the releases endpoint ([1688ec0](https://github.com/hyperi-io/dfe-fetcher/commit/1688ec0cbaeb481456bdae06f0453d5b16679b15))
+
 ## [1.4.12](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.11...v1.4.12) (2026-08-27)
 
 ### Bug Fixes

@@ -82,9 +82,21 @@ setting. Configuration loads through a layered cascade (CLI, then
 `SIGHUP` to reload the hot-reloadable settings without a restart. The cascade is
 diagrammed in [docs/DESIGN.md](docs/DESIGN.md).
 
-Default service ports: metrics and health on `9090` (`/livez`, `/readyz`,
-`/metrics`), the ingest HTTP endpoint on `8080`, and the Vector gRPC
-receiver on `6000`.
+Service ports: metrics and health on `9090` (`/livez`, `/readyz`), and -- each
+off until a deployment turns it on -- the ingest HTTP endpoint on `8080` and the
+Vector gRPC receiver on `6000`.
+
+### Idle until configured
+
+A fetcher with no enabled source, no container extractor and the ingest listener
+off has nothing that can produce a record. It starts, passes readiness, serves
+health and metrics, and opens no transport -- the `pipeline_idle` gauge sits at
+1 and the `work_config` health component reports Degraded, so an operator can
+see it has nothing to do while the deploy's readiness gate still passes. Writing
+the first source into its config takes it out of idle without a restart.
+
+A missing broker or endpoint is refused only once something would send to it, so
+an empty config is not a startup failure.
 
 ### Credential resolution
 

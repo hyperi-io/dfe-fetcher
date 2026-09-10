@@ -570,15 +570,35 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
     use testcontainers_modules::kafka::apache::Kafka;
 
     let name = container_name(Some(test), "kafka");
-    reap_stale(&name);
-    let Ok(container) = Kafka::default()
-        .with_tag(KAFKA_TAG)
-        .with_container_name(&name)
-        .with_labels(test_labels("kafka"))
-        .start()
-        .await
-    else {
-        require_kafka_path_in_ci();
+    // A start on a busy runner fails transiently while sibling tests start theirs;
+    // retry before deciding the runtime has no Kafka to offer.
+    let mut container = None;
+    let mut last_error = String::new();
+    for attempt in 1..=3 {
+        reap_stale(&name);
+        match Kafka::default()
+            .with_tag(KAFKA_TAG)
+            .with_container_name(&name)
+            .with_labels(test_labels("kafka"))
+            .start()
+            .await
+        {
+            Ok(started) => {
+                container = Some(started);
+                break;
+            }
+            Err(error) => {
+                last_error = format!("attempt {attempt}: {error}");
+                eprintln!("kafka testcontainer {name}: {last_error}");
+                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
+            }
+        }
+    }
+    let Some(container) = container else {
+        require_container_path_in_ci(
+            "Kafka",
+            &format!("testcontainer start failed, {last_error}"),
+        );
         return None;
     };
     let host = container.get_host().await.ok()?;
