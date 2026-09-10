@@ -3,6 +3,17 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.21](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.20...v1.4.21) (2026-09-10)
+
+### Bug Fixes
+
+* **config:** make the settings a deployment writes actually reach something ([c146d64](https://github.com/hyperi-io/dfe-fetcher/commit/c146d641aaaab27fe74960dd023642646f913aa3))
+* **deps:** raise the scalo floor to 2.12.1 ([0d4a2ab](https://github.com/hyperi-io/dfe-fetcher/commit/0d4a2ab768e1d47d8c9dfdc50428a7f2c661bd8a)), closes [#54](https://github.com/hyperi-io/dfe-fetcher/issues/54) [#67](https://github.com/hyperi-io/dfe-fetcher/issues/67) [#68](https://github.com/hyperi-io/dfe-fetcher/issues/68) [#69](https://github.com/hyperi-io/dfe-fetcher/issues/69)
+* **docs:** make the config reference describe what the code does ([83f6b4f](https://github.com/hyperi-io/dfe-fetcher/commit/83f6b4f650b946f29726f2c48a0abaed1aca9c22))
+* **health:** keep an output outage out of the readiness probe ([db1645b](https://github.com/hyperi-io/dfe-fetcher/commit/db1645bbeb0a9631832d978b10a6a2e4a04437dd))
+* **ingest:** resolve the ingest auth token and pin the contract default to the code ([22db218](https://github.com/hyperi-io/dfe-fetcher/commit/22db2181bbdd1eeaf43e82b280353742ce3daa65)), closes [#85](https://github.com/hyperi-io/dfe-fetcher/issues/85)
+* **pipeline:** release tracked bytes when a send is cancelled ([861038b](https://github.com/hyperi-io/dfe-fetcher/commit/861038ba714753edc7a0f7bc4190192ffa12def7))
+
 ## [1.4.20](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.19...v1.4.20) (2026-09-10)
 
 ### Bug Fixes
