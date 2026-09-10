@@ -703,8 +703,13 @@ metrics:
 # ON BY DEFAULT. At startup the fetcher POSTs its product, version and a
 # generated instance id to https://releases.hyperi.io/api/v1/check. Both
 # `enabled` and `send_instance_id` default to true, so a deployment that
-# never configures this section still calls out. The runtime overlays these
-# keys on the defaults in main.rs, so an explicit `enabled: false` wins.
+# never configures this section still calls out.
+#
+# The defaults come from main.rs and the runtime overlays the version_check
+# cascade keys on them. Whether a value written HERE joins that cascade on the
+# `--config` path the chart and the container entrypoint take is the open
+# question in #69; until it is settled, confirm the opt-out took effect rather
+# than assuming it, and treat the network policy as the reliable control.
 version_check:
   enabled: true                  # false to stop the startup call
   send_instance_id: true         # false keeps the check, drops the identifier
