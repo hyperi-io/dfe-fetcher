@@ -107,6 +107,12 @@ reqwest = { version = "0.12", default-features = false, features = [
 # Performance
 fastrand = "2"
 rustc-hash = "2"
+# SIMD substring search for the enrich pre-filter; already in the graph
+# transitively, declared here because src/pipeline calls it directly.
+memchr = "2.8"
+# Allocation-free integer formatting for the enrich append path; already in the
+# graph transitively, declared here because src/pipeline calls it directly.
+itoa = "1.0.18"
 compact_str = "0.10"
 parking_lot = "0.12"
 
