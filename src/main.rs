@@ -141,13 +141,12 @@ impl ServiceApp for App {
     }
 
     /// The fetcher has work when something can produce records: an enabled
-    /// source, a container extractor, or the ingest listener.
+    /// source, a container extractor, or the ingest listener. `Config::validate`
+    /// reads the same predicate, so a config that idles here is never refused
+    /// there for want of the transport it will not use.
     fn work_state(&self, config: &Config) -> scalo::lifecycle::WorkState {
-        let has_work = config.sources.any_enabled()
-            || !config.extractors.containers.is_empty()
-            || config.ingest.enabled;
         scalo::lifecycle::WorkState::idle_if(
-            !has_work,
+            !config.has_work(),
             "no enabled sources, container extractors or ingest listener",
         )
     }
@@ -698,9 +697,8 @@ mod tests {
     use super::*;
     use scalo::lifecycle::WorkState;
 
-    /// The output stanza every fetcher config carries. The default output type
-    /// is the bus, and a bus output with no broker is a structural fault, so it
-    /// is present in both configs below and neither test is about it.
+    /// A bus output with a broker, so the active half of the first test has a
+    /// transport to name. Neither test is about the transport itself.
     const OUTPUT: &str = "output:\n  type: kafka\n  kafka:\n    brokers: [localhost:9092]\n";
 
     /// The loop scalo's idle gate runs: re-read the config through the app's
@@ -748,17 +746,25 @@ mod tests {
         );
     }
 
-    /// The ingest listener is work in its own right, and it is on by default:
-    /// a fetcher deployed to receive from container extractors must not sit
-    /// idle waiting for a source nobody is going to write. A deployment that
-    /// wants the idle gate to fire on sources alone turns the listener off.
+    /// The shape a fetcher is deployed in before anything gives it a source: an
+    /// empty config file, no transport named, no listener. `load_config`
+    /// validates, so this covers the default bus output with no broker too.
     #[test]
-    fn the_default_configuration_has_work_because_the_ingest_listener_is_on() {
+    fn the_default_configuration_loads_and_idles() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("fetcher.yaml");
-        std::fs::write(&path, OUTPUT).expect("write config");
+        std::fs::write(&path, "{}\n").expect("write config");
 
         let app = App::parse_from(["dfe-fetcher", "--config", path.to_str().expect("utf-8")]);
-        assert_eq!(state_of(&app, &path), WorkState::Active);
+
+        let state = state_of(&app, &path);
+        assert!(
+            state.is_idle(),
+            "a fetcher deployed with no sources idles, it does not refuse"
+        );
+        assert_eq!(
+            state.reason(),
+            Some("no enabled sources, container extractors or ingest listener")
+        );
     }
 }

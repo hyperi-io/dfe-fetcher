@@ -174,7 +174,7 @@ properties:
     description: HTTP ingest server configuration (for container extractors to post data).
     $ref: '#/$defs/IngestConfig'
     default:
-      enabled: true
+      enabled: false
       bind_address: 0.0.0.0:8080
       max_body_size: 10485760
       auth_token: null
@@ -3229,7 +3229,7 @@ $defs:
       enabled:
         description: Enable ingest HTTP endpoint.
         type: boolean
-        default: true
+        default: false
       bind_address:
         description: Bind address.
         type: string

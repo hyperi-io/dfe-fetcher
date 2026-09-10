@@ -180,6 +180,17 @@ impl Config {
             .unwrap_or(&self.kafka.topic_suffix)
     }
 
+    /// Whether anything in this config can produce a record: an enabled source,
+    /// a container extractor, or the ingest listener.
+    ///
+    /// The idle gate's `work_state` and the transport checks in
+    /// [`validate`](Self::validate) read the same predicate, so an empty config
+    /// cannot idle by one definition and be refused by another.
+    #[must_use]
+    pub fn has_work(&self) -> bool {
+        self.sources.any_enabled() || !self.extractors.containers.is_empty() || self.ingest.enabled
+    }
+
     /// Load configuration with cascade: CLI -> ENV -> .env -> file -> defaults
     pub fn load(config_path: Option<&str>) -> Result<Self> {
         // If an explicit config file is provided, load it directly
@@ -246,40 +257,34 @@ impl Config {
 
     /// Validate the configuration.
     pub fn validate(&self) -> Result<()> {
-        // At least one source must be enabled
-        if !self.sources.aws.enabled
-            && !self.sources.azure.enabled
-            && !self.sources.m365.enabled
-            && !self.sources.gcp.enabled
-        {
-            // Not an error — just a warning scenario (no sources to fetch)
-            // Allow startup with no sources for config validation
-        }
-
-        // Validate output transport config
-        if self.output.includes_kafka() {
-            // Check output.kafka first, then legacy kafka section
-            let has_output_brokers = self
-                .output
-                .kafka
-                .as_ref()
-                .is_some_and(|k| !k.brokers.is_empty());
-            if !has_output_brokers && self.kafka.brokers.is_empty() {
+        // A missing broker or endpoint is a contradiction only once something
+        // would send to it; with nothing to send, the config is valid but empty
+        // of work and the idle gate holds it (main.rs `work_state`).
+        if self.has_work() {
+            if self.output.includes_kafka() {
+                // Check output.kafka first, then legacy kafka section
+                let has_output_brokers = self
+                    .output
+                    .kafka
+                    .as_ref()
+                    .is_some_and(|k| !k.brokers.is_empty());
+                if !has_output_brokers && self.kafka.brokers.is_empty() {
+                    return Err(Error::Config(
+                        "kafka brokers required when output.type includes kafka".into(),
+                    ));
+                }
+            }
+            if self.output.includes_grpc()
+                && self
+                    .output
+                    .grpc
+                    .as_ref()
+                    .is_none_or(|g| g.endpoint.is_none())
+            {
                 return Err(Error::Config(
-                    "kafka brokers required when output.type includes kafka".into(),
+                    "grpc.endpoint required when output.type includes grpc".into(),
                 ));
             }
-        }
-        if self.output.includes_grpc()
-            && self
-                .output
-                .grpc
-                .as_ref()
-                .is_none_or(|g| g.endpoint.is_none())
-        {
-            return Err(Error::Config(
-                "grpc.endpoint required when output.type includes grpc".into(),
-            ));
         }
 
         self.output.validate_routes()?;
@@ -3699,7 +3704,10 @@ pub struct IngestConfig {
 impl Default for IngestConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Off unless a deployment asks for it: the listener is work in its
+            // own right, so defaulting it on holds every fetcher out of idle
+            // and binds a port no deployment publishes.
+            enabled: false,
             bind_address: "0.0.0.0:8080".to_string(),
             max_body_size: 10 * 1024 * 1024, // 10MB
             auth_token: None,
@@ -4109,12 +4117,6 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validation_no_brokers() {
-        let config = Config::default();
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
     fn test_invalid_pressure_threshold() {
         let mut config = Config::default();
         config.kafka.brokers = vec!["localhost:9092".to_string()];
@@ -4378,6 +4380,8 @@ mod tests {
     #[test]
     fn test_validate_grpc_output_without_endpoint() {
         let mut cfg = valid_config();
+        // The transport checks only fire on a config with work to send.
+        cfg.sources.aws.enabled = true;
         cfg.output.output_type = "grpc".to_string();
         cfg.output.grpc = None;
         let err = cfg.validate().unwrap_err().to_string();
@@ -4390,6 +4394,7 @@ mod tests {
     #[test]
     fn test_validate_both_output_kafka_ok_grpc_missing() {
         let mut cfg = valid_config();
+        cfg.sources.aws.enabled = true;
         cfg.output.output_type = "both".to_string();
         // kafka brokers are set via valid_config(), but no grpc endpoint
         cfg.output.grpc = None;
@@ -4397,6 +4402,45 @@ mod tests {
         assert!(
             err.contains("grpc.endpoint required"),
             "Expected grpc endpoint error, got: {err}"
+        );
+    }
+
+    /// The shape a fetcher is deployed in before an operator writes a source:
+    /// the default output is the bus and no broker is named anywhere. It is
+    /// valid but empty of work, which the idle gate holds -- so validate must
+    /// not refuse it.
+    #[test]
+    fn test_validate_accepts_the_default_config_with_no_broker() {
+        let cfg = Config::default();
+        assert!(cfg.kafka.brokers.is_empty(), "the default names no broker");
+        assert!(!cfg.has_work(), "the default config has nothing to send");
+        cfg.validate()
+            .expect("a valid-but-empty config idles, it is not refused");
+    }
+
+    /// The first enabled source turns the broker requirement back on: something
+    /// would now produce records, and there is nowhere to put them.
+    #[test]
+    fn test_validate_refuses_an_enabled_source_with_no_broker() {
+        let mut cfg = Config::default();
+        cfg.sources.aws.enabled = true;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("kafka brokers required"),
+            "Expected kafka brokers error, got: {err}"
+        );
+    }
+
+    /// The ingest listener is a producer too, so turning it on demands the same
+    /// broker an enabled source would.
+    #[test]
+    fn test_validate_refuses_an_enabled_ingest_listener_with_no_broker() {
+        let mut cfg = Config::default();
+        cfg.ingest.enabled = true;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("kafka brokers required"),
+            "Expected kafka brokers error, got: {err}"
         );
     }
 
