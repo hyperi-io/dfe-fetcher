@@ -169,8 +169,10 @@ pub fn contract() -> DeploymentContract {
                     "acks": "all"
                 }
             },
+            // Matches `IngestConfig::default`: the listener counts as work, so
+            // shipping it on would hold every generated deployment out of idle.
             "ingest": {
-                "enabled": true,
+                "enabled": false,
                 "bind_address": "0.0.0.0:8080"
             },
             "metrics": {

@@ -54,6 +54,15 @@ pub enum Error {
     #[error("transport error: {0}")]
     Transport(String),
 
+    /// The destination is full and the batch must be held.
+    ///
+    /// Distinct from [`Error::Transport`] because it is not a delivery failure:
+    /// the records are still good and the cursor must NOT advance past them.
+    /// Never dead-lettered -- a DLQ is for records that cannot be delivered,
+    /// and on the direct transport there is no broker holding one.
+    #[error("destination backpressured: {0}")]
+    Backpressured(String),
+
     /// Cursor store error.
     #[error("cursor error: {0}")]
     Cursor(String),
@@ -119,7 +128,9 @@ impl IntoResponse for Error {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "kafka unavailable".to_string(),
             ),
-            Error::Transport(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            Error::Transport(msg) | Error::Backpressured(msg) => {
+                (StatusCode::SERVICE_UNAVAILABLE, msg.clone())
+            }
             Error::Cursor(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Error::Filter(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Error::Shutdown => (StatusCode::SERVICE_UNAVAILABLE, "shutting down".to_string()),

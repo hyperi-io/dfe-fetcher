@@ -33,6 +33,7 @@ async fn test_output_transport_kafka_send() {
         kafka: Some(kf.to_scalo_config()),
         grpc: None,
         topic_suffix: None,
+        ..Default::default()
     };
 
     let legacy_kafka = dfe_fetcher::config::KafkaConfig::default();

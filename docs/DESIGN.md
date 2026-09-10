@@ -129,13 +129,25 @@ sequenceDiagram
     S->>S: API call (with pagination)
     S-->>Sch: Vec<FetchResult>
     Sch->>P: deliver(results)
-    P->>P: Enrich: add _timestamp_fetcher, _source_fetcher, _timestamp_received
+    P->>P: Enrich: add _timestamp_fetcher, _timestamp_received, _source (topic base), _source_fetcher
     P->>P: CEL filter: evaluate per-source filter expression
     P->>O: send(topic + suffix, payload)
     O->>T: Produce message (Kafka and/or gRPC)
     Sch->>C: Save cursor (new fetch window)
     Note over T: topic = "{source}{topic_suffix}"<br>e.g. "aws_land"
 ```
+
+Those four enrichment names are reserved. A payload that already carries one
+keeps its own value under `<key>_original` and the fetcher's value takes the
+name: the loader routes on `_source`, so the DFE source name has to be the one
+that survives, and a record carrying the same top-level key twice is rejected
+outright by ClickHouse rather than dead-lettered.
+
+`<key>_original` is never overwritten. A payload that already carries both the
+reserved name and its `_original` -- a replayed record on a second enrich pass,
+say -- keeps the `_original` it arrived with, and the colliding value is parked
+under the next free `<key>_original_<n>` counting from 2, with a warning naming
+the key.
 
 ## Container Extractor Lifecycle
 

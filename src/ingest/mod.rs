@@ -186,12 +186,7 @@ async fn handle_ingest(
     }
 
     let config = state.pipeline.config();
-    let topic_suffix = config
-        .output
-        .topic_suffix
-        .as_deref()
-        .unwrap_or(&config.kafka.topic_suffix);
-    let topic = format!("{}{}", source, topic_suffix);
+    let topic = format!("{}{}", source, config.topic_suffix());
 
     debug!(
         source = %source,
@@ -202,7 +197,11 @@ async fn handle_ingest(
 
     state.metrics.add_records_fetched(1);
 
-    match state.pipeline.deliver_ingest(&topic, body).await {
+    match state
+        .pipeline
+        .deliver_ingest(&source, "ingest", &topic, body)
+        .await
+    {
         Ok(()) => {
             state.metrics.record_ingest_duration(start.elapsed());
             state.metrics.inc_ingest_request("success");
@@ -242,7 +241,11 @@ async fn handle_ingest_with_topic(
 
     state.metrics.add_records_fetched(1);
 
-    match state.pipeline.deliver_ingest(&topic, body).await {
+    match state
+        .pipeline
+        .deliver_ingest(&source, "ingest", &topic, body)
+        .await
+    {
         Ok(()) => {
             state.metrics.record_ingest_duration(start.elapsed());
             state.metrics.inc_ingest_request("success");
