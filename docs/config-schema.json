@@ -3709,11 +3709,11 @@
       ]
     },
     "IngestConfig": {
-      "description": "HTTP ingest server for container extractors to post data.",
+      "description": "HTTP ingest server for container extractors to post data.\n\nOff unless a deployment enables it. `/ingest/{source}/{topic}` takes the\ndestination topic from the URL, so an exposed listener with no token lets\nanything that can reach the port write to any topic.",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Enable ingest HTTP endpoint.",
+          "description": "Enable ingest HTTP endpoint. Off by default.",
           "type": "boolean",
           "default": false
         },

@@ -3223,11 +3223,16 @@ $defs:
     - name
     - topic
   IngestConfig:
-    description: HTTP ingest server for container extractors to post data.
+    description: |-
+      HTTP ingest server for container extractors to post data.
+
+      Off unless a deployment enables it. `/ingest/{source}/{topic}` takes the
+      destination topic from the URL, so an exposed listener with no token lets
+      anything that can reach the port write to any topic.
     type: object
     properties:
       enabled:
-        description: Enable ingest HTTP endpoint.
+        description: Enable ingest HTTP endpoint. Off by default.
         type: boolean
         default: false
       bind_address:

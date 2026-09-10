@@ -3683,10 +3683,14 @@ fn default_container_mode() -> String {
 // =============================================================================
 
 /// HTTP ingest server for container extractors to post data.
+///
+/// Off unless a deployment enables it. `/ingest/{source}/{topic}` takes the
+/// destination topic from the URL, so an exposed listener with no token lets
+/// anything that can reach the port write to any topic.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct IngestConfig {
-    /// Enable ingest HTTP endpoint.
+    /// Enable ingest HTTP endpoint. Off by default.
     pub enabled: bool,
 
     /// Bind address.
