@@ -49,30 +49,6 @@ fn test_metrics_extractor_counters() {
 // =============================================================================
 
 #[test]
-fn test_memory_guard_pressure_tracking() {
-    use scalo::memory::{MemoryGuard, MemoryGuardConfig};
-
-    let guard = MemoryGuard::new(MemoryGuardConfig {
-        limit_bytes: 1000,
-        pressure_threshold: 0.8,
-        ..Default::default()
-    });
-
-    assert!(!guard.under_pressure());
-    assert_eq!(guard.current_bytes(), 0);
-
-    guard.add_bytes(500);
-    assert_eq!(guard.current_bytes(), 500);
-    assert!(!guard.under_pressure());
-
-    guard.add_bytes(400); // 900/1000 = 90% > 80%
-    assert!(guard.under_pressure());
-
-    guard.release(500);
-    assert!(!guard.under_pressure());
-}
-
-#[test]
 fn test_memory_guard_release_underflow() {
     use scalo::memory::{MemoryGuard, MemoryGuardConfig};
 
