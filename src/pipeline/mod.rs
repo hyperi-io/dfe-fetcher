@@ -1507,15 +1507,19 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        // Build state with a known memory limit so the gauges have a predictable value
+        // Usage pinned to the reservation counter so the used gauge reads the
+        // 4096 reserved below, not the test process's resident size.
         let state = PipelineState {
             shared_config: shared,
             output: None,
-            memory_guard: Arc::new(MemoryGuard::new(scalo::memory::MemoryGuardConfig {
-                limit_bytes: 524_288_000, // 500 MB
-                pressure_threshold: 0.8,
-                ..Default::default()
-            })),
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                scalo::memory::MemoryGuardConfig {
+                    limit_bytes: 524_288_000, // 500 MB
+                    pressure_threshold: 0.8,
+                    ..Default::default()
+                },
+                scalo::memory::UsageSource::Reservations,
+            )),
             dlq: None,
             metrics: Arc::clone(&metrics),
             ready: AtomicBool::new(true),
