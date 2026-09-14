@@ -767,7 +767,11 @@ stores:
     #[test]
     fn every_engine_accepts_the_common_keys() {
         for (engine, extra, identity) in [
-            ("odbc", "dialect: postgres\n", r#"query: "SELECT 1", key: [id]"#),
+            (
+                "odbc",
+                "dialect: postgres\n",
+                r#"query: "SELECT 1", key: [id]"#,
+            ),
             ("clickhouse", "", r#"query: "SELECT 1", key: [id]"#),
             ("mongodb", "", "database: d, collection: c"),
         ] {
