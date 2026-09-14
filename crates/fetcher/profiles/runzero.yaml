@@ -1,0 +1,67 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/runzero.yaml
+# Purpose:   runZero inventory exports as a declarative REST dump profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the runZero export API and nothing else: no URL, no
+# credential, no organisation. An instance under `sources.rest.<id>` supplies
+# those, and the self-hosted console and the cloud console are two instances
+# of this one profile with different identities.
+#
+# Every store is a snapshot dump of the `.jsonl` export: one object per line,
+# streamed, no paging (the `.jsonl` variant ignores `page_size`), gzip on the
+# wire (reqwest negotiates and inflates it), a 0-byte 200 is an empty store,
+# and one store sends no trailing newline. The data path authenticates with
+# the organisation's export token as a static bearer, which every store
+# accepts; an OAuth2 client with the `inventory:read` grant is refused on the
+# four stores marked below, and the cloud console refuses every export unless
+# the client carries an inventory grant. A refused call ticks a server-side
+# throttle that doubles its delay per refusal, so 401 and 403 end the tick.
+profile: runzero
+maturity: alpha
+base_url: "{{ vars.base_url }}"
+shape: dump
+auth:
+  accepts: [bearer, oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ base_url }}/account/api/token"
+    scope: ""
+    expires_in_fallback_secs: 1800
+retry:
+  never_retry: [401, 403]
+error:
+  at: "/error"
+quota:
+  headers:
+    usage_today: x-api-usage-today
+    usage_total: x-api-usage-total
+# The variables the templates read. `base_url` has no default: every instance
+# names its console. `org_id` defaults to empty so an instance on the export
+# token (bound to one organisation already) leaves it unset and `_oid` is
+# omitted; an OAuth2 instance must set it, or the console answers 400.
+vars:
+  org_id: ""
+defaults:
+  query: { _oid: "{{ vars.org_id }}" }
+  rows: { decoder: ndjson }
+  paginate: { strategy: none }
+endpoints:
+  # `id` is the row's own id on these stores.
+  - { unit: assets,          path: /export/org/assets.jsonl,          row_key: "/id" }
+  - { unit: sites,           path: /export/org/sites.jsonl,           row_key: "/id" }
+  - { unit: certificates,    path: /export/org/certificates.jsonl,    row_key: "/id" }
+  # Asset joins: the parent asset is denormalised onto every row and `id` is
+  # the SERVICE id on services but the ASSET id on software and
+  # vulnerabilities, so the row key is the store-prefixed id.
+  - { unit: services,        path: /export/org/services.jsonl,        row_key: "/service_id" }
+  - { unit: software,        path: /export/org/software.jsonl,        row_key: "/software_id" }
+  - { unit: vulnerabilities, path: /export/org/vulnerabilities.jsonl, row_key: "/vulnerability_id" }
+  # Export token only: an OAuth client with `inventory:read` is refused.
+  - { unit: findings,        path: /export/org/findings.jsonl,        row_key: "/finding_code" }  # no `id` at all
+  - { unit: tasks,           path: /export/org/tasks.jsonl,           row_key: "/id" }
+  - { unit: users,           path: /export/org/users.jsonl,           row_key: "/id" }            # shape unverified: 0 rows seen
+  - { unit: groups,          path: /export/org/groups.jsonl,          row_key: "/id" }            # shape unverified: 0 rows seen
+  # Any credential; shape unverified: 0 rows seen.
+  - { unit: wireless,        path: /export/org/wireless.jsonl,        row_key: "/id" }

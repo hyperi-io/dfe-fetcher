@@ -11,12 +11,13 @@
 Each guide here covers what a provider administrator configures so dfe-fetcher
 can pull data from that provider: the access it needs, how to grant it
 least-privilege, where to put credentials, and how to verify the connection.
-All native sources read only -- the fetcher never writes, modifies, or deletes
+Every source reads only -- the fetcher never writes, modifies, or deletes
 anything on the provider side.
 
-For the fetcher's own configuration (scheduler, output, credential resolution),
-see [config.example.yaml](../../config.example.yaml) and
-[../DESIGN.md](../DESIGN.md).
+For the fetcher's own configuration (scheduler, output, credential resolution,
+the `sources.db` and `sources.file` blocks), see
+[config.example.yaml](../../config.example.yaml); the architecture and the
+profile grammar are in [../DESIGN.md](../DESIGN.md).
 
 ## Providers
 
@@ -37,14 +38,17 @@ see [config.example.yaml](../../config.example.yaml) and
 | Slack | Audit logs | [slack.md](slack.md) |
 | GitHub | Audit log | [github.md](github.md) |
 | Salesforce | Event monitoring logs | [salesforce.md](salesforce.md) |
+| runZero | Asset inventory snapshots | [runzero.md](runzero.md) |
 | Object store | Buckets (S3 and compatible) | [object_store.md](object_store.md) |
 | Package registries | PyPI, crates.io, Go modules | [supply-chain.md](supply-chain.md) |
 
 ## Source Maturity
 
-A source declares its own release maturity in code; this is the single source of
-truth. The fetcher logs a warning at startup for any enabled source that is not
-yet stable.
+A source's release maturity is the `maturity` field of its shipped profile
+under `crates/fetcher/profiles/`; the capability catalog
+(`docs/capability-catalog.yaml`) repeats it and a test keeps the two equal.
+The fetcher logs a warning at startup for any enabled source that is not yet
+stable.
 
 | Stage | Meaning |
 |-------|---------|
@@ -52,7 +56,5 @@ yet stable.
 | Beta | Validated against a live service; hardening in progress. |
 | Stable | Production-ready. |
 
-The core providers -- AWS, Azure, Microsoft 365, and Google Cloud -- are stable.
-Every other source is alpha until explicitly promoted. The authoritative value
-is the `maturity()` method on each source (`src/source/mod.rs`); promote a source
-there rather than recording its stage in these guides.
+Promote a source in its profile rather than recording its stage in these
+guides.

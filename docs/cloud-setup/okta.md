@@ -29,6 +29,12 @@ results server-side. Authentication is one of two schemes, selected by the
 Okta recommends OAuth 2.0 over SSWS for management APIs. SSWS remains
 supported and is the simplest path; OAuth is the better long-term choice.
 
+The source is the shipped `okta` REST profile
+(`crates/fetcher/profiles/okta.yaml`); the `sources.okta` block below maps
+onto an instance of it at load, so the profile's retry policy applies: a 429
+or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends
+the tick, and a tick that fails does not advance the fetch window.
+
 ## Prerequisites
 
 - Any Okta org (Workforce or Customer Identity). The System Log API is
@@ -136,7 +142,7 @@ sources:
   okta:
     enabled: true
     tenant_url: "https://your-tenant.okta.com"
-    credential_secret: "vault:secret/okta:token"
+    credential_secret: "vault:kv/data/okta:token"
     use_ssws_header: true
     services:
       - name: system_log
@@ -145,17 +151,18 @@ sources:
 
 ## Verification
 
-- **Health check.** The source's `health_check()` calls
+- **Health check.** The profile's probe calls
   `GET {tenant_url}/api/v1/users/me` with the configured auth header; a 2xx
   confirms the token + scheme + tenant URL are correct and reachable.
-- **e2e smoke test.** `tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live
-  tests. Export credentials, then run:
+- **e2e smoke test.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
+  `#[ignore]`-gated live tests. Export credentials (or put them in
+  `.env-cloud`), then run:
 
   ```bash
   export OKTA_TENANT_URL="https://your-tenant.okta.com"
   export OKTA_TOKEN="00..."
   export OKTA_USE_SSWS="true"     # or false for OAuth bearer
-  cargo nextest run --test e2e -- --ignored okta_
+  cargo test -p dfe-fetcher --test e2e okta_ -- --ignored
   ```
 
 - **Common failure modes.**
@@ -164,7 +171,8 @@ sources:
   - `403 Forbidden`: the token's admin role lacks System Log access, or the
     OAuth app was not granted `okta.logs.read`.
   - `404` / connection error: `tenant_url` typo, trailing slash, or wrong
-    domain (note `oktapreview.com` for preview orgs).
+    domain (note `oktapreview.com` for preview orgs). An empty or missing
+    `tenant_url` is refused at load, naming `sources.okta`.
   - Token silently stops working after a quiet period: SSWS tokens are
     revoked after 30 days of inactivity.
 

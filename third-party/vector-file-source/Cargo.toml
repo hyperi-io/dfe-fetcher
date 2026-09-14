@@ -1,0 +1,36 @@
+# Vendored from vectordotdev/vector lib/file-source (MIT, see LICENSE);
+# provenance in third-party/README.md. Dependency lines are re-pointed at this
+# workspace and the Vector-internal deps are replaced; nothing else changed.
+
+[package]
+name = "file-source"
+version = "0.1.0"
+authors = ["Vector Contributors <vector@datadoghq.com>", "Mark Story <mark@mark-story.com>"]
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+doctest = false
+
+[target.'cfg(windows)'.dependencies]
+libc = "0.2"
+winapi = { version = "0.3", features = ["winioctl"] }
+
+[dependencies]
+glob = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+# `std` added: Vector's workspace unifies it in from elsewhere, ours does not.
+indexmap = { version = "2.11.0", default-features = false, features = ["serde", "std"] }
+bytes = { workspace = true }
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }
+futures-util = "0.3.31"
+file-source-common = { path = "../vector-file-source-common" }
+async-compression = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+quickcheck = "1.0"
+tempfile = { workspace = true }

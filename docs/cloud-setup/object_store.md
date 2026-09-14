@@ -31,14 +31,25 @@ discriminator:
 - `s3` - FULLY IMPLEMENTED and tested live. SigV4-signed ListObjectsV2 +
   GetObject. Also works against S3-compatible stores (MinIO, Cloudflare
   R2, Backblaze B2) via `endpoint_override`.
-- `gcs` - NOT IMPLEMENTED. The config parses and the enum variant exists,
-  but listing and fetching both return an error and the driver
-  logs-and-skips the backend. NOT USABLE.
+- `gcs` - NOT IMPLEMENTED. The config parses, but the backend is skipped at
+  load with a warning naming it. NOT USABLE.
 - `azure_blob` - NOT IMPLEMENTED. Same status as `gcs`. NOT USABLE.
+
+The S3 backend runs on the shipped `object_store` profile
+(`crates/fetcher/profiles/object_store.yaml`); the `sources.object_store`
+block below maps onto one instance of it at load, one unit per prefix. Each
+object is read exactly once: the highest `last_modified` a tick delivered is
+the prefix's checkpoint, committed after the batch is acknowledged, and the
+next listing starts there (a first tick starts a day back). A refused listing
+(401 or 403) fails that prefix's tick and the other prefixes still run; an
+object that keeps failing is retried per the profile's policy and then fails
+the prefix's tick, so the checkpoint never advances past it.
 
 Supported object formats: `json_gz`, `jsonl`, `json`, `text_gz`, `text`.
 Per tick, each (bucket, prefix) is capped at 1000 objects and 10 list
-pages; the remainder rolls into the next tick.
+pages; the remainder waits for the next tick. One S3 backend per block: a
+second bucket account runs as a `sources.rest` instance of the
+`object_store` profile with its own key pair.
 
 dfe-fetcher only reads. It never writes, modifies, deletes, or lifecycles
 objects, buckets, or containers.
@@ -50,10 +61,11 @@ For the live S3 backend:
 - An S3 bucket (or S3-compatible store) that already receives log objects
   from the producing service. dfe-fetcher does not provision delivery -
   see Source-Side Setup for links on configuring each producer.
-- An IAM identity (user or assumable role) with read-only access to the
-  bucket and prefixes you intend to poll.
-- Static AWS access keys for that identity (or a vault secret holding
-  them). The S3 backend authenticates with SigV4 static credentials.
+- An IAM user with read-only access to the bucket and prefixes you intend
+  to poll.
+- Static AWS access keys for that user (or a vault secret holding them).
+  The S3 backend authenticates with SigV4 static credentials, resolved once
+  per instance.
 - The bucket region (used for SigV4 signing and endpoint construction).
 
 For GCS / Azure Blob: nothing to do. Those backends cannot fetch data. The
@@ -222,12 +234,14 @@ Field reference (S3 backend):
 - `buckets[].prefixes[].format` - one of `json_gz`, `jsonl`, `json`,
   `text_gz`, `text`.
 - `buckets[].prefixes[].source_tag` - record source tag
-  (`object_store.<source_tag>`).
+  (`object_store.<source_tag>`). A tag that names a format (`json_gz`,
+  `jsonl`, `json`, `text`, `text_gz`) or repeats is refused at load.
 - `buckets[].prefixes[].topic` - optional per-prefix topic override.
 
-The example config also documents `gcs` and `azure_blob` backend shapes,
-but neither is implemented - if configured, the driver warns and skips
-them. Do not enable them.
+Prefixes run in tag order, not config order. The example config also
+documents `gcs` and `azure_blob` backend shapes, but neither is implemented -
+if configured, the fetcher warns at load and skips them, and the S3 backend
+of the same block still runs. Do not enable them.
 
 ### Environment Variables
 
@@ -272,7 +286,7 @@ sources:
     backends:
       - provider: s3
         region: "ap-southeast-2"
-        credential_secret: "vault:secret/dfe/aws-s3-reader:credentials"
+        credential_secret: "vault:kv/data/dfe/aws-s3-reader:credentials"
         buckets:
           - bucket: "my-log-bucket"
             prefixes:
@@ -310,17 +324,16 @@ The keys `AccessKeyId` / `SecretAccessKey` (AWS casing) are also accepted.
    ```
 
 2. Start dfe-fetcher with the object_store source enabled and watch the
-   logs. A working backend logs `Polling object-store backends` then, per
-   drained prefix, `object_store: prefix drained` with object and record
-   counts.
+   logs. A working prefix logs `unit tick complete` with its `rows`,
+   `filtered`, `oversize` and `flushes` counts on every tick; a refused
+   listing logs `unit tick failed` with the API's text.
 
-3. The source `health_check` reports healthy when at least one S3
-   backend's credentials resolve. The unimplemented backends never
-   participate in the health check.
+3. The health check is the key pair resolving; there is no probe request.
+   The unimplemented backends never participate in it.
 
-4. If you (incorrectly) configure a `gcs` or `azure_blob` backend, you
-   will see `object_store: the GCS backend is not implemented, skipping
-   this operation` - remove that backend.
+4. If you (incorrectly) configure a `gcs` or `azure_blob` backend, the
+   fetcher warns at load that the backend is not implemented and skips it -
+   remove that backend.
 
 5. Emitted records carry a `_dfe_fetcher_object` envelope with
    `provider`, `bucket`, `key`, `last_modified`, and `size`, so you can

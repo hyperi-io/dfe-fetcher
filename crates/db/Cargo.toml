@@ -1,0 +1,81 @@
+# Project:   dfe-fetcher
+# File:      crates/db/Cargo.toml
+# Purpose:   Database shapes of the source framework (dump and keyset tail), one engine per feature
+# Language:  Rust
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+[package]
+name = "dfe-fetcher-db"
+description = "Database dump and keyset-tail shapes for the dfe-fetcher source framework; engines are opt-in features"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+dfe-fetcher-core = { workspace = true }
+
+bytes = { workspace = true }
+futures = { workspace = true }
+metrics = { workspace = true }
+# secrets for the connection-string spec, config-schema so SensitiveString
+# carries the secret marker into the app's config schema.
+scalo = { workspace = true, features = ["secrets", "secrets-vault", "config-schema"] }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
+# rt for the blocking-cursor pump, sync for its bounded channel.
+tokio = { workspace = true, features = ["rt", "sync"] }
+tracing = { workspace = true }
+
+# odbc: one wire crate for every engine with an ODBC driver. `prompt` (the
+# Windows connection dialog, pulls winit) is off; the driver manager is
+# unixODBC, linked dynamically (LGPL-2.1, dynamic linking only).
+odbc-api = { version = "29.0.0", default-features = false, features = ["odbc_version_3_80"], optional = true }
+arrow-odbc = { version = "25.3.0", optional = true }
+# The arrow umbrella arrow-odbc already depends on, with its JSON writer turned
+# on, so one arrow version serves both the reader and the writer.
+arrow = { version = "59.3.0", default-features = false, features = ["json"], optional = true }
+base64 = { workspace = true, optional = true }
+
+# clickhouse: the official HTTP client streams `FORMAT JSONEachRow` with
+# server-side parameters; clickhouse-dfe adds the ping and the typed server
+# exception. rustls only, never native-tls.
+clickhouse = { version = "0.15.2", default-features = false, features = ["lz4", "rustls-tls"], optional = true }
+clickhouse-dfe = { version = "0.1.0", default-features = false, features = ["ext"], optional = true }
+url = { workspace = true, optional = true }
+
+# mongodb: the official driver, the second approved exception to the one-wire
+# rule. A dump streams `find` batches, a tail follows a change stream or a
+# keyset over `_id`. TLS is rustls over aws-lc-rs, the provider the rest of
+# the graph already links; `dns-resolver` serves the `mongodb+srv://` form
+# Atlas hands out; `compat-3-3-0` is the crate's own forward-compatibility
+# marker, demanded once default features are off. `bson` is named so its
+# relaxed extended JSON writer (`serde_json-1`) is on: ObjectId and dates land
+# as JSON, not debug text.
+mongodb = { version = "3.9.1", default-features = false, features = ["bson-3", "compat-3-3-0", "rustls-tls-aws-lc", "dns-resolver"], optional = true }
+bson = { version = "3.1.0", default-features = false, features = ["serde", "serde_json-1"], optional = true }
+
+[dev-dependencies]
+serde_yaml_ng = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
+
+[features]
+default = []
+# Each engine is a feature so the app links only the drivers a deployment
+# ships. The config grammar and the shape are always compiled; an instance
+# naming an engine that is not built fails validation with that reason.
+odbc = ["dep:odbc-api", "dep:arrow-odbc", "dep:arrow", "dep:base64"]
+clickhouse = ["dep:clickhouse", "dep:clickhouse-dfe", "dep:url"]
+mongodb = ["dep:mongodb", "dep:bson"]

@@ -1,0 +1,52 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/github.yaml
+# Purpose:   GitHub organisation / enterprise audit log as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the GitHub audit-log API: no token, no organisation. An
+# instance supplies the bearer token and `scope_path` -- `orgs/<org>/audit-log`
+# or `enterprises/<enterprise>/audit-log` -- and may override `api_url` for a
+# GitHub Enterprise Server. The typed `sources.github` block maps onto an
+# instance of this profile at load, so its config surface is unchanged.
+#
+# One incremental unit: the scheduler's window becomes the `created:` phrase
+# filter, written to the second with a `+00:00` zone because the phrase
+# grammar takes no milliseconds. Pages are a top-level JSON array of at most
+# 100 events, linked by `Link: rel="next"`; the next URL is requested as given.
+# A 401 or 403 ends the tick -- GitHub's secondary rate limit answers 403
+# with a Retry-After, and repeating the call lengthens the penalty.
+profile: github
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [bearer]
+headers:
+  Accept: application/vnd.github+json
+  X-GitHub-Api-Version: "2022-11-28"
+window:
+  format: "strftime:%Y-%m-%dT%H:%M:%S+00:00"
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+# The cheapest authenticated call: the token's own user.
+probe:
+  path: /user
+# `api_url` is the public API unless the instance names a GitHub Enterprise
+# Server; `include` narrows to `web` or `git` events. `scope_path` has no
+# default: every instance names its organisation or enterprise.
+vars:
+  api_url: "https://api.github.com"
+  include: all
+endpoints:
+  - unit: audit_log
+    path: "/{{ vars.scope_path }}"
+    query:
+      per_page: 100
+      include: "{{ vars.include }}"
+      phrase: "created:{{ window.start }}..{{ window.end }}"
+    rows: { decoder: json_array }
+    paginate: { strategy: link_header }
+    max_pages: 50

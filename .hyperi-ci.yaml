@@ -7,13 +7,34 @@
 
 language: rust
 
+# Feature sets are listed explicitly rather than `all`. The database GRAMMAR
+# (`sources.db`) is in the default build, so a config naming an engine this
+# binary lacks is refused at load; the ENGINES are features. `db-clickhouse`,
+# `db-mongodb` and `file-tail` are pure Rust and their tests need only Docker,
+# so they are built and tested here -- without them CI compiles none of the
+# database or file-tail proofs and clippy never reads those engines.
+#
+# `db-odbc` is absent on purpose: it links unixODBC (`libodbc.so.2`) and its
+# tests need `unixodbc-dev`, `odbc-postgresql` and `odbc-mariadb` installed on
+# the runner. This config cannot declare apt packages, so a runner asked for it
+# fails at link time; it joins the lists when the runner image carries those
+# packages. Never ask a runner for `--all-features`.
 quality:
   enabled: true
+  rust:
+    features:
+      - "default"
+      - "jemalloc"
+      - "db-clickhouse,db-mongodb,file-tail"
 
 test:
   enabled: true
   rust:
     tier: all
+    features:
+      - "default"
+      - "jemalloc"
+      - "db-clickhouse,db-mongodb,file-tail"
 
 build:
   enabled: true
@@ -21,15 +42,16 @@ build:
   strategies:
     - native
   rust:
-    features: all
+    features:
+      - "jemalloc"
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
     # Release-track build optimisation (hyperi-ci Tier 1/2).
     # Channel-gated defaults apply automatically:
-    #   spike/alpha → jemalloc + thin LTO
-    #   beta        → jemalloc + fat LTO
-    #   release     → jemalloc + fat LTO + PGO/BOLT (opt-in below)
+    #   spike/alpha -> jemalloc + thin LTO
+    #   beta        -> jemalloc + fat LTO
+    #   release     -> jemalloc + fat LTO + PGO/BOLT (opt-in below)
     # See hyperi-ci's docs/RUST-RELEASE-TRACK-OPTIMISATION.md for the full
     # contract.
     optimize:

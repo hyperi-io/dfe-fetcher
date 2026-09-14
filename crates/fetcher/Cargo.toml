@@ -1,0 +1,208 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/Cargo.toml
+# Purpose:   The fetcher app: binary plus the library its tests and tooling link
+# Language:  Rust
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+[package]
+name = "dfe-fetcher"
+description = "Pulls audit and activity logs from AWS, Azure, M365, GCP and SaaS APIs into Kafka. Runs standalone or as part of the HyperI Data Fusion Engine."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+exclude = [".github/", "chart/", "docs/", "infra/", "reference/", "benches/"]
+
+[lib]
+name = "dfe_fetcher"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "dfe-fetcher"
+path = "src/main.rs"
+
+# PGO workload driver -- long-running mock-API server that drives the fetcher's
+# hot path (HTTP fetch -> JSON parse -> enrichment -> CEL filter -> output
+# produce -> cursor advance) during hyperi-ci Tier 2 PGO/BOLT builds.
+# Default builds skip this binary because of `required-features`.
+[[bin]]
+name = "pgo-driver"
+path = "src/bin/pgo_driver.rs"
+required-features = ["pgo-driver"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The source framework: core (rows, batcher, rules, envelope, checkpoints),
+# the REST shapes, the database grammar and the file dump are always linked;
+# database ENGINES and the file TAILER are features. The grammars stay in so
+# a `sources.db` or `sources.file` block on a binary built without its engine
+# or tailer is refused at load with the feature to build, never silently
+# ignored.
+dfe-fetcher-core = { workspace = true }
+dfe-fetcher-rest = { workspace = true }
+dfe-fetcher-db = { workspace = true }
+dfe-fetcher-file = { workspace = true }
+
+# scalo shared library (crates.io).
+scalo = { workspace = true, features = [
+    "config",
+    "config-reload",
+    "logger",
+    "metrics",
+    "service-metrics",
+    "http-server",
+    "transport-kafka",
+    "transport-grpc",
+    "transport-grpc-vector-compat",
+    "transport-memory",
+    "spool",
+    "tiered-sink",
+    "runtime",
+    "secrets",
+    # vault: credential specs (scalo::secrets::resolve "vault:path:key"); the
+    # former hyperi-rustlib `credential` feature carried vault support.
+    "secrets-vault",
+    "dlq",
+    # dlq-kafka: the file backend is an EROFS no-op on the charts' read-only
+    # rootfs, so kafka is the only DLQ backend that works deployed.
+    "dlq-kafka",
+    "deployment",
+    # Reflectable config schema + capability catalog (scalo-rs#6): derive
+    # JsonSchema on Config and emit config-schema.* / capability-catalog.*.
+    "config-schema",
+    "cli-service",
+    "top",
+    "expression",
+    "scaling",
+    "memory",
+    "version-check",
+    "worker-pool",
+] }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+futures-core = { workspace = true }
+
+# JSON
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+
+# Env-var layering over an explicit --config file (scalo's cascade only merges
+# env for files it discovers itself). Same range scalo pins, so cargo unifies to
+# one figment in the graph.
+figment = { version = ">=0.10, <0.11", features = ["env"] }
+
+# JSON Schema derivation for the reflectable config-schema capability
+# (scalo-rs#6).
+schemars = { workspace = true }
+
+# Performance
+fastrand = "2"
+rustc-hash = "2"
+# SIMD substring search for the enrich pre-filter; already in the graph
+# transitively, declared here because src/pipeline calls it directly.
+memchr = { workspace = true }
+# Allocation-free integer formatting for the enrich append path; already in the
+# graph transitively, declared here because src/pipeline calls it directly.
+itoa = { workspace = true }
+compact_str = "0.10"
+parking_lot = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = "1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Metrics (global recorder integration via scalo MetricsManager)
+metrics = { workspace = true }
+
+# HTTP server (for metrics/health endpoints)
+axum = { workspace = true }
+bytes = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+async-trait = { workspace = true }
+url = { workspace = true }
+
+# The instance id derivation hashes the config path.
+sha2 = "0.11"
+hex = { workspace = true }
+
+# Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
+tikv-jemallocator = { version = "0.7", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+tempfile = { workspace = true }
+tokio-test = "0.4"
+dotenvy = "0.15"
+wiremock = "0.6"
+# The suites talk to wiremock and the live providers directly; the app itself
+# reaches HTTP only through the REST crate.
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+# `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
+# ships ZERO default features, so this must be explicit (not transitive on axum).
+tower = { version = "0.5", features = ["util"] }
+# The CloudWatch metrics test decodes the OTLP record the profile lands.
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
+# Auto-managed Docker containers for integration tests (start + stop lifecycle).
+testcontainers = "0.27"
+# postgres / mariadb / clickhouse back the database-shape integration tests;
+# the MongoDB container is a GenericImage because the module's replica-set
+# readiness line predates MongoDB 8.
+testcontainers-modules = { version = "0.15", features = ["localstack", "kafka", "postgres", "mariadb", "clickhouse"] }
+# A snapshotting recorder so a test can read the framework's `metrics` series.
+metrics-util = { version = "0.20.4", features = ["debugging"] }
+smallvec = { workspace = true }
+# The in-test Duo provider verifies each request's HMAC-SHA1 signature.
+hmac = { workspace = true }
+sha1 = { workspace = true }
+# A throwaway RSA key per JWT-bearer test, so no private key is committed.
+aws-lc-rs = { workspace = true }
+# The in-test token endpoints verify the assertions the JWT-bearer mode signs.
+jsonwebtoken = { workspace = true }
+# The Pub/Sub and lister suites encode message data and gzip object bodies.
+base64 = { workspace = true }
+flate2 = { workspace = true }
+
+[features]
+default = []
+jemalloc = ["dep:tikv-jemallocator"]
+# Build the PGO workload driver bin (off by default -- adds no transitive deps).
+pgo-driver = []
+# Database engines, one per feature so a deployment links only the drivers
+# it ships. `db-odbc` links unixODBC (`libodbc.so.2`): the build needs
+# `unixodbc-dev`, the image `libodbc2` plus one driver package per engine.
+db-odbc = ["dfe-fetcher-db/odbc"]
+db-clickhouse = ["dfe-fetcher-db/clickhouse"]
+db-mongodb = ["dfe-fetcher-db/mongodb"]
+# File shapes: the directory dump is always built (its deps are already in
+# the graph), so `file` is kept only as the name CI lists and `full` names;
+# `file-tail` links the vendored tailer under third-party/.
+file = []
+file-tail = ["file", "dfe-fetcher-file/tail"]
+full = ["jemalloc", "db-odbc", "db-clickhouse", "db-mongodb", "file-tail"]
+
+[[bench]]
+name = "pipeline"
+harness = false

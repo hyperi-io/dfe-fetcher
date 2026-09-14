@@ -21,11 +21,20 @@ Sentinel incidents), the three split Entra ID Graph audit feeds
 `log_analytics` (arbitrary KQL queries against a Log Analytics workspace).
 All access is read-only. dfe-fetcher authenticates with the OAuth2
 `client_credentials` grant using a single Entra ID app registration and
-client secret, requesting one of three audiences per call:
+client secret, minting one token per audience and sharing it between the
+units that need it:
 
 - `https://management.azure.com/.default` - Activity Log, Defender, Sentinel.
 - `https://graph.microsoft.com/.default` - the Entra ID audit feeds.
 - `https://api.loganalytics.io/.default` - Log Analytics queries.
+
+The source is the shipped `azure` profile
+(`crates/fetcher/profiles/azure.yaml`); the `sources.azure` block below maps
+onto an instance of it at load. The Resource Manager units page on `nextLink`,
+the Graph units on `@odata.nextLink`, each as the API documents; a 429 or 5xx
+is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick
+with the API's `error.message`, and a tick that fails does not advance the
+fetch window.
 
 ## Prerequisites
 
@@ -33,7 +42,7 @@ client secret, requesting one of three audiences per call:
 - Permission to create an app registration and to assign subscription RBAC,
   plus a Global Administrator (or Privileged Role Administrator) to grant
   admin consent for the Graph application permission.
-- Azure CLI authenticated (`az login`) for the manual or Terraform paths.
+- Azure CLI authenticated (`az login`) for the manual or OpenTofu paths.
 - For `sentinel`: a Log Analytics workspace with Microsoft Sentinel enabled,
   and its resource group + workspace name.
 - For `log_analytics`: the target workspace GUID and the `Log Analytics
@@ -70,7 +79,7 @@ Notes:
 
 ## Source-Side Setup
 
-### Terraform (Automated)
+### OpenTofu (Automated)
 
 The test infrastructure is defined in
 [`infra/test/main.tf`](../../infra/test/main.tf) (Azure section). It creates
@@ -82,15 +91,15 @@ cd infra/test
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars - set azure_subscription_id
 az login
-terraform init
-terraform apply
-terraform output -json | python3 gen-env.py > ../../.env
+tofu init
+tofu apply
+tofu output -json | python3 gen-env.py > ../../.env
 ```
 
-The Terraform provisions only the subscription `Reader` role, which covers
+The module provisions only the subscription `Reader` role, which covers
 `activity_log`, `defender`, and `sentinel`. For the Entra audit feeds you
-must add the Graph application permission and grant admin consent (Terraform
-does not do this; run the manual step below or extend the Terraform):
+must add the Graph application permission and grant admin consent (the module
+does not do this; run the manual step below or extend it):
 
 ```bash
 # AuditLog.Read.All (application / Role) on Microsoft Graph
@@ -162,8 +171,12 @@ az ad app permission admin-consent --id <azure_client_id>
 
 The Azure source config fields are: `enabled`, `tenant_id`, `client_id`,
 `client_secret`, `credential_secret`, `subscription_id`, `interval_secs`,
-`services`, `topic`, `management_url_override`, `graph_url_override`,
-`token_url_override`, `filter`. Each service entry is `{ name, config }`.
+`services`, `connections`, `topic`, `management_url_override`,
+`graph_url_override`, `token_url_override`, `filter`. Each service entry is
+`{ name, config }`. `tenant_id` and a secret are required; `subscription_id`
+is required when a Resource Manager unit (`activity_log`, `defender`,
+`sentinel`) is listed; an unknown service name is refused at load, naming
+`sources.azure`.
 
 The Entra feeds are split into three distinct services, each with its own
 source tag and cursor. There is intentionally no combined `entra_id`
@@ -222,18 +235,19 @@ DFE_FETCHER_SOURCES__AZURE__SUBSCRIPTION_ID="your-subscription-uuid"
 
 ### Secrets Manager
 
-`credential_secret` resolves from OpenBao/Vault using the `provider:path:key`
-format. When set, it supplies both the client ID and client secret
-(the resolved value is used for each), so omit inline `client_id` /
-`client_secret`.
+`credential_secret` resolves from the secrets manager using the
+`vault:<mount>/data/<path>:<key>` format (the literal `data` segment names the
+KV v2 mount). It supplies the client SECRET only, so keep `client_id` as the
+literal application id beside it and omit the inline `client_secret`.
 
 ```yaml
 sources:
   azure:
     enabled: true
     tenant_id: "your-tenant-uuid"
+    client_id: "your-client-uuid"
     subscription_id: "your-subscription-uuid"
-    credential_secret: "vault:secret/dfe/azure:credentials"
+    credential_secret: "vault:kv/data/dfe/azure:client_secret"
     services:
       - name: activity_log
       - name: entra_signins
@@ -242,26 +256,27 @@ sources:
 
 ## Verification
 
-1. Credential check. `AzureSource::health_check()` returns `true` only when
-   the Management API token is obtained. Exercise it via the env-gated
-   smoke test:
+1. Credential check. The health check is the Management token exchange: a
+   healthy result means the tenant, client id and secret are accepted, and a
+   refused exchange is a health error carrying the response. Exercise it via
+   the env-gated smoke test:
 
    ```bash
-   cargo test --test e2e azure_health_check -- --ignored
+   cargo test -p dfe-fetcher --test e2e azure_health_check -- --ignored
    ```
 
 2. Live fetch tests. The env-gated tests in
-   [`tests/e2e/smoke_remote.rs`](../../tests/e2e/smoke_remote.rs) hit real
-   Azure APIs. They are `#[ignore]` by default and read credentials from
-   `.env-cloud` (preferred) or `.env`:
+   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs)
+   hit real Azure APIs. They are `#[ignore]` by default and read credentials
+   from `.env-cloud` (preferred) or `.env`:
    `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
    `AZURE_SUBSCRIPTION_ID`, plus `AZURE_SENTINEL_WORKSPACE_NAME` /
    `AZURE_SENTINEL_RESOURCE_GROUP` for Sentinel and
    `AZURE_LOG_ANALYTICS_WORKSPACE_ID` / `AZURE_LOG_ANALYTICS_KQL` for Log
-   Analytics.
+   Analytics. A refusal fails its test rather than passing with zero records.
 
    ```bash
-   cargo test --test e2e -- --ignored        # all live tests
+   cargo test -p dfe-fetcher --test e2e azure_ -- --ignored
    ```
 
 3. Common failures.
@@ -271,9 +286,9 @@ sources:
      the provisioning scope (`entra_provisioning` is the usual culprit).
    - Empty Activity Log / Defender / Sentinel: `Reader` role not yet
      propagated, or no events in the window.
-   - `azure.log_analytics requires service config workspace_id (GUID)` /
-     `requires service config kql`: the per-service `config` block is
-     missing a required key, or `workspace_id` is a name instead of a GUID.
+   - A `log_analytics` service without `workspace_id` (a GUID) or `kql`, or
+     a Resource Manager unit without `subscription_id`: the config is
+     refused at load, naming the field.
 
 ## Cost
 

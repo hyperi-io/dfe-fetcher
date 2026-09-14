@@ -20,6 +20,15 @@ poll-only - there are no outbound webhooks. dfe-fetcher authenticates with a
 single bearer JSON Web Token (JWT) issued from the 1Password admin console
 and POSTs a time-window / cursor body to each `/api/v2/*` endpoint.
 
+The source is the shipped `onepassword` profile
+(`crates/fetcher/profiles/onepassword.yaml`); the `sources.onepassword` block
+below maps onto an instance of it at load. The first call of a tick carries
+the window and the `limit`, every later call carries the returned `cursor`
+alone, and `has_more: false` ends the sequence. A 429 or 5xx is retried with
+backoff (honouring `Retry-After`), a 401 or 403 ends the tick, and a tick that
+fails does not advance the fetch window. A missing token or an unknown
+service name is refused at load, naming `sources.onepassword`.
+
 ## Prerequisites
 
 - A **1Password Business** account (Events Reporting is a Business-tier
@@ -124,7 +133,7 @@ Keep the token out of the config file by resolving it from a secret store:
 sources:
   onepassword:
     enabled: true
-    credential_secret: "vault:secret/onepassword:events_token"
+    credential_secret: "vault:kv/data/onepassword:events_token"
     services:
       - name: signin_attempts
       - name: item_usages
@@ -138,22 +147,17 @@ the bearer JWT string. The only configurable service-side key is `limit`
 
 ## Verification
 
-The source implements `health_check`, which calls `/api/auth/introspect`
-with the token (this does not consume any per-endpoint event budget) and
-returns healthy on a 2xx.
+The profile's probe calls `/api/auth/introspect` with the token (this does
+not consume any per-endpoint event budget) and is healthy on a 2xx.
 
-End-to-end smoke tests live in `tests/e2e/smoke_remote.rs` and are
-`#[ignore]`d by default. They read `ONEPASSWORD_EVENTS_TOKEN` (required) and
-`ONEPASSWORD_API_BASE` (optional regional override) from `.env-cloud` (or
-`.env`):
+End-to-end smoke tests live in `crates/fetcher/tests/e2e/smoke_remote.rs`
+and are `#[ignore]`d by default. They read `ONEPASSWORD_EVENTS_TOKEN`
+(required) and `ONEPASSWORD_API_BASE` (optional regional override) from
+`.env-cloud` (or `.env`):
 
 ```bash
-ONEPASSWORD_EVENTS_TOKEN="your-jwt" \
-  cargo nextest run --test e2e -- --ignored onepassword_
+cargo test -p dfe-fetcher --test e2e onepassword_ -- --ignored
 ```
-
-Tests cover `onepassword_health_check`, `onepassword_fetch_signin_attempts`,
-`onepassword_fetch_item_usages`, and `onepassword_fetch_audit_events`.
 
 Common failure modes:
 

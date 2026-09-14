@@ -22,6 +22,14 @@ using the OAuth2 client_credentials flow: it exchanges `client_id` +
 bearer token, then GETs `/public/events` with a `start`/`end` window and
 follows the `continuationToken` for pagination.
 
+The source is the shipped `bitwarden` profile
+(`crates/fetcher/profiles/bitwarden.yaml`); the `sources.bitwarden` block
+below maps onto an instance of it at load. The token is cached per instance
+and refreshed shortly before it expires; a 429 or 5xx is retried with backoff
+(honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick,
+and a tick that fails does not advance the fetch window. A missing client id
+or secret is refused at load, naming `sources.bitwarden`.
+
 ## Prerequisites
 
 - A **Bitwarden Teams or Enterprise** organization (the Public API is
@@ -123,7 +131,7 @@ sources:
   bitwarden:
     enabled: true
     client_id: "organization.<uuid>"
-    credential_secret: "vault:secret/bitwarden:client_secret"
+    credential_secret: "vault:kv/data/bitwarden:client_secret"
     services:
       - name: events
     topic: "bitwarden"
@@ -131,28 +139,24 @@ sources:
 
 `credential_secret` takes precedence over a literal `client_secret` and
 resolves to the secret string. `client_id` is always supplied in clear (it is
-not sensitive). The only service dfe-fetcher implements is `events`; it has no
-recognized service-side config keys.
+not sensitive). The only service is `events`; it has no service-side config
+keys.
 
 ## Verification
 
-The source implements `health_check`, which performs the OAuth2 token
-exchange and treats a successful token grant as healthy (the cheapest valid
-auth probe).
+The health check is the OAuth2 token exchange: a minted token proves the
+client, and no data endpoint is touched. A refused exchange is a health error
+carrying the response.
 
-End-to-end smoke tests live in `tests/e2e/smoke_remote.rs` and are
-`#[ignore]`d by default. They read `BITWARDEN_CLIENT_ID` and
+End-to-end smoke tests live in `crates/fetcher/tests/e2e/smoke_remote.rs`
+and are `#[ignore]`d by default. They read `BITWARDEN_CLIENT_ID` and
 `BITWARDEN_CLIENT_SECRET` (required), plus `BITWARDEN_API_BASE` and
 `BITWARDEN_IDENTITY_URL` (optional region/self-host overrides), from
 `.env-cloud` (or `.env`):
 
 ```bash
-BITWARDEN_CLIENT_ID="organization.<uuid>" \
-BITWARDEN_CLIENT_SECRET="<secret>" \
-  cargo nextest run --test e2e -- --ignored bitwarden_
+cargo test -p dfe-fetcher --test e2e bitwarden_ -- --ignored
 ```
-
-Tests cover `bitwarden_health_check` and `bitwarden_fetch_events`.
 
 Common failure modes:
 
@@ -162,9 +166,9 @@ Common failure modes:
   not enabled for the organization.
 - **Wrong region** - EU tenant left on the US default; set both
   `api_url_override` and `identity_url_override`.
-- **HTTP 429** - rate limited; dfe-fetcher follows the `continuationToken`
-  (max 50 pages per fetch) and should back off naturally on the poll
-  interval.
+- **HTTP 429** - rate limited; dfe-fetcher retries with backoff and
+  `Retry-After` up to the profile's policy, then fails the tick without
+  advancing; the page ceiling is 50 per fetch.
 
 ## Cost
 

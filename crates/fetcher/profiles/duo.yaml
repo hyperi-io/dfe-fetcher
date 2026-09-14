@@ -1,0 +1,57 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/duo.yaml
+# Purpose:   Duo Admin API authentication logs as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Duo Admin API v2 authentication log: no keys, no tenant.
+# An instance supplies its API hostname as `base_url` and the Admin API
+# integration key and secret key for Duo's request signing (`duo_hmac`: an
+# HMAC-SHA1 over the date, method, host, path and sorted query, carried as
+# a Basic credential). The typed `sources.duo` block maps onto an instance
+# of this profile at load, so its config surface is unchanged.
+#
+# One incremental unit: the scheduler's window becomes `mintime`/`maxtime`
+# in epoch milliseconds, `limit` events per page (Duo caps it at 1000).
+# Pages are `{stat, response: {authlogs, metadata.next_offset}}`; the
+# `next_offset` is the two-element list the v2 API documents (a timestamp
+# and an offset id), sent back comma-joined as `next_offset`, and a null
+# one ends the sequence. Duo reports a failure inside a 200 as `stat: FAIL`
+# with the reason under `message`; a refused signature is a 401.
+profile: duo
+maturity: alpha
+base_url: "{{ vars.base_url }}"
+shape: incremental
+auth:
+  accepts: [duo_hmac]
+headers:
+  Accept: application/json
+window:
+  format: epoch_millis
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+error:
+  at: "/message"
+# The free credential check: `{stat: OK, response: valid}`.
+probe:
+  path: /admin/v1/check
+  fail_when: "body.stat != 'OK'"
+# `base_url` has no default: every tenant has its own API hostname.
+vars:
+  limit: 100
+endpoints:
+  - unit: authentication_logs
+    path: /admin/v2/logs/authentication
+    query:
+      mintime: "{{ window.start }}"
+      maxtime: "{{ window.end }}"
+      limit: "{{ vars.limit }}"
+    rows: { decoder: json_at, at: "/response/authlogs" }
+    paginate:
+      strategy: cursor
+      from: "body:/response/metadata/next_offset"
+      into: "query:next_offset"
+    fail_when: "body.stat != 'OK'"
+    max_pages: 50

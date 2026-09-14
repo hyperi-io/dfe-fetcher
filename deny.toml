@@ -41,6 +41,8 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [bans]
 wildcards = "deny"
+# The workspace crates are path-only and publish = false, so they carry no version requirement.
+allow-wildcard-paths = true
 multiple-versions = "warn"
 highlight = "all"
 

@@ -1,0 +1,106 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/google_workspace.yaml
+# Purpose:   Google Workspace Reports API activity as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Workspace Reports API's activity listing: no tenant, no
+# key, no admin. An instance supplies a service-account key with
+# domain-wide delegation and the admin it impersonates: the RS256
+# assertion carries that admin as `sub` and the audit-readonly Reports
+# scope, is exchanged at the key's `token_uri` (or the instance's
+# `token_url`), and the token is cached for the tick. The typed
+# `sources.google_workspace` block maps onto an instance of this profile
+# at load, so its config surface is unchanged.
+#
+# One unit per `applicationName` the API documents, all on one GET shape:
+# the customer (`my_customer` unless the instance names one), the window
+# as `startTime`/`endTime` in RFC 3339 `+00:00`, 1000 activities a page,
+# an optional `eventName` per unit, `nextPageToken` fed back as
+# `pageToken`. Rows are the `items`. The token exchange is the health
+# check.
+profile: google_workspace
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [jwt_bearer]
+  jwt_bearer:
+    token_url: "{{ vars.token_url != '' ? vars.token_url : auth.token_uri }}"
+    claims:
+      iss: "{{ auth.client_email }}"
+      sub: "{{ vars.admin_email }}"
+      scope: "https://www.googleapis.com/auth/admin.reports.audit.readonly"
+      aud: "{{ auth.token_url }}"
+    ttl_secs: 3600
+headers:
+  Accept: application/json
+window:
+  format: "strftime:%Y-%m-%dT%H:%M:%S%.f+00:00"
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+error:
+  at: "/error/message"
+# The public endpoint unless the instance points elsewhere; an empty
+# `event_name` is omitted from the request.
+vars:
+  api_url: "https://admin.googleapis.com"
+  token_url: ""
+  customer_id: my_customer
+  event_name: ""
+defaults:
+  path: "/admin/reports/v1/activity/users/all/applications/{{ unit.name }}"
+  query:
+    customerId: "{{ vars.customer_id }}"
+    startTime: "{{ window.start }}"
+    endTime: "{{ window.end }}"
+    maxResults: 1000
+    eventName: "{{ vars.event_name }}"
+  rows: { decoder: json_at, at: "/items" }
+  paginate: { strategy: cursor, from: "body:/nextPageToken", into: "query:pageToken" }
+  max_pages: 50
+# The applicationName enum of activities.list, one unit each.
+endpoints:
+  - { unit: access_evaluation }
+  - { unit: access_transparency }
+  - { unit: admin }
+  - { unit: admin_data_action }
+  - { unit: assignments }
+  - { unit: calendar }
+  - { unit: chat }
+  - { unit: chrome }
+  - { unit: chrome_sync }
+  - { unit: classroom }
+  - { unit: cloud_search }
+  - { unit: contacts }
+  - { unit: context_aware_access }
+  - { unit: data_migration }
+  - { unit: data_studio }
+  - { unit: directory_sync }
+  - { unit: drive }
+  - { unit: gcp }
+  - { unit: gemini_in_workspace_apps }
+  - { unit: gmail }
+  - { unit: gplus }
+  - { unit: graduation }
+  - { unit: groups }
+  - { unit: groups_enterprise }
+  - { unit: jamboard }
+  - { unit: keep }
+  - { unit: ldap }
+  - { unit: login }
+  - { unit: meet }
+  - { unit: meet_hardware }
+  - { unit: mobile }
+  - { unit: profile }
+  - { unit: rules }
+  - { unit: saml }
+  - { unit: takeout }
+  - { unit: tasks }
+  - { unit: token }
+  - { unit: user_accounts }
+  - { unit: vault }
+  - { unit: voice }
+  - { unit: workspace_studio }

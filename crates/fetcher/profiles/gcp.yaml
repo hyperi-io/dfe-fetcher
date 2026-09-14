@@ -1,0 +1,86 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/gcp.yaml
+# Purpose:   Google Cloud audit and security sources as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Google Cloud audit surfaces: no project, no key. An
+# instance supplies its project and one of three credentials: a
+# service-account key (an RS256 assertion exchanged for a token at the
+# key's `token_uri`, cached for the tick), the workload's token from the
+# GCE metadata server, or a resolved bearer token. The typed `sources.gcp`
+# block maps onto an instance of this profile at load, so its config
+# surface is unchanged.
+#
+# Eight Cloud Logging units share one `entries:list` POST: the project as
+# the resource, the unit's filter clause ANDed with the window in RFC 3339
+# (`+00:00`, fractional seconds when the window has them), 100 entries a
+# page newest first, `nextPageToken` fed back in the body as `pageToken`.
+# `cloud_logging` takes its clause from the instance, `severity >= WARNING`
+# by default. Security Command Center findings are a GET under the
+# organisation the instance names, paged by `pageToken` in the query. The
+# POST is a read, so it is retried like a GET. The token exchange is the
+# health check.
+profile: gcp
+maturity: stable
+base_url: "{{ vars.logging_url }}"
+shape: incremental
+auth:
+  accepts: [jwt_bearer, gce_metadata, bearer]
+  jwt_bearer:
+    token_url: "{{ vars.token_url != '' ? vars.token_url : auth.token_uri }}"
+    claims:
+      iss: "{{ auth.client_email }}"
+      scope: "https://www.googleapis.com/auth/cloud-platform"
+      aud: "{{ auth.token_url }}"
+    ttl_secs: 3600
+  gce_metadata:
+    url: "{{ vars.metadata_url }}"
+headers:
+  Accept: application/json
+window:
+  format: "strftime:%Y-%m-%dT%H:%M:%S%.f+00:00"
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+  retry_non_idempotent: true
+# Every Google API answers `{"error": {"code", "message", "status"}}`.
+error:
+  at: "/error/message"
+# The public endpoints unless the instance points a host elsewhere; the
+# project, the organisation and the `cloud_logging` clause are the
+# instance's.
+vars:
+  logging_url: "https://logging.googleapis.com"
+  scc_url: "https://securitycenter.googleapis.com"
+  token_url: ""
+  metadata_url: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+defaults:
+  method: POST
+  path: "/v2/entries:list"
+  body:
+    resourceNames: ["projects/{{ vars.project_id }}"]
+    filter: "{{ vars.log_filter }} AND timestamp >= \"{{ window.start }}\" AND timestamp < \"{{ window.end }}\""
+    pageSize: 100
+    orderBy: timestamp desc
+  rows: { decoder: json_at, at: "/entries" }
+  paginate: { strategy: cursor, from: "body:/nextPageToken", into: "body:/pageToken" }
+  max_pages: 10
+endpoints:
+  - { unit: admin_activity, vars: { log_filter: 'log_id("cloudaudit.googleapis.com/activity")' } }
+  - { unit: data_access,    vars: { log_filter: 'log_id("cloudaudit.googleapis.com/data_access")' } }
+  - { unit: system_event,   vars: { log_filter: 'log_id("cloudaudit.googleapis.com/system_event")' } }
+  - { unit: policy_denied,  vars: { log_filter: 'log_id("cloudaudit.googleapis.com/policy")' } }
+  - { unit: vpc_flow_logs,  vars: { log_filter: 'log_id("compute.googleapis.com/vpc_flows")' } }
+  - { unit: dns_queries,    vars: { log_filter: 'log_id("dns.googleapis.com/dns_queries")' } }
+  - { unit: storage_access, vars: { log_filter: 'resource.type="gcs_bucket" AND log_id("cloudaudit.googleapis.com/data_access")' } }
+  - { unit: cloud_logging,  vars: { log_filter: "severity >= WARNING" } }
+  - unit: scc
+    base_url: "{{ vars.scc_url }}"
+    method: GET
+    path: "/v1/organizations/{{ vars.organization_id }}/sources/-/findings"
+    query:
+      pageSize: 100
+    rows: { decoder: json_at, at: "/listFindingsResults" }
+    paginate: { strategy: cursor, from: "body:/nextPageToken", into: "query:pageToken" }

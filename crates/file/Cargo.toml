@@ -1,0 +1,59 @@
+# Project:   dfe-fetcher
+# File:      crates/file/Cargo.toml
+# Purpose:   File shapes of the source framework (directory dump and file tail)
+# Language:  Rust
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+[package]
+name = "dfe-fetcher-file"
+description = "File dump and tail shapes for the dfe-fetcher source framework"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+dfe-fetcher-core = { workspace = true }
+
+# Multi-member gunzip in front of a dump file's framer (and the tailer's
+# gzip-rotated files).
+async-compression = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+glob = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# fs + io for the chunked reader; rt + sync + time for the tailer's task,
+# its per-unit state and the tick clock.
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync", "time"] }
+tokio-util = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+# tail: the vendored Vector tailer (MIT, third-party/), path-only.
+file-source = { path = "../../third-party/vector-file-source", optional = true }
+file-source-common = { path = "../../third-party/vector-file-source-common", optional = true }
+
+[dev-dependencies]
+flate2 = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
+# The tail shape rides the vendored file tailer under third-party/; the app
+# forwards it as `file-tail`. The grammar (`tail:` units) is always compiled,
+# so a config naming a tail on a binary without it is refused at load.
+tail = ["dep:file-source", "dep:file-source-common", "dep:tokio-util"]

@@ -20,6 +20,14 @@ message content). dfe-fetcher authenticates with an org-level user bearer
 token (`xoxp-...`) carrying the `auditlogs:read` scope and pages through
 results via the response `next_cursor`.
 
+The source is the shipped `slack` profile
+(`crates/fetcher/profiles/slack.yaml`); the `sources.slack` block below maps
+onto an instance of it at load. A 429 or 5xx is retried with backoff
+(honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying
+`ok: false` fails the tick with Slack's `error` text, and a tick that fails
+does not advance the fetch window. A missing token is refused at load, naming
+`sources.slack`.
+
 ## Prerequisites
 
 - A **Slack Enterprise Grid** organization (also marketed as Enterprise+).
@@ -122,31 +130,28 @@ DFE_FETCHER_SOURCES__SLACK__TOKEN="xoxp-your-org-user-token"
 sources:
   slack:
     enabled: true
-    credential_secret: "vault:secret/slack:audit_token"
+    credential_secret: "vault:kv/data/slack:audit_token"
     services:
       - name: audit_logs
     topic: "slack"
 ```
 
 `credential_secret` takes precedence over a literal `token` and resolves to
-the `xoxp-...` string. The only audit service dfe-fetcher implements is
-`audit_logs`.
+the `xoxp-...` string. The only service is `audit_logs`.
 
 ## Verification
 
-The source implements `health_check`, which calls `/api/auth.test` with the
-token and treats `{"ok": true}` as healthy.
+The profile's probe calls `/api/auth.test` with the token; Slack answers 200
+either way, so `ok: false` is the refusal and is reported as a health error
+carrying Slack's reason.
 
-End-to-end smoke tests live in `tests/e2e/smoke_remote.rs` and are
-`#[ignore]`d by default. They read `SLACK_AUDIT_TOKEN` (required) from
-`.env-cloud` (or `.env`):
+End-to-end smoke tests live in `crates/fetcher/tests/e2e/smoke_remote.rs`
+and are `#[ignore]`d by default. They read `SLACK_AUDIT_TOKEN` (required)
+from `.env-cloud` (or `.env`):
 
 ```bash
-SLACK_AUDIT_TOKEN="xoxp-..." \
-  cargo nextest run --test e2e -- --ignored slack_
+cargo test -p dfe-fetcher --test e2e slack_ -- --ignored
 ```
-
-Tests cover `slack_health_check` and `slack_fetch_audit_logs`.
 
 Common failure modes:
 
@@ -156,8 +161,8 @@ Common failure modes:
 - **`not_allowed_token_type`** - a bot token was supplied; the Audit Logs API
   requires the `xoxp-` user token.
 - **HTTP 429** - rate limited. The endpoint is Tier 3 (about 50 calls/min);
-  dfe-fetcher caps at 50 pages per fetch and polls on the configured
-  interval.
+  dfe-fetcher retries with backoff and `Retry-After` up to the profile's
+  policy, caps at 50 pages per fetch, and polls on the configured interval.
 
 ## Cost
 

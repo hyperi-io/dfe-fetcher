@@ -1,0 +1,116 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/azure.yaml
+# Purpose:   Azure tenant audit and security sources as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Azure audit surfaces: no tenant, no subscription, no
+# client. An instance supplies the service principal for the OAuth2
+# client-credentials exchange at the tenant's v2.0 token endpoint, its
+# subscription for the Resource Manager units, and may point the three
+# API hosts and the token endpoint elsewhere. The typed `sources.azure`
+# block maps onto an instance of this profile at load, so its config
+# surface is unchanged.
+#
+# Three API audiences, one token each, shared by the units that need it:
+# Azure Resource Manager (activity_log, defender, sentinel: `nextLink`
+# paging under the subscription, with `api-version` per resource
+# provider), Microsoft Graph (the three Entra audit endpoints:
+# `@odata.nextLink` paging, `$top` 100, the window as an OData clause on
+# each endpoint's own time field) and Log Analytics (one KQL query per
+# configured workspace, the window as the `timespan`, each result table's
+# columnar rows built into objects). The window is RFC 3339 to the second
+# and defaults to the last day. The health check is the Management token
+# exchange.
+profile: azure
+maturity: stable
+base_url: "{{ vars.management_url }}"
+shape: incremental
+auth:
+  accepts: [oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ vars.token_url != '' ? vars.token_url : vars.login_url + '/' + vars.tenant_id + '/oauth2/v2.0/token' }}"
+    scope: "https://management.azure.com/.default"
+    expires_in_fallback_secs: 3600
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_secs
+  lookback: 24h
+retry:
+  never_retry: [401, 403]
+  retry_non_idempotent: true
+# ARM, Graph and Log Analytics all answer `{"error": {"code", "message"}}`.
+error:
+  at: "/error/message"
+# The public clouds unless the instance points a host elsewhere; the
+# Sentinel workspace and the Log Analytics queries are the instance's.
+vars:
+  management_url: "https://management.azure.com"
+  graph_url: "https://graph.microsoft.com"
+  log_analytics_url: "https://api.loganalytics.io"
+  login_url: "https://login.microsoftonline.com"
+  token_url: ""
+  sentinel_resource_group: default
+  sentinel_workspace_name: default
+  log_analytics_queries: []
+defaults:
+  rows: { decoder: json_at, at: "/value" }
+  paginate: { strategy: request_path, from: "body:/nextLink" }
+  max_pages: 10
+endpoints:
+  - unit: activity_log
+    path: "/subscriptions/{{ vars.subscription_id }}/providers/microsoft.insights/eventtypes/management/values"
+    query:
+      api-version: "2015-04-01"
+      $filter: "eventTimestamp ge '{{ window.start }}' and eventTimestamp le '{{ window.end }}'"
+  - unit: defender
+    path: "/subscriptions/{{ vars.subscription_id }}/providers/Microsoft.Security/alerts"
+    query:
+      api-version: "2022-01-01"
+  - unit: sentinel
+    path: "/subscriptions/{{ vars.subscription_id }}/resourceGroups/{{ vars.sentinel_resource_group }}/providers/Microsoft.OperationalInsights/workspaces/{{ vars.sentinel_workspace_name }}/providers/Microsoft.SecurityInsights/incidents"
+    query:
+      api-version: "2023-11-01"
+  - unit: entra_signins
+    base_url: "{{ vars.graph_url }}"
+    auth: { scope: "https://graph.microsoft.com/.default" }
+    vars: { time_field: createdDateTime }
+    path: /v1.0/auditLogs/signIns
+    query:
+      $top: 100
+      $filter: "{{ vars.time_field }} ge {{ window.start }} and {{ vars.time_field }} lt {{ window.end }}"
+    paginate: { strategy: request_path, from: "body:/@odata.nextLink" }
+  - unit: entra_directory_audits
+    base_url: "{{ vars.graph_url }}"
+    auth: { scope: "https://graph.microsoft.com/.default" }
+    vars: { time_field: activityDateTime }
+    path: /v1.0/auditLogs/directoryAudits
+    query:
+      $top: 100
+      $filter: "{{ vars.time_field }} ge {{ window.start }} and {{ vars.time_field }} lt {{ window.end }}"
+    paginate: { strategy: request_path, from: "body:/@odata.nextLink" }
+  - unit: entra_provisioning
+    base_url: "{{ vars.graph_url }}"
+    auth: { scope: "https://graph.microsoft.com/.default" }
+    vars: { time_field: activityDateTime }
+    path: /v1.0/auditLogs/provisioning
+    query:
+      $top: 100
+      $filter: "{{ vars.time_field }} ge {{ window.start }} and {{ vars.time_field }} lt {{ window.end }}"
+    paginate: { strategy: request_path, from: "body:/@odata.nextLink" }
+  # One query per configured `log_analytics` service: the keyset is the list
+  # of `{workspace_id, kql}` pairs the instance carries.
+  - unit: log_analytics
+    base_url: "{{ vars.log_analytics_url }}"
+    auth: { scope: "https://api.loganalytics.io/.default" }
+    method: POST
+    path: "/v1/workspaces/{{ key.workspace_id }}/query"
+    body:
+      query: "{{ key.kql }}"
+      timespan: "{{ window.start }}/{{ window.end }}"
+    rows: { decoder: json_at, at: "/tables", builder: columnar_table }
+    paginate: { strategy: none }
+    construct:
+      keyset: { from: "{{ vars.log_analytics_queries }}" }

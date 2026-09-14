@@ -37,7 +37,17 @@ Services (each emits source tag `salesforce.<service>`):
 - `event_log_file` - two-stage: SOQL lists `EventLogFile` rows in the window,
   then each row's `LogFile` body is downloaded and parsed from CSV to one
   record per line, with `_dfe_fetcher_event_type` / `_dfe_fetcher_log_date`
-  provenance fields added.
+  provenance fields added. At most 200 files are read a tick; the rest wait
+  for the next.
+
+The source is the shipped `salesforce` profile
+(`crates/fetcher/profiles/salesforce.yaml`); the `sources.salesforce` block
+below maps onto an instance of it at load. The SOQL units follow
+`nextRecordsUrl` until the API says `done`; a 429 or 5xx is retried with
+backoff (honouring `Retry-After`), a refused exchange or a 401 or 403 ends
+the tick, a log file that keeps failing fails the unit's tick, and a tick that
+fails does not advance the fetch window. An unknown service name or a
+missing credential is refused at load, naming `sources.salesforce`.
 
 ## Prerequisites
 
@@ -62,7 +72,7 @@ Salesforce API) - no `full` or write scope.
 
 ## Source-Side Setup
 
-There is no Terraform path for this source. Connected-app / external-client-app
+There is no OpenTofu path for this source. Connected-app / external-client-app
 creation, certificate upload, and the pre-authorise / run-as policy are
 UI / CLI steps in Salesforce Setup; the provider does not cover digital-signature
 config cleanly. Follow the manual steps below.
@@ -212,8 +222,8 @@ sources:
     enabled: true
     client_id: "your-consumer-key"
     username: "integration@yourco.com"
-    private_key_secret: "vault:secret/dfe/salesforce:private_key"    # JWT bearer
-    # credential_secret: "vault:secret/dfe/salesforce:client_secret" # client credentials
+    private_key_secret: "vault:kv/data/dfe/salesforce:private_key"    # JWT bearer
+    # credential_secret: "vault:kv/data/dfe/salesforce:client_secret" # client credentials
     services:
       - name: setup_audit_trail
       - name: login_history
@@ -231,13 +241,13 @@ its own app (and cert for JWT), integration user, and `instance_id`.
 
 ## Verification
 
-1. **Health check.** `SalesforceSource::health_check` performs the token
-   exchange and confirms an `instance_url` came back. It does not exercise
-   per-sObject read permissions.
+1. **Health check.** The health check is the token exchange; the
+   `instance_url` it answers is what every data call addresses. It does not
+   exercise per-sObject read permissions.
 
 2. **Env-gated smoke tests.** Live tests live in
-   [`tests/e2e/smoke_remote.rs`](../../tests/e2e/smoke_remote.rs), all
-   `#[ignore]`'d. They read these from `.env-cloud`: `SALESFORCE_CLIENT_ID`
+   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs),
+   all `#[ignore]`'d. They read these from `.env-cloud`: `SALESFORCE_CLIENT_ID`
    (required) plus one of `SALESFORCE_PRIVATE_KEY` /
    `SALESFORCE_PRIVATE_KEY_SECRET` (with `SALESFORCE_USERNAME`) or
    `SALESFORCE_CLIENT_SECRET` / `SALESFORCE_CREDENTIAL_SECRET`. Optional:
@@ -245,7 +255,7 @@ its own app (and cert for JWT), integration user, and `instance_id`.
    `SALESFORCE_INSTANCE_URL`.
 
    ```bash
-   cargo test --test e2e salesforce_ -- --ignored --nocapture
+   cargo test -p dfe-fetcher --test e2e salesforce_ -- --ignored
    ```
 
 3. **Common failures.**
