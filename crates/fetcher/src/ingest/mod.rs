@@ -286,15 +286,11 @@ mod tests {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        let pipeline = Arc::new(
-            PipelineState::new(
-                shared,
-                Arc::clone(&metrics),
-                output,
-                CancellationToken::new(),
-            )
-            .expect("default config should work"),
-        );
+        let pipeline = Arc::new(PipelineState::for_tests(
+            shared,
+            Arc::clone(&metrics),
+            output,
+        ));
         let state = Arc::new(IngestState::new(pipeline.clone(), metrics, auth_token));
 
         let app = Router::new()

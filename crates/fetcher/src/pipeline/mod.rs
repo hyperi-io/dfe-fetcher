@@ -240,6 +240,32 @@ impl PipelineState {
         })
     }
 
+    /// State whose memory guard counts only reserved bytes.
+    ///
+    /// `new` auto-detects usage from the cgroup, so a readiness assertion there
+    /// measures the whole container rather than this pipeline.
+    #[cfg(test)]
+    pub(crate) fn for_tests(
+        shared_config: SharedConfig,
+        metrics: Arc<Metrics>,
+        output: Option<OutputManager>,
+    ) -> Self {
+        Self {
+            shared_config,
+            output: output.map(Arc::new),
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                scalo::memory::MemoryGuardConfig {
+                    limit_bytes: 1_073_741_824,
+                    ..Default::default()
+                },
+                scalo::memory::UsageSource::Reservations,
+            )),
+            dlq: None,
+            metrics,
+            ready: AtomicBool::new(true),
+        }
+    }
+
     /// Get the current configuration.
     pub fn config(&self) -> Config {
         self.shared_config.get()
