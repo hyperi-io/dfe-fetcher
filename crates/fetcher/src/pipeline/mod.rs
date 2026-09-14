@@ -662,11 +662,14 @@ mod tests {
     // -- enrich_record tests --
 
     /// Helper to create a PipelineState for enrichment tests without output.
+    ///
+    /// Reservation-counted, so a readiness or pressure assertion reads what the
+    /// test reserved rather than the container's memory.
     fn make_pipeline_state() -> PipelineState {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
-        PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap()
+        PipelineState::for_tests(shared, metrics, None)
     }
 
     #[test]
