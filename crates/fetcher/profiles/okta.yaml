@@ -1,0 +1,55 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/okta.yaml
+# Purpose:   Okta System Log as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Okta System Log API: no tenant, no token. An instance
+# supplies its tenant URL as `base_url` and its token as either an API key
+# (`Authorization: SSWS <token>`, Okta's own API-token header) or a plain
+# bearer (an OAuth access token). The typed `sources.okta` block maps onto an
+# instance of this profile at load, so its config surface is unchanged.
+#
+# One incremental unit: the scheduler's window becomes `since`/`until` in ISO
+# 8601 with millisecond precision and a `Z` zone, oldest first, `limit`
+# events per page (Okta caps it at 1000), and an optional server-side
+# `filter` in Okta's expression syntax. Pages are a top-level JSON array
+# linked by `Link: rel="next"`; the next URL is requested as given, and a
+# page that is empty but still links onward is followed.
+profile: okta
+maturity: alpha
+base_url: "{{ vars.base_url }}"
+shape: incremental
+auth:
+  accepts: [api_key, bearer]
+  api_key:
+    header: Authorization
+    prefix: "SSWS "
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_millis
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+# The cheapest authenticated call: the token's own user.
+probe:
+  path: /api/v1/users/me
+# `base_url` has no default: every tenant has its own. An empty `filter` is
+# omitted from the request.
+vars:
+  limit: 100
+  filter: ""
+endpoints:
+  - unit: system_log
+    path: /api/v1/logs
+    query:
+      since: "{{ window.start }}"
+      until: "{{ window.end }}"
+      limit: "{{ vars.limit }}"
+      sortOrder: ASCENDING
+      filter: "{{ vars.filter }}"
+    rows: { decoder: json_array }
+    paginate: { strategy: link_header }
+    max_pages: 50

@@ -1,0 +1,63 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/cloudflare.yaml
+# Purpose:   Cloudflare account audit log as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Cloudflare v4 account audit-log API: no token, no
+# account. An instance supplies a scoped API token (Account Settings: Read)
+# as a bearer and its `account_id`, and may override `api_url`. The typed
+# `sources.cloudflare` block maps onto an instance of this profile at load,
+# so its config surface is unchanged.
+#
+# One incremental unit: the scheduler's window becomes `since`/`before` in
+# RFC 3339 to the second, `per_page` entries per page (Cloudflare caps it at
+# 1000), with optional `actor.email` and `action.type` narrowing. Pages are
+# `{success, result, result_info}`; the page number counts from 1 up to
+# `result_info.total_pages`, and a page without a total is the last.
+# Cloudflare reports a failure inside a 200 as `success: false` with the
+# reasons under `errors`.
+profile: cloudflare
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [bearer]
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_secs
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+error:
+  at: "/errors"
+# Token introspection: free-tier-friendly, answers 2xx for a valid token.
+probe:
+  path: /user/tokens/verify
+# `api_url` is the public v4 API unless the instance overrides it. An empty
+# `actor_email` or `action_type` is omitted from the request. `account_id`
+# has no default: every instance names its account.
+vars:
+  api_url: "https://api.cloudflare.com/client/v4"
+  per_page: 100
+  actor_email: ""
+  action_type: ""
+endpoints:
+  - unit: audit_logs
+    path: "/accounts/{{ vars.account_id }}/audit_logs"
+    query:
+      since: "{{ window.start }}"
+      before: "{{ window.end }}"
+      per_page: "{{ vars.per_page }}"
+      actor.email: "{{ vars.actor_email }}"
+      action.type: "{{ vars.action_type }}"
+    rows: { decoder: json_at, at: "/result" }
+    paginate:
+      strategy: page_number
+      param: page
+      start: 1
+      total_pages_at: "/result_info/total_pages"
+    fail_when: "body.success == false"
+    max_pages: 50

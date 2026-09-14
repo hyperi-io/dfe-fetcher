@@ -1,0 +1,55 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/go_modules.yaml
+# Purpose:   Go module-proxy metadata as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of a GOPROXY-compatible module proxy for supply-chain
+# monitoring: no credential, a public registry. An instance supplies the
+# module paths to watch and may point `api_url` at an internal mirror. The
+# typed `sources.go_modules` block maps onto an instance of this profile at
+# load, so its config surface is unchanged.
+#
+# One unit, one row per module: the proxy's version list (`@v/list`, one
+# version per text line) names the items, each version's `.info` document
+# is fetched in list order (at most a hundred a module a tick, a retracted
+# version's 404 yielding nothing), and the fold turns the module's
+# documents into one row -- `versions` in list order, `version_info` keyed
+# by version -- stamped with the module it was asked for as
+# `_dfe_fetcher_module`. A module the proxy does not know answers 404 on
+# its list and yields no row; the others still land. The scheduler's
+# window plays no part: a module's versions are its current state, and
+# downstream tooling computes the deltas between ticks to spot an
+# unexpected publication or a commit-hash drift. The health check is the
+# proxy's root.
+profile: go_modules
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [none]
+headers:
+  Accept: application/json
+retry:
+  never_retry: [401, 403]
+probe:
+  path: /
+vars:
+  api_url: "https://proxy.golang.org"
+  modules: []
+endpoints:
+  - unit: metadata
+    path: "/{{ key }}/@v/list"
+    rows: { decoder: lines }
+    ignore_status: [404]
+    fold: go_module_aggregate
+    add_fields:
+      _dfe_fetcher_module: "{{ key }}"
+    construct:
+      keyset:
+        from: "{{ vars.modules }}"
+      manifest:
+        item_request: { path: "/{{ key }}/@v/{{ item.line }}.info", ignore_status: [404] }
+        rows: { decoder: document }
+        max_items: 100

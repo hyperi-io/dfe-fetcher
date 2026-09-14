@@ -1,0 +1,181 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/aws.yaml
+# Purpose:   AWS audit and security sources as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the AWS audit surfaces: no account, no key, no region. An
+# instance supplies a SigV4 key pair (or one credentials document carrying
+# both halves), its region, and may point every service host at one URL
+# (LocalStack, a test server). The typed `sources.aws` block maps onto an
+# instance of this profile at load, so its config surface is unchanged.
+#
+# Every unit is its own AWS service: the host is
+# `https://<service>.<region>.amazonaws.com` and each request is signed for
+# that service in that region, both rendered from the unit's `service` var
+# (Health is region-locked, so it also fixes `region`). The JSON-1.x units
+# POST to the service root with `X-Amz-Target`; GuardDuty, Security Hub
+# and Inspector v2 are REST-JSON APIs with their own paths. Every list
+# pages to the end on the body token the API documents. The window is
+# epoch seconds (milliseconds for CloudWatch Logs) as typed numbers, and
+# defaults to the last hour. The health check is STS `GetCallerIdentity`,
+# the one call every key may make.
+#
+# CloudWatch metrics are a two-request synthesis: the keyset is the list
+# of `ListMetrics` filters the instance builds from its namespaces (and
+# metric names, when it narrows), each descriptor is an id, and the lookup
+# posts them as `GetMetricData` queries in batches of 500, joined back by
+# the `cloudwatch_metrics` builder into one row per datapoint (or one
+# OTLP protobuf per response when `output_format` is `otlp`, declared
+# binary so it leaves the fetcher byte for byte; `period_secs` and `stat`
+# shape the queries). AWS Config's `Results` are JSON-encoded strings,
+# unquoted into the documents they hold.
+profile: aws
+maturity: stable
+base_url: "{{ vars.endpoint_url != '' ? vars.endpoint_url : 'https://' + vars.service + '.' + vars.region + '.amazonaws.com' }}"
+shape: incremental
+auth:
+  accepts: [sigv4]
+  sigv4:
+    service: "{{ vars.service }}"
+    region: "{{ vars.region }}"
+headers:
+  Accept: application/json
+window:
+  format: epoch_secs
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+  retry_non_idempotent: true
+# No `error.at`: a refusal is `{"__type": ..., "message"|"Message": ...}` and
+# the whole body names both halves.
+vars:
+  endpoint_url: ""
+  region: us-east-1
+  service: sts
+  expression: "SELECT resourceId, resourceType, resourceName, arn, accountId, awsRegion, availabilityZone, configurationItemCaptureTime, configurationItemStatus, resourceCreationTime, version, tags, relationships, configuration, supplementaryConfiguration"
+  metric_filters: []
+  output_format: json
+  filter_pattern: ""
+  max_results: 100
+probe:
+  path: /
+  query: { Action: GetCallerIdentity, Version: "2011-06-15" }
+defaults:
+  method: POST
+  path: /
+  paginate: { strategy: cursor, from: "body:/NextToken", into: "body:/NextToken" }
+  max_pages: 50
+endpoints:
+  - unit: cloudtrail
+    vars: { service: cloudtrail }
+    headers:
+      X-Amz-Target: com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101.LookupEvents
+      Content-Type: application/x-amz-json-1.1
+    body:
+      StartTime: "{{ int(window.start) }}"
+      EndTime: "{{ int(window.end) }}"
+      MaxResults: 50
+    rows: { decoder: json_at, at: "/Events" }
+  # GuardDuty: the detectors the account has, each detector's finding ids
+  # 50 a page, and the findings 50 ids a call, looked up under the detector
+  # that listed them.
+  - unit: guardduty
+    vars: { service: guardduty }
+    path: "/detector/{{ key }}/findings"
+    headers: { Content-Type: application/json }
+    body: { maxResults: 50 }
+    rows: { decoder: json_at, at: "/findingIds" }
+    paginate: { strategy: cursor, from: "body:/nextToken", into: "body:/nextToken" }
+    construct:
+      keyset:
+        request: { method: GET, path: /detector }
+        keys_at: "/detectorIds"
+      lookup:
+        batch: 50
+        request:
+          path: "/detector/{{ key }}/findings/get"
+          headers: { Content-Type: application/json }
+          body: { findingIds: "{{ ids }}" }
+        rows: { decoder: json_at, at: "/findings" }
+  - unit: securityhub
+    vars: { service: securityhub }
+    path: /findings
+    headers: { Content-Type: application/json }
+    body:
+      Filters: { WorkflowStatus: [{ Value: NEW, Comparison: EQUALS }] }
+      MaxResults: 100
+    rows: { decoder: json_at, at: "/Findings" }
+  - unit: config
+    vars: { service: config }
+    headers:
+      X-Amz-Target: StarlingDoveService.SelectResourceConfig
+      Content-Type: application/x-amz-json-1.1
+    body:
+      Expression: "{{ vars.expression }}"
+      Limit: 100
+    rows: { decoder: json_at, at: "/Results", quoted: true }
+  - unit: cloudwatch_logs
+    vars: { service: logs }
+    window: { format: epoch_millis }
+    headers:
+      X-Amz-Target: Logs_20140328.FilterLogEvents
+      Content-Type: application/x-amz-json-1.1
+    body:
+      logGroupName: "{{ vars.log_group_name }}"
+      startTime: "{{ int(window.start) }}"
+      endTime: "{{ int(window.end) }}"
+      limit: 10000
+      filterPattern: "{{ vars.filter_pattern != '' ? vars.filter_pattern : null }}"
+    rows: { decoder: json_at, at: "/events" }
+    paginate: { strategy: cursor, from: "body:/nextToken", into: "body:/nextToken" }
+  - unit: cloudwatch_metrics
+    vars: { service: monitoring }
+    headers:
+      X-Amz-Target: GraniteServiceVersion20100801.ListMetrics
+      Content-Type: application/x-amz-json-1.0
+    body: "{{ key }}"
+    rows: { decoder: json_at, at: "/Metrics" }
+    max_pages: 10
+    construct:
+      keyset: { from: "{{ vars.metric_filters }}" }
+      lookup:
+        batch: 500
+        request:
+          path: /
+          headers:
+            X-Amz-Target: GraniteServiceVersion20100801.GetMetricData
+            Content-Type: application/x-amz-json-1.0
+          body:
+            StartTime: "{{ int(window.start) }}"
+            EndTime: "{{ int(window.end) }}"
+            MetricDataQueries: "{{ ids }}"
+        rows:
+          decoder: document
+          builder: cloudwatch_metrics
+          content: "{{ vars.output_format == 'otlp' ? 'binary' : 'json' }}"
+        paginate: { strategy: cursor, from: "body:/NextToken", into: "body:/NextToken" }
+        max_pages: 10
+  - unit: inspector
+    vars: { service: inspector2 }
+    path: /findings/list
+    headers: { Content-Type: application/json }
+    body:
+      filterCriteria:
+        lastObservedAt: [{ startInclusive: "{{ int(window.start) }}", endInclusive: "{{ int(window.end) }}" }]
+      maxResults: "{{ vars.max_results }}"
+    rows: { decoder: json_at, at: "/findings" }
+    paginate: { strategy: cursor, from: "body:/nextToken", into: "body:/nextToken" }
+  # Health lives in us-east-1 whatever region the instance names.
+  - unit: health
+    vars: { service: health, region: us-east-1 }
+    headers:
+      X-Amz-Target: AWSHealth_20160804.DescribeEvents
+      Content-Type: application/x-amz-json-1.1
+    body:
+      filter:
+        lastUpdatedTimes: [{ from: "{{ int(window.start) }}", to: "{{ int(window.end) }}" }]
+      maxResults: "{{ vars.max_results }}"
+    rows: { decoder: json_at, at: "/events" }
+    paginate: { strategy: cursor, from: "body:/nextToken", into: "body:/nextToken" }

@@ -1,0 +1,113 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/m365.yaml
+# Purpose:   Microsoft 365 audit and security sources as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Microsoft 365 audit surfaces: no tenant, no application.
+# An instance supplies the application for the OAuth2 client-credentials
+# exchange at the tenant's v2.0 token endpoint, its tenant id, and may
+# point the two API hosts and the token endpoint elsewhere. The typed
+# `sources.m365` block maps onto an instance of this profile at load, so
+# its config surface is unchanged.
+#
+# Two API audiences, one token each: the Office 365 Management Activity
+# API (every OMAP unit) and Microsoft Graph (`alerts`). An OMAP unit is
+# one content type of the tenant's activity feed: a prelude starts its
+# subscription blind every tick (the API answers an already-enabled feed
+# with 400 `AF20024`, which is not a failure), the content list is asked
+# for in steps of at most a day with the window to the second and no zone
+# suffix, paged by the `NextPageUri` header, and each listed item is a
+# manifest pointer whose `contentUri` answers a JSON array of records. The
+# five `audit_log.*` units are the feeds the `audit_log` service fetches,
+# tagged `<connection>.audit_log.<feed>`; `dlp` and `exchange_audit` are
+# the same flow under their own tags. `alerts` is the tenant's current
+# Graph security alerts, newest first, `@odata.nextLink` paging, and reads
+# no window. The health check is the Management token exchange.
+profile: m365
+maturity: stable
+base_url: "{{ vars.management_url }}"
+shape: incremental
+auth:
+  accepts: [oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ vars.token_url != '' ? vars.token_url : vars.login_url + '/' + vars.tenant_id + '/oauth2/v2.0/token' }}"
+    scope: "https://manage.office.com/.default"
+    expires_in_fallback_secs: 3600
+headers:
+  Accept: application/json
+window:
+  format: "strftime:%Y-%m-%dT%H:%M:%S"
+  step: 24h
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+  retry_non_idempotent: true
+# OMAP and Graph both answer `{"error": {"code", "message"}}`.
+error:
+  at: "/error/message"
+# The public clouds unless the instance points a host elsewhere; the
+# publisher identifier keys the per-publisher OMAP rate budget and should
+# be the deployment's own.
+vars:
+  management_url: "https://manage.office.com"
+  graph_url: "https://graph.microsoft.com"
+  login_url: "https://login.microsoftonline.com"
+  token_url: ""
+  publisher_identifier: "12345678-1234-1234-1234-123456789123"
+defaults:
+  path: "/api/v1.0/{{ vars.tenant_id }}/activity/feed/subscriptions/content"
+  rows: { decoder: json_array }
+  paginate: { strategy: request_path, from: "header:NextPageUri" }
+  max_pages: 50
+  prelude:
+    - path: "/api/v1.0/{{ vars.tenant_id }}/activity/feed/subscriptions/start"
+      query:
+        contentType: "{{ vars.content_type }}"
+        PublisherIdentifier: "{{ vars.publisher_identifier }}"
+      ignore_status: [400]
+  construct:
+    manifest:
+      item_request: { path: "{{ item.contentUri }}" }
+      rows: { decoder: json_array }
+      key: "{{ item.contentId }}"
+      position: "{{ item.contentCreated }}"
+endpoints:
+  - unit: audit_log.audit_azureactivedirectory
+    vars: { content_type: Audit.AzureActiveDirectory }
+    query: &omap_query
+      contentType: "{{ vars.content_type }}"
+      startTime: "{{ window.start }}"
+      endTime: "{{ window.end }}"
+      PublisherIdentifier: "{{ vars.publisher_identifier }}"
+  - unit: audit_log.audit_exchange
+    vars: { content_type: Audit.Exchange }
+    query: *omap_query
+  - unit: audit_log.audit_sharepoint
+    vars: { content_type: Audit.SharePoint }
+    query: *omap_query
+  - unit: audit_log.audit_general
+    vars: { content_type: Audit.General }
+    query: *omap_query
+  - unit: audit_log.dlp_all
+    vars: { content_type: DLP.All }
+    query: *omap_query
+  - unit: dlp
+    vars: { content_type: DLP.All }
+    query: *omap_query
+  - unit: exchange_audit
+    vars: { content_type: Audit.Exchange }
+    query: *omap_query
+  - unit: alerts
+    base_url: "{{ vars.graph_url }}"
+    auth: { scope: "https://graph.microsoft.com/.default" }
+    path: /v1.0/security/alerts_v2
+    query:
+      $top: 100
+      $orderby: createdDateTime desc
+    rows: { decoder: json_at, at: "/value" }
+    paginate: { strategy: request_path, from: "body:/@odata.nextLink" }
+    max_pages: 10
+    prelude: []
+    construct: {}

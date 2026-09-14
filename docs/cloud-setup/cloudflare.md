@@ -22,6 +22,14 @@ from Cloudflare's `{"success":..., "result":[...], "result_info":{...}}`
 envelope. Authentication is a scoped API token in
 `Authorization: Bearer <token>`.
 
+The source is the shipped `cloudflare` profile
+(`crates/fetcher/profiles/cloudflare.yaml`); the `sources.cloudflare` block
+below maps onto an instance of it at load. A 429 or 5xx is retried with
+backoff (honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying
+`success: false` fails the tick with the `errors` array as the reason, and a
+tick that fails does not advance the fetch window. A missing token or
+`account_id` is refused at load, naming `sources.cloudflare`.
+
 Note on API versions: Cloudflare made **Audit Logs v2** (the newer
 `/accounts/{account_id}/logs/audit` endpoint) generally available in early
 2026. dfe-fetcher targets the **v1** `audit_logs` endpoint, which
@@ -126,7 +134,7 @@ sources:
   cloudflare:
     enabled: true
     account_id: "0123456789abcdef0123456789abcdef"
-    credential_secret: "vault:secret/cloudflare:token"
+    credential_secret: "vault:kv/data/cloudflare:token"
     services:
       - name: audit_logs
     topic: "cloudflare"
@@ -134,17 +142,18 @@ sources:
 
 ## Verification
 
-- **Health check.** The source's `health_check()` calls
-  `GET /user/tokens/verify`; a 2xx confirms the token is valid and active.
-  Note this proves the token is good but not that it carries Account Settings
-  Read - exercise the smoke test for that.
-- **e2e smoke test.** `tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live
-  tests. Export credentials, then run:
+- **Health check.** The profile's probe calls `GET /user/tokens/verify`; a
+  2xx confirms the token is valid and active. Note this proves the token is
+  good but not that it carries Account Settings Read - exercise the smoke
+  test for that.
+- **e2e smoke test.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
+  `#[ignore]`-gated live tests. Export credentials (or put them in
+  `.env-cloud`), then run:
 
   ```bash
   export CLOUDFLARE_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
   export CLOUDFLARE_TOKEN="cfut_..."
-  cargo nextest run --test e2e -- --ignored cloudflare_
+  cargo test -p dfe-fetcher --test e2e cloudflare_ -- --ignored
   ```
 
 - **Common failure modes.**
@@ -154,8 +163,8 @@ sources:
     "Audit Logs" permission for the v1 endpoint.
   - `400` / `404`: malformed or wrong `account_id` (must be the 32-char hex
     account ID, not a zone ID).
-  - Body `success:false` on a 2xx: dfe-fetcher treats this as an error and
-    surfaces the `errors` array.
+  - Body `success:false` on a 2xx: the tick fails with the `errors` array as
+    the reason and the window does not advance.
   - Empty result every tick: no audit events in the configured lookback
     window.
 

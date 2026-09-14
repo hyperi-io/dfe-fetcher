@@ -1,0 +1,760 @@
+// Project:   dfe-fetcher
+// File:      crates/db/src/config.rs
+// Purpose:   The `sources.db.<id>` grammar: engine, connection, batch bounds, stores
+// Language:  Rust
+//
+// License:   BUSL-1.1
+// Copyright: (c) 2026 HYPERI PTY LIMITED
+
+//! The database instance grammar.
+//!
+//! One [`DbInstance`] per `sources.db.<id>` entry: the engine and its
+//! connection string (a credential spec, resolved on first use), the
+//! per-fetch batch bounds, and the stores -- each a query the engine dumps
+//! whole or tails by keyset, or for MongoDB a collection dumped whole or
+//! tailed by change stream. Everything that can be checked without a
+//! connection is checked by [`DbInstance::validate`], with the field path, so
+//! a bad instance fails at load rather than at the first tick.
+
+use std::collections::BTreeSet;
+
+use scalo::SensitiveString;
+use serde::{Deserialize, Serialize};
+
+use dfe_fetcher_core::UnitShape;
+use dfe_fetcher_core::batch::AccumulateConfig;
+
+use crate::store::Dialect;
+
+/// Which client library an instance speaks through.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Engine {
+    /// unixODBC plus the engine's own ODBC driver; every SQL dialect.
+    #[default]
+    Odbc,
+    /// The ClickHouse HTTP interface, server-side JSON.
+    Clickhouse,
+    /// The official MongoDB driver: a collection dumped by `find`, tailed by
+    /// change stream or by `_id`.
+    Mongodb,
+}
+
+impl Engine {
+    /// The config spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Engine::Odbc => "odbc",
+            Engine::Clickhouse => "clickhouse",
+            Engine::Mongodb => "mongodb",
+        }
+    }
+
+    /// The app feature that compiles this engine in.
+    #[must_use]
+    pub const fn feature(self) -> &'static str {
+        match self {
+            Engine::Odbc => "db-odbc",
+            Engine::Clickhouse => "db-clickhouse",
+            Engine::Mongodb => "db-mongodb",
+        }
+    }
+
+    /// Whether this binary was built with the engine.
+    #[must_use]
+    pub const fn is_built(self) -> bool {
+        match self {
+            Engine::Odbc => cfg!(feature = "odbc"),
+            Engine::Clickhouse => cfg!(feature = "clickhouse"),
+            Engine::Mongodb => cfg!(feature = "mongodb"),
+        }
+    }
+
+    /// Whether the engine speaks SQL: a store is a query with a dialect.
+    #[must_use]
+    pub const fn is_sql(self) -> bool {
+        !matches!(self, Engine::Mongodb)
+    }
+}
+
+/// How a MongoDB tail follows its collection.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TailMode {
+    /// A change stream: every insert, update, replace and delete as an event,
+    /// resumed from the last committed resume token; needs a replica set.
+    #[default]
+    ChangeStream,
+    /// A keyset over `_id`: documents past the last committed `_id` in `_id`
+    /// order, for a standalone server with no oplog.
+    Keyset,
+}
+
+impl TailMode {
+    /// The config spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TailMode::ChangeStream => "change_stream",
+            TailMode::Keyset => "keyset",
+        }
+    }
+}
+
+/// Whether a store is dumped whole or tailed by keyset.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreShape {
+    /// The whole result set every tick, wrapped in the snapshot envelope.
+    #[default]
+    Dump,
+    /// Rows past the last committed key tuple, in key order.
+    Tail,
+}
+
+impl StoreShape {
+    /// The driver-facing unit shape: a tail is an incremental unit with a
+    /// keyset checkpoint.
+    #[must_use]
+    pub const fn unit_shape(self) -> UnitShape {
+        match self {
+            StoreShape::Dump => UnitShape::Dump,
+            StoreShape::Tail => UnitShape::Incremental,
+        }
+    }
+}
+
+/// Per-fetch bounds on the block cursor.
+///
+/// A block is what one round trip to the engine fetches; the pump holds at
+/// most two blocks plus the one being read, so `3 x max_bytes` is the
+/// store's memory ceiling before the batcher's own bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct BatchSpec {
+    /// Rows per block.
+    pub max_rows: usize,
+    /// Transit-buffer bytes per block; whichever of the two bounds is smaller wins.
+    pub max_bytes: usize,
+    /// Largest text value the transit buffer accepts; a longer value fails the
+    /// tick rather than being truncated.
+    pub max_text_bytes: usize,
+    /// Largest binary value the transit buffer accepts, likewise.
+    pub max_binary_bytes: usize,
+}
+
+impl Default for BatchSpec {
+    fn default() -> Self {
+        Self {
+            max_rows: 5000,
+            max_bytes: 4 * 1024 * 1024,
+            max_text_bytes: 64 * 1024,
+            max_binary_bytes: 1024 * 1024,
+        }
+    }
+}
+
+/// One store: a query and how it is fetched, or for MongoDB a collection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct StoreSpec {
+    /// Unit name: the second half of `_source_fetcher` and of a dump's `store`.
+    pub unit: String,
+    /// Dump or tail.
+    pub shape: StoreShape,
+    /// SQL engines: the SELECT, without an ORDER BY or LIMIT for a tail; the
+    /// framework appends the keyset predicate, the ordering and the limit.
+    pub query: String,
+    /// SQL tail only: the ordering key columns, in precedence order, each as
+    /// it appears in the query's result (delimit a case-sensitive name in
+    /// the dialect's own form).
+    pub key: Vec<String>,
+    /// Tail only: rows per page.
+    pub limit: u32,
+    /// Tail only: pages of `limit` rows read per tick before the rest of the
+    /// backlog waits for the next one. A tick ends early on the first short
+    /// page, so this bounds only a store that is behind.
+    pub max_pages_per_tick: u32,
+    /// JSON pointer to the row's identity, for the oversize stub and logs.
+    pub row_key: Option<String>,
+    /// MongoDB: the database holding the collection.
+    pub database: Option<String>,
+    /// MongoDB: the collection.
+    pub collection: Option<String>,
+    /// MongoDB: a query document over what the store yields -- the documents
+    /// of a dump or keyset tail, the change events of a change stream.
+    pub filter: Option<serde_json::Map<String, serde_json::Value>>,
+    /// MongoDB tail only: change stream (the default) or keyset over `_id`.
+    pub tail: Option<TailMode>,
+}
+
+impl Default for StoreSpec {
+    fn default() -> Self {
+        Self {
+            unit: String::new(),
+            shape: StoreShape::Dump,
+            query: String::new(),
+            key: Vec::new(),
+            limit: 5000,
+            max_pages_per_tick: 10,
+            row_key: None,
+            database: None,
+            collection: None,
+            filter: None,
+            tail: None,
+        }
+    }
+}
+
+impl StoreSpec {
+    /// The MongoDB tail mode in force: the configured one, else the change
+    /// stream, because it is the lossless one and a keyset over `_id` only
+    /// sees inserts.
+    #[must_use]
+    pub fn tail_mode(&self) -> TailMode {
+        self.tail.unwrap_or_default()
+    }
+}
+
+/// One `sources.db.<id>` instance.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct DbInstance {
+    /// Whether the instance runs.
+    pub enabled: bool,
+    /// The client library.
+    pub engine: Engine,
+    /// The SQL dialect; required for `odbc`, implied for `clickhouse`.
+    pub dialect: Option<Dialect>,
+    /// The connection string or URL as a credential spec (`vault:...`,
+    /// `env:VAR`, or a literal), resolved on first use and never logged.
+    pub connection_string: SensitiveString,
+    /// Fetch interval; the scheduler default when unset.
+    pub interval_secs: Option<u64>,
+    /// Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.
+    pub topic: String,
+    /// CEL keep-filter over each row, hot-reloaded.
+    pub filter: Option<String>,
+    /// Block cursor bounds.
+    pub batch: BatchSpec,
+    /// The stores, in tick order.
+    pub stores: Vec<StoreSpec>,
+    /// Batch bounds for this instance; the deployment's when unset.
+    pub accumulate: Option<AccumulateConfig>,
+}
+
+impl Default for DbInstance {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            engine: Engine::Odbc,
+            dialect: None,
+            connection_string: SensitiveString::default(),
+            interval_secs: None,
+            topic: String::new(),
+            filter: None,
+            batch: BatchSpec::default(),
+            stores: Vec::new(),
+            accumulate: None,
+        }
+    }
+}
+
+impl DbInstance {
+    /// The dialect in force: the configured one, ClickHouse for that engine,
+    /// none for MongoDB.
+    #[must_use]
+    pub fn dialect(&self) -> Option<Dialect> {
+        match (self.engine, self.dialect) {
+            (Engine::Clickhouse, None) => Some(Dialect::Clickhouse),
+            (Engine::Mongodb, _) => None,
+            (_, d) => d,
+        }
+    }
+
+    /// Whether the connection string is a literal rather than a `vault:` or
+    /// `env:` reference, so it can be inspected at load.
+    fn literal_connection_string(&self) -> Option<&str> {
+        let spec = self.connection_string.expose();
+        let referenced = spec.starts_with("vault:")
+            || spec.starts_with("env:")
+            || spec.starts_with("file:")
+            || spec.starts_with("bao:");
+        (!referenced).then_some(spec)
+    }
+
+    /// Every problem with this instance, each as `field: problem`.
+    #[must_use]
+    pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.topic.trim().is_empty() {
+            issues.push("topic: is required".to_owned());
+        }
+        if self.connection_string.expose().trim().is_empty() {
+            issues.push("connection_string: is required".to_owned());
+        }
+        if !self.engine.is_built() {
+            issues.push(format!(
+                "engine: `{}` is not built into this binary; build with `--features {}`",
+                self.engine.as_str(),
+                self.engine.feature()
+            ));
+        }
+        match (self.engine, self.dialect) {
+            (Engine::Odbc, None) => {
+                issues.push("dialect: is required for the odbc engine".to_owned());
+            }
+            (Engine::Clickhouse, Some(d)) if d != Dialect::Clickhouse => issues.push(format!(
+                "dialect: the clickhouse engine is always `clickhouse`, not `{}`",
+                d.as_str()
+            )),
+            (Engine::Mongodb, Some(d)) => issues.push(format!(
+                "dialect: the mongodb engine speaks no SQL dialect, drop `{}`",
+                d.as_str()
+            )),
+            _ => {}
+        }
+        if let (Some(dialect), Some(literal)) = (self.dialect(), self.literal_connection_string())
+            && let Some(knob) = dialect.streaming_knob()
+            && !literal
+                .to_ascii_lowercase()
+                .contains(&knob.to_ascii_lowercase())
+        {
+            issues.push(format!(
+                "connection_string: the {} driver buffers the whole result set unless it carries `{knob}`",
+                dialect.as_str()
+            ));
+        }
+        for (name, value) in [
+            ("max_rows", self.batch.max_rows),
+            ("max_bytes", self.batch.max_bytes),
+            ("max_text_bytes", self.batch.max_text_bytes),
+            ("max_binary_bytes", self.batch.max_binary_bytes),
+        ] {
+            if value == 0 {
+                issues.push(format!("batch.{name}: must be at least 1"));
+            }
+        }
+        if self.stores.is_empty() {
+            issues.push("stores: at least one store is required".to_owned());
+        }
+        let mut seen = BTreeSet::new();
+        for (i, store) in self.stores.iter().enumerate() {
+            let at = |f: &str| format!("stores[{i}].{f}");
+            if store.unit.trim().is_empty() {
+                issues.push(format!("{}: is required", at("unit")));
+            } else if !seen.insert(store.unit.as_str()) {
+                issues.push(format!(
+                    "{}: `{}` is declared twice",
+                    at("unit"),
+                    store.unit
+                ));
+            } else if store.unit.contains('.') {
+                issues.push(format!(
+                    "{}: `{}` cannot contain `.`, which separates the connection from the unit",
+                    at("unit"),
+                    store.unit
+                ));
+            }
+            if self.engine.is_sql() {
+                issues.extend(
+                    sql_store_issues(store)
+                        .into_iter()
+                        .map(|(f, p)| format!("{}: {p}", at(f))),
+                );
+            } else {
+                issues.extend(
+                    mongo_store_issues(store)
+                        .into_iter()
+                        .map(|(f, p)| format!("{}: {p}", at(f))),
+                );
+            }
+            if store.shape == StoreShape::Tail && store.limit == 0 {
+                issues.push(format!("{}: must be at least 1", at("limit")));
+            }
+            if store.shape == StoreShape::Tail && store.max_pages_per_tick == 0 {
+                issues.push(format!("{}: must be at least 1", at("max_pages_per_tick")));
+            }
+            if let Some(pointer) = &store.row_key
+                && !pointer.starts_with('/')
+            {
+                issues.push(format!(
+                    "{}: `{pointer}` is not a JSON pointer (must start with `/`)",
+                    at("row_key")
+                ));
+            }
+        }
+        if let Some(acc) = &self.accumulate
+            && let Err(e) = acc.validate()
+        {
+            issues.push(e.to_string());
+        }
+        issues
+    }
+}
+
+/// What a store on a SQL engine gets wrong, as `(field, problem)`.
+fn sql_store_issues(store: &StoreSpec) -> Vec<(&'static str, String)> {
+    let mut issues = Vec::new();
+    if store.query.trim().is_empty() {
+        issues.push(("query", "is required".to_owned()));
+    }
+    match store.shape {
+        StoreShape::Dump if !store.key.is_empty() => issues.push((
+            "key",
+            "only a tail has a key; a dump reads the whole store".to_owned(),
+        )),
+        StoreShape::Tail if store.key.is_empty() => issues.push((
+            "key",
+            "a tail needs at least one ordering key column".to_owned(),
+        )),
+        _ => {}
+    }
+    for (field, set) in [
+        ("database", store.database.is_some()),
+        ("collection", store.collection.is_some()),
+        ("filter", store.filter.is_some()),
+        ("tail", store.tail.is_some()),
+    ] {
+        if set {
+            issues.push((field, "only the mongodb engine reads it".to_owned()));
+        }
+    }
+    issues
+}
+
+/// What a store on the MongoDB engine gets wrong, as `(field, problem)`.
+fn mongo_store_issues(store: &StoreSpec) -> Vec<(&'static str, String)> {
+    let mut issues = Vec::new();
+    if !store.query.trim().is_empty() {
+        issues.push((
+            "query",
+            "the mongodb engine reads a collection, not SQL; name `database` and `collection`"
+                .to_owned(),
+        ));
+    }
+    if !store.key.is_empty() {
+        issues.push((
+            "key",
+            "the mongodb engine tails by change stream or by `_id`; the key is not configurable"
+                .to_owned(),
+        ));
+    }
+    for (field, value) in [
+        ("database", store.database.as_deref()),
+        ("collection", store.collection.as_deref()),
+    ] {
+        if value.is_none_or(|v| v.trim().is_empty()) {
+            issues.push((field, "is required for the mongodb engine".to_owned()));
+        }
+    }
+    if store.shape == StoreShape::Dump && store.tail.is_some() {
+        issues.push(("tail", "only a tail has a tail mode".to_owned()));
+    }
+    issues
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(yaml: &str) -> DbInstance {
+        serde_yaml_ng::from_str(yaml).expect("instance parses")
+    }
+
+    const GOOD: &str = r#"
+engine: odbc
+dialect: postgres
+connection_string: "vault:kv/data/dfe/inventory:odbc_dsn"
+topic: inventory
+stores:
+  - { unit: hosts, shape: dump, query: "SELECT * FROM hosts", row_key: "/id" }
+  - { unit: events, shape: tail, query: "SELECT * FROM events", key: [ts, id], limit: 100 }
+"#;
+
+    fn without_build_gate(issues: Vec<String>) -> Vec<String> {
+        issues
+            .into_iter()
+            .filter(|i| !i.contains("not built into this binary"))
+            .collect()
+    }
+
+    #[test]
+    fn a_complete_instance_has_no_issues_beyond_the_build_gate() {
+        let inst = instance(GOOD);
+        assert!(without_build_gate(inst.validate()).is_empty());
+        assert_eq!(inst.stores[0].shape.unit_shape(), UnitShape::Dump);
+        assert_eq!(inst.stores[1].shape.unit_shape(), UnitShape::Incremental);
+        assert_eq!(inst.stores[1].limit, 100);
+        assert_eq!(inst.stores[0].limit, 5000, "the default limit");
+        assert_eq!(inst.stores[1].max_pages_per_tick, 10);
+    }
+
+    #[test]
+    fn the_build_gate_names_the_feature() {
+        let inst = instance(GOOD);
+        let issues = inst.validate();
+        if Engine::Odbc.is_built() {
+            assert!(issues.iter().all(|i| !i.contains("not built")));
+        } else {
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.contains("`odbc` is not built") && i.contains("db-odbc")),
+                "{issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_topic_connection_and_dialect_are_named() {
+        let inst = instance("engine: odbc\nstores: [{ unit: a, query: 'SELECT 1' }]\n");
+        let issues = without_build_gate(inst.validate());
+        assert!(
+            issues.iter().any(|i| i == "topic: is required"),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i == "connection_string: is required"),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i == "dialect: is required for the odbc engine"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn a_literal_postgres_connection_string_without_the_streaming_knob_is_refused() {
+        let inst = instance(
+            "engine: odbc\ndialect: postgres\nconnection_string: \"Driver=PostgreSQL Unicode;Server=db\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
+        );
+        let issues = without_build_gate(inst.validate());
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("connection_string:") && i.contains("UseDeclareFetch=1")),
+            "{issues:?}"
+        );
+        let ok = instance(
+            "engine: odbc\ndialect: postgres\nconnection_string: \"Driver=PostgreSQL Unicode;Server=db;UseDeclareFetch=1\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
+        );
+        assert!(without_build_gate(ok.validate()).is_empty());
+    }
+
+    #[test]
+    fn a_referenced_connection_string_is_not_inspected_at_load() {
+        let inst = instance(
+            "engine: odbc\ndialect: mysql\nconnection_string: \"env:INVENTORY_DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
+        );
+        assert!(without_build_gate(inst.validate()).is_empty());
+    }
+
+    #[test]
+    fn store_problems_carry_their_index_and_field() {
+        let inst = instance(
+            r#"
+engine: odbc
+dialect: mysql
+connection_string: "env:DSN"
+topic: t
+stores:
+  - { unit: a, query: "SELECT 1", key: [id] }
+  - { unit: a, shape: tail, query: "SELECT 1" }
+  - { unit: "x.y", query: "" , row_key: "id" }
+  - { unit: z, shape: tail, query: "SELECT 1", key: [id], limit: 0 }
+"#,
+        );
+        let issues = without_build_gate(inst.validate());
+        for expected in [
+            "stores[0].key: only a tail has a key",
+            "stores[1].unit: `a` is declared twice",
+            "stores[1].key: a tail needs at least one ordering key column",
+            "stores[2].unit: `x.y` cannot contain `.`",
+            "stores[2].query: is required",
+            "stores[2].row_key: `id` is not a JSON pointer",
+            "stores[3].limit: must be at least 1",
+        ] {
+            assert!(
+                issues.iter().any(|i| i.starts_with(expected)),
+                "missing `{expected}` in {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clickhouse_implies_its_dialect_and_accepts_a_tail() {
+        let inst = instance(
+            "engine: clickhouse\nconnection_string: \"env:CH\"\ntopic: t\nstores: [{ unit: audit, shape: tail, query: 'SELECT 1', key: [ts] }]\n",
+        );
+        assert_eq!(inst.dialect(), Some(Dialect::Clickhouse));
+        assert!(
+            without_build_gate(inst.validate()).is_empty(),
+            "{:?}",
+            inst.validate()
+        );
+        let wrong = instance(
+            "engine: clickhouse\ndialect: postgres\nconnection_string: \"env:CH\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
+        );
+        assert!(
+            without_build_gate(wrong.validate())
+                .iter()
+                .any(|i| i.starts_with("dialect: the clickhouse engine is always `clickhouse`"))
+        );
+    }
+
+    #[test]
+    fn zero_batch_bounds_and_an_empty_store_list_are_refused() {
+        let inst = instance(
+            "engine: odbc\ndialect: mssql\nconnection_string: \"env:DSN\"\ntopic: t\nbatch: { max_rows: 0, max_bytes: 0 }\n",
+        );
+        let issues = without_build_gate(inst.validate());
+        assert!(
+            issues
+                .iter()
+                .any(|i| i == "batch.max_rows: must be at least 1")
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i == "batch.max_bytes: must be at least 1")
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i == "stores: at least one store is required")
+        );
+    }
+
+    #[test]
+    fn the_connection_string_is_redacted_on_serialise() {
+        let inst = instance(GOOD);
+        let out = serde_json::to_string(&inst).unwrap();
+        assert!(!out.contains("odbc_dsn"), "{out}");
+    }
+
+    #[test]
+    fn unknown_fields_fail_the_load() {
+        assert!(serde_yaml_ng::from_str::<DbInstance>("engine: odbc\ndsn: x\n").is_err());
+    }
+
+    const MONGO: &str = r#"
+engine: mongodb
+connection_string: "vault:kv/data/dfe/mongo:uri"
+topic: inventory
+stores:
+  - { unit: assets, shape: dump, database: inventory, collection: assets, filter: { alive: true }, row_key: "/_id/$oid" }
+  - { unit: changes, shape: tail, database: inventory, collection: assets, limit: 100 }
+  - { unit: rows, shape: tail, database: inventory, collection: assets, tail: keyset }
+"#;
+
+    #[test]
+    fn a_mongodb_instance_names_collections_and_defaults_its_tail_to_the_change_stream() {
+        let inst = instance(MONGO);
+        assert_eq!(inst.engine, Engine::Mongodb);
+        assert_eq!(inst.dialect(), None);
+        assert!(
+            without_build_gate(inst.validate()).is_empty(),
+            "{:?}",
+            inst.validate()
+        );
+        assert_eq!(inst.stores[1].tail_mode(), TailMode::ChangeStream);
+        assert_eq!(inst.stores[2].tail_mode(), TailMode::Keyset);
+        assert_eq!(
+            inst.stores[0].filter.as_ref().unwrap()["alive"],
+            serde_json::json!(true)
+        );
+        assert_eq!(Engine::Mongodb.feature(), "db-mongodb");
+        assert_eq!(Engine::Mongodb.as_str(), "mongodb");
+        assert!(!Engine::Mongodb.is_sql());
+        assert_eq!(TailMode::ChangeStream.as_str(), "change_stream");
+        assert_eq!(
+            serde_json::from_str::<TailMode>("\"keyset\"").unwrap(),
+            TailMode::Keyset
+        );
+    }
+
+    #[test]
+    fn the_mongodb_build_gate_names_its_feature() {
+        let issues = instance(MONGO).validate();
+        if Engine::Mongodb.is_built() {
+            assert!(
+                issues.iter().all(|i| !i.contains("not built")),
+                "{issues:?}"
+            );
+        } else {
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.contains("`mongodb` is not built") && i.contains("db-mongodb")),
+                "{issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mongodb_store_refuses_sql_keys_and_needs_its_collection() {
+        let inst = instance(
+            r#"
+engine: mongodb
+dialect: postgres
+connection_string: "env:MONGO"
+topic: t
+stores:
+  - { unit: a, shape: tail, query: "SELECT 1", key: [id], database: d, collection: c }
+  - { unit: b, shape: dump, tail: keyset }
+  - { unit: c, shape: dump, database: "", collection: c }
+"#,
+        );
+        let issues = without_build_gate(inst.validate());
+        for expected in [
+            "dialect: the mongodb engine speaks no SQL dialect, drop `postgres`",
+            "stores[0].query: the mongodb engine reads a collection, not SQL",
+            "stores[0].key: the mongodb engine tails by change stream or by `_id`",
+            "stores[1].database: is required for the mongodb engine",
+            "stores[1].collection: is required for the mongodb engine",
+            "stores[1].tail: only a tail has a tail mode",
+            "stores[2].database: is required for the mongodb engine",
+        ] {
+            assert!(
+                issues.iter().any(|i| i.starts_with(expected)),
+                "missing `{expected}` in {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sql_store_refuses_the_mongodb_keys() {
+        let inst = instance(
+            "engine: odbc\ndialect: postgres\nconnection_string: \"env:DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1', database: d, collection: c, filter: {}, tail: keyset }]\n",
+        );
+        let issues = without_build_gate(inst.validate());
+        for field in ["database", "collection", "filter", "tail"] {
+            let expected = format!("stores[0].{field}: only the mongodb engine reads it");
+            assert!(
+                issues.contains(&expected),
+                "missing `{expected}` in {issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mongodb_filter_must_be_a_document() {
+        assert!(
+            serde_yaml_ng::from_str::<DbInstance>(
+                "engine: mongodb\nstores: [{ unit: a, database: d, collection: c, filter: [1] }]\n"
+            )
+            .is_err(),
+            "an array is not a query document"
+        );
+    }
+}

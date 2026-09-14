@@ -1,236 +1,135 @@
 # Project:   dfe-fetcher
 # File:      Cargo.toml
-# Purpose:   Data fetcher for external services (AWS, Azure, M365, GCP)
+# Purpose:   Workspace root: the source framework crates and the fetcher app
 # Language:  Rust
 #
 # License:   BUSL-1.1
 # Copyright: (c) 2026 HYPERI PTY LIMITED
 
-[package]
-name = "dfe-fetcher"
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/rest",
+    "crates/db",
+    "crates/file",
+    "crates/fetcher",
+    # Vendored Vector file tailer (MIT); provenance in third-party/README.md.
+    # Path-only, publish = false, depended on by crates/file behind `tail`.
+    "third-party/vector-file-source",
+    "third-party/vector-file-source-common",
+]
+
+# One version for every crate: hyperi-ci stamps this table on release and the
+# members inherit it.
+[workspace.package]
 version = "1.3.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Pulls audit and activity logs from AWS, Azure, M365, GCP and SaaS APIs into Kafka. Runs standalone or as part of the HyperI Data Fusion Engine."
 license = "BUSL-1.1"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
-exclude = [".github/", "chart/", "docs/", "infra/", "reference/", "benches/"]
 
-[lib]
-name = "dfe_fetcher"
-path = "src/lib.rs"
-doctest = false
+[workspace.dependencies]
+# Internal crates
+dfe-fetcher-core = { path = "crates/core" }
+dfe-fetcher-rest = { path = "crates/rest" }
+dfe-fetcher-db = { path = "crates/db" }
+dfe-fetcher-file = { path = "crates/file" }
 
-# PGO workload driver — long-running mock-API server that drives the fetcher's
-# hot path (HTTP fetch → JSON parse → enrichment → CEL filter → output produce
-# → cursor advance) during hyperi-ci Tier 2 PGO/BOLT builds.
-# Default builds skip this binary because of `required-features`.
-[[bin]]
-name = "pgo-driver"
-path = "src/bin/pgo_driver.rs"
-required-features = ["pgo-driver"]
-
-[dependencies]
-# scalo shared library (crates.io).
-scalo = { version = ">=2.12.1, <3", features = [
-    "config",
-    "config-reload",
-    "logger",
-    "metrics",
-    "service-metrics",
-    "http-server",
-    "transport-kafka",
-    "transport-grpc",
-    "transport-grpc-vector-compat",
-    "transport-memory",
-    "spool",
-    "tiered-sink",
-    "runtime",
-    "secrets",
-    # vault: credential specs (scalo::secrets::resolve "vault:path:key"); the
-    # former hyperi-rustlib `credential` feature carried vault support.
-    "secrets-vault",
-    "dlq",
-    # dlq-kafka: the file backend is an EROFS no-op on the charts' read-only
-    # rootfs, so kafka is the only DLQ backend that works deployed.
-    "dlq-kafka",
-    "deployment",
-    # Reflectable config schema + capability catalog (scalo-rs#6): derive
-    # JsonSchema on Config and emit config-schema.* / capability-catalog.*.
-    "config-schema",
-    "cli-service",
-    "top",
-    "expression",
-    "scaling",
-    "memory",
-    "version-check",
-    "worker-pool",
-] }
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tokio-stream = "0.1"
-futures = ">=0.3.31, <0.4"
-futures-core = "0.3"
-
-# JSON
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml_ng = "0.10"
-
-# Env-var layering over an explicit --config file (scalo's cascade only merges
-# env for files it discovers itself). Same range scalo pins, so cargo unifies to
-# one figment in the graph.
-figment = { version = ">=0.10, <0.11", features = ["env"] }
-
-# JSON Schema derivation for the reflectable config-schema capability
-# (scalo-rs#6). Same version range as scalo so cargo unifies to ONE schemars in
-# the graph -- so scalo's `SensitiveString` x-dfe-secret impl and the fetcher's
-# derives resolve against the same `JsonSchema` trait.
+# scalo shared library (crates.io). Features are chosen per member; the core
+# takes `expression` only.
+scalo = { version = ">=2.12.1, <3", default-features = false }
+# Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
+# the type the framework holds.
+cel = { version = ">=0.13, <0.14", features = ["json"] }
+# Same range as scalo so cargo unifies to ONE schemars in the graph -- scalo's
+# `SensitiveString` x-dfe-secret impl and our derives resolve against the same
+# `JsonSchema` trait.
 schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
 
-# HTTP client (for API calls to external services).
-# `default-features = false` drops the `default-tls` feature (which pulls
-# native-tls + openssl). We use rustls exclusively. Re-enable charset/http2/
-# system-proxy explicitly to preserve previous behaviour.
-#
-# HELD on 0.12: reqwest and reqsign move together. reqsign signs an
-# http::request::Parts and its default context sends over reqwest 0.12, so
-# bumping reqwest alone stops every SigV4 call site compiling.
-reqwest = { version = "0.12", default-features = false, features = [
-    "charset",
-    "http2",
-    "system-proxy",
-    "json",
-    "rustls-tls",
-    "gzip",
-    "brotli",
-    "stream",
-] }
+# Async runtime and streams
+tokio = { version = "1.53.1", default-features = false }
+tokio-util = "0.7.19"
+tokio-stream = "0.1"
+futures = "0.3.34"
+futures-core = "0.3.34"
+async-trait = "0.1.92"
 
-# Performance
-fastrand = "2"
-rustc-hash = "2"
-# SIMD substring search for the enrich pre-filter; already in the graph
-# transitively, declared here because src/pipeline calls it directly.
-memchr = "2.8"
-# Allocation-free integer formatting for the enrich append path; already in the
-# graph transitively, declared here because src/pipeline calls it directly.
-itoa = "1.0.18"
-compact_str = "0.10"
-parking_lot = "0.12"
+# Serialisation
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_yaml_ng = "0.10.0"
+bytes = "1.12.1"
 
-# Error handling
-thiserror = "2"
-anyhow = "1"
-
-# CLI
-clap = { version = "4", features = ["derive", "env"] }
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-
-# Metrics (global recorder integration via scalo MetricsManager)
-metrics = ">=0.24, <0.25"
-
-# HTTP server (for metrics/health endpoints)
-axum = "0.8"
-bytes = "1"
+# HTTP client. HELD on 0.12: reqwest and reqsign move together -- reqsign signs
+# an http::request::Parts and its default context sends over reqwest 0.12, so
+# bumping reqwest alone stops every SigV4 call site compiling. Members pick
+# features; `default-features = false` drops native-tls so rustls is the only
+# TLS in the binary.
+reqwest = { version = "0.12", default-features = false }
+async-compression = { version = "0.4.46", features = ["tokio", "gzip"] }
+backon = "1.6.0"
+url = "2.5.8"
+axum = "0.8.9"
 
 # Utilities
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
-async-trait = "0.1"
-url = "2"
-jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
-
-# AWS SigV4 signing (reqsign — lightweight, no AWS SDK dependency)
-reqsign = { version = "0.20", default-features = false, features = ["aws", "default-context"] }
-# reqsign signs an http::request::Parts, so the SigV4 seam builds one directly.
-http = "1"
-sha2 = "0.11"
-hex = "0.4"
-
-# Crypto for the Duo Admin API HMAC-SHA1 request signature scheme.
-# Used only by src/source/duo. Other sources stick to SigV4 / OAuth bearer.
-#
-# sha1 stays on the 0.10.x line (digest 0.10) for compat with hmac 0.12.
-# Bumping sha1 to 0.11 silently switches to digest 0.11 and breaks the
-# `Hmac<Sha1>` instantiation.
-#
-# hmac 0.13 IS out and still does not close this. Taking the pair to 0.13/0.11
-# fails to compile: `Hmac::<Sha1>::new_from_slice` is gone, because KeyInit
-# moved in digest 0.11. It needs a call-site migration in src/source/duo, not a
-# version bump -- see the tracking issue.
+chrono = { version = "0.4.45", features = ["serde"] }
+uuid = "1.26.1"
+smallvec = "1.16.1"
+thiserror = "2.0.20"
+itoa = "1.0.18"
+memchr = "2.8.3"
+base64 = "0.23.1"
+# Duo's Admin API signature: HMAC-SHA1 over a canonical string, hex-encoded.
+# sha1 stays on the 0.10 line (digest 0.10) to pair with hmac 0.12; hmac 0.13
+# / sha1 0.11 moved `KeyInit` and need a call-site migration, not a bump.
 hmac = "0.12"
 sha1 = "0.10"
-base64 = "0.23"
-
-# Gzip decompression for the object_store source family. Most bucket-
-# delivered log feeds (CloudTrail, VPC Flow Logs, WAF, Cloud Logging
-# storage sinks) gzip every object. miniz_oxide backend keeps the
-# dependency surface small (no C zlib).
+hex = "0.4"
+# The RFC 3986 encoding a canonical query string is signed with; url's own
+# dependency, so no new crate in the graph.
+percent-encoding = "2.3"
+# The RS256 assertion of the JWT-bearer grant; aws-lc-rs is the one crypto
+# backend already in the graph through rustls.
+jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
+# Test-only RSA key generation for the JWT-bearer fixtures, jsonwebtoken's
+# own backend so no second crypto crate enters the graph.
+aws-lc-rs = "1"
+# AWS SigV4 signing (reqsign -- lightweight, no AWS SDK dependency). HELD with
+# reqwest 0.12: reqsign signs an http::request::Parts and its default context
+# sends over reqwest 0.12.
+reqsign = { version = "0.20", default-features = false, features = ["aws", "default-context"] }
+# reqsign signs an http::request::Parts, so the SigV4 mode projects one.
+http = "1"
+# OpenTelemetry proto types for the OTLP metric row builder.
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
+prost = "0.14"
+# The S3 lister reads ListObjectsV2 XML, the one XML the fetcher consumes.
+quick-xml = "0.41"
+csv = "1.4.0"
+csv-core = "0.1.13"
+glob = "0.3.4"
+parking_lot = "0.12"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
-# Small XML parser for AWS S3 ListObjectsV2 responses (the only XML the
-# fetcher consumes; everything else is JSON). Stays out of the hot path.
-quick-xml = "0.41"
+# Observability
+tracing = "0.1.44"
+metrics = ">=0.24, <0.25"
 
-# CSV parser for the Salesforce EventLogFile source. EventLogFile bodies
-# are downloaded as CSV with a header row and quoted fields; hand-parsing
-# quoting/escaping is error-prone, so use the mature `csv` crate (same
-# call as quick-xml for S3 XML). Only used by src/source/salesforce.
-csv = "1.3"
-
-# OpenTelemetry proto types (for OTLP metric output)
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.14"
-
-# Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
-tikv-jemallocator = { version = "0.7", optional = true }
-
-[dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
+# Dev
 tempfile = "3"
-tokio-test = "0.4"
-dotenvy = "0.15"
-wiremock = "0.6"
-# `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
-# ships ZERO default features, so this must be explicit (not transitive on axum).
-tower = { version = "0.5", features = ["util"] }
-opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.14"
-# Auto-managed Docker containers for integration tests (start + stop lifecycle).
-testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["localstack", "kafka"] }
 
-[features]
-default = []
-jemalloc = ["dep:tikv-jemallocator"]
-# Build the PGO workload driver bin (off by default — adds no transitive deps).
-pgo-driver = []
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
-strip = true
-panic = "abort"
-opt-level = 3
-
-[profile.bench]
-lto = "thin"
-codegen-units = 1
-
-[lints.rust]
+# `deny`, not `forbid`: the integration test binary allows `unsafe_code` around
+# `std::env::set_var`, and a workspace `forbid` cannot be allowed back. The
+# framework crates forbid it at their crate roots.
+[workspace.lints.rust]
 unsafe_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 # Use pedantic but allow some overly strict lints
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
-expect_used = "warn"
+expect_used = "deny"
 
 # Allow these pedantic lints (too noisy for early development)
 needless_raw_string_hashes = "allow"
@@ -258,7 +157,13 @@ format_push_string = "allow"
 single_char_add_str = "allow"
 uninlined_format_args = "allow"
 
-[[bench]]
-name = "pipeline"
-harness = false
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3
 
+[profile.bench]
+lto = "thin"
+codegen-units = 1

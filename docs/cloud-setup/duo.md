@@ -30,9 +30,17 @@ grants it log-read permission, and hands dfe-fetcher three values: the
 **integration key** (ikey), **secret key** (skey), and **API hostname**.
 
 The v2 endpoint takes `mintime`/`maxtime` as **millisecond** Unix timestamps,
-returns up to `limit` records (default 100, max 1000), and paginates with an
-opaque `next_offset`. Note Duo enforces a deliberate **two-minute delay**:
-authentications less than two minutes old are not yet returned.
+returns up to `limit` records (default 100, max 1000), and paginates with
+`metadata.next_offset`, the two-element list the API documents, sent back
+comma-joined until it is null. Note Duo enforces a deliberate **two-minute
+delay**: authentications less than two minutes old are not yet returned.
+
+The source is the shipped `duo` profile (`crates/fetcher/profiles/duo.yaml`)
+on the `duo_hmac` auth mode; the `sources.duo` block below maps onto an
+instance of it at load. A 429 or 5xx is retried with backoff (honouring
+`Retry-After`), a 401 or 403 ends the tick, a 2xx carrying `stat: FAIL` fails
+the tick with Duo's `message`, and a tick that fails does not advance the
+fetch window. A missing host or key is refused at load, naming `sources.duo`.
 
 ## Prerequisites
 
@@ -119,7 +127,7 @@ sources:
     enabled: true
     api_host: "api-XXXXXXXX.duosecurity.com"
     integration_key: "your-ikey"
-    credential_secret: "vault:secret/dfe/duo:skey"
+    credential_secret: "vault:kv/data/dfe/duo:skey"
     services:
       - name: authentication_logs
     topic: "duo"
@@ -131,14 +139,14 @@ and can stay inline.
 
 ## Verification
 
-**Health check.** The source's `health_check` signs and calls
-`GET /admin/v1/check`, which returns `{"response": "valid", "stat": "OK"}` for
-working credentials. A healthy result confirms the ikey, skey, and api_host
-are correct and the application is active.
+**Health check.** The profile's probe signs and calls `GET /admin/v1/check`,
+which returns `{"response": "valid", "stat": "OK"}` for working credentials;
+a `stat` other than `OK` is a health error. A healthy result confirms the
+ikey, skey, and api_host are correct and the application is active.
 
-**Live smoke tests.** `tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d
-tests that hit a real tenant. They read these variables (canonical
-`.env-cloud`, fallback `.env`):
+**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
+env-gated, `#[ignore]`d tests that hit a real tenant. They read these
+variables (canonical `.env-cloud`, fallback `.env`):
 
 - `DUO_API_HOST`
 - `DUO_INTEGRATION_KEY`
@@ -147,7 +155,7 @@ tests that hit a real tenant. They read these variables (canonical
 Run them:
 
 ```bash
-cargo nextest run --test e2e -- --ignored duo_
+cargo test -p dfe-fetcher --test e2e duo_ -- --ignored
 ```
 
 Results are tagged `duo.authentication_logs`. Zero records is normal on a

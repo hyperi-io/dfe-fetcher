@@ -50,6 +50,7 @@ STATE.md
 CLAUDE.md
 TODO.md
 docs/superpowers/
+.playwright-mcp/
 
 # Local environment files (never commit -- contain secrets)
 .env.*

@@ -11,18 +11,18 @@
 # Instance Identity
 # =============================================================================
 # Auto-derived from source config if omitted.
-# Explicit ID recommended for production — prevents cursor key collisions.
+# Explicit ID recommended for production -- prevents cursor key collisions.
 # instance_id: "contoso-m365"
 
 # =============================================================================
 # Scheduler
 # =============================================================================
-# Interval and jitter are HOT-RELOADED — changes take effect on next fetch cycle.
+# Interval and jitter are HOT-RELOADED -- changes take effect on next fetch cycle.
 # max_concurrent_fetches REQUIRES RESTART (semaphore created at startup).
 scheduler:
-  default_interval_secs: 300    # 5 minutes — hot-reloaded
+  default_interval_secs: 300    # 5 minutes -- hot-reloaded
   max_concurrent_fetches: 10    # REQUIRES RESTART
-  jitter_percent: 10            # Avoid thundering herd — hot-reloaded
+  jitter_percent: 10            # Avoid thundering herd -- hot-reloaded
 
 # =============================================================================
 # Native Sources (Rust-native, maintained in this repo)
@@ -30,17 +30,19 @@ scheduler:
 # Decision: use native source when a good Rust crate exists.
 # Otherwise, use a container extractor.
 
-# Sources — filter is HOT-RELOADED (re-evaluated per record).
+# Sources -- filter is HOT-RELOADED (re-evaluated per record).
 # enabled, credentials, services, topic REQUIRE RESTART.
 sources:
   aws:
     enabled: false              # REQUIRES RESTART
-    # region may be a literal value, env:VAR_NAME, or vault:path:key
+    # region may be a literal value, env:VAR_NAME, or vault:<mount>/data/<path>:<key>.
+    # A vault: spec names the KV v2 mount followed by a literal `data` segment;
+    # without `data` the whole path is read under the default `secret` mount.
     region: "us-east-1"
     # access_key_id: ""         # Prefer credential_secret in production
     # secret_access_key: ""
     # assume_role_arn: ""
-    # credential_secret: "vault:secret/aws:credentials"
+    # credential_secret: "vault:kv/data/aws:credentials"
     # interval_secs: 300        # Override default
     services:
       - name: cloudtrail
@@ -69,10 +71,10 @@ sources:
     # connections:
     #   - id: aws-acct-123
     #     region: us-east-1
-    #     credential_secret: "vault:secret/dfe/fetcher/aws-acct-123:creds"
+    #     credential_secret: "vault:kv/data/dfe/fetcher/aws-acct-123:creds"
     #   - id: aws-acct-456
     #     region: eu-west-1
-    #     credential_secret: "vault:secret/dfe/fetcher/aws-acct-456:creds"
+    #     credential_secret: "vault:kv/data/dfe/fetcher/aws-acct-456:creds"
     #     interval_secs: 600
 
   azure:
@@ -80,7 +82,7 @@ sources:
     # tenant_id: ""
     # client_id: ""
     # client_secret: ""
-    # credential_secret: "vault:secret/azure:credentials"
+    # credential_secret: "vault:kv/data/azure:credentials"
     # subscription_id: ""
     services:
       - name: activity_log
@@ -110,7 +112,10 @@ sources:
     # tenant_id: ""
     # client_id: ""
     # client_secret: ""
-    # credential_secret: "vault:secret/m365:credentials"
+    # credential_secret: "vault:kv/data/m365:credentials"
+    # PublisherIdentifier on every Management Activity call (your own GUID
+    # keys this deployment's OMAP rate budget); the shared default unless set.
+    # publisher_identifier: ""
     services:
       # Office 365 Management Activity API. audit_log covers all 5 OMAP content
       # types by default (Audit.General, Audit.AzureActiveDirectory,
@@ -135,7 +140,7 @@ sources:
                                # or GitHub App installation token.
                                # Scope: read:audit_log (org) or
                                #        read:enterprise (enterprise).
-    # credential_secret: "vault:secret/github:token"
+    # credential_secret: "vault:kv/data/github:token"
     services:
       # GitHub audit log. Optional `include` filter (web/git/all).
       - name: audit_log
@@ -150,7 +155,7 @@ sources:
     # token: ""                # SSWS API token (legacy) or OAuth access token.
     # use_ssws_header: true    # true = Authorization: SSWS <token> (default);
                                # false = Authorization: Bearer <token>.
-    # credential_secret: "vault:secret/okta:token"
+    # credential_secret: "vault:kv/data/okta:token"
     services:
       - name: system_log
         # Optional service-side config:
@@ -164,7 +169,7 @@ sources:
     enabled: false
     # account_id: ""           # 32-char hex from Cloudflare dashboard.
     # token: ""                # API token with "Account Settings: Read" (v1 audit-logs endpoint).
-    # credential_secret: "vault:secret/cloudflare:token"
+    # credential_secret: "vault:kv/data/cloudflare:token"
     services:
       - name: audit_logs
         # Optional service-side filters:
@@ -181,7 +186,7 @@ sources:
     # Enterprise plan with Events Reporting enabled on the tenant.
     # token: ""                # Bearer token from 1Password Business dash:
                                # Integrations > Directory > Events Reporting.
-    # credential_secret: "vault:secret/onepassword:events_token"
+    # credential_secret: "vault:kv/data/onepassword:events_token"
     # api_url_override:        # Defaults to https://events.1password.com.
     #                          # EU region: https://events.ent.1password.eu
     services:
@@ -201,7 +206,7 @@ sources:
     # api_url_override: "https://api.crowdstrike.com"
     # client_id: ""            # OAuth2 client ID (Falcon admin console).
     # client_secret: ""        # OAuth2 client secret.
-    # credential_secret: "vault:secret/crowdstrike:client_secret"
+    # credential_secret: "vault:kv/data/crowdstrike:client_secret"
     services:
       - name: alerts
         # Optional service-side config:
@@ -217,7 +222,7 @@ sources:
     # available on Pro/Business+.
     # token: ""                # xoxa-... or xoxb-... org-admin token with
                                # `auditlogs:read` scope.
-    # credential_secret: "vault:secret/slack:audit_token"
+    # credential_secret: "vault:kv/data/slack:audit_token"
     services:
       - name: audit_logs
         # Optional service-side filters:
@@ -234,7 +239,7 @@ sources:
     # Cloud or self-hosted (set both URL overrides for self-hosted).
     # client_id: "organization.<uuid>"   # Settings > Organization info > API Key
     # client_secret: ""
-    # credential_secret: "vault:secret/bitwarden:client_secret"
+    # credential_secret: "vault:kv/data/bitwarden:client_secret"
     # api_url_override: "https://api.bitwarden.com"
     # identity_url_override: "https://identity.bitwarden.com/connect/token"
     services:
@@ -248,7 +253,7 @@ sources:
     # api_host: "api-XXXXXXXX.duosecurity.com"   # from Admin > Applications
     # integration_key: ""                        # ikey
     # secret_key: ""                             # skey
-    # credential_secret: "vault:secret/duo:skey"
+    # credential_secret: "vault:kv/data/duo:skey"
     services:
       - name: authentication_logs
         # config:
@@ -303,7 +308,7 @@ sources:
   google_workspace:
     enabled: false
     # service_account_key: "/etc/workspace/sa-key.json"
-    # credential_secret: "vault:secret/google_workspace:sa_key"
+    # credential_secret: "vault:kv/data/google_workspace:sa_key"
     # admin_email: "audit-admin@example.com"   # MUST be a Workspace admin
     # customer_id: "my_customer"               # default - tenant of admin_email
     # api_url_override: "https://admin.googleapis.com"   # default
@@ -341,7 +346,7 @@ sources:
   gcp_pubsub:
     enabled: false
     # service_account_key: "/etc/gcp/pubsub-sa.json"
-    # credential_secret: "vault:secret/gcp-pubsub:sa_key"
+    # credential_secret: "vault:kv/data/gcp-pubsub:sa_key"
     # api_url_override: "https://pubsub.googleapis.com"  # default
     # token_url_override: "https://oauth2.googleapis.com/token"  # default
     subscriptions:
@@ -376,7 +381,7 @@ sources:
       #   region: ap-southeast-2
       #   access_key_id: "env:AWS_ACCESS_KEY_ID"
       #   secret_access_key: "env:AWS_SECRET_ACCESS_KEY"
-      #   # credential_secret: "vault:secret/aws-s3-reader:credentials"
+      #   # credential_secret: "vault:kv/data/aws-s3-reader:credentials"
       #   # endpoint_override: "http://localhost:9000"  # for MinIO / R2 / B2
       #   buckets:
       #     - bucket: my-cloudtrail-bucket
@@ -402,7 +407,7 @@ sources:
       # --- Azure Blob example (PHASE 2 STUB - do not enable today) ---
       # - provider: azure_blob
       #   account: mydiagstorage
-      #   account_key: "vault:secret/azure-blob:account-key"
+      #   account_key: "vault:kv/data/azure-blob:account-key"
       #   buckets:
       #     - bucket: insights-activity-logs   # blob container
       #       prefixes:
@@ -447,12 +452,12 @@ sources:
     #
     # --- JWT bearer auth ---
     # username: "integration@example.com"
-    # private_key_secret: "vault:secret/salesforce:private_key"
+    # private_key_secret: "vault:kv/data/salesforce:private_key"
     # # private_key: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
     #
     # --- OR client-credentials auth ---
     # client_secret: "env:SALESFORCE_CLIENT_SECRET"
-    # # credential_secret: "vault:secret/salesforce:client_secret"
+    # # credential_secret: "vault:kv/data/salesforce:client_secret"
     #
     # instance_url_override: "https://mydomain.my.salesforce.com"  # testing / custom domain
     services:
@@ -469,7 +474,7 @@ sources:
     enabled: false
     # project_id: ""
     # service_account_key: "/etc/gcp/sa-key.json"
-    # credential_secret: "vault:secret/gcp:credentials"
+    # credential_secret: "vault:kv/data/gcp:credentials"
     services:
       # Cloud Audit Logs split into the four subtypes GCP publishes under
       # cloudaudit.googleapis.com. Each gets its own source tag and cursor.
@@ -492,10 +497,135 @@ sources:
     topic: "gcp"
     # filter: 'severity != "INFO"'  # hot-reloaded
 
+  # ---------------------------------------------------------------------------
+  # Declarative REST sources (the source framework) -- REQUIRE RESTART
+  # ---------------------------------------------------------------------------
+  # An instance binds a PROFILE (the shape of an API: base URL template,
+  # accepted auth modes, endpoints with their decoder and pager) to this
+  # deployment's IDENTITY (base URL, credential kind and refs, topic,
+  # interval). The map key is the connection id: the cursor key, the metric
+  # and log label, and the `_source_fetcher` prefix. Two instances of one
+  # profile with different credential kinds is the normal case.
+  #
+  # `profile:` names a shipped profile or carries one inline. Unknown keys,
+  # decoders, pagers and auth modes fail the load with the YAML line; an
+  # instance whose mode the profile does not accept, or that lacks the
+  # credential field for it, fails validation with its field path.
+  #
+  # Shipped profiles (see crates/fetcher/profiles/): aws, azure, bitwarden,
+  # cloudflare, crates_io, crowdstrike, duo, gcp, gcp_pubsub, github,
+  # go_modules, google_workspace, m365, object_store, okta, onepassword,
+  # pypi, runzero, salesforce, slack. Every typed block above with one of
+  # those names is the same profile behind its typed config: each block maps
+  # onto an instance at load, so the blocks stay as they are and
+  # `sources.rest` is for a second instance of a shape or an API with no
+  # block.
+  rest:
+    # -------------------------------------------------------------------------
+    # runZero -- asset inventory snapshots from the export API
+    # -------------------------------------------------------------------------
+    # Every store the profile declares (assets, services, software, ... see
+    # crates/fetcher/profiles/runzero.yaml) is a snapshot dump: each tick
+    # streams the whole `.jsonl` export wrapped in the snapshot envelope
+    # (begin / row / end markers on the store's own topic `<topic>-<store>`),
+    # so a consumer rebuilds a complete inventory by snapshot id. Nothing is
+    # incremental; the cursor never advances.
+    #
+    # A self-hosted console and the cloud console are two INSTANCES of the one
+    # profile with different logins. Self-hosted: the organisation's export
+    # token as a static bearer, which every store accepts. Cloud: an OAuth2
+    # API client scoped to the organisation, which needs `_oid` on every call
+    # and is refused on the stores that need an export token.
+    runzero_self_hosted:
+      enabled: false
+      topic: "runzero"                  # stores land on runzero-assets, runzero-services, ...
+      interval_secs: 3600
+      # filter: 'record.alive == true'  # CEL over the enveloped row; hot-reloaded
+      auth:
+        mode: bearer
+        token: "vault:kv/data/runzero/self_hosted:export_token"   # the organisation's Export token
+      vars:
+        base_url: "https://runzero.example.internal/api/v1.0"     # required, no default
+        # org_id unset: the export token is bound to one organisation, so
+        # `_oid` is omitted from every request.
+      # units:                           # optional per-store narrowing
+      #   assets: { query: { fields: "id,alive,addresses,names,os,type" } }
+      #   services: { query: { search: "alive:t" } }
+      #   wireless: { enabled: false }
+      # accumulate: { max_bytes: 4194304 }   # per-instance override of the section below
+      profile: runzero
+    runzero_cloud:
+      enabled: false
+      topic: "runzero-cloud"            # or "runzero" to land in the same tables, told apart by _source_fetcher
+      interval_secs: 86400
+      auth:
+        mode: oauth2_client_credentials
+        client_id: "00000000-0000-0000-0000-000000000000"          # the API client's id (not a secret)
+        client_secret: "vault:kv/data/runzero/cloud:client_secret"
+      vars:
+        base_url: "https://console.runzero.example/api/v1.0"
+        org_id: "00000000-0000-0000-0000-000000000000"             # required with OAuth2: 400 without it
+      units:
+        # An OAuth2 client with the inventory grant is refused on these four;
+        # a refused export is terminal for the tick and ticks the console's
+        # throttle, so leave them off on an OAuth2 instance.
+        findings: { enabled: false }
+        tasks: { enabled: false }
+        users: { enabled: false }
+        groups: { enabled: false }
+      profile: runzero
+    # A one-off API needs no shipped profile: write the shape inline. The same
+    # grammar, with paging and a wrapped page body:
+    # inventory_paged:
+    #   enabled: true
+    #   topic: inventory
+    #   auth: { mode: api_key, key: "env:INVENTORY_API_KEY" }
+    #   vars: { base_url: "https://inventory.example.internal/api" }
+    #   profile:
+    #     base_url: "{{ vars.base_url }}"       # a profile carries no literal URL
+    #     shape: dump                           # incremental | dump
+    #     auth: { accepts: [api_key], api_key: { header: Authorization, prefix: "Token " } }
+    #     retry: { never_retry: [401, 403] }    # a refusal is terminal for the tick
+    #     error: { at: "/error" }               # where a non-2xx body keeps its text
+    #     endpoints:
+    #       - unit: assets
+    #         path: /assets
+    #         query: { page_size: 500 }
+    #         rows: { decoder: json_at, at: "/assets" }
+    #         paginate: { strategy: cursor, from: "body:/next_key", into: "query:start_key", stop_when: "body.next_key == ''" }
+
 # =============================================================================
-# External Extractors — ALL REQUIRE RESTART
+# Source framework: accumulate, oversize, self-regulation -- hot-reloaded per tick
 # =============================================================================
-# For tools that don't have good Rust crates — wrap in containers.
+# Framework sources pool rows and flush ONE transport batch when any bound is
+# reached; a partial batch waits at most `window_ms` after its first row.
+accumulate:
+  max_rows: 1000
+  max_bytes: 8388608
+  window_ms: 1000
+  in_flight: 1000                  # concurrent sends per flush; the whole batch
+                                   # by default, because each send awaits its own
+                                   # delivery report
+
+# A framework row longer than `max_record_bytes` is replaced by an oversize
+# stub (so a dump's row count still reconciles) and a copy cut at
+# `max_dlq_bytes` goes to the dead-letter queue.
+oversize:
+  max_record_bytes: 921600
+  max_dlq_bytes: 65536
+
+# The memory-pressure brake: when the memory guard crosses `pause_above` a
+# framework source stops polling its provider and flushes what it holds, and
+# resumes below `resume_below`.
+self_regulation:
+  enabled: true
+  pause_above: 0.80
+  resume_below: 0.65
+
+# =============================================================================
+# External Extractors -- ALL REQUIRE RESTART
+# =============================================================================
+# For tools that don't have good Rust crates -- wrap in containers.
 # One container per source + config. Can run N instances with different configs.
 
 extractors:
@@ -513,8 +643,8 @@ extractors:
     #   pull_policy: if-not-present  # always, if-not-present, or never
     #   env:
     #     AWS_REGION: us-east-1
-    #     AWS_ACCESS_KEY_ID: "vault:secret/aws:access_key"
-    #     AWS_SECRET_ACCESS_KEY: "vault:secret/aws:secret_key"
+    #     AWS_ACCESS_KEY_ID: "vault:kv/data/aws:access_key"
+    #     AWS_SECRET_ACCESS_KEY: "vault:kv/data/aws:secret_key"
     #   memory_limit: "512m"
     #   cpu_limit: 0.5
     #   max_restart_attempts: 0      # 0 = unlimited
@@ -530,7 +660,7 @@ extractors:
     #   env:
     #     M365_TENANT_ID: "tenant-alpha-uuid"
     #     M365_CLIENT_ID: "client-alpha-uuid"
-    #     M365_CLIENT_SECRET: "vault:secret/m365/alpha:client_secret"
+    #     M365_CLIENT_SECRET: "vault:kv/data/m365/alpha:client_secret"
 
     # - name: m365-org-beta
     #   image: internal/m365-extractor:latest
@@ -540,11 +670,11 @@ extractors:
     #   env:
     #     M365_TENANT_ID: "tenant-beta-uuid"
     #     M365_CLIENT_ID: "client-beta-uuid"
-    #     M365_CLIENT_SECRET: "vault:secret/m365/beta:client_secret"
+    #     M365_CLIENT_SECRET: "vault:kv/data/m365/beta:client_secret"
 
-    # ─── Filebeat sidecar examples ───────────────────────────────────
+    # --- Filebeat sidecar examples -----------------------------------
     # Use Filebeat for log sources that established tools handle well.
-    # Each runs as a container extractor — stdout (JSON lines) or HTTP POST.
+    # Each runs as a container extractor -- stdout (JSON lines) or HTTP POST.
 
     # Example: Syslog collection via Filebeat
     # - name: filebeat-syslog
@@ -600,7 +730,7 @@ extractors:
     #   topic: syslog_land
 
 # =============================================================================
-# Ingest server — REQUIRES RESTART
+# Ingest server -- REQUIRES RESTART
 # =============================================================================
 # HTTP server binds at startup; auth token resolved once.
 # Off by default: the listener counts as work, so turning it on holds this
@@ -609,10 +739,10 @@ ingest:
   enabled: false
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
-  # auth_token: "vault:secret/dfe:ingest_token"
+  # auth_token: "vault:kv/data/dfe:ingest_token"
 
 # =============================================================================
-# Output transport — REQUIRES RESTART
+# Output transport -- REQUIRES RESTART
 # =============================================================================
 # Transport connections are established at startup.
 # Default: kafka (backward compatible with top-level kafka: section)
@@ -643,7 +773,7 @@ ingest:
 #       match_value: "orders"
 #       destination: ["transform_orders", "archiver"]
 
-# Kafka — transport config REQUIRES RESTART; topic_suffix is hot-reloaded.
+# Kafka -- transport config REQUIRES RESTART; topic_suffix is hot-reloaded.
 kafka:
   brokers:                        # REQUIRES RESTART
     - "localhost:9092"
@@ -666,14 +796,14 @@ kafka:
     retries: 5
 
 # =============================================================================
-# Buffer / Memory — REQUIRES RESTART
+# Buffer / Memory -- REQUIRES RESTART
 # =============================================================================
 buffer:
   memory_limit: 0             # 0 = auto-detect (67% available)
   pressure_threshold: 0.8
 
 # =============================================================================
-# Dead Letter Queue — REQUIRES RESTART
+# Dead Letter Queue -- REQUIRES RESTART
 # =============================================================================
 # Records that cannot be delivered are routed to the DLQ for later replay. A
 # BACKPRESSURED destination is not a delivery failure and never comes here: the
@@ -693,14 +823,14 @@ dlq:
   #   compress_rotated: true
 
 # =============================================================================
-# Metrics — REQUIRES RESTART
+# Metrics -- REQUIRES RESTART
 # =============================================================================
 metrics:
   enabled: true
   address: "0.0.0.0:9090"
 
 # =============================================================================
-# Version check (PHONES HOME) — REQUIRES RESTART
+# Version check (PHONES HOME) -- REQUIRES RESTART
 # =============================================================================
 # ON BY DEFAULT. At startup the fetcher POSTs its product, version and a
 # generated instance id to https://releases.hyperi.io/api/v1/check. Both
@@ -731,18 +861,18 @@ version_check:
 #   default_window_hours: 1                     # hot-reloaded
 
 # =============================================================================
-# Horizontal scaling pressure (rustlib 2.8.10+ engine) — REQUIRES RESTART
+# Horizontal scaling pressure (rustlib 2.8.10+ engine) -- REQUIRES RESTART
 # =============================================================================
 # Honoured via the rustlib config cascade (run_app reads the `scaling` key).
-# The fetcher's inbound is NOT a rustlib transport — it PULLS from cloud APIs
-# (aws/azure/gcp/m365/salesforce + the alpha source families) — so
+# The fetcher's inbound is NOT a rustlib transport -- it PULLS from cloud APIs
+# (aws/azure/gcp/m365/salesforce + the alpha source families) -- so
 # transport.inbound is `other` and the engine's compound inbound is 0. Left
 # alone the smart default reduces to CPU-only. We therefore push DOMAIN signals
 # from the fetch loop and fold them into a CEL pressure here. Both domain
 # signals are SELF-NORMALISED (0-1), so NO unguessable per-env target is needed:
 #   custom.fetch_pressure = active_fetches / scheduler.max_concurrent_fetches
 #   custom.throttle_ratio = throttle_errors / fetch_attempts (HTTP 429 / SlowDown)
-# CEL has no max() — the ternary picks the worse of CPU-vs-domain pressure,
+# CEL has no max() -- the ternary picks the worse of CPU-vs-domain pressure,
 # then the inner ternary picks the worse of the two domain signals. The
 # outbound Kafka circuit (set_circuit_open) gates to 0 (more pods won't fix a
 # dead sink). Emits dfe_fetcher_scaling_pressure{name="fetch"}.
@@ -757,3 +887,114 @@ scaling:
 # a CEL composite written here never runs and emits no gauge. The domain signals
 # the fetch loop pushes (fetch_pressure, throttle_ratio) have nowhere to land,
 # so deployments scale on CPU. The intent is recorded in #66.
+
+# =============================================================================
+# Database sources (sources.db) -- the database shapes of the source framework
+# =============================================================================
+# Goes UNDER `sources:` alongside `rest:`; shown whole here so it can be
+# pasted. One instance per key: an engine, its connection string as a secret
+# spec, the block-cursor bounds, and the stores. A `dump` store selects the
+# whole result set every tick and lands in the snapshot envelope on
+# `<topic>-<unit>` (begin / row / end, rebuilt by `snapshot_id`); a `tail`
+# store selects rows past the last committed key tuple in key order, lands
+# on `<topic>`, and the checkpoint is written only after the batch is
+# acknowledged. A tail reads pages of `limit` rows inside one tick, each
+# resuming past the last row of the page before, and ends on the first short
+# page or at `max_pages_per_tick`. Every timestamp lands as RFC 3339 UTC, binary as base64,
+# NULL as null with the key present. An engine this binary was built
+# without (`db-odbc`, `db-clickhouse`, `db-mongodb`) is refused at load.
+# The driver each engine needs, its licence and whether the image ships it
+# are tabled in docs/reference/db-drivers.md.
+#
+# sources:
+#   db:
+#     inventory:
+#       enabled: true
+#       engine: odbc                    # odbc | clickhouse | mongodb
+#       dialect: postgres               # odbc only: postgres | mysql | mssql | oracle | sqlite | snowflake | bigquery | databricks
+#       # An ODBC connection string; the driver name is what `odbcinst -q -d`
+#       # lists. psqlodbc buffers the whole result set unless it carries
+#       # UseDeclareFetch=1 (BoolsAsChar=0 makes booleans JSON booleans);
+#       # MariaDB Connector/ODBC likewise unless NO_CACHE=1;FORWARDONLY=1.
+#       connection_string: "vault:kv/data/<team>/inventory:odbc_dsn"
+#       interval_secs: 3600
+#       topic: "inventory"              # dump units land on inventory-hosts, a tail on inventory
+#       filter: 'record.alive == true'  # optional CEL over the enveloped row, hot-reloaded
+#       batch:
+#         max_rows: 5000                # rows per block the cursor fetches
+#         max_bytes: 4194304            # transit-buffer bytes per block; 3 x this is the store's memory ceiling
+#         max_text_bytes: 65536         # a longer text value fails the tick rather than being truncated
+#         max_binary_bytes: 1048576     # likewise for bytea / BLOB
+#       stores:
+#         - { unit: hosts, shape: dump, query: "SELECT * FROM hosts", row_key: "/id" }
+#         # A tail's keys are written into the SQL as given; a case-sensitive
+#         # name is delimited in the dialect's own form ('"Ts"', '[Order Date]').
+#         - { unit: events, shape: tail, query: "SELECT * FROM events", key: [ts, id], limit: 5000, max_pages_per_tick: 10 }
+#     audit:
+#       enabled: true
+#       engine: clickhouse              # HTTP interface, server-side JSON; a tail binds typed placeholders whose types come from DESCRIBE
+#       connection_string: "vault:kv/data/<team>/clickhouse:http_url"   # http[s]://user:password@host:8123/database
+#       topic: "audit"
+#       stores:
+#         - { unit: logins, shape: dump, query: "SELECT * FROM logins", row_key: "/id" }
+#         - { unit: access, shape: tail, query: "SELECT * FROM access_log", key: [ts, id], limit: 10000, max_pages_per_tick: 10 }
+#     assets:
+#       enabled: true
+#       engine: mongodb                 # the official driver; a store is a collection, not a query
+#       connection_string: "vault:kv/data/<team>/mongo:uri"   # mongodb://user:password@host:27017 or mongodb+srv://...
+#       topic: "assets"
+#       batch: { max_rows: 1000 }       # documents per driver batch (find batch_size / change-stream batch size)
+#       stores:
+#         # Documents land as relaxed extended JSON: ObjectId as {"$oid": ...}, dates as {"$date": ...}.
+#         - { unit: hosts, shape: dump, database: inventory, collection: hosts, filter: { alive: true }, row_key: "/_id/$oid" }
+#         # tail: change_stream (default) needs a replica set and sees every insert, update and delete,
+#         # resumed from the last acknowledged event's resume token; tail: keyset follows _id on a
+#         # standalone server and sees inserts only. `filter` matches what the store yields: the
+#         # documents of a dump or keyset tail, the change EVENTS of a change stream.
+#         - { unit: changes, shape: tail, database: inventory, collection: hosts, limit: 5000 }
+#         - { unit: appended, shape: tail, tail: keyset, database: inventory, collection: audit, limit: 5000 }
+
+# =============================================================================
+# File sources (sources.file) -- the file shapes of the source framework
+# =============================================================================
+# Goes UNDER `sources:` alongside `rest:` and `db:`; shown whole here so it
+# can be pasted. One instance per key: a topic base, the interval, an optional
+# filter, and the units. A `dump` unit reads every file its globs match once,
+# oldest change first, and lands EACH FILE as its own snapshot on
+# `<topic>-<unit>` (begin / row / end, rebuilt by `snapshot_id`); a tick with
+# no new file emits nothing. The done marker is the file's change time,
+# committed only after the file's last batch is acknowledged, so a file that
+# is rewritten in place is read again and a file dropped in by rename is
+# never skipped. A `tail` unit follows its files through rotation and
+# truncation, lands each line on `<topic>` with no envelope, and commits its
+# byte offsets after the acks; it needs the binary built with `file-tail`
+# and is refused at load otherwise. A dump is gzip-inflated by magic
+# whatever the file is called.
+#
+# sources:
+#   file:
+#     exports:
+#       enabled: true
+#       interval_secs: 300
+#       topic: "exports"                # dump units land on exports-assets, a tail on exports
+#       filter: 'record.alive == true'  # optional CEL over the enveloped row, hot-reloaded
+#       units:
+#         - unit: assets
+#           dump:
+#             paths: ["/data/exports/**/*.jsonl.gz", "/data/exports/**/*.csv"]
+#             decoder: auto             # auto | ndjson | json_array | csv; auto picks by extension (.jsonl/.ndjson, .json, .csv)
+#             chunk_bytes: 65536        # bytes read per chunk; one chunk plus the open row is held ahead of the driver
+#           row_key: "/id"              # JSON pointer to the row's identity, for the oversize stub
+#         - unit: logs
+#           tail:
+#             include: ["/var/log/app/*.log*"]   # the `*` after `.log` keeps a rotated file in scope
+#             exclude: []
+#             read_from: beginning      # beginning | end -- where a newly discovered file is read from
+#             decoder: ndjson           # ndjson passes each line through; line wraps it as {"line": "..."}
+#             max_line_bytes: 102400    # a longer line is dropped and counted
+#             glob_minimum_cooldown_ms: 1000
+#             rotate_wait_secs: 30      # a rotated file keeps being read this long after it leaves the glob
+#             max_tick_secs: 30         # a tick ends by then so its lines can be committed while the files grow
+#             fingerprint: { strategy: checksum, bytes: 256, lines: 1, ignored_header_bytes: 0 }   # checksum | device_and_inode
+#             data_dir: "/var/lib/dfe-fetcher/tail/logs"   # the checkpoint file; durable storage
+#       accumulate: { max_rows: 1000, max_bytes: 8388608, window_ms: 1000, in_flight: 1000 }   # optional; the deployment's when unset

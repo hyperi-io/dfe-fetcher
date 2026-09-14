@@ -1,0 +1,45 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/crates_io.yaml
+# Purpose:   crates.io crate metadata as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the crates.io API for supply-chain monitoring: no credential,
+# a public registry whose usage policy asks every consumer to identify
+# itself with a contact `User-Agent`. An instance supplies the crates to
+# watch and may point `api_url` at a mirror. The typed `sources.crates_io`
+# block maps onto an instance of this profile at load, so its config surface
+# is unchanged.
+#
+# One unit, one request per crate: the whole document (versions, owners,
+# yanks, downloads) is the row, stamped with the crate it was asked for as
+# `_dfe_fetcher_crate`. A crate the registry does not know answers 404 and
+# is skipped; the others still land. The scheduler's window plays no part.
+profile: crates_io
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [none]
+headers:
+  Accept: application/json
+  User-Agent: "dfe-fetcher (https://github.com/hyperi-io/dfe-fetcher)"
+retry:
+  never_retry: [401, 403]
+# The registry summary: reachability, nothing to authenticate.
+probe:
+  path: /api/v1/summary
+vars:
+  api_url: "https://crates.io"
+  crates: []
+endpoints:
+  - unit: metadata
+    path: "/api/v1/crates/{{ key }}"
+    rows: { decoder: document }
+    construct:
+      keyset:
+        from: "{{ vars.crates }}"
+    ignore_status: [404]
+    add_fields:
+      _dfe_fetcher_crate: "{{ key }}"

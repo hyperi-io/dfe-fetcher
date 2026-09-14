@@ -1,0 +1,62 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/slack.yaml
+# Purpose:   Slack Enterprise Grid audit log as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Slack Audit Logs API: no token, no organisation. An
+# instance supplies the org-admin token (`auditlogs:read`, Enterprise Grid
+# only) as a bearer and may override `api_url`. The typed `sources.slack`
+# block maps onto an instance of this profile at load, so its config
+# surface is unchanged.
+#
+# One incremental unit: the scheduler's window becomes `oldest` (inclusive)
+# and `latest` (exclusive) as epoch seconds, `limit` entries per page (Slack
+# caps it at 1000), with optional `action` and `entity` narrowing. Pages are
+# `{ok, entries, response_metadata.next_cursor}`; the cursor goes back as
+# the `cursor` query parameter and an empty one ends the sequence. Slack
+# reports a failure inside a 200 as `ok: false` with the reason under
+# `error`, on the data endpoint and on the `auth.test` probe alike.
+profile: slack
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [bearer]
+headers:
+  Accept: application/json
+window:
+  format: epoch_secs
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+error:
+  at: "/error"
+# The token probe answers 200 either way; `ok: false` is the refusal.
+probe:
+  path: /api/auth.test
+  fail_when: "body.ok == false"
+# `api_url` is the public API unless the instance overrides it. An empty
+# `action` or `entity` is omitted from the request.
+vars:
+  api_url: "https://api.slack.com"
+  limit: 200
+  action: ""
+  entity: ""
+endpoints:
+  - unit: audit_logs
+    path: /audit/v1/logs
+    query:
+      oldest: "{{ window.start }}"
+      latest: "{{ window.end }}"
+      limit: "{{ vars.limit }}"
+      action: "{{ vars.action }}"
+      entity: "{{ vars.entity }}"
+    rows: { decoder: json_at, at: "/entries" }
+    paginate:
+      strategy: cursor
+      from: "body:/response_metadata/next_cursor"
+      into: "query:cursor"
+    fail_when: "body.ok == false"
+    max_pages: 50

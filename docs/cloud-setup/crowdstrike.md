@@ -30,6 +30,15 @@ Falcon tenants live on different cloud regions, each with its own API host.
 The admin's only job is to create an OAuth2 API client with the right scope
 and tell dfe-fetcher which region to use.
 
+The source is the shipped `crowdstrike` profile
+(`crates/fetcher/profiles/crowdstrike.yaml`); the `sources.crowdstrike` block
+below maps onto an instance of it at load. The id query walks `offset` against
+`meta.pagination.total` and the entity lookup runs per batch of ids; both
+calls are reads, so a 429 or 5xx on either is retried with backoff
+(honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick,
+and a tick that fails does not advance the fetch window. A missing client id
+or secret is refused at load, naming `sources.crowdstrike`.
+
 > **History (2026).** CrowdStrike renamed "Detections" to "Alerts" and
 > introduced the Alerts API. The legacy `/detects/*` endpoints were
 > deprecated 2024-10-01 and decommissioned 2025-09-30. dfe-fetcher uses the
@@ -102,7 +111,8 @@ required.
 
 The CrowdStrike source config fields are: `enabled`, `api_url_override`
 (region base URL), `client_id`, `client_secret`, `credential_secret`,
-`services`, `topic`. The only service is `alerts`.
+`interval_secs`, `services`, `connections`, `topic`, `filter`. The only
+service is `alerts`.
 
 ### Config File
 
@@ -142,7 +152,7 @@ sources:
     enabled: true
     # api_url_override: "https://api.us-2.crowdstrike.com"
     client_id: "your-oauth2-client-id"
-    credential_secret: "vault:secret/dfe/crowdstrike:client_secret"
+    credential_secret: "vault:kv/data/dfe/crowdstrike:client_secret"
     services:
       - name: alerts
     topic: "crowdstrike"
@@ -153,13 +163,14 @@ precedence over an inline `client_secret`.
 
 ## Verification
 
-**Health check.** The source's `health_check` performs a token exchange only
-(the cheapest valid auth probe). A healthy result means the client ID/secret
-and region base URL are correct - it does NOT confirm the Alerts: Read scope.
+**Health check.** The health check is the token exchange (the cheapest valid
+auth probe). A healthy result means the client ID/secret and region base URL
+are correct - it does NOT confirm the Alerts: Read scope. A refused exchange
+is a health error carrying the response.
 
-**Live smoke tests.** `tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d
-tests that hit a real tenant. They read these variables (canonical
-`.env-cloud`, fallback `.env`):
+**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
+env-gated, `#[ignore]`d tests that hit a real tenant. They read these
+variables (canonical `.env-cloud`, fallback `.env`):
 
 - `CROWDSTRIKE_CLIENT_ID`
 - `CROWDSTRIKE_CLIENT_SECRET`
@@ -168,7 +179,7 @@ tests that hit a real tenant. They read these variables (canonical
 Run them:
 
 ```bash
-cargo nextest run --test e2e -- --ignored crowdstrike_
+cargo test -p dfe-fetcher --test e2e crowdstrike_ -- --ignored
 ```
 
 Results are tagged `crowdstrike.alerts`. Zero records is normal on a quiet

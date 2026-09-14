@@ -1,0 +1,52 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/bitwarden.yaml
+# Purpose:   Bitwarden organisation Events API as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Bitwarden Public API's events endpoint: no client, no
+# vault. An instance supplies the organisation API client id and secret
+# (Settings > Organization info > View API Key) for the OAuth2
+# client-credentials exchange, and a self-hosted vault overrides `api_url`
+# and `identity_url`. The typed `sources.bitwarden` block maps onto an
+# instance of this profile at load, so its config surface is unchanged.
+#
+# One incremental unit: the scheduler's window becomes `start`/`end` in
+# RFC 3339 to the second. Pages are `{data, continuationToken}`; the token
+# goes back as the `continuationToken` query parameter and a null or empty
+# one ends the sequence. The token exchange itself is the health check: a
+# minted token proves the client, and no data endpoint is touched.
+profile: bitwarden
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ vars.identity_url }}"
+    scope: api.organization
+    expires_in_fallback_secs: 3600
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_secs
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+# Bitwarden Cloud unless the instance names a self-hosted vault.
+vars:
+  api_url: "https://api.bitwarden.com"
+  identity_url: "https://identity.bitwarden.com/connect/token"
+endpoints:
+  - unit: events
+    path: /public/events
+    query:
+      start: "{{ window.start }}"
+      end: "{{ window.end }}"
+    rows: { decoder: json_at, at: "/data" }
+    paginate:
+      strategy: cursor
+      from: "body:/continuationToken"
+      into: "query:continuationToken"
+    max_pages: 50

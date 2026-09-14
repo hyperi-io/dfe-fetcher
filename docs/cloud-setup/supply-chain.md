@@ -32,9 +32,15 @@ deciding which packages you own and listing them. Each source also
 accepts an `api_url_override` so you can point at an internal mirror or a
 test server.
 
-Missing packages are tolerated: a 404 logs a warning and skips that one
-entry rather than failing the whole tick. The Go source caps per-version
-`.info` fetches at 100 versions per module per tick.
+The three sources are the shipped `pypi`, `crates_io` and `go_modules`
+profiles (`crates/fetcher/profiles/`); each typed block below maps onto an
+instance of its profile at load. Missing packages are tolerated: a 404 for a
+configured name is an empty answer, not an error, and the other names still
+land. A 5xx or 429 on one name is retried with backoff; a name the registry
+keeps refusing fails the tick, and the names after it wait for the next tick
+(these are state documents, so nothing is lost). The Go source fetches at most
+100 versions' `.info` per module per tick, in list order, and a retracted
+version (a 404 on its `.info`) is left out of the row.
 
 ## Prerequisites
 
@@ -175,17 +181,16 @@ registry sources.
    ```
 
 2. Start dfe-fetcher with the sources enabled and watch the logs. Each
-   source logs how many names it is fetching, then a record count, e.g.
-   `Fetching PyPI package metadata` / `PyPI metadata fetched`.
+   source logs `unit tick complete` with its `rows` count on every tick.
 
-3. Each source `health_check` performs a lightweight reachability probe
-   (PyPI root, crates.io `/api/v1/summary`, Go proxy root) and reports
-   healthy when the endpoint answers.
+3. Each profile's probe is a lightweight reachability request (PyPI root,
+   crates.io `/api/v1/summary`, Go proxy root) and is healthy when the
+   endpoint answers 2xx.
 
 4. Emitted records carry a name field so downstream tooling can route
    them: `_dfe_fetcher_package` (PyPI), `_dfe_fetcher_crate`
-   (crates.io), `_dfe_fetcher_module` (Go). A 404 for a configured name
-   logs `404` / `package missing` and is skipped, not fatal.
+   (crates.io), `_dfe_fetcher_module` (Go). A 404 for a configured name is
+   skipped, not fatal, and is not counted as an API error.
 
 ## Cost
 

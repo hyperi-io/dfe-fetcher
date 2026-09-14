@@ -1,0 +1,70 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/crowdstrike.yaml
+# Purpose:   CrowdStrike Falcon alerts as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Falcon Alerts API v2: no client, no region. An instance
+# supplies the Falcon API client id and secret for the OAuth2
+# client-credentials exchange at `/oauth2/token` (no scope) and names its
+# region's `api_url` (US-1 by default). The typed `sources.crowdstrike`
+# block maps onto an instance of this profile at load, so its config
+# surface is unchanged.
+#
+# One incremental unit in two stages. The id query narrows by a Falcon
+# Query Language clause -- the scheduler's window as
+# `created_timestamp:>'<start>'+created_timestamp:<'<end>'` in RFC 3339
+# seconds, ANDed with an optional instance filter -- oldest first, `limit`
+# ids per page (Falcon caps it at 1000), walked by `offset` against
+# `meta.pagination.total`. The rows are the alert entities a POST returns
+# for each batch of composite ids. Both calls are reads, so the POST is
+# retried like a GET. The token exchange is the health check.
+profile: crowdstrike
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ base_url }}/oauth2/token"
+    scope: ""
+    expires_in_fallback_secs: 1800
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_secs
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+  retry_non_idempotent: true
+error:
+  at: "/errors"
+# US-1 unless the instance names another region. An empty `filter` adds
+# nothing to the FQL clause.
+vars:
+  api_url: "https://api.crowdstrike.com"
+  limit: 100
+  filter: ""
+endpoints:
+  - unit: alerts
+    path: /alerts/queries/alerts/v2
+    query:
+      filter: "created_timestamp:>'{{ window.start }}'+created_timestamp:<'{{ window.end }}'{{ vars.filter != '' ? '+' + vars.filter : '' }}"
+      limit: "{{ vars.limit }}"
+      sort: created_timestamp.asc
+    rows: { decoder: json_at, at: "/resources" }
+    paginate:
+      strategy: offset
+      param: offset
+      total_at: "/meta/pagination/total"
+    construct:
+      lookup:
+        batch: 1000
+        request:
+          method: POST
+          path: /alerts/entities/alerts/v2
+          body:
+            composite_ids: "{{ ids }}"
+        rows: { decoder: json_at, at: "/resources" }
+    max_pages: 50

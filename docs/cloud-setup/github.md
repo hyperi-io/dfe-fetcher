@@ -28,6 +28,12 @@ installation token). The audit-log API is available only on GitHub
 Enterprise Cloud - both the org-level and enterprise-level endpoints require
 your organisation to be part of an Enterprise Cloud plan.
 
+The source is the shipped `github` REST profile
+(`crates/fetcher/profiles/github.yaml`); the `sources.github` block below
+maps onto an instance of it at load, so the profile's retry policy applies:
+a 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403
+ends the tick, and a tick that fails does not advance the fetch window.
+
 ## Prerequisites
 
 - GitHub Enterprise Cloud. The audit-log REST API is not available on free,
@@ -144,7 +150,7 @@ sources:
   github:
     enabled: true
     org: "your-github-org"
-    credential_secret: "vault:secret/github:token"
+    credential_secret: "vault:kv/data/github:token"
     services:
       - name: audit_log
         config:
@@ -154,17 +160,18 @@ sources:
 
 ## Verification
 
-- **Health check.** The source's `health_check()` calls `GET /user` with the
-  token; a 2xx means the token authenticates and `api.github.com` is
-  reachable. Note this only proves the token is valid, not that it carries
-  audit-log permission.
-- **e2e smoke test.** `tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live
-  tests. Export credentials, then run:
+- **Health check.** The profile's probe calls `GET /user` with the token; a
+  2xx means the token authenticates and `api.github.com` is reachable. Note
+  this only proves the token is valid, not that it carries audit-log
+  permission.
+- **e2e smoke test.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
+  `#[ignore]`-gated live tests. Export credentials (or put them in
+  `.env-cloud`), then run:
 
   ```bash
   export GITHUB_AUDIT_TOKEN="ghp_..."
   export GITHUB_AUDIT_ORG="your-github-org"   # OR GITHUB_AUDIT_ENTERPRISE
-  cargo nextest run --test e2e -- --ignored github_
+  cargo test -p dfe-fetcher --test e2e github_ -- --ignored
   ```
 
   Covers the health check, audit-log fetch, and git-only include variant.
@@ -175,8 +182,8 @@ sources:
     not available for that account tier.
   - Empty result every tick: no events in the lookback window; git events are
     retained only ~7 days, so a stale window returns nothing.
-  - Setting both `org` and `enterprise` is a config error and the fetch is
-    rejected.
+  - Setting both `org` and `enterprise`, or neither, is a config error: the
+    fetcher refuses the config at load, naming `sources.github`.
 
 ## Cost
 

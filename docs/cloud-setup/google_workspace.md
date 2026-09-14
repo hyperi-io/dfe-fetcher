@@ -32,6 +32,14 @@ account and the Admin SDK API enablement are in **Google Cloud**, while the
 domain-wide-delegation scope grant is in the **Workspace Admin console**. The
 Admin console step is human-only - there is no IaC path for it.
 
+The source is the shipped `google_workspace` profile
+(`crates/fetcher/profiles/google_workspace.yaml`); the
+`sources.google_workspace` block below maps onto an instance of it at load,
+one unit per configured application. The token is exchanged once per tick
+and shared by every unit; a 429 or 5xx is retried with backoff (honouring
+`Retry-After`), a 401 or 403 ends the tick with the API's `error.message`,
+and a tick that fails does not advance the fetch window.
+
 dfe-fetcher never writes, modifies, or deletes anything.
 
 ## Prerequisites
@@ -127,12 +135,13 @@ administrator privilege. Console path: Admin console -> Account -> Admin roles.
 
 ## dfe-fetcher Configuration
 
-Service names map directly to Reports API `applicationName` values, such as
-`login`, `admin`, `drive`, `token`, `mobile`, `groups`,
-`groups_enterprise`, `calendar`, `chat`, `meet`, `chrome`, `keep`,
-`access_transparency`, `context_aware_access`. Each entry produces records
-tagged `google_workspace.<name>`. Per-service config supports an optional
-`event_name` to filter to a single event.
+Service names are Reports API `applicationName` values, such as `login`,
+`admin`, `drive`, `token`, `mobile`, `groups`, `groups_enterprise`,
+`calendar`, `chat`, `meet`, `chrome`, `keep`, `access_transparency`,
+`context_aware_access`; the profile lists the documented enum, and a name
+outside it is refused at load, naming `sources.google_workspace`. Each entry
+produces records tagged `google_workspace.<name>`. Per-service config
+supports an optional `event_name` to filter to a single event.
 
 ### Config File
 
@@ -143,8 +152,8 @@ sources:
     service_account_key: "/etc/workspace/workspace-sa.json"
     admin_email: "audit-admin@example.com"      # MUST be a Workspace admin
     customer_id: "my_customer"                   # default; tenant of admin_email
-    # api_url_override: "https://admin.googleapis.com"            # default
-    # token_url_override: "https://oauth2.googleapis.com/token"   # default
+    # api_url_override: "https://admin.googleapis.com"   # default
+    # token_url_override: ""                             # default: the key's own token_uri
     services:
       - name: login
       - name: admin
@@ -179,7 +188,7 @@ Keep the SA key out of the config file with a vault spec:
 sources:
   google_workspace:
     enabled: true
-    credential_secret: "vault:secret/google_workspace:sa_key"
+    credential_secret: "vault:kv/data/google_workspace:sa_key"
     admin_email: "audit-admin@example.com"
     services:
       - name: login
@@ -188,26 +197,24 @@ sources:
 ```
 
 `credential_secret` resolves to the full service account JSON key as a string.
-Provide exactly one of `credential_secret` or `service_account_key`.
+Provide exactly one of `credential_secret` or `service_account_key`, and
+`admin_email`; a block missing either is refused at load.
 
 ## Verification
 
-dfe-fetcher's `health_check` for this source signs a JWT and performs the token
-exchange; it returns `true` only when delegation and impersonation are wired
-correctly. The env-gated e2e tests in
-[`tests/e2e/smoke_remote.rs`](../../tests/e2e/smoke_remote.rs) exercise the live
-path. They are `#[ignore]`'d until the tenant side is provisioned.
+The health check is the delegated token exchange, so a healthy result proves
+the key, the delegation grant and the impersonated admin together. The
+env-gated e2e tests in
+[`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs)
+exercise the live path. They are `#[ignore]`'d until the tenant side is
+provisioned, and read `GOOGLE_WORKSPACE_SA_KEY` (a file path) or
+`GOOGLE_WORKSPACE_CREDENTIAL_SECRET`, `GOOGLE_WORKSPACE_ADMIN_EMAIL` and,
+optionally, `GOOGLE_WORKSPACE_CUSTOMER_ID`, `GOOGLE_WORKSPACE_API_URL` and
+`GOOGLE_WORKSPACE_TOKEN_URL` from `.env-cloud`:
 
 ```bash
-export GOOGLE_WORKSPACE_SA_KEY="/etc/workspace/workspace-sa.json"
-# or GOOGLE_WORKSPACE_CREDENTIAL_SECRET="vault:secret/google_workspace:sa_key"
-export GOOGLE_WORKSPACE_ADMIN_EMAIL="audit-admin@example.com"
-
-# Token exchange + scope grant only:
-cargo test --test smoke_remote google_workspace_health_check -- --ignored --nocapture
-
-# Real login activity fetch (empty window is a valid pass):
-cargo test --test smoke_remote google_workspace_login_activity_fetch -- --ignored --nocapture
+# Token exchange, then a login-activity fetch (an empty window is a valid pass):
+cargo test -p dfe-fetcher --test e2e google_workspace_ -- --ignored
 ```
 
 Common failures:

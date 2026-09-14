@@ -1,0 +1,45 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/pypi.yaml
+# Purpose:   PyPI package metadata as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of PyPI's JSON API for supply-chain monitoring: no credential,
+# a public registry. An instance supplies the packages to watch and may
+# point `api_url` at a mirror. The typed `sources.pypi` block maps onto an
+# instance of this profile at load, so its config surface is unchanged.
+#
+# One unit, one request per package: the whole JSON document is the row,
+# stamped with the package it was asked for as `_dfe_fetcher_package` so a
+# deployment can filter and route on what it configured rather than on
+# `info.name`. A package the registry does not know answers 404 and is
+# skipped; the others still land. The scheduler's window plays no part: a
+# document is the package's current state, and downstream tooling computes
+# the deltas between ticks.
+profile: pypi
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [none]
+headers:
+  Accept: application/json
+retry:
+  never_retry: [401, 403]
+# The registry's front page: reachability, nothing to authenticate.
+probe:
+  path: /
+vars:
+  api_url: "https://pypi.org"
+  packages: []
+endpoints:
+  - unit: metadata
+    path: "/pypi/{{ key }}/json"
+    rows: { decoder: document }
+    construct:
+      keyset:
+        from: "{{ vars.packages }}"
+    ignore_status: [404]
+    add_fields:
+      _dfe_fetcher_package: "{{ key }}"

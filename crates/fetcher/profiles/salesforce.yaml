@@ -1,0 +1,88 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/salesforce.yaml
+# Purpose:   Salesforce audit surfaces as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Salesforce audit surfaces: no org, no connected app. An
+# instance supplies the connected app's identity for one of two
+# server-to-server flows at `<login_url>/services/oauth2/token`: the
+# JWT-bearer grant (the app's consumer key as `iss`, the integration user
+# as `sub`, the login host as `aud`, signed with the app's RSA private key,
+# five minutes long) or client credentials (the consumer key and secret).
+# Either exchange answers the org's own host as `instance_url`, which the
+# authenticator exposes as `auth.instance_url` and every unit addresses
+# (an instance may pin it with `instance_url`). The typed
+# `sources.salesforce` block maps onto an instance of this profile at load,
+# so its config surface is unchanged.
+#
+# The two SOQL units query their sObject for the window (SOQL datetime
+# literals are bare RFC 3339 to the second) ascending by time, and follow
+# `nextRecordsUrl` -- a path on the instance host -- until the API says
+# `done`. `event_log_file` is a manifest: SOQL lists the log files of the
+# window at the configured interval (and event types, when narrowed),
+# ascending by `LogDate`, and each file's `LogFile` is a CSV with a header
+# row whose rows land as objects stamped with the file's event type and
+# log date; at most two hundred files are read a tick. The health check is
+# the token exchange.
+profile: salesforce
+maturity: alpha
+base_url: "{{ vars.login_url }}"
+shape: incremental
+auth:
+  accepts: [jwt_bearer, oauth2_client_credentials]
+  jwt_bearer:
+    token_url: "{{ base_url }}/services/oauth2/token"
+    claims:
+      iss: "{{ vars.client_id }}"
+      sub: "{{ vars.username }}"
+      aud: "{{ base_url }}"
+    ttl_secs: 300
+    expose: [instance_url]
+  oauth2_client_credentials:
+    token_url: "{{ base_url }}/services/oauth2/token"
+    expose: [instance_url]
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_secs
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+# A refusal is `[{"message": ..., "errorCode": ...}]`.
+error:
+  at: "/0/message"
+vars:
+  login_url: "https://login.salesforce.com"
+  api_version: v60.0
+  instance_url: ""
+  client_id: ""
+  username: ""
+  interval: Daily
+  event_types_soql: ""
+defaults:
+  path: "{{ vars.instance_url != '' ? vars.instance_url : auth.instance_url }}/services/data/{{ vars.api_version }}/query"
+  rows: { decoder: json_at, at: /records }
+  paginate: { strategy: request_path, from: "body:/nextRecordsUrl" }
+  max_pages: 50
+endpoints:
+  - unit: setup_audit_trail
+    query:
+      q: "SELECT Id, Action, Section, CreatedDate, Display, DelegateUser, CreatedBy.Username FROM SetupAuditTrail WHERE CreatedDate >= {{ window.start }} AND CreatedDate < {{ window.end }} ORDER BY CreatedDate ASC"
+  - unit: login_history
+    query:
+      q: "SELECT Id, UserId, LoginTime, LoginType, SourceIp, Status, Application, Browser, Platform, CountryIso, ApiType, TlsProtocol FROM LoginHistory WHERE LoginTime >= {{ window.start }} AND LoginTime < {{ window.end }} ORDER BY LoginTime ASC"
+  - unit: event_log_file
+    query:
+      q: "SELECT Id, EventType, LogDate, LogFileLength, Interval FROM EventLogFile WHERE LogDate >= {{ window.start }} AND LogDate < {{ window.end }} AND Interval = '{{ vars.interval }}'{{ vars.event_types_soql != '' ? ' AND EventType IN (' + vars.event_types_soql + ')' : '' }} ORDER BY LogDate ASC"
+    construct:
+      manifest:
+        item_request:
+          path: "{{ vars.instance_url != '' ? vars.instance_url : auth.instance_url }}/services/data/{{ vars.api_version }}/sobjects/EventLogFile/{{ item.Id }}/LogFile"
+          headers: { Accept: "*/*" }
+        rows: { decoder: csv, header: true }
+        max_items: 200
+        add_fields:
+          _dfe_fetcher_event_type: "{{ item.EventType }}"
+          _dfe_fetcher_log_date: "{{ item.LogDate }}"

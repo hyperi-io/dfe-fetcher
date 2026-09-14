@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` — fetch interval re-computed each cycle\n- `scheduler.jitter_percent` — jitter re-computed each cycle\n- `kafka.topic_suffix` — topic name suffix re-read on each delivery\n- `sources.*.filter` — CEL filter re-evaluated on each record\n- `cursor.default_window_hours` — lookback window re-read when no cursor exists\n\n**Requires pod restart:**\n- `output.*` — transport connections established at startup\n- `kafka.*` (except `topic_suffix`) — transport config bound at startup\n- `ingest.*` — HTTP server binds at startup, auth token resolved once\n- `extractors.*` — containers and Vector instances spawned at startup\n- `metrics.*` — metrics server binds at startup\n- `instance_id` — cursor key prefix set at startup\n- `cursor.directory` — cursor store created at startup\n- `sources.*.enabled` — source registration at startup\n- `sources.*.credential_secret` / `tenant_id` / `client_id` etc. — credentials resolved once\n- `scheduler.max_concurrent_fetches` — semaphore created at startup\n- `dlq.*` — DLQ created at startup\n- `buffer.*` — buffer manager created at startup",
+  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` -- fetch interval re-computed each cycle\n- `scheduler.jitter_percent` -- jitter re-computed each cycle\n- `kafka.topic_suffix` -- topic name suffix re-read on each delivery\n- `sources.*.filter` -- CEL filter re-evaluated on each record\n- `cursor.default_window_hours` -- lookback window re-read when no cursor exists\n\n**Requires pod restart:**\n- `output.*` -- transport connections established at startup\n- `kafka.*` (except `topic_suffix`) -- transport config bound at startup\n- `ingest.*` -- HTTP server binds at startup, auth token resolved once\n- `extractors.*` -- containers and Vector instances spawned at startup\n- `metrics.*` -- metrics server binds at startup\n- `instance_id` -- cursor key prefix set at startup\n- `cursor.directory` -- cursor store created at startup\n- `sources.*.enabled` -- source registration at startup\n- `sources.*.credential_secret` / `tenant_id` / `client_id` etc. -- credentials resolved once\n- `scheduler.max_concurrent_fetches` -- semaphore created at startup\n- `dlq.*` -- DLQ created at startup\n- `buffer.*` -- buffer manager created at startup",
   "type": "object",
   "properties": {
     "scheduler": {
@@ -152,7 +152,10 @@
           "services": [],
           "topic": "salesforce",
           "filter": null
-        }
+        },
+        "rest": {},
+        "db": {},
+        "file": {}
       }
     },
     "extractors": {
@@ -292,6 +295,34 @@
       "description": "Recursively unwrap double-serialised JSON string fields before delivery.\n\nWhen enabled (default), any string field whose value parses as a JSON\nobject or array is replaced with the parsed value. This makes fields\nlike AWS CloudTrail's `CloudTrailEvent` queryable as nested JSON in\ndownstream systems like ClickHouse.\n\nSet to `false` for sources that intentionally store JSON as strings.",
       "type": "boolean",
       "default": true
+    },
+    "accumulate": {
+      "description": "Batch bounds for framework sources: rows and bytes per flush, and how\nlong a partial batch waits. Overridable per source under\n`sources.rest.<id>.accumulate`.",
+      "$ref": "#/$defs/AccumulateConfig",
+      "default": {
+        "max_rows": 1000,
+        "max_bytes": 8388608,
+        "window_ms": 1000,
+        "in_flight": 1000
+      }
+    },
+    "oversize": {
+      "description": "When a framework row is too large to send, and how much of it the\ndead-letter copy keeps.",
+      "$ref": "#/$defs/OversizePolicy",
+      "default": {
+        "max_record_bytes": 921600,
+        "max_dlq_bytes": 65536
+      }
+    },
+    "self_regulation": {
+      "description": "The memory-pressure brake on framework sources: when the memory guard\ncrosses `pause_above` a source stops polling its provider until the\nbuffer drains below `resume_below`.",
+      "$ref": "#/$defs/SelfRegulationConfig",
+      "default": {
+        "enabled": true,
+        "pause_above": 0.8,
+        "resume_below": 0.65,
+        "max_hold_secs": 30
+      }
     }
   },
   "$defs": {
@@ -538,6 +569,30 @@
             "topic": "salesforce",
             "filter": null
           }
+        },
+        "rest": {
+          "description": "Declarative REST sources on the source framework, keyed by instance id.\n\nEach entry binds a profile (a shipped one by name, or written inline)\nto one deployment's identity: base URL, credential kind and refs,\ntopic, interval, per-unit narrowing. The id is the connection id: the\ncursor key, the metric and log label, and the `_source_fetcher` prefix.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RestInstance"
+          },
+          "default": {}
+        },
+        "db": {
+          "description": "Database sources on the source framework, keyed by instance id.\n\nEach entry names an engine (`odbc` with a dialect, or `clickhouse`),\nits connection string as a credential spec, the block-cursor bounds,\nand the stores: each a query dumped whole into the snapshot envelope\nor tailed by keyset. The id is the connection id, as for `rest`. An\nengine this binary was built without is refused at load.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/DbInstance"
+          },
+          "default": {}
+        },
+        "file": {
+          "description": "File sources on the source framework, keyed by instance id.\n\nEach entry names units: a `dump` (globs of NDJSON, JSON-array or CSV\nfiles, gzip by magic, each read once into the snapshot envelope) or\na `tail` (files followed through rotation, lines committed after\nacknowledgement). The id is the connection id, as for `rest`. A tail\non a binary built without the tailer is refused at load.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/FileInstance"
+          },
+          "default": {}
         }
       }
     },
@@ -582,7 +637,7 @@
           "default": null
         },
         "credential_secret": {
-          "description": "Secret source for credentials.\nFormat: \"provider:path:key\" (e.g., \"vault:secret/aws:credentials\")",
+          "description": "Secret source for credentials.\nFormat: `vault:<mount>/data/<path>:<key>` (e.g. `vault:kv/data/aws:credentials`);\nthe literal `data` segment names the KV v2 mount.",
           "type": [
             "string",
             "null"
@@ -838,7 +893,7 @@
       "type": "object",
       "properties": {
         "name": {
-          "description": "Service name (e.g., \"activity_log\", \"defender\", \"sentinel\", \"entra_id\").",
+          "description": "Service name (e.g., \"activity_log\", \"defender\", \"sentinel\",\n\"entra_signins\", \"entra_directory_audits\", \"entra_provisioning\",\n\"log_analytics\").",
           "type": "string"
         },
         "config": {
@@ -1019,6 +1074,13 @@
             "null"
           ]
         },
+        "publisher_identifier": {
+          "description": "The `PublisherIdentifier` every Management Activity call carries,\nkeying this deployment's OMAP rate budget; the shared default unless\nset, and an operator who set `M365_PUBLISHER_IDENTIFIER` in the\nenvironment must move it here, as the environment is no longer read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "filter": {
           "description": "CEL filter expression applied to fetched records.",
           "type": [
@@ -1041,7 +1103,7 @@
       "type": "object",
       "properties": {
         "name": {
-          "description": "Service name (e.g., \"audit_log\", \"message_trace\", \"dlp\", \"alerts\").",
+          "description": "Service name (e.g., \"audit_log\", \"exchange_audit\", \"dlp\", \"alerts\").",
           "type": "string"
         },
         "config": {
@@ -1220,7 +1282,7 @@
       "type": "object",
       "properties": {
         "name": {
-          "description": "Service name (e.g., \"audit_logs\", \"scc\", \"cloud_logging\").",
+          "description": "Service name (e.g., \"admin_activity\", \"data_access\", \"system_event\",\n\"policy_denied\", \"vpc_flow_logs\", \"dns_queries\", \"storage_access\",\n\"scc\", \"cloud_logging\").",
           "type": "string"
         },
         "config": {
@@ -1324,7 +1386,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the token (e.g. `vault:secret/github:token`).",
+          "description": "Secret source spec for the token (e.g. `vault:kv/data/github:token`).",
           "type": [
             "string",
             "null"
@@ -1485,7 +1547,7 @@
           "default": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the token (e.g. `vault:secret/okta:token`).",
+          "description": "Secret source spec for the token (e.g. `vault:kv/data/okta:token`).",
           "type": [
             "string",
             "null"
@@ -1641,7 +1703,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the token (e.g. `vault:secret/cloudflare:token`).",
+          "description": "Secret source spec for the token (e.g. `vault:kv/data/cloudflare:token`).",
           "type": [
             "string",
             "null"
@@ -1783,7 +1845,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the token\n(e.g. `vault:secret/onepassword:events_token`).",
+          "description": "Secret source spec for the token\n(e.g. `vault:kv/data/onepassword:events_token`).",
           "type": [
             "string",
             "null"
@@ -1932,7 +1994,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the client_secret\n(e.g. `vault:secret/crowdstrike:client_secret`).",
+          "description": "Secret source spec for the client_secret\n(e.g. `vault:kv/data/crowdstrike:client_secret`).",
           "type": [
             "string",
             "null"
@@ -1982,11 +2044,11 @@
       "type": "object",
       "properties": {
         "name": {
-          "description": "Service name (currently only \"detections\" - returns enriched\nEPP detection summaries).",
+          "description": "Service name (currently only \"alerts\" - returns enriched EPP alert\nentities from the Alerts API v2).",
           "type": "string"
         },
         "config": {
-          "description": "Service-specific configuration. Recognised keys for `detections`:\n- `limit`: query page size (default 100, max 9999).\n- `filter`: Falcon Query Language clause appended to the auto-built\n  `created_timestamp:>'<start>'+created_timestamp:<'<end>'`.",
+          "description": "Service-specific configuration. Recognised keys for `alerts`:\n- `limit`: query page size (default 100, max 1000).\n- `filter`: Falcon Query Language clause appended to the auto-built\n  `created_timestamp:>'<start>'+created_timestamp:<'<end>'`.",
           "type": "object",
           "additionalProperties": true,
           "default": {}
@@ -2067,7 +2129,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the token\n(e.g. `vault:secret/slack:audit_token`).",
+          "description": "Secret source spec for the token\n(e.g. `vault:kv/data/slack:audit_token`).",
           "type": [
             "string",
             "null"
@@ -2209,7 +2271,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the client_secret\n(e.g. `vault:secret/bitwarden:client_secret`).",
+          "description": "Secret source spec for the client_secret\n(e.g. `vault:kv/data/bitwarden:client_secret`).",
           "type": [
             "string",
             "null"
@@ -2379,7 +2441,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec for the secret_key\n(e.g. `vault:secret/duo:skey`).",
+          "description": "Secret source spec for the secret_key\n(e.g. `vault:kv/data/duo:skey`).",
           "type": [
             "string",
             "null"
@@ -2670,7 +2732,7 @@
           ]
         },
         "credential_secret": {
-          "description": "Secret source spec for the SA key\n(e.g. `vault:secret/google_workspace:sa_key`).",
+          "description": "Secret source spec for the SA key\n(e.g. `vault:kv/data/google_workspace:sa_key`).",
           "type": [
             "string",
             "null"
@@ -2843,7 +2905,7 @@
           ]
         },
         "credential_secret": {
-          "description": "Secret source spec for the SA key\n(e.g. `vault:secret/gcp-pubsub:sa_key`).",
+          "description": "Secret source spec for the SA key\n(e.g. `vault:kv/data/gcp-pubsub:sa_key`).",
           "type": [
             "string",
             "null"
@@ -3289,7 +3351,7 @@
           ]
         },
         "private_key_secret": {
-          "description": "Secret source spec resolving to the RSA private key PEM\n(e.g. `vault:secret/salesforce:private_key`). Takes precedence over\n`private_key` when set. JWT-bearer flow only.",
+          "description": "Secret source spec resolving to the RSA private key PEM\n(e.g. `vault:kv/data/salesforce:private_key`). Takes precedence over\n`private_key` when set. JWT-bearer flow only.",
           "type": [
             "string",
             "null"
@@ -3305,7 +3367,7 @@
           "writeOnly": true
         },
         "credential_secret": {
-          "description": "Secret source spec resolving to the consumer secret\n(e.g. `vault:secret/salesforce:client_secret`). Takes precedence\nover `client_secret` when set. client-credentials flow only.",
+          "description": "Secret source spec resolving to the consumer secret\n(e.g. `vault:kv/data/salesforce:client_secret`). Takes precedence\nover `client_secret` when set. client-credentials flow only.",
           "type": [
             "string",
             "null"
@@ -3463,6 +3525,2601 @@
         "id"
       ]
     },
+    "RestInstance": {
+      "description": "One deployment of a profile: identity, topic, interval, narrowing.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether the instance runs.",
+          "type": "boolean",
+          "default": true
+        },
+        "profile": {
+          "description": "The shape.",
+          "$ref": "#/$defs/ProfileRef",
+          "default": ""
+        },
+        "interval_secs": {
+          "description": "Fetch interval; the scheduler default when unset.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "topic": {
+          "description": "Topic base; dump units land on `<topic>-<unit>`.",
+          "type": "string",
+          "default": ""
+        },
+        "filter": {
+          "description": "CEL keep-filter over each row, hot-reloaded.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "auth": {
+          "description": "Credential kind and refs.",
+          "$ref": "#/$defs/InstanceAuth",
+          "default": {
+            "mode": "none",
+            "token": null,
+            "key": null,
+            "username": null,
+            "password": null,
+            "client_id": null,
+            "client_secret": null,
+            "scope": null,
+            "integration_key": null,
+            "secret_key": null,
+            "service_account_key": null,
+            "service_account_key_file": null,
+            "private_key": null,
+            "access_key_id": null,
+            "secret_access_key": null,
+            "credentials_json": null,
+            "assume_role_arn": null
+          }
+        },
+        "vars": {
+          "description": "Values the profile's templates read as `vars.*`.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "units": {
+          "description": "Per-unit narrowing, keyed by unit name.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/UnitOverride"
+          },
+          "default": {}
+        },
+        "accumulate": {
+          "description": "Batch bounds for this instance; the deployment's when unset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccumulateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProfileRef": {
+      "description": "A shipped profile by name, or a one-off profile written inline.",
+      "anyOf": [
+        {
+          "description": "Registry key of a shipped profile.",
+          "type": "string"
+        },
+        {
+          "description": "The profile itself.",
+          "$ref": "#/$defs/RestProfile"
+        }
+      ]
+    },
+    "RestProfile": {
+      "description": "A declarative REST profile: the shape of an API, with no identity.",
+      "type": "object",
+      "properties": {
+        "profile": {
+          "description": "Registry key for a shipped profile; an inline profile may leave it empty.",
+          "type": "string",
+          "default": ""
+        },
+        "maturity": {
+          "description": "Release maturity of sources built from this profile.",
+          "$ref": "#/$defs/SourceMaturity",
+          "default": "alpha"
+        },
+        "base_url": {
+          "description": "Base URL template; must reference a variable, never a literal URL.",
+          "type": "string",
+          "default": ""
+        },
+        "shape": {
+          "description": "Default shape of every endpoint.",
+          "$ref": "#/$defs/UnitShape",
+          "default": "incremental"
+        },
+        "auth": {
+          "description": "Accepted auth modes and their shapes.",
+          "$ref": "#/$defs/AuthSpec",
+          "default": {
+            "accepts": [
+              "none"
+            ],
+            "api_key": {
+              "header": null,
+              "query": null,
+              "prefix": ""
+            },
+            "oauth2_client_credentials": {
+              "token_url": "",
+              "scope": "",
+              "expires_in_fallback_secs": 3600,
+              "early_refresh_secs": 60,
+              "expose": []
+            },
+            "jwt_bearer": {
+              "token_url": "",
+              "claims": {},
+              "ttl_secs": 3600,
+              "expires_in_fallback_secs": 3600,
+              "early_refresh_secs": 60,
+              "expose": []
+            },
+            "gce_metadata": {
+              "url": "",
+              "expires_in_fallback_secs": 3600,
+              "early_refresh_secs": 60
+            },
+            "sigv4": {
+              "service": "",
+              "region": ""
+            }
+          }
+        },
+        "headers": {
+          "description": "Header templates on every request.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "retry": {
+          "description": "Retry policy.",
+          "$ref": "#/$defs/RetrySpec",
+          "default": {
+            "max_retries": 3,
+            "min_backoff_ms": 500,
+            "max_backoff_ms": 30000,
+            "retry_on": [
+              408,
+              429,
+              "5xx"
+            ],
+            "never_retry": [
+              401,
+              403
+            ],
+            "retry_after_header": true,
+            "retry_non_idempotent": false
+          }
+        },
+        "error": {
+          "description": "Where a non-2xx body keeps its error text.",
+          "$ref": "#/$defs/ErrorSpec",
+          "default": {
+            "at": null
+          }
+        },
+        "quota": {
+          "description": "Quota headers surfaced as gauges.",
+          "$ref": "#/$defs/QuotaSpec",
+          "default": {
+            "headers": {}
+          }
+        },
+        "window": {
+          "description": "Window rendering and chunking.",
+          "$ref": "#/$defs/WindowSpec",
+          "default": {
+            "format": "rfc3339_secs",
+            "step": null,
+            "lookback": "3600s"
+          }
+        },
+        "probe": {
+          "description": "The health-check request, when the API has a cheap one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProbeSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "defaults": {
+          "description": "Endpoint defaults.",
+          "$ref": "#/$defs/EndpointDefaults",
+          "default": {
+            "method": null,
+            "path": null,
+            "query": {},
+            "headers": {},
+            "body": null,
+            "rows": null,
+            "paginate": null,
+            "max_pages": null,
+            "max_page_bytes": null,
+            "prelude": null,
+            "construct": null
+          }
+        },
+        "endpoints": {
+          "description": "The units.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EndpointSpec"
+          },
+          "default": []
+        },
+        "vars": {
+          "description": "Default `vars` an instance may override.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceMaturity": {
+      "description": "Release-maturity stage of a source, used for runtime warnings and docs.\n\nNew sources start at `Alpha` until explicitly promoted; the orchestrator\nwarns at startup for every enabled non-stable source.",
+      "oneOf": [
+        {
+          "description": "Code-complete, not production-validated.",
+          "type": "string",
+          "const": "alpha"
+        },
+        {
+          "description": "Live-validated, hardening in progress.",
+          "type": "string",
+          "const": "beta"
+        },
+        {
+          "description": "Production-ready.",
+          "type": "string",
+          "const": "stable"
+        }
+      ]
+    },
+    "UnitShape": {
+      "description": "What a unit's rows are: events in a window, or the current state of a store.",
+      "oneOf": [
+        {
+          "description": "Rows are events inside the scheduler's window.",
+          "type": "string",
+          "const": "incremental"
+        },
+        {
+          "description": "Rows are the whole store; the driver wraps them in the snapshot envelope.",
+          "type": "string",
+          "const": "dump"
+        }
+      ]
+    },
+    "AuthSpec": {
+      "description": "What the API accepts and the shape of each mode; identity lives on the instance.",
+      "type": "object",
+      "properties": {
+        "accepts": {
+          "description": "Modes an instance may pick.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuthKind"
+          },
+          "default": [
+            "none"
+          ]
+        },
+        "api_key": {
+          "description": "Shape of the `api_key` mode.",
+          "$ref": "#/$defs/ApiKeySpec",
+          "default": {
+            "header": null,
+            "query": null,
+            "prefix": ""
+          }
+        },
+        "oauth2_client_credentials": {
+          "description": "Shape of the `oauth2_client_credentials` mode.",
+          "$ref": "#/$defs/OAuth2Spec",
+          "default": {
+            "token_url": "",
+            "scope": "",
+            "expires_in_fallback_secs": 3600,
+            "early_refresh_secs": 60,
+            "expose": []
+          }
+        },
+        "jwt_bearer": {
+          "description": "Shape of the `jwt_bearer` mode.",
+          "$ref": "#/$defs/JwtBearerSpec",
+          "default": {
+            "token_url": "",
+            "claims": {},
+            "ttl_secs": 3600,
+            "expires_in_fallback_secs": 3600,
+            "early_refresh_secs": 60,
+            "expose": []
+          }
+        },
+        "gce_metadata": {
+          "description": "Shape of the `gce_metadata` mode.",
+          "$ref": "#/$defs/GceMetadataSpec",
+          "default": {
+            "url": "",
+            "expires_in_fallback_secs": 3600,
+            "early_refresh_secs": 60
+          }
+        },
+        "sigv4": {
+          "description": "Shape of the `sigv4` mode.",
+          "$ref": "#/$defs/SigV4Spec",
+          "default": {
+            "service": "",
+            "region": ""
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuthKind": {
+      "description": "The auth modes this build implements; a profile's `accepts` and an\ninstance's `mode` draw from the same vocabulary.",
+      "oneOf": [
+        {
+          "description": "No credential on the request.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "`Authorization: Bearer <token>` with a static token.",
+          "type": "string",
+          "const": "bearer"
+        },
+        {
+          "description": "A key in a named header (with optional prefix) or query parameter.",
+          "type": "string",
+          "const": "api_key"
+        },
+        {
+          "description": "HTTP Basic.",
+          "type": "string",
+          "const": "basic"
+        },
+        {
+          "description": "OAuth2 client-credentials exchange, cached until shortly before expiry.",
+          "type": "string",
+          "const": "oauth2_client_credentials"
+        },
+        {
+          "description": "Duo Admin API signing: HMAC-SHA1 over the request's date, method,\nhost, path and sorted query, sent as a Basic credential of\n`integration_key:signature` with the same `Date` header.",
+          "type": "string",
+          "const": "duo_hmac"
+        },
+        {
+          "description": "OAuth2 JWT-bearer grant (RFC 7523): an RS256 assertion signed with the\ninstance's private key, exchanged for a cached access token.",
+          "type": "string",
+          "const": "jwt_bearer"
+        },
+        {
+          "description": "The GCE metadata server's token for the workload's service account,\ncached until shortly before expiry.",
+          "type": "string",
+          "const": "gce_metadata"
+        },
+        {
+          "description": "AWS Signature Version 4 over static keys: every request is signed\nfor the service and region the profile's templates name, with the\nbody's SHA-256 as the payload hash.",
+          "type": "string",
+          "const": "sigv4"
+        }
+      ]
+    },
+    "ApiKeySpec": {
+      "description": "Where an API key goes.",
+      "type": "object",
+      "properties": {
+        "header": {
+          "description": "Header name carrying the key.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "query": {
+          "description": "Query parameter carrying the key.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "prefix": {
+          "description": "Text put in front of the key in a header, e.g. `SSWS `.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "OAuth2Spec": {
+      "description": "The OAuth2 client-credentials exchange as the API shapes it.",
+      "type": "object",
+      "properties": {
+        "token_url": {
+          "description": "Token endpoint, a template (may use `base_url`).",
+          "type": "string",
+          "default": ""
+        },
+        "scope": {
+          "description": "Scope sent with the exchange; omitted from the form when empty.",
+          "type": "string",
+          "default": ""
+        },
+        "expires_in_fallback_secs": {
+          "description": "Lifetime assumed when the token response carries no `expires_in`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 3600
+        },
+        "early_refresh_secs": {
+          "description": "How long before expiry the token is refreshed.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 60
+        },
+        "expose": {
+          "description": "Top-level fields of the token response the templates read as\n`auth.<name>` (Salesforce's `instance_url`); an allow-list, so a\nrefresh or id token the response also carries never reaches a URL.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "JwtBearerSpec": {
+      "description": "The JWT-bearer grant as the API shapes it: where the assertion is\nexchanged, the claims it carries and how long it is valid.\n\nEvery claim value is a template over the instance's `vars` and `auth.*`,\nwhere the authenticator exposes `client_email` and `token_uri` from a\nservice-account key and `token_url` once rendered; a claim that renders\nempty is left out (an optional `sub`). `iat` and `exp` are set from\n`ttl_secs` on every assertion.",
+      "type": "object",
+      "properties": {
+        "token_url": {
+          "description": "Token endpoint, a template (may read `auth.token_uri` from the key).",
+          "type": "string",
+          "default": ""
+        },
+        "claims": {
+          "description": "Claim templates: `iss`, `scope`, `aud`, an optional `sub`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "ttl_secs": {
+          "description": "Assertion lifetime, `exp - iat`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 3600
+        },
+        "expires_in_fallback_secs": {
+          "description": "Lifetime assumed when the token response carries no `expires_in`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 3600
+        },
+        "early_refresh_secs": {
+          "description": "How long before expiry the token is refreshed.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 60
+        },
+        "expose": {
+          "description": "Top-level fields of the token response the templates read as\n`auth.<name>`, an allow-list as on `oauth2_client_credentials`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "GceMetadataSpec": {
+      "description": "The GCE metadata token endpoint as the profile names it.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "The service account's token URL on the metadata server, a template.",
+          "type": "string",
+          "default": ""
+        },
+        "expires_in_fallback_secs": {
+          "description": "Lifetime assumed when the response carries no `expires_in`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 3600
+        },
+        "early_refresh_secs": {
+          "description": "How long before expiry the token is refreshed.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 60
+        }
+      },
+      "additionalProperties": false
+    },
+    "SigV4Spec": {
+      "description": "The SigV4 signing scope as the profile names it: both are templates\nrendered per request from the unit's context, so a profile whose units\nare different AWS services (and one region-locked unit) varies them with\n`endpoints[].vars`.",
+      "type": "object",
+      "properties": {
+        "service": {
+          "description": "The service code of the credential scope (`cloudtrail`, `logs`,\n`monitoring`), a template.",
+          "type": "string",
+          "default": ""
+        },
+        "region": {
+          "description": "The region of the credential scope, a template.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "RetrySpec": {
+      "description": "Retry policy for one profile.",
+      "type": "object",
+      "properties": {
+        "max_retries": {
+          "description": "Attempts after the first.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 3
+        },
+        "min_backoff_ms": {
+          "description": "First backoff.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 500
+        },
+        "max_backoff_ms": {
+          "description": "Backoff ceiling.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 30000
+        },
+        "retry_on": {
+          "description": "Statuses that are retried.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StatusMatch"
+          },
+          "default": [
+            408,
+            429,
+            "5xx"
+          ]
+        },
+        "never_retry": {
+          "description": "Statuses that are never retried, whatever `retry_on` says.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "default": [
+            401,
+            403
+          ]
+        },
+        "retry_after_header": {
+          "description": "Honour `Retry-After` on a retried response.",
+          "type": "boolean",
+          "default": true
+        },
+        "retry_non_idempotent": {
+          "description": "Retry POST as well as GET; off unless the endpoint dedupes.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "StatusMatch": {
+      "description": "An HTTP status code (100-599) or a class string such as \"5xx\"",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        {
+          "type": "string",
+          "pattern": "^[1-5]xx$"
+        }
+      ]
+    },
+    "ErrorSpec": {
+      "description": "Where the provider's error text lives in a non-2xx body.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "JSON pointer to the error text; the whole body is used when unset.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuotaSpec": {
+      "description": "Provider quota headers surfaced as gauges.",
+      "type": "object",
+      "properties": {
+        "headers": {
+          "description": "Gauge name suffix -> response header name.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "WindowSpec": {
+      "description": "How the scheduler's window is written into requests and chunked.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "How `window.start` and `window.end` are rendered.",
+          "$ref": "#/$defs/WindowFormat",
+          "default": "rfc3339_secs"
+        },
+        "step": {
+          "description": "Split the window into steps of at most this length, one page sequence each.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurationText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lookback": {
+          "description": "Window used when the scheduler passes none.",
+          "$ref": "#/$defs/DurationText",
+          "default": "3600s"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WindowFormat": {
+      "description": "rfc3339_secs | rfc3339_millis | epoch_secs | epoch_millis | strftime:<pattern>",
+      "type": "string"
+    },
+    "DurationText": {
+      "description": "A duration such as 90s, 15m, 24h or 2d",
+      "type": "string",
+      "pattern": "^[0-9]+[smhd]$"
+    },
+    "ProbeSpec": {
+      "description": "The request a health check sends: the API's cheapest authenticated call.\n\nWithout one the health check only resolves the credential (and mints a\ntoken for an OAuth2 instance); with one it also proves the provider\nanswers that identity.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "description": "GET or POST.",
+          "$ref": "#/$defs/Method",
+          "default": "GET"
+        },
+        "path": {
+          "description": "Path template appended to `base_url`.",
+          "type": "string",
+          "default": ""
+        },
+        "query": {
+          "description": "Query parameter templates; an empty rendering is omitted.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "fail_when": {
+          "description": "CEL over the 2xx body; true fails the probe with the text at\n`error.at` (an API that answers a bad credential inside a 200).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Method": {
+      "description": "HTTP method of an endpoint.",
+      "oneOf": [
+        {
+          "description": "GET, idempotent, retried by default.",
+          "type": "string",
+          "const": "GET"
+        },
+        {
+          "description": "POST, retried only with `retry.retry_non_idempotent`.",
+          "type": "string",
+          "const": "POST"
+        }
+      ]
+    },
+    "EndpointDefaults": {
+      "description": "Values every endpoint inherits unless it sets its own.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "description": "HTTP method of every endpoint that sets none.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Method"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "path": {
+          "description": "Path template of every endpoint that sets none; `{{ unit.name }}` is\nhow one template serves many units.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "query": {
+          "description": "Query parameters merged under each endpoint's own.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "headers": {
+          "description": "Headers merged under each endpoint's own.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "body": {
+          "description": "Body of every POST endpoint that sets none; a GET never inherits it.",
+          "default": null
+        },
+        "rows": {
+          "description": "Row framing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "paginate": {
+          "description": "Pagination.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PaginateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "max_pages": {
+          "description": "Page ceiling per tick.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "max_page_bytes": {
+          "description": "Bytes a page-bounded decoder may buffer.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "prelude": {
+          "description": "Prelude of every endpoint that sets none; an endpoint's own\n`prelude: []` opts out.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/LookupRequest"
+          },
+          "default": null
+        },
+        "construct": {
+          "description": "Construct of every endpoint that sets none, replaced whole by an\nendpoint's own; an endpoint's own `construct: {}` opts out.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConstructSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "RowsSpec": {
+      "description": "Where the rows are in a response.",
+      "type": "object",
+      "properties": {
+        "decoder": {
+          "description": "The framing.",
+          "$ref": "#/$defs/DecoderKind",
+          "default": "json_array"
+        },
+        "at": {
+          "description": "JSON pointer to the row array (`json_at` only).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "gzip": {
+          "description": "The body is a gzip member sequence to inflate before framing (a\n`Content-Encoding: gzip` response is inflated by the client regardless).",
+          "type": "boolean",
+          "default": false
+        },
+        "header": {
+          "description": "The first CSV record is a header naming the columns.",
+          "type": "boolean",
+          "default": true
+        },
+        "quoted": {
+          "description": "Each framed row is a JSON string whose content is the row (AWS\nConfig's `Results`); it is unquoted before it is a row.",
+          "type": "boolean",
+          "default": false
+        },
+        "builder": {
+          "description": "A transform each framed row goes through before it is a row.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowBuilderKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "content": {
+          "description": "What the rows are made of, `json` or `binary`, as a template rendered\nonce when the unit is bound (so a builder whose output a var decides\ncan say `{{ vars.output_format == 'otlp' ? 'binary' : 'json' }}`); a\nbinary row is emitted verbatim, never enriched, filtered, routed or\nunwrapped, and a dump unit cannot be binary.",
+          "type": "string",
+          "default": "json"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DecoderKind": {
+      "description": "Framing of a response body into rows.",
+      "oneOf": [
+        {
+          "description": "A top-level JSON array, streamed element by element.",
+          "type": "string",
+          "const": "json_array"
+        },
+        {
+          "description": "One JSON object per line, streamed; a missing trailing newline and an\nempty body are both fine.",
+          "type": "string",
+          "const": "ndjson"
+        },
+        {
+          "description": "A wrapped page read whole, rows at the `at` pointer.",
+          "type": "string",
+          "const": "json_at"
+        },
+        {
+          "description": "The whole body is one row.",
+          "type": "string",
+          "const": "document"
+        },
+        {
+          "description": "A whole JSON document read whole: a top-level array is one row per\nelement, anything else is one row (an object export that may be\neither).",
+          "type": "string",
+          "const": "json"
+        },
+        {
+          "description": "Plain text, one row per line wrapped as `{\"line\": ...}`.",
+          "type": "string",
+          "const": "lines"
+        },
+        {
+          "description": "CSV with an optional header row, one object per record.",
+          "type": "string",
+          "const": "csv"
+        }
+      ]
+    },
+    "RowBuilderKind": {
+      "description": "A row builder: the shape transform no decoder expresses, applied to each\nframed row and yielding the rows it holds, or (a folding builder) to the\nrows of one key of a unit, yielding the one row they fold into.",
+      "oneOf": [
+        {
+          "description": "A columnar table (`{columns: [{name}], rows: [[...]]}`, the Log\nAnalytics result shape) becomes one object per row keyed by column.",
+          "type": "string",
+          "const": "columnar_table"
+        },
+        {
+          "description": "A CloudWatch `GetMetricData` response joined with the metric\ndescriptors the lookup asked for: one JSON row per datapoint, or one\nOTLP protobuf per response when `vars.output_format` is `otlp`.",
+          "type": "string",
+          "const": "cloudwatch_metrics"
+        },
+        {
+          "description": "A fold: the `.info` documents of one Go module's versions become the\none row per module the proxy source emits (`versions` in list order,\n`version_info` keyed by version).",
+          "type": "string",
+          "const": "go_module_aggregate"
+        },
+        {
+          "description": "A row that is not a JSON object is wrapped as one: a JSON scalar or\narray under `payload`, text that is not JSON under\n`_dfe_fetcher_raw_line` with the parse error beside it.",
+          "type": "string",
+          "const": "wrap_non_object"
+        },
+        {
+          "description": "A Pub/Sub `receivedMessages[]` entry becomes the record its base64\n`message.data` holds (JSON as itself, anything else as `{\"data\"}`),\nwith the message envelope under `_dfe_fetcher_pubsub`.",
+          "type": "string",
+          "const": "pubsub_message"
+        }
+      ]
+    },
+    "PaginateSpec": {
+      "description": "Pagination as data.",
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "description": "The strategy.",
+          "$ref": "#/$defs/PagerStrategy",
+          "default": "none"
+        },
+        "from": {
+          "description": "Where the token or URL comes from: `body:/pointer` or `header:Name`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "into": {
+          "description": "Where the token goes on the next request: `query:name`, `body:/pointer`\n(written into the rendered body), `body_replace:/pointer` (the next\nbody is the token and nothing else) or `path`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "stop_when": {
+          "description": "CEL over `body` and `headers`; true stops after this page.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "total_pages_at": {
+          "description": "JSON pointer to the total page count (`page_number`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "total_at": {
+          "description": "JSON pointer to the total row count (`offset`).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "page_size": {
+          "description": "Rows per page (`offset`): a shorter page is the last. Optional when\n`total_at` is set; the offset itself advances by the rows received.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "param": {
+          "description": "Query parameter carrying the page number or offset.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "start": {
+          "description": "First page number (`page_number`) or first offset (`offset`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "base": {
+          "description": "Base URL a relative `request_path` value is resolved against.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "PagerStrategy": {
+      "description": "How the next page is found.",
+      "oneOf": [
+        {
+          "description": "One page.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "RFC 5988 `Link: <url>; rel=\"next\"`.",
+          "type": "string",
+          "const": "link_header"
+        },
+        {
+          "description": "A token read from the body or a header, injected into the next request.",
+          "type": "string",
+          "const": "cursor"
+        },
+        {
+          "description": "A page number parameter, optionally bounded by a total in the body.",
+          "type": "string",
+          "const": "page_number"
+        },
+        {
+          "description": "An offset parameter advanced by the page size, optionally bounded by a total.",
+          "type": "string",
+          "const": "offset"
+        },
+        {
+          "description": "The next request's full URL read from the body or a header.",
+          "type": "string",
+          "const": "request_path"
+        }
+      ]
+    },
+    "LookupRequest": {
+      "description": "A secondary request of a unit: what a lookup sends for one batch of ids\n(`{{ ids }}` is the batch), what a keyset sends for its keys, what a\nmanifest sends per item (`{{ item }}`), or one prelude step.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "description": "GET or POST; unset takes the construct's default (POST for a lookup\nbatch, a keyset request and a prelude step, GET for a manifest item).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Method"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "path": {
+          "description": "Path template appended to `base_url`, or a whole URL when it renders\none (a manifest item's `contentUri`).",
+          "type": "string",
+          "default": ""
+        },
+        "query": {
+          "description": "Query parameter templates.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "headers": {
+          "description": "Header templates.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "body": {
+          "description": "JSON body; a leaf that is one expression keeps its type, so\n`\"{{ ids }}\"` is the id list.",
+          "default": null
+        },
+        "ignore_status": {
+          "description": "Non-2xx statuses that are not failures: a lookup or keyset answers\nan empty page, a manifest item yields no rows, a prelude step\ncarries on (the 400 an already-enabled OMAP subscription answers).",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "default": []
+        },
+        "timeout_secs": {
+          "description": "Total seconds one of these requests may take, body included; only\nfor a request whose rows are read whole (a streaming decoder is\nbounded per read by the client, never in total).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConstructSpec": {
+      "description": "A shape within the shape: how one unit's requests are multiplied. A\nunit takes at most one of `lookup`, `manifest` and `queue`, the first\ntwo being the second request its pages point at and the third the\nacknowledgement its rows earn.",
+      "type": "object",
+      "properties": {
+        "keyset": {
+          "description": "One page sequence per key of a list.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeysetSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lookup": {
+          "description": "A second request per batch of ids the pages yield.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LookupSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "manifest": {
+          "description": "A second request per item the pages yield, whose rows are the\nunit's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ManifestSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "queue": {
+          "description": "The pages are pulled messages acknowledged after delivery.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QueueSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeysetSpec": {
+      "description": "One request sequence per key of a list: the unit's templates and its\n`add_fields` read the current key as `{{ key }}`. The keys come from a\ntemplate over the instance's vars (`from`) or from one request the unit\nsends first (`request` with the keys at `keys_at`, GuardDuty's detector\nids).",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "A template rendering the list of keys, e.g. `{{ vars.packages }}`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "request": {
+          "description": "The request whose response carries the keys.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LookupRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "keys_at": {
+          "description": "JSON pointer to the key array in that response.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "LookupSpec": {
+      "description": "A two-stage unit: the endpoint's pages carry ids, and the rows are the\nentities a second request returns for each batch of them. A batch's\nresponse may page like a first-stage one (`paginate`, `max_pages`).",
+      "type": "object",
+      "properties": {
+        "id_at": {
+          "description": "JSON pointer into each first-stage row to its id; unset when the row\nis the id itself (a bare string in the page's array).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "batch": {
+          "description": "Ids per lookup request.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1000
+        },
+        "request": {
+          "description": "The lookup request.",
+          "$ref": "#/$defs/LookupRequest",
+          "default": {
+            "method": null,
+            "path": "",
+            "query": {},
+            "headers": {},
+            "body": null,
+            "ignore_status": [],
+            "timeout_secs": null
+          }
+        },
+        "rows": {
+          "description": "Row framing of the lookup response.",
+          "$ref": "#/$defs/RowsSpec",
+          "default": {
+            "decoder": "json_array",
+            "at": null,
+            "gzip": false,
+            "header": true,
+            "quoted": false,
+            "builder": null,
+            "content": "json"
+          }
+        },
+        "paginate": {
+          "description": "Pagination of one batch's response; one page when unset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PaginateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "max_pages": {
+          "description": "Page ceiling per batch.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ManifestSpec": {
+      "description": "A manifest: the endpoint's rows are POINTERS to content, and the rows\nof the unit are what one request per pointer returns (the OMAP content\nlist, whose items name blobs of records). Each framed row of the pages\nis an item the templates read as `{{ item }}`. With `key` and\n`position` set, every row of an item carries an item checkpoint mark\nthat the driver commits once the row is acknowledged.",
+      "type": "object",
+      "properties": {
+        "item_request": {
+          "description": "The request sent per item; GET by default.",
+          "$ref": "#/$defs/LookupRequest",
+          "default": {
+            "method": null,
+            "path": "",
+            "query": {},
+            "headers": {},
+            "body": null,
+            "ignore_status": [],
+            "timeout_secs": null
+          }
+        },
+        "rows": {
+          "description": "Row framing of an item's response.",
+          "$ref": "#/$defs/RowsSpec",
+          "default": {
+            "decoder": "json_array",
+            "at": null,
+            "gzip": false,
+            "header": true,
+            "quoted": false,
+            "builder": null,
+            "content": "json"
+          }
+        },
+        "key": {
+          "description": "Template of the item's identity for its checkpoint mark.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "position": {
+          "description": "Template of the item's RFC 3339 position in the listing order for\nits checkpoint mark; set together with `key`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "max_items": {
+          "description": "Items fetched per key per tick; the rest wait for the next tick\n(their checkpoint has not moved past them).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "add_fields": {
+          "description": "Fields added to every row of an item, rendered per item: a value is\na template, or a JSON object or array whose string leaves are\ntemplates, and may read `item`.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "QueueSpec": {
+      "description": "A queue: the unit's pages are pulled messages, each row carrying the\nack id at `ack_at`, and `ack_request` is sent for each batch of ids the\ndriver hands back once the batch is delivered (`{{ ids }}` is the\nbatch), so a message is acknowledged only after it is on the wire.",
+      "type": "object",
+      "properties": {
+        "ack_at": {
+          "description": "JSON pointer into each framed row to its ack id.",
+          "type": "string",
+          "default": ""
+        },
+        "ack_request": {
+          "description": "The acknowledgement request; POST by default, `ids` is the batch.",
+          "$ref": "#/$defs/LookupRequest",
+          "default": {
+            "method": null,
+            "path": "",
+            "query": {},
+            "headers": {},
+            "body": null,
+            "ignore_status": [],
+            "timeout_secs": null
+          }
+        },
+        "ack_batch": {
+          "description": "Ids per acknowledgement request.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 500
+        }
+      },
+      "additionalProperties": false
+    },
+    "EndpointSpec": {
+      "description": "One endpoint of a profile: one unit of the source.",
+      "type": "object",
+      "properties": {
+        "unit": {
+          "description": "Unit name: `_source_fetcher` suffix, dump `store` suffix, topic suffix.",
+          "type": "string",
+          "default": ""
+        },
+        "shape": {
+          "description": "Overrides the profile's shape for this unit.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnitShape"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "base_url": {
+          "description": "Base URL template of this unit when its API host differs from the\nprofile's; validated like the profile's.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "auth": {
+          "description": "The credential narrowing this unit needs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EndpointAuthSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "window": {
+          "description": "The window rendering this unit needs when it differs from the\nprofile's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EndpointWindowSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "vars": {
+          "description": "Values this unit's templates read as `vars.*`, over the instance's\nand under the instance's `units.<name>.vars`.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "method": {
+          "description": "GET or POST; the defaults' when unset, else GET.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Method"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "path": {
+          "description": "Path template appended to `base_url`; the defaults' when unset.",
+          "type": "string",
+          "default": ""
+        },
+        "query": {
+          "description": "Query parameter templates; an empty rendering is omitted.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "headers": {
+          "description": "Header templates.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "body": {
+          "description": "JSON body for POST; string leaves are templates, a leaf that is one\nexpression keeps its type. The defaults' when unset.",
+          "default": null
+        },
+        "rows": {
+          "description": "Row framing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "row_key": {
+          "description": "JSON pointer to the row's identity.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "paginate": {
+          "description": "Pagination.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PaginateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fail_when": {
+          "description": "CEL over a 2xx body; true fails the tick with the text at `error.at`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "max_pages": {
+          "description": "Page ceiling per tick.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "add_fields": {
+          "description": "Fields added to every row: a value is a template, or a JSON object\nor array whose string leaves are templates. One that reads `key` is\nrendered per key of the unit's keyset.",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "fold": {
+          "description": "A folding builder: the rows of one key (of the tick, without a\nkeyset) become the one row it builds, stamped with `add_fields`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowBuilderKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lister": {
+          "description": "A listing protocol standing in for the page fetch: the unit's\n`path` and `query` name the listing, the lister frames and pages\nit, and `rows` and `paginate` are its own.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ListerKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "max_page_bytes": {
+          "description": "Bytes a page-bounded decoder may buffer.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": null
+        },
+        "construct": {
+          "description": "How the unit's requests are multiplied (a keyset, a lookup, a\nmanifest, a queue); the defaults' when unset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConstructSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prelude": {
+          "description": "Idempotent requests sent once per tick before the unit's first page\n(the OMAP `subscriptions/start`); the defaults' when unset. A step\nrenders from the unit's vars alone, never the window, a key or an\nitem.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/LookupRequest"
+          },
+          "default": null
+        },
+        "ignore_status": {
+          "description": "Non-2xx statuses answered as an empty page instead of a failure (a\n404 for a key the provider does not know).",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "default": []
+        },
+        "timeout_secs": {
+          "description": "Total seconds one page request may take, body included; only for a\nunit whose decoder reads the page whole (json_at, document, json,\ncsv). A streaming decoder is bounded per read by the client and\ntakes as long as the body takes.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "EndpointAuthSpec": {
+      "description": "What a unit needs of the credential beyond the instance's mode.",
+      "type": "object",
+      "properties": {
+        "scope": {
+          "description": "The scope (OAuth2) or `scope` claim (JWT bearer) this unit's token is\nminted for, when its API audience differs from the profile's; units\nwith the same scope share one token.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "EndpointWindowSpec": {
+      "description": "How one unit writes the window when its API differs from the profile's\n(CloudWatch Logs takes milliseconds where CloudTrail takes seconds).",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "How this unit's `window.start` and `window.end` are rendered.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WindowFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListerKind": {
+      "description": "A lister: a listing protocol no decoder expresses, standing where the\nunit's page fetch would be and yielding the listing as one page of items\nfor the unit's manifest.",
+      "oneOf": [
+        {
+          "description": "S3 `ListObjectsV2`: the XML pages under `path` (the bucket, with the\n`list-type`, `prefix` and `max-keys` query the unit names) walked on\n`NextContinuationToken` up to `max_pages`, the keys modified after\nthe unit's checkpoint sorted by `last_modified`, each an item\n`{key, path, last_modified, size}` (`path` is the key encoded for a\nURL path).",
+          "type": "string",
+          "const": "s3"
+        }
+      ]
+    },
+    "InstanceAuth": {
+      "description": "The identity half of the auth axis: the mode picked and its credentials.\n\nSecret fields are credential specs (`vault:<mount>/data/<path>:<key>`,\n`env:VAR`, or a literal) resolved when first used.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "One of the profile's `auth.accepts`.",
+          "$ref": "#/$defs/AuthKind",
+          "default": "none"
+        },
+        "token": {
+          "description": "`bearer`: the token.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "key": {
+          "description": "`api_key`: the key.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "username": {
+          "description": "`basic`: the user name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "password": {
+          "description": "`basic`: the password.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "client_id": {
+          "description": "`oauth2_client_credentials`: the client id.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "client_secret": {
+          "description": "`oauth2_client_credentials`: the client secret.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "scope": {
+          "description": "`oauth2_client_credentials`: overrides the profile's scope.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "integration_key": {
+          "description": "`duo_hmac`: the integration key (`ikey`), the Basic user name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "secret_key": {
+          "description": "`duo_hmac`: the secret key (`skey`) the signature is made with.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "service_account_key": {
+          "description": "`jwt_bearer`: a Google-style service-account key JSON (`client_email`,\n`private_key`, `token_uri`) as a credential spec.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "service_account_key_file": {
+          "description": "`jwt_bearer`: a credential spec resolving to the PATH of such a key\nfile.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "private_key": {
+          "description": "`jwt_bearer`: a bare RSA private key PEM as a credential spec, for an\nAPI whose issuer and audience come from `vars` alone.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "access_key_id": {
+          "description": "`sigv4`: the access key id, a credential spec.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "secret_access_key": {
+          "description": "`sigv4`: the secret access key, a credential spec.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "credentials_json": {
+          "description": "`sigv4`: a credential spec resolving to a JSON document carrying\n`access_key_id` and `secret_access_key` (the AWS `AccessKeyId` /\n`SecretAccessKey` spelling is accepted too), instead of the pair.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": null
+        },
+        "assume_role_arn": {
+          "description": "`sigv4`: an IAM role the keys assume through STS `AssumeRole` once per\ninstance, its session credentials cached to their expiry and every\nrequest signed with them.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "UnitOverride": {
+      "description": "Per-unit narrowing an instance applies.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether this instance fetches the unit.",
+          "type": "boolean",
+          "default": true
+        },
+        "endpoint": {
+          "description": "The profile endpoint this unit is an instance of, when the unit's\nname is the instance's own: the endpoint runs once more under this\nname with these overrides (one unit per bucket prefix, per\nsubscription), tagged `<connection>.<name>`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "topic": {
+          "description": "Topic base for this unit's rows in place of the instance's.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "query": {
+          "description": "Query parameters merged over the endpoint's.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "headers": {
+          "description": "Headers merged over the endpoint's.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "vars": {
+          "description": "Values overriding the instance's `vars` for this unit's templates (a\nper-service page size).",
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "AccumulateConfig": {
+      "description": "Batch bounds, from the config cascade under `accumulate` and overridable per\nsource.",
+      "type": "object",
+      "properties": {
+        "max_rows": {
+          "description": "Rows per batch before a flush.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1000
+        },
+        "max_bytes": {
+          "description": "Payload bytes per batch before a flush.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 8388608
+        },
+        "window_ms": {
+          "description": "How long a partial batch waits after its first row.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 1000
+        },
+        "in_flight": {
+          "description": "Concurrent sends per flush on a transport without a native batch call.\n\nDefaults to the whole batch: scalo's Kafka transport awaits each\nproduce's delivery report, so a bound below `max_rows` serialises the\nflush against the broker's round trip. Memory does not grow with it --\nthe batch is already in memory and already leased.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1000
+        }
+      },
+      "additionalProperties": false
+    },
+    "DbInstance": {
+      "description": "One `sources.db.<id>` instance.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether the instance runs.",
+          "type": "boolean",
+          "default": true
+        },
+        "engine": {
+          "description": "The client library.",
+          "$ref": "#/$defs/Engine",
+          "default": "odbc"
+        },
+        "dialect": {
+          "description": "The SQL dialect; required for `odbc`, implied for `clickhouse`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Dialect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "connection_string": {
+          "description": "The connection string or URL as a credential spec (`vault:...`,\n`env:VAR`, or a literal), resolved on first use and never logged.",
+          "type": "string",
+          "x-dfe-secret": true,
+          "writeOnly": true,
+          "default": "***REDACTED***"
+        },
+        "interval_secs": {
+          "description": "Fetch interval; the scheduler default when unset.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "topic": {
+          "description": "Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.",
+          "type": "string",
+          "default": ""
+        },
+        "filter": {
+          "description": "CEL keep-filter over each row, hot-reloaded.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "batch": {
+          "description": "Block cursor bounds.",
+          "$ref": "#/$defs/BatchSpec",
+          "default": {
+            "max_rows": 5000,
+            "max_bytes": 4194304,
+            "max_text_bytes": 65536,
+            "max_binary_bytes": 1048576
+          }
+        },
+        "stores": {
+          "description": "The stores, in tick order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StoreSpec"
+          },
+          "default": []
+        },
+        "accumulate": {
+          "description": "Batch bounds for this instance; the deployment's when unset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccumulateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Engine": {
+      "description": "Which client library an instance speaks through.",
+      "oneOf": [
+        {
+          "description": "unixODBC plus the engine's own ODBC driver; every SQL dialect.",
+          "type": "string",
+          "const": "odbc"
+        },
+        {
+          "description": "The ClickHouse HTTP interface, server-side JSON.",
+          "type": "string",
+          "const": "clickhouse"
+        },
+        {
+          "description": "The official MongoDB driver: a collection dumped by `find`, tailed by\nchange stream or by `_id`.",
+          "type": "string",
+          "const": "mongodb"
+        }
+      ]
+    },
+    "Dialect": {
+      "description": "SQL dialect, which decides the keyset predicate form, the streaming knob\nthe connection string must carry, and the session statements run after\nconnecting.",
+      "oneOf": [
+        {
+          "description": "PostgreSQL and wire-compatible engines (Redshift); psqlodbc needs\n`UseDeclareFetch=1` to stream instead of buffering the result set.",
+          "type": "string",
+          "const": "postgres"
+        },
+        {
+          "description": "MySQL and MariaDB; MariaDB Connector/ODBC needs `NO_CACHE=1` (and\n`FORWARDONLY=1`) to stream instead of buffering the result set.",
+          "type": "string",
+          "const": "mysql"
+        },
+        {
+          "description": "Microsoft SQL Server; no row-value comparison, streams by default.",
+          "type": "string",
+          "const": "mssql"
+        },
+        {
+          "description": "Oracle; no row-value comparison, streams by default.",
+          "type": "string",
+          "const": "oracle"
+        },
+        {
+          "description": "ClickHouse over ODBC or the native client.",
+          "type": "string",
+          "const": "clickhouse"
+        },
+        {
+          "description": "SQLite.",
+          "type": "string",
+          "const": "sqlite"
+        },
+        {
+          "description": "Snowflake.",
+          "type": "string",
+          "const": "snowflake"
+        },
+        {
+          "description": "BigQuery.",
+          "type": "string",
+          "const": "bigquery"
+        },
+        {
+          "description": "Databricks.",
+          "type": "string",
+          "const": "databricks"
+        }
+      ]
+    },
+    "BatchSpec": {
+      "description": "Per-fetch bounds on the block cursor.\n\nA block is what one round trip to the engine fetches; the pump holds at\nmost two blocks plus the one being read, so `3 x max_bytes` is the\nstore's memory ceiling before the batcher's own bound.",
+      "type": "object",
+      "properties": {
+        "max_rows": {
+          "description": "Rows per block.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 5000
+        },
+        "max_bytes": {
+          "description": "Transit-buffer bytes per block; whichever of the two bounds is smaller wins.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 4194304
+        },
+        "max_text_bytes": {
+          "description": "Largest text value the transit buffer accepts; a longer value fails the\ntick rather than being truncated.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 65536
+        },
+        "max_binary_bytes": {
+          "description": "Largest binary value the transit buffer accepts, likewise.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1048576
+        }
+      },
+      "additionalProperties": false
+    },
+    "StoreSpec": {
+      "description": "One store: a query and how it is fetched, or for MongoDB a collection.",
+      "type": "object",
+      "properties": {
+        "unit": {
+          "description": "Unit name: the second half of `_source_fetcher` and of a dump's `store`.",
+          "type": "string",
+          "default": ""
+        },
+        "shape": {
+          "description": "Dump or tail.",
+          "$ref": "#/$defs/StoreShape",
+          "default": "dump"
+        },
+        "query": {
+          "description": "SQL engines: the SELECT, without an ORDER BY or LIMIT for a tail; the\nframework appends the keyset predicate, the ordering and the limit.",
+          "type": "string",
+          "default": ""
+        },
+        "key": {
+          "description": "SQL tail only: the ordering key columns, in precedence order, each as\nit appears in the query's result (delimit a case-sensitive name in\nthe dialect's own form).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "limit": {
+          "description": "Tail only: rows per page.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 5000
+        },
+        "max_pages_per_tick": {
+          "description": "Tail only: pages of `limit` rows read per tick before the rest of the\nbacklog waits for the next one. A tick ends early on the first short\npage, so this bounds only a store that is behind.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 10
+        },
+        "row_key": {
+          "description": "JSON pointer to the row's identity, for the oversize stub and logs.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "database": {
+          "description": "MongoDB: the database holding the collection.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "collection": {
+          "description": "MongoDB: the collection.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "filter": {
+          "description": "MongoDB: a query document over what the store yields -- the documents\nof a dump or keyset tail, the change events of a change stream.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "default": null
+        },
+        "tail": {
+          "description": "MongoDB tail only: change stream (the default) or keyset over `_id`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TailMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "StoreShape": {
+      "description": "Whether a store is dumped whole or tailed by keyset.",
+      "oneOf": [
+        {
+          "description": "The whole result set every tick, wrapped in the snapshot envelope.",
+          "type": "string",
+          "const": "dump"
+        },
+        {
+          "description": "Rows past the last committed key tuple, in key order.",
+          "type": "string",
+          "const": "tail"
+        }
+      ]
+    },
+    "TailMode": {
+      "description": "How a MongoDB tail follows its collection.",
+      "oneOf": [
+        {
+          "description": "A change stream: every insert, update, replace and delete as an event,\nresumed from the last committed resume token; needs a replica set.",
+          "type": "string",
+          "const": "change_stream"
+        },
+        {
+          "description": "A keyset over `_id`: documents past the last committed `_id` in `_id`\norder, for a standalone server with no oplog.",
+          "type": "string",
+          "const": "keyset"
+        }
+      ]
+    },
+    "FileInstance": {
+      "description": "One `sources.file.<id>` instance.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether the instance runs.",
+          "type": "boolean",
+          "default": true
+        },
+        "interval_secs": {
+          "description": "Fetch interval; the scheduler default when unset. A tail polls at this\ncadence between ticks, so set it low for a log directory.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "topic": {
+          "description": "Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.",
+          "type": "string",
+          "default": ""
+        },
+        "filter": {
+          "description": "CEL keep-filter over each row, hot-reloaded.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "units": {
+          "description": "The units, in tick order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileUnit"
+          },
+          "default": []
+        },
+        "accumulate": {
+          "description": "Batch bounds for this instance; the deployment's when unset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccumulateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "FileUnit": {
+      "description": "One unit: a dump or a tail, never both.",
+      "type": "object",
+      "properties": {
+        "unit": {
+          "description": "Unit name: the second half of `_source_fetcher` and of a dump's `store`.",
+          "type": "string",
+          "default": ""
+        },
+        "dump": {
+          "description": "Read every matched file once, into the snapshot envelope.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DumpSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tail": {
+          "description": "Follow the matched files as they grow.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TailSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "row_key": {
+          "description": "Dump only: JSON pointer to the row's identity, for the oversize stub\nand logs.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "DumpSpec": {
+      "description": "A directory dump: every file the globs match, once each.",
+      "type": "object",
+      "properties": {
+        "paths": {
+          "description": "Globs of the files to read.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "decoder": {
+          "description": "How each file is framed.",
+          "$ref": "#/$defs/DumpDecoder",
+          "default": "auto"
+        },
+        "chunk_bytes": {
+          "description": "Bytes read from a file per chunk; one chunk plus the open row is what\na reader holds ahead of the driver.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 65536
+        },
+        "max_row_bytes": {
+          "description": "Longest one row may run before its boundary; a file with no boundary\nat all (a `.json` document declared `ndjson`) fails here instead of\nbeing read whole into memory.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 16777216
+        }
+      },
+      "additionalProperties": false
+    },
+    "DumpDecoder": {
+      "description": "How a dump frames each file.",
+      "oneOf": [
+        {
+          "description": "By extension: `.jsonl` / `.ndjson` NDJSON, `.json` array, `.csv` CSV;\ngzip by magic.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "One JSON object per line.",
+          "type": "string",
+          "const": "ndjson"
+        },
+        {
+          "description": "A top-level JSON array.",
+          "type": "string",
+          "const": "json_array"
+        },
+        {
+          "description": "CSV with a header row.",
+          "type": "string",
+          "const": "csv"
+        }
+      ]
+    },
+    "TailSpec": {
+      "description": "A tailed set of files.",
+      "type": "object",
+      "properties": {
+        "include": {
+          "description": "Globs of the files to follow.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "exclude": {
+          "description": "Globs excluded from `include`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "read_from": {
+          "description": "Where a new file is read from.",
+          "$ref": "#/$defs/ReadFrom",
+          "default": "beginning"
+        },
+        "decoder": {
+          "description": "How a line becomes a row.",
+          "$ref": "#/$defs/TailDecoder",
+          "default": "ndjson"
+        },
+        "max_line_bytes": {
+          "description": "Longest line accepted; longer lines are dropped with a count.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 102400
+        },
+        "glob_minimum_cooldown_ms": {
+          "description": "Minimum interval between glob scans.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 1000
+        },
+        "rotate_wait_secs": {
+          "description": "How long a rotated file keeps being read after it disappears from the glob.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 30
+        },
+        "max_tick_secs": {
+          "description": "Longest a tick runs before it ends so its lines can be committed,\neven if the files keep growing.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 30
+        },
+        "fingerprint": {
+          "description": "How files are recognised across renames.",
+          "$ref": "#/$defs/Fingerprint",
+          "default": {
+            "strategy": "checksum",
+            "bytes": 256,
+            "ignored_header_bytes": 0,
+            "lines": 1
+          }
+        },
+        "data_dir": {
+          "description": "Directory the checkpoint file lives in; must be on durable storage.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReadFrom": {
+      "description": "Where a freshly discovered file is read from.",
+      "oneOf": [
+        {
+          "description": "The first byte.",
+          "type": "string",
+          "const": "beginning"
+        },
+        {
+          "description": "The current end; only new lines are read.",
+          "type": "string",
+          "const": "end"
+        }
+      ]
+    },
+    "TailDecoder": {
+      "description": "How a tailed line becomes a row.",
+      "oneOf": [
+        {
+          "description": "Each line is one JSON object, passed through as is.",
+          "type": "string",
+          "const": "ndjson"
+        },
+        {
+          "description": "Each line is text, wrapped as `{\"line\": \"...\"}`.",
+          "type": "string",
+          "const": "line"
+        }
+      ]
+    },
+    "Fingerprint": {
+      "description": "Fingerprint options.",
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "description": "The strategy.",
+          "$ref": "#/$defs/FingerprintStrategy",
+          "default": "checksum"
+        },
+        "bytes": {
+          "description": "Bytes hashed for the checksum strategy.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 256
+        },
+        "ignored_header_bytes": {
+          "description": "Leading bytes skipped before hashing.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
+        },
+        "lines": {
+          "description": "Lines hashed for the checksum strategy.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "FingerprintStrategy": {
+      "description": "How a file is recognised across renames.",
+      "oneOf": [
+        {
+          "description": "A checksum of the file's first line(s).",
+          "type": "string",
+          "const": "checksum"
+        },
+        {
+          "description": "The device and inode.",
+          "type": "string",
+          "const": "device_and_inode"
+        }
+      ]
+    },
     "ExtractorsConfig": {
       "description": "External extractors configuration.",
       "type": "object",
@@ -3494,7 +6151,7 @@
       }
     },
     "ContainerExtractorConfig": {
-      "description": "Container-based extractor configuration.\n\nEach container runs an isolated extraction tool (any language/runtime).\nOne container per source + config — no horizontal scaling needed.",
+      "description": "Container-based extractor configuration.\n\nEach container runs an isolated extraction tool (any language/runtime).\nOne container per source + config -- no horizontal scaling needed.",
       "type": "object",
       "properties": {
         "name": {
@@ -3627,7 +6284,7 @@
       ]
     },
     "PluginsConfig": {
-      "description": "Deprecated plugin configuration — logs warning if non-empty values present.",
+      "description": "Deprecated plugin configuration -- logs warning if non-empty values present.",
       "type": "object",
       "properties": {
         "directory": {
@@ -4919,11 +7576,11 @@
       ]
     },
     "CursorConfig": {
-      "description": "Cursor store configuration for incremental fetching.\n\nCursors are stored as individual JSON files in `directory`, one per\nsource service (e.g., `aws.cloudtrail.cursor.json`). The directory\nshould be PVC-backed for pod restart persistence.\n\nIf `directory` is empty, the cursor store falls back to the config\nfile's parent directory with a warning.",
+      "description": "Cursor store configuration for incremental fetching.\n\nCursors are stored as individual JSON files in `directory`, one per\nconnection (e.g. `prod-aws.aws-acct-123.cursor.json`); every service of a\nconnection shares its cursor. The directory should be PVC-backed for pod\nrestart persistence.\n\nIf `directory` is empty, the cursor store falls back to the config\nfile's parent directory with a warning.",
       "type": "object",
       "properties": {
         "directory": {
-          "description": "Directory for cursor files. Each source gets its own file\nnamed `{instance_id}.{source}.{service}.cursor.json`.\nEmpty = fall back to config file directory (with warning).",
+          "description": "Directory for cursor files. Each connection gets its own file named\n`{instance_id}.{connection_id}.cursor.json`; a single implicit\nconnection uses the source type name as its id.\nEmpty = fall back to config file directory (with warning).",
           "type": "string",
           "default": ""
         },
@@ -4952,6 +7609,58 @@
           "default": 0.8
         }
       }
+    },
+    "OversizePolicy": {
+      "description": "When a row is too large to send, and how much of it the dead-letter copy keeps.",
+      "type": "object",
+      "properties": {
+        "max_record_bytes": {
+          "description": "A row longer than this becomes an oversize stub. Default sits under\nlibrdkafka's 1,000,000-byte `message.max.bytes`.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 921600
+        },
+        "max_dlq_bytes": {
+          "description": "How many leading bytes of an oversize row the dead-letter copy keeps.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 65536
+        }
+      },
+      "additionalProperties": false
+    },
+    "SelfRegulationConfig": {
+      "description": "The memory-pressure brake, `self_regulation` in the cascade.\n\nA local section rather than scalo's own because that one carries no JSON\nschema and the deployment contract derives one from every section here.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch; off means framework sources never pause for pressure.",
+          "type": "boolean",
+          "default": true
+        },
+        "pause_above": {
+          "description": "Memory pressure ratio at which polling pauses.",
+          "type": "number",
+          "format": "double",
+          "default": 0.8
+        },
+        "resume_below": {
+          "description": "Memory pressure ratio at which polling resumes; below `pause_above`.",
+          "type": "number",
+          "format": "double",
+          "default": 0.65
+        },
+        "max_hold_secs": {
+          "description": "Longest one pause lasts: memory the pause itself cannot release (a\npumped cursor, a file chunk, an open row) may hold the ratio above\n`resume_below` for ever, so after this many seconds the source flushes\nwhat it holds and polls on; `self_regulation_inbound_paused` is the\nsignal an alert watches for a pause that keeps recurring.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 30
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

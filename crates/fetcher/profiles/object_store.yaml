@@ -1,0 +1,110 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/object_store.yaml
+# Purpose:   Object-store tailing (S3) as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of an S3 (or S3-compatible) bucket prefix read as a log feed:
+# no account, no key, no bucket. An instance supplies a SigV4 key pair (or
+# one credentials document carrying both halves), its region, and may point
+# the host at an S3-compatible endpoint (MinIO, R2, B2) with `endpoint_url`;
+# each prefix it tails is a unit of its own, instantiated from the endpoint
+# of its format with the bucket and prefix as vars (`units.<source_tag>:
+# { endpoint: json_gz, vars: { bucket, prefix } }`), so its records are
+# tagged `<connection>.<source_tag>`. The typed `sources.object_store`
+# block maps onto an instance of this profile at load, so its config
+# surface is unchanged.
+#
+# Every unit is the same flow under a different framing: the bucket is
+# listed with `ListObjectsV2` (path-style, the prefix and up to a thousand
+# keys a page, the continuation token followed for at most ten pages), the
+# objects modified after the unit's checkpoint -- or, on a first tick,
+# after the start of the day-long window -- are read oldest first, a
+# thousand a tick, each one a manifest item fetched by its key and framed by
+# the format (a gzip member sequence inflates whole, a line that is not
+# JSON lands as a raw-line record, a non-object as `payload`), and every
+# record carries the object envelope under `_dfe_fetcher_object`. Each row
+# is marked with its object's key and `last_modified`, which the driver
+# commits once the row is delivered, so an object is read exactly once and
+# the rest of a backlog waits for the next tick. There is no probe: the
+# health check is the key pair resolving.
+profile: object_store
+maturity: alpha
+base_url: "{{ vars.endpoint_url != '' ? vars.endpoint_url : 'https://s3.' + vars.region + '.amazonaws.com' }}"
+shape: incremental
+auth:
+  accepts: [sigv4]
+  sigv4:
+    service: s3
+    region: "{{ vars.region }}"
+window:
+  lookback: 24h
+retry:
+  never_retry: [401, 403]
+vars:
+  endpoint_url: ""
+  region: us-east-1
+  bucket: ""
+  prefix: ""
+defaults:
+  path: "{{ vars.bucket }}/"
+  query: { list-type: 2, prefix: "{{ vars.prefix }}", max-keys: 1000 }
+  max_pages: 10
+endpoints:
+  - unit: json_gz
+    lister: s3
+    construct:
+      manifest:
+        item_request: &object { path: "{{ vars.bucket }}/{{ item.path }}" }
+        rows: { decoder: ndjson, gzip: true, builder: wrap_non_object }
+        key: &key "{{ item.key }}"
+        position: &position "{{ item.last_modified }}"
+        max_items: 1000
+        add_fields: &envelope
+          _dfe_fetcher_object:
+            provider: s3
+            bucket: "{{ vars.bucket }}"
+            key: "{{ item.key }}"
+            last_modified: "{{ item.last_modified }}"
+            size: "{{ item.size }}"
+  - unit: jsonl
+    lister: s3
+    construct:
+      manifest:
+        item_request: *object
+        rows: { decoder: ndjson, builder: wrap_non_object }
+        key: *key
+        position: *position
+        max_items: 1000
+        add_fields: *envelope
+  - unit: json
+    lister: s3
+    construct:
+      manifest:
+        item_request: *object
+        rows: { decoder: json, builder: wrap_non_object }
+        key: *key
+        position: *position
+        max_items: 1000
+        add_fields: *envelope
+  - unit: text
+    lister: s3
+    construct:
+      manifest:
+        item_request: *object
+        rows: { decoder: lines }
+        key: *key
+        position: *position
+        max_items: 1000
+        add_fields: *envelope
+  - unit: text_gz
+    lister: s3
+    construct:
+      manifest:
+        item_request: *object
+        rows: { decoder: lines, gzip: true }
+        key: *key
+        position: *position
+        max_items: 1000
+        add_fields: *envelope

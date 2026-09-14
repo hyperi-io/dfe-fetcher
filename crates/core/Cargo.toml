@@ -1,0 +1,51 @@
+# Project:   dfe-fetcher
+# File:      crates/core/Cargo.toml
+# Purpose:   Source framework core: rows, shapes, batcher, rules, envelope, checkpoints
+# Language:  Rust
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+[package]
+name = "dfe-fetcher-core"
+description = "I/O-free core of the dfe-fetcher source framework: row types, shape trait, batcher, CEL rules, snapshot envelope, checkpoints"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+cel = { workspace = true }
+chrono = { workspace = true }
+# The incremental CSV parser under the `csv` crate: records are framed as
+# chunks arrive, so a CSV body streams like NDJSON does.
+csv-core = { workspace = true }
+futures-core = { workspace = true }
+itoa = { workspace = true }
+memchr = { workspace = true }
+# The compiled CEL surface only: no I/O, no transport, no config.
+scalo = { workspace = true, features = ["expression"] }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true, features = ["serde"] }
+thiserror = { workspace = true }
+# Clock types, so the batcher window is testable under `tokio::time::pause`,
+# and the once-cell the secret resolves into; nothing here spawns a task or
+# builds a runtime.
+tokio = { workspace = true, features = ["sync", "time"] }
+uuid = { workspace = true, features = ["v7", "serde"] }
+
+[dev-dependencies]
+futures = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }

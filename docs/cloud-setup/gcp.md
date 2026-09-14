@@ -15,10 +15,19 @@ audit data from Google Cloud Platform (read-only, pull-mode).
 
 dfe-fetcher polls Google Cloud REST APIs on a schedule and ships records to
 Kafka. It authenticates with a service account: it signs an RS256 JWT with the
-service account's private key and exchanges it for a short-lived OAuth2 access
-token (scope `https://www.googleapis.com/auth/cloud-platform`), or - when
-running on GCE/GKE - it reads a token from the metadata server (workload
-identity). dfe-fetcher never writes, modifies, or deletes resources.
+service account's private key and exchanges it once per tick for a short-lived
+OAuth2 access token (scope `https://www.googleapis.com/auth/cloud-platform`),
+or - when running on GCE/GKE with no key configured - it reads a token from the
+metadata server (workload identity), or it sends a pre-minted access token
+supplied as `credential_secret`. dfe-fetcher never writes, modifies, or
+deletes resources.
+
+The source is the shipped `gcp` profile (`crates/fetcher/profiles/gcp.yaml`);
+the `sources.gcp` block below maps onto an instance of it at load. Each
+Cloud Logging unit sends its documented filter clause and pages on
+`nextPageToken`; a 429 or 5xx is retried with backoff (honouring
+`Retry-After`), a 401 or 403 ends the tick with the API's `error.message`,
+and a tick that fails does not advance the fetch window.
 
 The GCP source exposes these services (each emits its own source tag
 `gcp.<service>` and tracks its own cursor):
@@ -39,7 +48,7 @@ with a Logging Query Language filter; `scc` reads
 ## Prerequisites
 
 - A GCP project (`project_id`) whose logs you want to read.
-- `gcloud` CLI authenticated as a project owner/editor, or Terraform with
+- `gcloud` CLI authenticated as a project owner/editor, or OpenTofu with
   application-default credentials (`gcloud auth application-default login`).
 - For `scc`: Security Command Center activated on the organisation (Standard or
   Premium/Enterprise tier) and the numeric `organization_id`.
@@ -63,9 +72,9 @@ Grant only what you need. All roles are read-only.
 - `roles/logging.privateLogViewer` is a superset of `roles/logging.viewer`, so
   granting it alone covers every logging-backed service. If you do not fetch
   `data_access` or `storage_access`, `roles/logging.viewer` is sufficient.
-- SCC findings require **organisation-level** access. Without an
-  `organization_id` in the `scc` service config, the source logs a warning and
-  returns no data.
+- SCC findings require **organisation-level** access. An `scc` service
+  without `organization_id` in its config is refused at load, naming
+  `sources.gcp`.
 
 ### Least-Privilege Custom Role (Alternative)
 
@@ -79,7 +88,7 @@ logging.views.access      # required to read Data Access (private) logs
 
 ## Source-Side Setup
 
-### Terraform (Automated)
+### OpenTofu (Automated)
 
 The test infrastructure lives in
 [`infra/test/main.tf`](../../infra/test/main.tf) (GCP section). It creates a
@@ -91,12 +100,12 @@ cd infra/test
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars - set gcp_project_id
 gcloud auth application-default login
-terraform init
-terraform apply
-terraform output -json | python3 gen-env.py > ../../.env
+tofu init
+tofu apply
+tofu output -json | python3 gen-env.py > ../../.env
 ```
 
-The provided Terraform grants `roles/logging.viewer` only. To read Data Access
+The provided module grants `roles/logging.viewer` only. To read Data Access
 logs, raise the binding to `roles/logging.privateLogViewer`:
 
 ```hcl
@@ -211,8 +220,11 @@ sources:
 ```
 
 Recognised top-level fields: `enabled`, `project_id`, `service_account_key`,
-`credential_secret`, `interval_secs`, `services`, `topic`, `filter`,
-`api_url_override`, `token_url_override`. No others exist.
+`credential_secret`, `interval_secs`, `services`, `connections`, `topic`,
+`filter`, `api_url_override`, `token_url_override`. No others exist. A Cloud
+Logging unit without `project_id`, `scc` without `organization_id`, or an
+unknown service name is refused at load. `api_url_override` points both the
+Logging and the Security Command Center hosts at one URL.
 
 ### Environment Variables
 
@@ -226,23 +238,28 @@ DFE_FETCHER_SOURCES__GCP__SERVICE_ACCOUNT_KEY="/etc/gcp/sa-key.json"
 
 ### Secrets Manager
 
-Resolve the whole service account JSON key from a secret store via
-`credential_secret`. The resolved value is the full JSON key as a string.
+On this block `credential_secret` resolves to an OAuth2 ACCESS TOKEN that is
+sent as the bearer on every call -- not the service-account key. Use it when
+something outside the fetcher mints and rotates the token; a static value
+expires within the hour.
 
 ```yaml
 sources:
   gcp:
     enabled: true
     project_id: "your-project-id"
-    credential_secret: "vault:secret/dfe/gcp:credentials"
+    credential_secret: "vault:kv/data/dfe/gcp:access_token"
     services:
       - name: admin_activity
       - name: cloud_logging
     topic: "gcp"
 ```
 
-When mounting the key as a Kubernetes secret, point `service_account_key` at
-the mounted path:
+To keep the service-account key itself in the secrets manager, run the `gcp`
+profile as a `sources.rest` instance with `auth.mode: jwt_bearer` and
+`auth.service_account_key: "vault:..."` (the JSON as a spec), which is the
+same shape the block maps onto. When mounting the key as a Kubernetes secret,
+point `service_account_key` at the mounted path:
 
 ```bash
 kubectl create secret generic dfe-fetcher-gcp --from-file=sa-key.json=./sa-key.json
@@ -264,28 +281,31 @@ several projects.
 
 ## Verification
 
-1. **Health check.** `GcpSource::health_check` simply acquires an access token,
-   so a healthy result confirms the credential and token exchange only - not
-   per-service IAM grants.
+1. **Health check.** The health check is the token exchange (or, with
+   `credential_secret`, the resolution of the token), so a healthy result
+   confirms the credential only - not per-service IAM grants.
 
 2. **Env-gated smoke tests.** Live tests live in
-   [`tests/e2e/smoke_remote.rs`](../../tests/e2e/smoke_remote.rs), all
-   `#[ignore]`'d. They read `GCP_PROJECT_ID` and `GCP_SERVICE_ACCOUNT_KEY` (a
-   file path) from `.env-cloud`.
+   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs),
+   all `#[ignore]`'d. They read `GCP_PROJECT_ID` and `GCP_SERVICE_ACCOUNT_KEY`
+   (a file path) from `.env-cloud`, and `GCP_ORGANIZATION_ID` for the SCC
+   test. A refusal fails its test rather than passing with zero records.
 
    ```bash
-   cargo test --test e2e gcp_ -- --ignored --nocapture
+   cargo test -p dfe-fetcher --test e2e gcp_ -- --ignored
    ```
 
 3. **Common failures.**
    - `403`/empty on `data_access` or `storage_access`: missing
      `roles/logging.privateLogViewer`, or Data Access audit logs not enabled.
-   - SCC warning "requires organization_id": add `organization_id` to the `scc`
-     service config.
+   - The config is refused naming `scc` and `organization_id`: add
+     `organization_id` to the `scc` service config.
    - Token exchange error: bad key file path, malformed JSON key, or clock skew
      (the JWT `exp` is `now + 3600s`).
    - `metadata server unavailable`: no key/secret configured and not running on
      GCE/GKE.
+   - SCC answers `400` naming the legacy tier: Security Command Center is not
+     activated on a Standard or Premium tier for the organisation.
 
 ## Cost
 

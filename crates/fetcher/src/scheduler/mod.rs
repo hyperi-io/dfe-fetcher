@@ -1,0 +1,1038 @@
+// Project:   dfe-fetcher
+// File:      crates/fetcher/src/scheduler/mod.rs
+// Purpose:   Fetch scheduling with jitter and concurrency control
+// Language:  Rust
+//
+// License:   BUSL-1.1
+// Copyright: (c) 2026 HYPERI PTY LIMITED
+
+//! Fetch scheduler module.
+//!
+//! Manages the timing and concurrency of fetch operations across every
+//! connection's [`Driver`]. Supports:
+//!
+//! - Configurable intervals per source (hot-reloaded from shared config)
+//! - Jitter to avoid thundering herd (hot-reloaded)
+//! - Concurrency limiting across all sources
+//! - Graceful shutdown with in-flight fetch completion
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::Utc;
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
+
+use crate::config::{SchedulerConfig, SharedConfig};
+use crate::cursor::{CursorStore, CursorValue};
+use crate::driver::Driver;
+use crate::error::Error;
+use crate::metrics::Metrics;
+use dfe_fetcher_core::FetchWindow;
+
+/// Fetch scheduler that coordinates timing and concurrency.
+///
+/// The scheduler reads `default_interval_secs`, `jitter_percent`, and
+/// `default_window_hours` from `SharedConfig` on every tick so that
+/// config hot-reloads take effect without a pod restart.
+pub struct Scheduler {
+    shared_config: SharedConfig,
+    concurrency_semaphore: Arc<Semaphore>,
+    cursor_store: Option<Arc<dyn CursorStore>>,
+    instance_id: String,
+}
+
+impl Scheduler {
+    /// Create a new scheduler from configuration.
+    pub fn new(
+        config: &SchedulerConfig,
+        shared_config: SharedConfig,
+        cursor_store: Option<Arc<dyn CursorStore>>,
+        instance_id: String,
+    ) -> Self {
+        let semaphore = Arc::new(Semaphore::new(config.max_concurrent_fetches));
+
+        Self {
+            shared_config,
+            concurrency_semaphore: semaphore,
+            cursor_store,
+            instance_id,
+        }
+    }
+
+    /// Spawn a recurring fetch task for one connection's driver.
+    ///
+    /// The interval and jitter are re-read from `SharedConfig` on each tick
+    /// so that config hot-reloads take effect without a restart. The
+    /// `source_interval` override (per-source) is baked at spawn time.
+    ///
+    /// The `is_ready` callback is polled before each fetch. When it returns
+    /// `false` (e.g. output transports are backpressured or unhealthy), the
+    /// task stalls with a 5-second poll interval instead of fetching and
+    /// routing everything to DLQ.
+    ///
+    /// When a cursor store is configured, the scheduler reads the last fetch
+    /// position before each fetch to compute a `FetchWindow`, and writes the
+    /// cursor back once the tick has awaited every acknowledgement.
+    pub fn spawn_source_task(
+        &self,
+        driver: Arc<Driver>,
+        source_interval: Option<u64>,
+        metrics: Arc<Metrics>,
+        shutdown: CancellationToken,
+        is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) {
+        let semaphore = Arc::clone(&self.concurrency_semaphore);
+        let cursor_store = self.cursor_store.clone();
+        let instance_id = self.instance_id.clone();
+        let shared_config = self.shared_config.clone();
+
+        tokio::spawn(async move {
+            // The cursor key and the per-source metric and log labels are keyed
+            // on the CONNECTION id, not the type name, so each account or
+            // tenant of a type checkpoints and reports independently; a
+            // single implicit connection's id is the type name, so its cursor
+            // key and labels are unchanged.
+            let label = driver.name();
+            let cursor_key = format!("{instance_id}.{label}");
+
+            // Initial sleep before first fetch (let startup complete).
+            // Read interval from current config so even the first tick is dynamic.
+            {
+                let config = shared_config.get();
+                let base_secs = source_interval.unwrap_or(config.scheduler.default_interval_secs);
+                let jitter = calculate_jitter(base_secs, config.scheduler.jitter_percent);
+                let sleep_duration = Duration::from_secs(base_secs + jitter);
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {
+                        info!(source = label, "Scheduler shutting down during initial wait");
+                        return;
+                    }
+                    () = tokio::time::sleep(sleep_duration) => {}
+                }
+            }
+
+            loop {
+                // Compute interval from CURRENT config (hot-reloaded)
+                let config = shared_config.get();
+                let base_secs = source_interval.unwrap_or(config.scheduler.default_interval_secs);
+                let jitter = calculate_jitter(base_secs, config.scheduler.jitter_percent);
+                let default_window_hours = config.cursor.default_window_hours;
+
+                // Wait for pipeline readiness (backpressure stall)
+                while !is_ready() {
+                    {
+                        use std::sync::atomic::AtomicU64;
+                        static BACKPRESSURE_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
+                        if scalo::logger::log_debounced(&BACKPRESSURE_DEBOUNCE, 10_000) {
+                            warn!(source = label, "Pipeline not ready (backpressure), waiting");
+                        }
+                    }
+                    debug!(source = label, "Backpressure stall -- delaying fetch");
+                    metrics.inc_transport_backpressured();
+                    tokio::select! {
+                        biased;
+                        () = shutdown.cancelled() => {
+                            info!(source = label, "Scheduler shutting down during backpressure wait");
+                            return;
+                        }
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                }
+
+                // Acquire concurrency permit
+                let permit = match semaphore.acquire().await {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!(source = label, "Semaphore closed, stopping");
+                        break;
+                    }
+                };
+
+                metrics.inc_active_fetches();
+
+                // Read cursor to compute fetch window
+                let window = build_fetch_window(
+                    cursor_store.as_deref(),
+                    &cursor_key,
+                    default_window_hours,
+                    &metrics,
+                    label,
+                )
+                .await;
+
+                debug!(
+                    source = label,
+                    cursor_key,
+                    window_start = %window.start,
+                    window_end = %window.end,
+                    window_hours = (window.end - window.start).num_seconds() as f64 / 3600.0,
+                    "Fetch started"
+                );
+
+                let fetch_start = std::time::Instant::now();
+                match driver.run_tick(Some(&window)).await {
+                    Ok(report) => {
+                        let fetch_duration = fetch_start.elapsed();
+                        let fetch_duration_ms = fetch_duration.as_millis();
+                        metrics.record_fetch_duration(label, fetch_duration);
+
+                        let total_records = report.rows;
+                        metrics.inc_fetches_success_for(label);
+                        metrics.add_records_fetched(total_records);
+                        metrics.add_bytes_fetched(report.bytes);
+
+                        if total_records > 0 {
+                            info!(
+                                source = label,
+                                records = total_records,
+                                bytes = report.bytes,
+                                duration_ms = fetch_duration_ms,
+                                "Fetch completed with records"
+                            );
+                        } else {
+                            debug!(
+                                source = label,
+                                duration_ms = fetch_duration_ms,
+                                "Fetch completed -- no new records in window"
+                            );
+                        }
+
+                        // The driver has awaited every acknowledgement inside
+                        // run_tick, so the window is safe to advance past.
+                        write_cursor(
+                            cursor_store.as_deref(),
+                            &cursor_key,
+                            &window,
+                            total_records,
+                            &metrics,
+                        )
+                        .await;
+                    }
+                    // Shutdown is not a fetch failure; counting it as a
+                    // network error would alert on every rollout.
+                    Err(Error::Shutdown) => {
+                        metrics.record_fetch_duration(label, fetch_start.elapsed());
+                        info!(source = label, "Fetch stopped for shutdown");
+                    }
+                    Err(e) => {
+                        let fetch_duration = fetch_start.elapsed();
+                        metrics.record_fetch_duration(label, fetch_duration);
+
+                        let code = classify_api_error(&e);
+                        metrics.inc_api_error(label, code);
+
+                        metrics.inc_fetches_error_for(label);
+                        error!(
+                            source = label,
+                            error = %e,
+                            error_code = code,
+                            duration_ms = fetch_duration.as_millis(),
+                            "Fetch failed"
+                        );
+                    }
+                }
+
+                metrics.dec_active_fetches();
+                drop(permit);
+
+                // Sleep until next fetch cycle (interval re-computed per tick)
+                let sleep_duration = Duration::from_secs(base_secs + jitter);
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {
+                        info!(source = label, "Scheduler shutting down");
+                        break;
+                    }
+                    () = tokio::time::sleep(sleep_duration) => {}
+                }
+            }
+        });
+    }
+
+    /// Calculate the effective interval for a source (for logging at startup).
+    ///
+    /// This reads the current shared config. In the spawn loop, the interval
+    /// is re-computed on each tick so hot-reloaded values take effect.
+    pub fn effective_interval(&self, source_interval: Option<u64>) -> Duration {
+        let config = self.shared_config.get();
+        let base_secs = source_interval.unwrap_or(config.scheduler.default_interval_secs);
+        let jitter_secs = calculate_jitter(base_secs, config.scheduler.jitter_percent);
+        Duration::from_secs(base_secs + jitter_secs)
+    }
+}
+
+/// Calculate jitter amount based on configured percentage.
+fn calculate_jitter(base_secs: u64, jitter_percent: u8) -> u64 {
+    if jitter_percent == 0 {
+        return 0;
+    }
+
+    let max_jitter = base_secs * u64::from(jitter_percent) / 100;
+    if max_jitter == 0 {
+        return 0;
+    }
+
+    fastrand::u64(0..max_jitter)
+}
+
+/// Classify a tick failure into a bounded category for metrics: a
+/// framework error carries its TYPED HTTP status (`throttle`, `4xx`, `5xx`,
+/// `timeout`, `oversize_page`), and anything else -- a transport, a
+/// checkpoint write -- is not an HTTP answer, so it is a `timeout` or
+/// `network` by its text.
+///
+/// "throttle" is split out of the generic "4xx" bucket: it is the signal a
+/// producer wants to scale OUT on (spread the upstream quota over more
+/// pods), not a client bug like a 401/404, and feeds the self-normalised
+/// `throttle_ratio` scaling signal.
+fn classify_api_error(error: &Error) -> &'static str {
+    match error {
+        Error::Framework(inner) => inner.api_error_code(),
+        other => dfe_fetcher_core::error::non_http_error_code(&other.to_string()),
+    }
+}
+
+/// Build a `FetchWindow` from the cursor store. If no cursor exists or the
+/// read fails, falls back to `now - default_window_hours`.
+///
+/// When a cursor is found, records its age (seconds since `last_fetch_end`)
+/// as `dfe_fetcher_cursor_age_seconds` for staleness monitoring.
+async fn build_fetch_window(
+    store: Option<&dyn CursorStore>,
+    cursor_key: &str,
+    default_window_hours: u64,
+    metrics: &Metrics,
+    source_prefix: &str,
+) -> FetchWindow {
+    let now = Utc::now();
+
+    if let Some(store) = store {
+        match store.get(cursor_key).await {
+            Ok(Some(cursor)) => {
+                let age_secs = (now - cursor.last_fetch_end).num_seconds().max(0) as f64;
+                debug!(
+                    cursor_key,
+                    last_end = %cursor.last_fetch_end,
+                    age_secs,
+                    last_records = cursor.last_fetch_records,
+                    "Cursor found, resuming from last position"
+                );
+                tracing::trace!(
+                    cursor_key,
+                    last_end = %cursor.last_fetch_end,
+                    updated_at = %cursor.updated_at,
+                    api_cursor = cursor.api_cursor.as_deref().unwrap_or("none"),
+                    version = cursor.version,
+                    "Cursor details"
+                );
+                metrics.set_cursor_age(source_prefix, age_secs);
+                return FetchWindow {
+                    start: cursor.last_fetch_end,
+                    end: now,
+                };
+            }
+            Ok(None) => {
+                debug!(
+                    cursor_key,
+                    default_window_hours, "No cursor found, using default lookback window"
+                );
+            }
+            Err(e) => {
+                warn!(cursor_key, error = %e, "Cursor read failed, using default lookback");
+            }
+        }
+    }
+
+    let hours = i64::try_from(default_window_hours).unwrap_or(i64::MAX);
+    let start = now - chrono::Duration::hours(hours);
+    FetchWindow { start, end: now }
+}
+
+/// Write cursor after a successful fetch. Logs warning on failure but does
+/// not propagate the error -- cursor failures must not block the pipeline.
+async fn write_cursor(
+    store: Option<&dyn CursorStore>,
+    cursor_key: &str,
+    window: &FetchWindow,
+    records: u64,
+    metrics: &Metrics,
+) {
+    let Some(store) = store else { return };
+
+    let value = CursorValue {
+        cursor_key: cursor_key.to_string(),
+        last_fetch_end: window.end,
+        last_fetch_records: records,
+        updated_at: Utc::now(),
+        api_cursor: None,
+        version: 1,
+    };
+
+    match store.set(cursor_key, &value).await {
+        Ok(()) => {
+            metrics.inc_cursor_writes();
+            debug!(
+                cursor_key,
+                end = %window.end,
+                records,
+                "Cursor position written"
+            );
+            tracing::trace!(
+                cursor_key,
+                window_start = %window.start,
+                window_end = %window.end,
+                records,
+                "Cursor write details"
+            );
+        }
+        Err(e) => {
+            metrics.inc_cursor_write_failures();
+            warn!(cursor_key, error = %e, end = %window.end, "Cursor write failed -- position not persisted");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use futures::StreamExt;
+    use futures::future::BoxFuture;
+
+    use crate::driver::{DriverParts, Shape};
+    use crate::emit::Emitter;
+    use crate::pipeline::PipelineState;
+    use dfe_fetcher_core::batch::AccumulateConfig;
+    use dfe_fetcher_core::envelope::OversizePolicy;
+    use dfe_fetcher_core::{RowSource, RowStream, SourceMaturity, TickCtx, UnitShape, UnitSpec};
+
+    /// Build a test config with zero jitter for deterministic assertions.
+    fn test_config_no_jitter() -> crate::config::Config {
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.jitter_percent = 0;
+        cfg
+    }
+
+    /// A shape that counts how often its rows are asked for and yields none,
+    /// so the scheduler's cadence is observable without a transport.
+    struct Counting {
+        units: Vec<UnitSpec>,
+        ticks: Arc<AtomicU64>,
+    }
+
+    impl RowSource for Counting {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+        fn maturity(&self) -> SourceMaturity {
+            SourceMaturity::Alpha
+        }
+        fn units(&self) -> &[UnitSpec] {
+            &self.units
+        }
+        fn rows<'a>(&'a self, _tick: TickCtx<'a>) -> RowStream<'a> {
+            self.ticks.fetch_add(1, Ordering::Relaxed);
+            futures::stream::empty().boxed()
+        }
+        fn probe(&self) -> BoxFuture<'_, dfe_fetcher_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A driver over [`Counting`] under `connection_id`, emitting through a
+    /// pipeline with no output (nothing is ever emitted).
+    fn counting_driver(
+        shared: &SharedConfig,
+        metrics: &Arc<Metrics>,
+        connection_id: &str,
+        ticks: Arc<AtomicU64>,
+    ) -> Arc<Driver> {
+        let state = Arc::new(
+            PipelineState::new(
+                shared.clone(),
+                Arc::clone(metrics),
+                None,
+                CancellationToken::new(),
+            )
+            .expect("pipeline state"),
+        );
+        let oversize = OversizePolicy::default();
+        Arc::new(Driver::new(DriverParts {
+            shape: Shape::Custom(Box::new(Counting {
+                units: vec![UnitSpec::new("unit", UnitShape::Incremental, "t")],
+                ticks,
+            })),
+            connection_id: connection_id.to_owned(),
+            instance_id: "inst".into(),
+            shared_config: shared.clone(),
+            accumulate: AccumulateConfig::default(),
+            oversize,
+            emitter: Emitter::new(Arc::clone(&state), Arc::clone(metrics), 4),
+            pressure: None,
+            memory_guard: Arc::clone(state.memory_guard()),
+            checkpoints: None,
+            metrics: Arc::clone(metrics),
+            shutdown: CancellationToken::new(),
+        }))
+    }
+
+    #[test]
+    fn test_effective_interval_default() {
+        let config = SchedulerConfig {
+            default_interval_secs: 300,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let scheduler = Scheduler::new(&config, shared, None, "test".into());
+
+        let interval = scheduler.effective_interval(None);
+        assert_eq!(interval.as_secs(), 300);
+    }
+
+    #[test]
+    fn test_effective_interval_override() {
+        let config = SchedulerConfig {
+            default_interval_secs: 300,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let scheduler = Scheduler::new(&config, shared, None, "test".into());
+
+        let interval = scheduler.effective_interval(Some(60));
+        assert_eq!(interval.as_secs(), 60);
+    }
+
+    #[test]
+    fn test_jitter_bounded() {
+        let config = SchedulerConfig {
+            default_interval_secs: 300,
+            max_concurrent_fetches: 10,
+            jitter_percent: 10,
+        };
+        let jitter = calculate_jitter(300, config.jitter_percent);
+        assert!(jitter <= 30); // 10% of 300 = 30
+    }
+
+    #[test]
+    fn test_jitter_zero_percent() {
+        assert_eq!(calculate_jitter(300, 0), 0);
+    }
+
+    #[test]
+    fn test_jitter_zero_base() {
+        assert_eq!(calculate_jitter(0, 10), 0);
+    }
+
+    #[tokio::test]
+    async fn test_build_fetch_window_no_store() {
+        let metrics = Metrics::new();
+        let window = build_fetch_window(None, "test.key", 2, &metrics, "test").await;
+        let expected_start = Utc::now() - chrono::Duration::hours(2);
+        // Allow 1 second tolerance
+        assert!((window.start - expected_start).num_seconds().abs() < 2);
+        assert!((window.end - Utc::now()).num_seconds().abs() < 2);
+    }
+
+    #[tokio::test]
+    async fn test_build_fetch_window_with_cursor() {
+        use crate::cursor::file::FileCursorStore;
+        use crate::cursor::{CursorStore, CursorValue};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+
+        let last_end = Utc::now() - chrono::Duration::minutes(10);
+        let cursor = CursorValue {
+            cursor_key: "test.key".to_string(),
+            last_fetch_end: last_end,
+            last_fetch_records: 50,
+            updated_at: Utc::now(),
+            api_cursor: None,
+            version: 1,
+        };
+        store.set("test.key", &cursor).await.unwrap();
+
+        let metrics = Metrics::new();
+        let window = build_fetch_window(Some(&store), "test.key", 2, &metrics, "test").await;
+
+        // Window should start from cursor, not default lookback
+        assert!(
+            (window.start - last_end).num_seconds().abs() < 2,
+            "window.start should match cursor.last_fetch_end"
+        );
+        assert!(window.end > window.start);
+    }
+
+    /// Test that the scheduler stalls when is_ready returns false,
+    /// and resumes when it returns true. Uses tokio::time::pause()
+    /// to control time without real delays.
+    #[tokio::test]
+    async fn test_scheduler_stalls_on_backpressure() {
+        tokio::time::pause();
+
+        // Very short interval so the test runs fast with paused time
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.scheduler.jitter_percent = 0;
+        let shared = SharedConfig::new(cfg);
+
+        let scheduler_config = SchedulerConfig {
+            default_interval_secs: 1,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+
+        let scheduler = Scheduler::new(&scheduler_config, shared.clone(), None, "test".into());
+
+        let metrics = Arc::new(Metrics::new());
+        let ticks = Arc::new(AtomicU64::new(0));
+        let driver = counting_driver(&shared, &metrics, "counting", Arc::clone(&ticks));
+        let shutdown = CancellationToken::new();
+
+        // Start with is_ready = false (backpressured)
+        let ready = Arc::new(AtomicBool::new(false));
+        let ready_clone = ready.clone();
+        let is_ready = Arc::new(move || ready_clone.load(Ordering::Relaxed));
+
+        scheduler.spawn_source_task(driver, Some(1), metrics.clone(), shutdown.clone(), is_ready);
+
+        // Advance time past the initial sleep + several backpressure poll intervals
+        // (step in 1s increments to let spawned task run)
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        // No fetches should have happened -- pipeline was not ready
+        let fetches_while_stalled = ticks.load(Ordering::Relaxed);
+        assert_eq!(
+            fetches_while_stalled, 0,
+            "scheduler should NOT fetch while backpressured"
+        );
+
+        // Mark pipeline as ready
+        ready.store(true, Ordering::Relaxed);
+
+        // Advance time for the stall poll to detect readiness + one fetch cycle
+        for _ in 0..15 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let fetches_after_ready = ticks.load(Ordering::Relaxed);
+        assert!(
+            fetches_after_ready >= 1,
+            "scheduler should fetch after pipeline becomes ready, got {fetches_after_ready}"
+        );
+
+        shutdown.cancel();
+    }
+
+    /// Test that changing SharedConfig interval is picked up by the scheduler
+    /// on the next tick (hot-reload).
+    #[tokio::test]
+    async fn test_scheduler_hot_reload_interval() {
+        tokio::time::pause();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.default_interval_secs = 2;
+        cfg.scheduler.jitter_percent = 0;
+        let shared = SharedConfig::new(cfg);
+
+        let scheduler_config = SchedulerConfig {
+            default_interval_secs: 2,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let scheduler = Scheduler::new(&scheduler_config, shared.clone(), None, "test".into());
+
+        let metrics = Arc::new(Metrics::new());
+        let ticks = Arc::new(AtomicU64::new(0));
+        let driver = counting_driver(&shared, &metrics, "counting", Arc::clone(&ticks));
+        let shutdown = CancellationToken::new();
+        let is_ready = Arc::new(|| true);
+
+        scheduler.spawn_source_task(
+            driver,
+            None, // use config default
+            metrics,
+            shutdown.clone(),
+            is_ready,
+        );
+
+        // Advance past initial sleep (2s) in small steps to let spawned task run
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let count_before = ticks.load(Ordering::Relaxed);
+        assert!(
+            count_before >= 1,
+            "should have at least 1 fetch after 10s with 2s interval, got {count_before}"
+        );
+
+        // Hot-reload: change interval to 100s (effectively stop fetching)
+        let mut new_cfg = crate::config::Config::default();
+        new_cfg.scheduler.default_interval_secs = 100;
+        new_cfg.scheduler.jitter_percent = 0;
+        shared.update(new_cfg);
+
+        // Advance 10s in steps -- should NOT trigger many more fetches (interval is now 100s)
+        let count_snapshot = ticks.load(Ordering::Relaxed);
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let count_after = ticks.load(Ordering::Relaxed);
+        // At most 1 more fetch could sneak in from the previous cycle
+        assert!(
+            count_after <= count_snapshot + 1,
+            "hot-reload should slow fetches: before={count_snapshot}, after={count_after}"
+        );
+
+        shutdown.cancel();
+    }
+
+    // -- write_cursor tests --
+
+    #[tokio::test]
+    async fn test_write_cursor_no_store_is_noop() {
+        let metrics = Metrics::new();
+        let window = FetchWindow {
+            start: Utc::now() - chrono::Duration::hours(1),
+            end: Utc::now(),
+        };
+        // Must not panic, must not touch metrics
+        write_cursor(None, "some.key", &window, 42, &metrics).await;
+
+        // Verify no cursor write counters were incremented
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("dfe_fetcher_cursor_writes_total 0"),
+            "write with no store must not increment success counter: \n{rendered}"
+        );
+        assert!(
+            rendered.contains("dfe_fetcher_cursor_write_failures_total 0"),
+            "write with no store must not increment failure counter: \n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_cursor_with_store_increments_metric() {
+        use crate::cursor::file::FileCursorStore;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+        let window = FetchWindow {
+            start: Utc::now() - chrono::Duration::hours(1),
+            end: Utc::now(),
+        };
+        write_cursor(Some(&store), "source.test", &window, 7, &metrics).await;
+
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains("dfe_fetcher_cursor_writes_total 1"),
+            "successful write must increment success counter: \n{rendered}"
+        );
+
+        // And the cursor is readable back with the written values
+        let stored = store
+            .get("source.test")
+            .await
+            .unwrap()
+            .expect("cursor persisted");
+        assert_eq!(stored.last_fetch_records, 7);
+    }
+
+    // -- build_fetch_window with corrupt cursor --
+
+    #[tokio::test]
+    async fn test_build_fetch_window_with_corrupt_cursor_falls_back() {
+        use crate::cursor::file::FileCursorStore;
+
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Write an invalid cursor file before creating the store. FileCursorStore
+        // skips malformed files on load, so the cache will be empty and the
+        // scheduler falls back to the default lookback window.
+        std::fs::write(
+            dir.path().join("corrupt.key.cursor.json"),
+            b"THIS IS NOT VALID JSON {{{",
+        )
+        .unwrap();
+
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+
+        let window = build_fetch_window(Some(&store), "corrupt.key", 3, &metrics, "test").await;
+        let expected_start = Utc::now() - chrono::Duration::hours(3);
+        assert!(
+            (window.start - expected_start).num_seconds().abs() < 2,
+            "corrupt cursor should fall back to default lookback (3h)"
+        );
+        assert!(
+            window.end > window.start,
+            "window end must be after window start"
+        );
+    }
+
+    // -- effective_interval with source override --
+
+    #[test]
+    fn test_effective_interval_source_override_60_seconds() {
+        let config = SchedulerConfig {
+            default_interval_secs: 300,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let scheduler = Scheduler::new(&config, shared, None, "test".into());
+
+        let interval = scheduler.effective_interval(Some(60));
+        assert_eq!(
+            interval.as_secs(),
+            60,
+            "source override should take precedence over default"
+        );
+    }
+
+    // -- calculate_jitter edge cases --
+
+    #[test]
+    fn test_calculate_jitter_100_percent_bounded() {
+        // 100% jitter on base=100 => max_jitter=100, fastrand in [0, 100)
+        let j = calculate_jitter(100, 100);
+        assert!(j < 100, "100% jitter on 100 should be < 100, got {j}");
+    }
+
+    #[test]
+    fn test_calculate_jitter_rounds_down_to_zero() {
+        // base=10, jitter_percent=1 => 10 * 1 / 100 = 0 (integer division)
+        // max_jitter==0 path returns 0
+        let j = calculate_jitter(10, 1);
+        assert_eq!(
+            j, 0,
+            "tiny jitter that rounds to 0 must return 0, not panic"
+        );
+    }
+
+    #[test]
+    fn test_calculate_jitter_large_values_no_overflow() {
+        // Large base with 50% jitter must compute without panicking on overflow.
+        // u64::MAX / 200 * 50 / 100 fits easily in u64.
+        let base = u64::MAX / 200;
+        let j = calculate_jitter(base, 50);
+        let expected_max = base * 50 / 100;
+        assert!(
+            j < expected_max,
+            "jitter {j} must be < expected max {expected_max}"
+        );
+    }
+
+    #[test]
+    fn test_calculate_jitter_repeated_within_bound() {
+        // Call many times to get coverage of the fastrand path, all must be in range.
+        for _ in 0..50 {
+            let j = calculate_jitter(1000, 25);
+            assert!(j < 250, "25% of 1000 must yield < 250, got {j}");
+        }
+    }
+
+    // -- Scheduler concurrency configuration --
+
+    #[test]
+    fn test_scheduler_with_max_concurrent_one() {
+        // Semaphore is constructed internally -- verify the scheduler still
+        // reports a sensible effective interval when configured for
+        // single-flight concurrency.
+        let config = SchedulerConfig {
+            default_interval_secs: 120,
+            max_concurrent_fetches: 1,
+            jitter_percent: 0,
+        };
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let scheduler = Scheduler::new(&config, shared, None, "singleton".into());
+
+        let interval = scheduler.effective_interval(None);
+        assert_eq!(
+            interval.as_secs(),
+            300,
+            "effective_interval reads from shared config default (300s), not SchedulerConfig"
+        );
+
+        // A source-level override is still honoured
+        let overridden = scheduler.effective_interval(Some(45));
+        assert_eq!(overridden.as_secs(), 45);
+    }
+
+    /// Two drivers over the SAME shape but DIFFERENT connection ids must
+    /// checkpoint under DIFFERENT cursor keys (cursor key = connection id),
+    /// so accounts of one type do not collide.
+    #[tokio::test]
+    async fn test_per_connection_cursor_keys() {
+        use crate::cursor::file::FileCursorStore;
+
+        tokio::time::pause();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store: Arc<dyn CursorStore> =
+            Arc::new(FileCursorStore::new(dir.path().to_str().unwrap()).unwrap());
+
+        let mut cfg = crate::config::Config::default();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.scheduler.jitter_percent = 0;
+        let shared = SharedConfig::new(cfg);
+        let sched_cfg = SchedulerConfig {
+            default_interval_secs: 1,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let scheduler = Scheduler::new(
+            &sched_cfg,
+            shared.clone(),
+            Some(store.clone()),
+            "inst".into(),
+        );
+
+        let metrics = Arc::new(Metrics::new());
+        let shutdown = CancellationToken::new();
+        let is_ready = Arc::new(|| true);
+
+        for conn in ["acct-a", "acct-b"] {
+            let driver = counting_driver(&shared, &metrics, conn, Arc::default());
+            scheduler.spawn_source_task(
+                driver,
+                Some(1),
+                metrics.clone(),
+                shutdown.clone(),
+                is_ready.clone(),
+            );
+        }
+
+        // Advance past the initial sleep, one fetch, and the cursor write.
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        // Each connection has its OWN cursor key ({instance}.{connection_id}),
+        // NOT the shared shape name ("inst.counting").
+        assert!(
+            store.get("inst.acct-a").await.unwrap().is_some(),
+            "connection acct-a must checkpoint under its own cursor key"
+        );
+        assert!(
+            store.get("inst.acct-b").await.unwrap().is_some(),
+            "connection acct-b must checkpoint under its own cursor key"
+        );
+        assert!(
+            store.get("inst.counting").await.unwrap().is_none(),
+            "cursor must NOT be keyed on the shape name"
+        );
+
+        shutdown.cancel();
+    }
+
+    // --- classify_api_error tests ---
+
+    #[test]
+    fn test_classify_timed_out() {
+        let err = Error::Source("request timed out".to_string());
+        assert_eq!(classify_api_error(&err), "timeout");
+    }
+
+    #[test]
+    fn test_classify_timeout_keyword() {
+        let err = Error::Source("connection timeout reached".to_string());
+        assert_eq!(classify_api_error(&err), "timeout");
+    }
+
+    #[test]
+    fn test_classify_connection_refused() {
+        let err = Error::Source("connection refused".to_string());
+        assert_eq!(classify_api_error(&err), "network");
+    }
+
+    #[test]
+    fn test_classify_dns_failure() {
+        let err = Error::Source("DNS resolution failed".to_string());
+        assert_eq!(classify_api_error(&err), "network");
+    }
+
+    #[test]
+    fn test_classify_empty_message() {
+        let err = Error::Source(String::new());
+        assert_eq!(classify_api_error(&err), "network");
+    }
+
+    fn api(status: u16, text: &str) -> Error {
+        Error::Framework(dfe_fetcher_core::Error::Api {
+            status,
+            text: text.to_owned(),
+        })
+    }
+
+    /// An HTTP answer classifies from its typed status alone: a 429 is a
+    /// throttle whatever the body says, a 4xx a client error, a 5xx an
+    /// upstream one, S3's SlowDown a throttle, and a 408 a timeout.
+    #[test]
+    fn test_classify_http_answers_by_typed_status() {
+        assert_eq!(classify_api_error(&api(429, "")), "throttle");
+        assert_eq!(classify_api_error(&api(429, "500 mentioned")), "throttle");
+        for status in [400, 401, 403, 404, 422] {
+            assert_eq!(classify_api_error(&api(status, "429")), "4xx", "{status}");
+        }
+        for status in [500, 502, 503, 504] {
+            assert_eq!(
+                classify_api_error(&api(status, "throttled")),
+                "5xx",
+                "{status}"
+            );
+        }
+        assert_eq!(
+            classify_api_error(&api(503, "<Code>SlowDown</Code>")),
+            "throttle"
+        );
+        assert_eq!(classify_api_error(&api(408, "")), "timeout");
+    }
+
+    /// An error that is not an HTTP answer never reads as one: a transport
+    /// or checkpoint failure whose text carries a status number is still a
+    /// network failure, and a framework page overflow keeps its own code.
+    #[test]
+    fn test_classify_non_http_errors_never_read_a_status_off_the_text() {
+        assert_eq!(
+            classify_api_error(&Error::Transport("broker said 429".into())),
+            "network"
+        );
+        assert_eq!(
+            classify_api_error(&Error::Cursor("status: 503 writing".into())),
+            "network"
+        );
+        assert_eq!(
+            classify_api_error(&Error::Backpressured("kafka timed out".into())),
+            "timeout"
+        );
+        assert_eq!(
+            classify_api_error(&Error::Framework(dfe_fetcher_core::Error::Source(
+                "AWS SlowDown: reduce request rate".into()
+            ))),
+            "network"
+        );
+        assert_eq!(
+            classify_api_error(&Error::Framework(dfe_fetcher_core::Error::OversizePage {
+                max: 1,
+            })),
+            "oversize_page"
+        );
+    }
+}

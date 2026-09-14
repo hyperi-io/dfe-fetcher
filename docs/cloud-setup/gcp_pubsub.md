@@ -14,19 +14,29 @@ log entries delivered through a Cloud Logging sink into a Pub/Sub topic.
 ## Overview
 
 dfe-fetcher consumes Pub/Sub via **REST synchronous pull**. For each configured
-subscription it calls
-`POST /v1/projects/<project>/subscriptions/<sub>:pull`, then acknowledges the
-batch with
-`POST /v1/projects/<project>/subscriptions/<sub>:acknowledge`. Each message's
-base64 `data` field is decoded; if it parses as JSON (typical for Cloud Logging
-sink payloads, where `data` is a base64-encoded `LogEntry`) the value is emitted
-directly, otherwise the raw string is wrapped as `{"data": "..."}`. The Pub/Sub
-envelope (subscription, message ID, publish time, attributes, ordering key) is
-attached under `_dfe_fetcher_pubsub` on every record. Each subscription produces
+subscription it calls `POST /v1/projects/<project>/subscriptions/<sub>:pull`
+once per tick, delivers the messages, and only then acknowledges them with
+`POST /v1/projects/<project>/subscriptions/<sub>:acknowledge`, 500 ids a
+request: a batch the transport refuses is never acknowledged, so the broker
+redelivers it rather than losing it. Each message's base64 `data` field is
+decoded; if it parses as JSON (typical for Cloud Logging sink payloads, where
+`data` is a base64-encoded `LogEntry`) the value is emitted directly,
+otherwise the raw string is wrapped as `{"data": "..."}`. The Pub/Sub envelope
+(subscription, message ID, publish time, attributes, ordering key) is attached
+under `_dfe_fetcher_pubsub` on every record. Each subscription produces
 records tagged `gcp_pubsub.<subscription-id>`.
 
-Authentication is a GCP **service account** (JSON key, or vault-resolved key),
-signing an RS256 JWT exchanged for an access token with the read-side scope:
+The source is the shipped `gcp_pubsub` profile
+(`crates/fetcher/profiles/gcp_pubsub.yaml`) on the framework's queue shape;
+the `sources.gcp_pubsub` block below maps onto an instance of it at load, one
+unit per subscription. A pull that keeps failing fails that subscription's
+tick and the others still run; a refused token exchange fails the tick before
+any pull.
+
+Authentication is a GCP **service account** (a JSON key file, or the key
+resolved from a secrets manager), signing an RS256 JWT exchanged for an access
+token with the read-side scope, or - with no key configured - the workload's
+token from the GCE metadata server:
 
 - `https://www.googleapis.com/auth/pubsub`
 
@@ -147,7 +157,8 @@ gcloud pubsub subscriptions add-iam-policy-binding dfe-audit-fetcher \
 Each entry under `subscriptions` is one `project_id` + `subscription_id` pair.
 `max_messages` defaults to 1000 (the REST cap); `return_immediately` defaults to
 `true` (single-shot per tick, fitting the polling model). The `subscription_id`
-is the short name, not the fully-qualified path.
+is the short name, not the fully-qualified path; a repeated id, or the id
+`pull`, is refused at load.
 
 ### Config File
 
@@ -156,8 +167,8 @@ sources:
   gcp_pubsub:
     enabled: true
     service_account_key: "/etc/gcp/pubsub-sa.json"
-    # api_url_override: "https://pubsub.googleapis.com"           # default
-    # token_url_override: "https://oauth2.googleapis.com/token"   # default
+    # api_url_override: "https://pubsub.googleapis.com"   # default
+    # token_url_override: ""                              # default: the key's own token_uri
     subscriptions:
       - project_id: "your-project-id"
         subscription_id: "dfe-audit-fetcher"
@@ -185,7 +196,7 @@ Keep the SA key out of the config file with a vault spec:
 sources:
   gcp_pubsub:
     enabled: true
-    credential_secret: "vault:secret/gcp-pubsub:sa_key"
+    credential_secret: "vault:kv/data/gcp-pubsub:sa_key"
     subscriptions:
       - project_id: "your-project-id"
         subscription_id: "dfe-audit-fetcher"
@@ -193,27 +204,24 @@ sources:
 ```
 
 `credential_secret` resolves to the full service account JSON key as a string.
-Provide exactly one of `credential_secret` or `service_account_key`.
+Provide `credential_secret` or `service_account_key`; with neither, the
+fetcher takes the workload's token from the GCE metadata server, which is the
+path for a pod running under Workload Identity.
 
 ## Verification
 
-dfe-fetcher's `health_check` for this source signs a JWT and performs the
-Pub/Sub-scoped token exchange; it returns `true` when the SA key is valid. The
-env-gated e2e tests in
-[`tests/e2e/smoke_remote.rs`](../../tests/e2e/smoke_remote.rs) exercise the live
-pull path. They are `#[ignore]`'d until the tenant side is provisioned.
+The health check is the Pub/Sub-scoped token exchange (or the metadata
+server's token), so a healthy result proves the credential, not the
+subscription grant. The env-gated e2e tests in
+[`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs)
+exercise the live pull path. They are `#[ignore]`'d until the tenant side is
+provisioned, and read `GCP_PUBSUB_SA_KEY` (a file path) or
+`GCP_PUBSUB_CREDENTIAL_SECRET`, plus `GCP_PUBSUB_PROJECT_ID` and
+`GCP_PUBSUB_SUBSCRIPTION_ID` for the pull, from `.env-cloud`:
 
 ```bash
-export GCP_PUBSUB_SA_KEY="/etc/gcp/pubsub-sa.json"
-# or GCP_PUBSUB_CREDENTIAL_SECRET="vault:secret/gcp-pubsub:sa_key"
-
-# Token exchange only:
-cargo test --test smoke_remote gcp_pubsub_health_check -- --ignored --nocapture
-
-# Real pull from a subscription (empty subscription is a valid pass):
-export GCP_PUBSUB_PROJECT_ID="your-project-id"
-export GCP_PUBSUB_SUBSCRIPTION_ID="dfe-audit-fetcher"
-cargo test --test smoke_remote gcp_pubsub_pull_subscription -- --ignored --nocapture
+# Token exchange, then a real pull (an empty subscription is a valid pass):
+cargo test -p dfe-fetcher --test e2e gcp_pubsub_ -- --ignored
 ```
 
 Common failures:

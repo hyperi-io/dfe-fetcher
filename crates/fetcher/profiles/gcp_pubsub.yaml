@@ -1,0 +1,75 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/gcp_pubsub.yaml
+# Purpose:   GCP Pub/Sub synchronous pull as a declarative REST profile on the queue shape
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of a Pub/Sub subscription pulled over REST: no project, no
+# subscription, no key. An instance supplies a service-account key (the
+# JSON as a spec, or the path to it) for the JWT-bearer exchange on the
+# Pub/Sub scope -- or nothing, and the GCE metadata server supplies the
+# workload's token -- and one unit per subscription, instantiated from
+# `pull` with the project and subscription id as vars
+# (`units.<subscription_id>: { endpoint: pull, vars: { project_id,
+# subscription_id, max_messages, return_immediately } }`), so its records
+# are tagged `<connection>.<subscription_id>`. The typed `sources.gcp_pubsub`
+# block maps onto an instance of this profile at load, so its config
+# surface is unchanged.
+#
+# A unit is a queue: one `:pull` per tick takes up to `max_messages`
+# received messages, each becoming the record its base64 `data` holds (JSON
+# as itself, anything else under `data`) with the message envelope under
+# `_dfe_fetcher_pubsub`, and each row carries its `ackId` as its mark. The
+# driver hands the marks of every batch back only after the transport has
+# taken the batch, and the acknowledgement goes out then, five hundred ids
+# a request, so a message the transport never took is redelivered by the
+# broker rather than lost. The scheduler's window plays no part; the
+# health check is the token exchange.
+profile: gcp_pubsub
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [jwt_bearer, gce_metadata]
+  jwt_bearer:
+    token_url: "{{ vars.token_url != '' ? vars.token_url : auth.token_uri }}"
+    claims:
+      iss: "{{ auth.client_email }}"
+      scope: "https://www.googleapis.com/auth/pubsub"
+      aud: "{{ auth.token_url }}"
+    ttl_secs: 3600
+  gce_metadata:
+    url: "{{ vars.metadata_url }}"
+headers:
+  Accept: application/json
+retry:
+  never_retry: [401, 403]
+  retry_non_idempotent: true
+# Pub/Sub answers `{"error": {"code", "message", "status"}}`.
+error:
+  at: "/error/message"
+vars:
+  api_url: "https://pubsub.googleapis.com"
+  token_url: ""
+  metadata_url: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+  project_id: ""
+  subscription_id: ""
+  max_messages: 1000
+  return_immediately: true
+endpoints:
+  - unit: pull
+    method: POST
+    path: "/v1/projects/{{ vars.project_id }}/subscriptions/{{ vars.subscription_id }}:pull"
+    body:
+      maxMessages: "{{ vars.max_messages }}"
+      returnImmediately: "{{ vars.return_immediately }}"
+    rows: { decoder: json_at, at: /receivedMessages, builder: pubsub_message }
+    max_pages: 1
+    construct:
+      queue:
+        ack_at: /ackId
+        ack_request:
+          path: "/v1/projects/{{ vars.project_id }}/subscriptions/{{ vars.subscription_id }}:acknowledge"
+          body: { ackIds: "{{ ids }}" }
+        ack_batch: 500

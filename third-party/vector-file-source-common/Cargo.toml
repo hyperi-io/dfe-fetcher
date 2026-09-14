@@ -1,0 +1,35 @@
+# Vendored from vectordotdev/vector lib/file-source-common (MIT, see LICENSE);
+# provenance in third-party/README.md. Dependency lines are re-pointed at this
+# workspace and the Vector-internal deps are replaced; nothing else changed.
+
+[package]
+name = "file-source-common"
+version = "0.1.0"
+authors = ["Vector Contributors <vector@datadoghq.com>", "Mark Story <mark@mark-story.com>"]
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+doctest = false
+
+[target.'cfg(windows)'.dependencies]
+libc = "0.2"
+winapi = { version = "0.3", features = ["winioctl"] }
+
+[dependencies]
+glob = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+crc = "3.3.0"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json = { workspace = true }
+bstr = { version = "1.12", default-features = false }
+bytes = { version = "1.11.1", default-features = false, features = ["serde"] }
+dashmap = { version = "6.1", default-features = false }
+async-compression = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[dev-dependencies]
+quickcheck = "1.0"
+tempfile = { workspace = true }
