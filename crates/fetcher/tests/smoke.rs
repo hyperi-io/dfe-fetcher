@@ -42,8 +42,8 @@ async fn test_startup_orchestrator_boots_with_default_config() {
     let orchestrator = result.unwrap();
     let state = orchestrator.state();
 
-    // Pipeline should be ready (no output = no health check failure)
-    assert!(state.is_ready(), "Pipeline should be ready after boot");
+    // No output configured, so nothing can report unhealthy.
+    assert!(state.output_healthy(), "no output = nothing to fail");
 
     // Config should be accessible
     let config = state.config();

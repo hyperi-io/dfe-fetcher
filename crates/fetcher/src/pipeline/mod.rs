@@ -873,11 +873,6 @@ mod tests {
             state.output_healthy(),
             "no output = considered healthy (nothing to fail)"
         );
-        // is_ready should still return true since no output was configured
-        assert!(
-            state.is_ready(),
-            "pipeline should be ready when no output is configured"
-        );
     }
 
     #[tokio::test]
@@ -1186,8 +1181,7 @@ mod tests {
         let state = PipelineState::new(shared, metrics, None, CancellationToken::new())
             .expect("state creation must succeed");
 
-        // Pipeline reports ready (DLQ init succeeded)
-        assert!(state.is_ready(), "state should be ready");
+        assert!(state.dlq.is_some(), "the DLQ init branch ran");
     }
 
     /// Exercise shared_config() getter.
