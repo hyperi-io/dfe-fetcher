@@ -334,7 +334,14 @@ mod tests {
             Some(crate::output::OutputManager::memory(Arc::clone(&transport))),
             None,
         );
-        assert!(pipeline.is_ready());
+        assert!(
+            pipeline.is_ready(),
+            "probe {} output {} pressure {:.3} of {} bytes",
+            pipeline.probe_ready(),
+            pipeline.output_healthy(),
+            pipeline.memory_guard().pressure_ratio(),
+            pipeline.memory_guard().limit_bytes(),
+        );
         transport.close().await.expect("close");
         assert!(!pipeline.is_ready(), "a closed output is not ready");
 
@@ -370,7 +377,14 @@ mod tests {
             Some(crate::output::OutputManager::memory(Arc::clone(&transport))),
             None,
         );
-        assert!(pipeline.is_ready());
+        assert!(
+            pipeline.is_ready(),
+            "probe {} output {} pressure {:.3} of {} bytes",
+            pipeline.probe_ready(),
+            pipeline.output_healthy(),
+            pipeline.memory_guard().pressure_ratio(),
+            pipeline.memory_guard().limit_bytes(),
+        );
         assert_eq!(
             post_event(app.clone(), "/ingest/test_source")
                 .await
