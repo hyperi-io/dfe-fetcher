@@ -578,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn a_mechanism_this_binary_cannot_perform_is_refused_at_connect() {
         let spec: StoreSpec =
-            serde_yaml_ng::from_str("unit: a\ndatabase: d\ncollection: c\n").unwrap();
+            serde_yaml_ng::from_str("unit: a\nmongodb: { database: d, collection: c }\n").unwrap();
         let s = MongoStore::new(
             &spec,
             Arc::new(Secret::new(SensitiveString::from(
