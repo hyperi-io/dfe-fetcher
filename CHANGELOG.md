@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.23](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.22...v1.4.23) (2026-09-15)
+
+### Bug Fixes
+
+* **pgo:** name the gcp service the profile actually declares ([ee3c246](https://github.com/hyperi-io/dfe-fetcher/commit/ee3c246415930721f22249cae6aaec24ef421f3e))
+* **sources:** run every source on one generic framework ([47deaa5](https://github.com/hyperi-io/dfe-fetcher/commit/47deaa55614dba1bae084d8b0915c949f373605f))
+
 ## [1.4.22](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.21...v1.4.22) (2026-09-12)
 
 ### Bug Fixes
