@@ -286,6 +286,10 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `gce_metadata`, `none` | nothing |
 | `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling) |
 
+Only `vault:` and `env:` resolve, and the prefix is matched exactly: a `file:`
+or `bao:` spec, or a near miss such as `Vault:`, is refused at load naming the
+field and the prefix rather than reaching the provider as literal text.
+
 `units.<name>` narrows one unit: `enabled`, `endpoint` (instantiate a
 profile endpoint under this name with these overrides, so one endpoint serves
 many buckets or subscriptions, tagged `<connection>.<name>`), `topic` (in

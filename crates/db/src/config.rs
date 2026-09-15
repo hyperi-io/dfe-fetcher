@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use dfe_fetcher_core::UnitShape;
 use dfe_fetcher_core::batch::AccumulateConfig;
+use dfe_fetcher_core::secret::{is_reference, spec_issue};
 
 use crate::store::Dialect;
 
@@ -267,6 +268,61 @@ impl Default for DbInstance {
     }
 }
 
+/// The value of one option in a MongoDB URI's query string: the name is
+/// matched without regard to case and the value percent-decoded, both as the
+/// driver does before it reads them.
+fn uri_option(uri: &str, name: &str) -> Option<String> {
+    let (_, query) = uri.split_once('?')?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| {
+            percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
+}
+
+/// A MongoDB auth mechanism this binary cannot perform, named with the
+/// reason, or `None` when the driver can be left to it.
+///
+/// `MONGODB-AWS` and `GSSAPI` sit behind driver build features this crate
+/// does not enable, and the driver refuses `MONGODB-CR` outright as
+/// deprecated. `MONGODB-OIDC` needs a token callback, which the driver
+/// supplies only for the `azure`, `gcp` and `k8s` environments; any other
+/// form expects the application to hand one over, and this one does not.
+/// Left to the driver these fail at connect naming its feature rather than
+/// the binary, so a literal string is checked at load and a resolved
+/// reference at connect. The mechanism is compared without regard to case
+/// so a mis-cased spelling is refused here rather than at connect; the
+/// property key and value are the driver's to match exactly.
+#[must_use]
+pub fn mongodb_auth_issue(uri: &str) -> Option<String> {
+    let mechanism = uri_option(uri, "authMechanism")?.to_ascii_uppercase();
+    match mechanism.as_str() {
+        "MONGODB-AWS" | "GSSAPI" => Some(format!("`{mechanism}` is not built into this binary")),
+        "MONGODB-CR" => Some("`MONGODB-CR` is refused by the driver as deprecated".to_owned()),
+        "MONGODB-OIDC" => {
+            let environment = uri_option(uri, "authMechanismProperties").and_then(|props| {
+                props
+                    .split(',')
+                    .filter_map(|p| p.split_once(':'))
+                    .find(|(k, _)| *k == "ENVIRONMENT")
+                    .map(|(_, v)| v.to_owned())
+            });
+            match environment.as_deref() {
+                Some("azure" | "gcp" | "k8s") => None,
+                _ => Some(
+                    "`MONGODB-OIDC` needs a token callback this binary does not provide; set `authMechanismProperties=ENVIRONMENT:` to `azure`, `gcp` or `k8s` so the driver mints from that environment"
+                        .to_owned(),
+                ),
+            }
+        }
+        _ => None,
+    }
+}
+
 impl DbInstance {
     /// The dialect in force: the configured one, ClickHouse for that engine,
     /// none for MongoDB.
@@ -279,15 +335,15 @@ impl DbInstance {
         }
     }
 
-    /// Whether the connection string is a literal rather than a `vault:` or
-    /// `env:` reference, so it can be inspected at load.
+    /// Whether the connection string is a literal rather than a reference, so
+    /// it can be inspected at load.
+    ///
+    /// Anything carrying a spec prefix is a reference and is not inspected; an
+    /// unusable one is refused separately by [`DbInstance::validate`], so it
+    /// never also draws a complaint about a missing streaming knob.
     fn literal_connection_string(&self) -> Option<&str> {
         let spec = self.connection_string.expose();
-        let referenced = spec.starts_with("vault:")
-            || spec.starts_with("env:")
-            || spec.starts_with("file:")
-            || spec.starts_with("bao:");
-        (!referenced).then_some(spec)
+        (!is_reference(spec)).then_some(spec)
     }
 
     /// Every problem with this instance, each as `field: problem`.
@@ -299,6 +355,11 @@ impl DbInstance {
         }
         if self.connection_string.expose().trim().is_empty() {
             issues.push("connection_string: is required".to_owned());
+        }
+        // A spec the resolver cannot read otherwise reaches the driver as
+        // literal text and fails about the DSN, not the credential.
+        if let Some(issue) = spec_issue(self.connection_string.expose()) {
+            issues.push(format!("connection_string: {issue}"));
         }
         if !self.engine.is_built() {
             issues.push(format!(
@@ -320,6 +381,12 @@ impl DbInstance {
                 d.as_str()
             )),
             _ => {}
+        }
+        if self.engine == Engine::Mongodb
+            && let Some(literal) = self.literal_connection_string()
+            && let Some(issue) = mongodb_auth_issue(literal)
+        {
+            issues.push(format!("connection_string: {issue}"));
         }
         if let (Some(dialect), Some(literal)) = (self.dialect(), self.literal_connection_string())
             && let Some(knob) = dialect.streaming_knob()
@@ -479,10 +546,13 @@ stores:
   - { unit: events, shape: tail, query: "SELECT * FROM events", key: [ts, id], limit: 100 }
 "#;
 
+    /// The issues minus the engine gate, so a test reads the same on a build
+    /// without the engine. Only the `engine:` line is set aside: a mechanism
+    /// refusal on `connection_string:` uses the same words and must stay.
     fn without_build_gate(issues: Vec<String>) -> Vec<String> {
         issues
             .into_iter()
-            .filter(|i| !i.contains("not built into this binary"))
+            .filter(|i| !(i.starts_with("engine:") && i.contains("not built into this binary")))
             .collect()
     }
 
@@ -557,6 +627,73 @@ stores:
             "engine: odbc\ndialect: mysql\nconnection_string: \"env:INVENTORY_DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
         );
         assert!(without_build_gate(inst.validate()).is_empty());
+    }
+
+    /// Both halves of the prefix contract, so the accepted list and the
+    /// resolver cannot drift apart again: a prefix the resolver handles is
+    /// accepted and left uninspected, and one it does not is refused at load
+    /// naming the prefix. An unresolvable prefix otherwise reaches the driver
+    /// as literal text and fails talking about the DSN, not the credential.
+    /// One instance of `engine: odbc` carrying `spec` as its connection string.
+    fn with_spec(spec: &str) -> Vec<String> {
+        without_build_gate(
+            instance(&format!(
+                "engine: odbc\ndialect: mysql\nconnection_string: \"{spec}\"\ntopic: t\nstores: [{{ unit: a, query: 'SELECT 1' }}]\n"
+            ))
+            .validate(),
+        )
+    }
+
+    /// A connection_string issue, or nothing.
+    fn spec_issues(spec: &str) -> Vec<String> {
+        with_spec(spec)
+            .into_iter()
+            .filter(|i| i.starts_with("connection_string:"))
+            .collect()
+    }
+
+    #[test]
+    fn a_spec_the_resolver_cannot_read_is_refused_at_load() {
+        // Well formed, so accepted and left uninspected; a vault spec carries
+        // its `:key`.
+        for spec in ["vault:kv/data/team/db:dsn", "env:INVENTORY_DSN"] {
+            assert!(
+                with_spec(spec).is_empty(),
+                "`{spec}` is a spec the resolver reads, so nothing is wrong with it"
+            );
+        }
+        // Not derived from the consts under test, so emptying one fails here.
+        for (spec, secret) in [
+            ("file:/run/secrets/dsn", "run/secrets/dsn"),
+            ("bao:secret/data/team/db:dsn", "team/db"),
+        ] {
+            let issues = spec_issues(spec);
+            assert!(!issues.is_empty(), "`{spec}` must be refused");
+            assert!(
+                !issues.iter().any(|i| i.contains(secret)),
+                "the refusal names the prefix only, never the rest of the spec: {issues:?}"
+            );
+            assert!(
+                !with_spec(spec)
+                    .iter()
+                    .any(|i| i.contains("UseDeclareFetch")),
+                "a refused spec must not also be inspected for a streaming knob"
+            );
+        }
+        // The resolver matches a prefix exactly, so a near miss resolves to
+        // nothing and must not be mistaken for a reference.
+        for spec in ["Vault:kv/data/team/db:dsn", " vault:kv/data/team/db:dsn"] {
+            assert!(
+                !spec_issues(spec).is_empty(),
+                "`{spec}` is not written as the resolver matches it, so it must be refused"
+            );
+        }
+        // Split into path and key only at resolve time, so a missing key is
+        // otherwise a per-tick failure rather than a load error.
+        assert!(
+            !spec_issues("vault:kv/data/team/db").is_empty(),
+            "a vault spec naming no key must be refused at load"
+        );
     }
 
     #[test]
@@ -699,6 +836,94 @@ stores:
                 "{issues:?}"
             );
         }
+    }
+
+    /// One mongodb instance carrying `uri` as a literal connection string;
+    /// only the `connection_string` issues are returned, which leaves the
+    /// engine gate out so the test reads the same on a build without it.
+    fn mongo_uri_issues(uri: &str) -> Vec<String> {
+        let inst = instance(&format!(
+            "engine: mongodb\nconnection_string: \"{uri}\"\ntopic: t\nstores: [{{ unit: a, database: d, collection: c }}]\n"
+        ));
+        inst.validate()
+            .into_iter()
+            .filter(|i| i.starts_with("connection_string:"))
+            .collect()
+    }
+
+    #[test]
+    fn a_mongodb_mechanism_this_binary_cannot_perform_is_refused_at_load() {
+        // SCRAM, X.509 and the three OIDC environments the driver mints from
+        // are the driver's to validate; nothing is said here. The driver
+        // percent-decodes each value before reading it, so an encoded
+        // property list is the same list; the `+srv` and `/db?` forms put
+        // the query in the same place.
+        for uri in [
+            "mongodb://u:p@h/?authSource=admin&authMechanism=SCRAM-SHA-256",
+            "mongodb://h/?authMechanism=MONGODB-X509&tls=true",
+            "mongodb://u:p@h/",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:x",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=TOKEN_RESOURCE:x,ENVIRONMENT:gcp",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT%3Ak8s",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT%3Aazure%2CTOKEN_RESOURCE%3Aapi%3A%2F%2Fx",
+            "mongodb+srv://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
+            "mongodb://h/admin?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
+        ] {
+            assert!(mongo_uri_issues(uri).is_empty(), "{uri}");
+        }
+
+        // Mechanisms behind driver features this crate leaves off, the one
+        // the driver refuses as deprecated, and the callback-only OIDC form
+        // are refused naming the reason, an encoded spelling included.
+        for (uri, names) in [
+            (
+                "mongodb://h/?authMechanism=MONGODB-AWS",
+                "`MONGODB-AWS` is not built",
+            ),
+            (
+                "mongodb://h/?authMechanism=MONGODB%2DAWS",
+                "`MONGODB-AWS` is not built",
+            ),
+            ("mongodb://h/?authMechanism=GSSAPI", "`GSSAPI` is not built"),
+            ("mongodb://h/?authMechanism=MONGODB-CR", "deprecated"),
+            (
+                "mongodb://h/?authMechanism=MONGODB-OIDC",
+                "`azure`, `gcp` or `k8s`",
+            ),
+            (
+                "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:test",
+                "`azure`, `gcp` or `k8s`",
+            ),
+        ] {
+            let issues = mongo_uri_issues(uri);
+            assert_eq!(issues.len(), 1, "{uri}: {issues:?}");
+            assert!(issues[0].contains(names), "{uri}: {issues:?}");
+        }
+
+        // The option name and the mechanism are matched without regard to
+        // case, as the driver matches the name, so neither is a way past.
+        let lower = "mongodb://h/?authmechanism=mongodb-aws";
+        assert_eq!(mongo_uri_issues(lower).len(), 1, "{lower}");
+
+        // The property key is matched exactly, as the driver matches it, so
+        // a mis-cased key is no environment at all and the string is the
+        // callback-only form the driver would refuse too.
+        let cased =
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=environment:k8s";
+        assert_eq!(mongo_uri_issues(cased).len(), 1, "{cased}");
+
+        // A referenced spec cannot be read at load; the same check runs at
+        // connect, where the resolved text is first seen.
+        let referenced = instance(
+            "engine: mongodb\nconnection_string: \"env:MONGO_URI\"\ntopic: t\nstores: [{ unit: a, database: d, collection: c }]\n",
+        );
+        assert!(
+            without_build_gate(referenced.validate()).is_empty(),
+            "{:?}",
+            referenced.validate()
+        );
+        assert!(mongodb_auth_issue("mongodb://h/?authMechanism=GSSAPI").is_some());
     }
 
     #[test]

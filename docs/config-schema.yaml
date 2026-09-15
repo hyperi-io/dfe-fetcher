@@ -25,7 +25,7 @@ description: |-
   - `instance_id` -- cursor key prefix set at startup
   - `cursor.directory` -- cursor store created at startup
   - `sources.*.enabled` -- source registration at startup
-  - `sources.*.credential_secret` / `tenant_id` / `client_id` etc. -- credentials resolved once
+  - `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup
   - `scheduler.max_concurrent_fetches` -- semaphore created at startup
   - `dlq.*` -- DLQ created at startup
   - `buffer.*` -- buffer manager created at startup

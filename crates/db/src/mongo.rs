@@ -62,7 +62,7 @@ use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::{Mark, Row, RowStream};
 
-use crate::config::{BatchSpec, StoreSpec, TailMode};
+use crate::config::{BatchSpec, StoreSpec, TailMode, mongodb_auth_issue};
 use crate::lines::{LeasedBlock, rows_of_blocks};
 use crate::secret::Secret;
 use crate::store::Store;
@@ -254,6 +254,12 @@ impl MongoStore {
         self.client
             .get_or_try_init(|| async {
                 let uri = self.uri.value().await?;
+                // A referenced spec could not be inspected at load; the same
+                // check runs here so the message names the reason rather
+                // than a driver feature flag.
+                if let Some(issue) = mongodb_auth_issue(uri) {
+                    return Err(Error::Config(format!("connection_string: {issue}")));
+                }
                 Client::with_uri_str(uri).await.map_err(|e| mongo_error(&e))
             })
             .await
@@ -564,6 +570,31 @@ mod tests {
         assert!(matches!(err, Error::Config(_)), "{err}");
         assert!(
             err.to_string().contains("filter: not a BSON document"),
+            "{err}"
+        );
+    }
+
+    /// A referenced connection string is first seen at connect, so the
+    /// mechanism check runs there; the refusal comes before any client is
+    /// built, so no server is needed to prove it.
+    #[tokio::test]
+    async fn a_mechanism_this_binary_cannot_perform_is_refused_at_connect() {
+        let spec: StoreSpec =
+            serde_yaml_ng::from_str("unit: a\ndatabase: d\ncollection: c\n").unwrap();
+        let s = MongoStore::new(
+            &spec,
+            Arc::new(Secret::new(SensitiveString::from(
+                "mongodb://h/?authMechanism=GSSAPI".to_owned(),
+            ))),
+            BatchSpec::default(),
+            Arc::new(NoLease),
+        )
+        .unwrap();
+        let err = s.client().await.unwrap_err();
+        assert!(matches!(err, Error::Config(_)), "{err}");
+        assert!(
+            err.to_string()
+                .contains("connection_string: `GSSAPI` is not built into this binary"),
             "{err}"
         );
     }
