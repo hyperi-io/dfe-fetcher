@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.24](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.23...v1.4.24) (2026-09-15)
+
+### Bug Fixes
+
+* **chart:** restore the generated chart and guard it against drift ([2c7bb95](https://github.com/hyperi-io/dfe-fetcher/commit/2c7bb95a935afe1ea9b7c1ad6594f6706bd674bf))
+
 ## [1.4.23](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.22...v1.4.23) (2026-09-15)
 
 ### Bug Fixes
