@@ -543,6 +543,53 @@ mod tests {
         );
     }
 
+    /// Map a chart directory to relative path -> file body.
+    fn chart_files(root: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read_dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let rel = path.strip_prefix(root).expect("relative path");
+                    files.insert(
+                        rel.display().to_string(),
+                        std::fs::read_to_string(&path).expect("read chart file"),
+                    );
+                }
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn checked_in_chart_matches_generated() {
+        // A deployment installs the committed chart, not a freshly generated
+        // one, so drift means the cluster gets whatever the stale file says.
+        const REGEN: &str = "regenerate with: `dfe-fetcher emit-chart chart`";
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        scalo::deployment::generate_chart(&contract(), tmp.path(), None).expect("generate_chart");
+        let generated = chart_files(tmp.path());
+        let committed = chart_files(&repo_root().join("chart"));
+
+        let generated_names: Vec<&String> = generated.keys().collect();
+        let committed_names: Vec<&String> = committed.keys().collect();
+        assert_eq!(
+            committed_names, generated_names,
+            "chart/ file list differs from the contract -- {REGEN}"
+        );
+        for (name, want) in &generated {
+            assert_eq!(
+                committed.get(name),
+                Some(want),
+                "chart/{name} differs from the contract -- {REGEN}"
+            );
+        }
+    }
+
     use scalo::deployment::generate_dockerfile;
 
     #[test]

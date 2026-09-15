@@ -622,6 +622,9 @@ mod tests {
         let first = stream.next().await.unwrap().unwrap();
         assert_eq!(&first.payload[..], b"{\"id\":\"b\"}", "oldest change first");
         // Appears while the tick is streaming: not in this tick's listing.
+        // The sleep puts its change time strictly after a.jsonl's, so the next
+        // tick's checkpoint cannot filter it out.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         std::fs::write(dir.path().join("c.jsonl"), "{\"id\":\"c\"}\n").unwrap();
         let second = stream.next().await.unwrap().unwrap();
         assert_eq!(&second.payload[..], b"{\"id\":\"a\"}");

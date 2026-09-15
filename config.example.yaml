@@ -733,8 +733,12 @@ extractors:
 # Ingest server -- REQUIRES RESTART
 # =============================================================================
 # HTTP server binds at startup; auth token resolved once.
-# Off by default: the listener counts as work, so turning it on holds this
-# fetcher out of idle whether or not anything ever posts to it.
+# Off by default for two reasons. The listener counts as work, so turning it on
+# holds this fetcher out of idle whether or not anything ever posts to it. And
+# `/ingest/{source}/{topic}` takes its destination from the URL, so an enabled
+# listener with no `auth_token` lets anything reaching the port write to any
+# topic -- set `auth_token` whenever you enable it. Container extractors in HTTP
+# mode are the only consumer.
 ingest:
   enabled: false
   bind_address: "0.0.0.0:8080"
