@@ -73,13 +73,42 @@ fn profile_maturity(name: &str) -> String {
         .to_string()
 }
 
+/// The auth modes a shipped profile accepts, in its declared order.
+///
+/// Read from the profile rather than listed here, so a profile that gains or
+/// loses a mode cannot leave the catalogue claiming the old set.
+fn accepted_auth_modes(name: &str) -> String {
+    crate::profiles::shipped()
+        .get(name)
+        .unwrap_or_else(|| panic!("`{name}` is a shipped profile"))
+        .auth
+        .accepts
+        .iter()
+        .map(|kind| kind.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The full fetcher capability catalog: one entry per registry block, each
-/// stamped with its shipped profile's maturity.
+/// stamped with its shipped profile's maturity and the auth modes that profile
+/// accepts.
+///
+/// The auth modes are appended to the description rather than declared as a
+/// field, because a catalogue field names a config knob and an operator selects
+/// a mode by supplying its credential, not by naming it.
 #[must_use]
 pub fn capabilities() -> Vec<Capability> {
     REGISTRY
         .iter()
-        .map(|block| block.capability().maturity(profile_maturity(block.name)))
+        .map(|block| {
+            let mut capability = block.capability().maturity(profile_maturity(block.name));
+            capability.description = format!(
+                "{} Accepted auth modes: {}.",
+                capability.description,
+                accepted_auth_modes(block.name)
+            );
+            capability
+        })
         .collect()
 }
 
@@ -777,6 +806,17 @@ mod tests {
             assert_eq!(c.kind, "source", "top-level entries are sources");
             assert!(!c.description.is_empty(), "{} needs a description", c.name);
         }
+        // The auth-mode sentence is appended after a single space, so a
+        // hand-written description missing its full stop would run on. Checked
+        // before the append, which supplies a stop of its own.
+        for block in &REGISTRY {
+            let base = block.capability().description;
+            assert!(
+                base.ends_with('.'),
+                "{} description must end with a full stop: {base}",
+                block.name
+            );
+        }
     }
 
     /// The shipped profile's `maturity`, which the driver answers, is the
@@ -793,6 +833,35 @@ mod tests {
                 source.name
             );
         }
+    }
+
+    /// The shipped profile's `accepts` list is the single source of truth for
+    /// which auth modes a source takes; the catalog repeats it so coverage is
+    /// readable without opening the Rust, and must say the same thing.
+    #[test]
+    fn catalog_names_the_auth_modes_the_profile_accepts() {
+        let caps = capabilities();
+        for source in every_source(&example_config()) {
+            let modes = accepted_auth_modes(source.name);
+            assert!(
+                !modes.is_empty(),
+                "`{}` names no auth mode, but a profile must accept at least one",
+                source.name
+            );
+            let description = &catalog_entry(&caps, source.name).description;
+            assert!(
+                description.ends_with(&format!("Accepted auth modes: {modes}.")),
+                "catalog description for `{}` must name its profile's modes, got: {description}",
+                source.name
+            );
+        }
+        // Both sides above derive from the same helper, so one case is spelled
+        // out to pin the config spelling and the full list.
+        assert_eq!(
+            accepted_auth_modes("gcp"),
+            "jwt_bearer, gce_metadata, bearer",
+            "the catalog names every accepted mode, in the profile's order, in its config spelling"
+        );
     }
 
     /// Every service the example config lists for a source is a service the

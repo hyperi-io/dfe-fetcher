@@ -2,7 +2,7 @@
   {
     "kind": "source",
     "name": "aws",
-    "description": "AWS audit + security sources via SigV4-signed API calls.",
+    "description": "AWS audit + security sources via SigV4-signed API calls. Accepted auth modes: sigv4.",
     "maturity": "stable",
     "fields": [
       {
@@ -166,7 +166,7 @@
   {
     "kind": "source",
     "name": "azure",
-    "description": "Azure tenant audit + security sources (Management + Graph APIs).",
+    "description": "Azure tenant audit + security sources (Management + Graph APIs). Accepted auth modes: oauth2_client_credentials.",
     "maturity": "stable",
     "fields": [
       {
@@ -276,7 +276,7 @@
   {
     "kind": "source",
     "name": "m365",
-    "description": "Microsoft 365 tenant audit sources (Management Activity + Graph).",
+    "description": "Microsoft 365 tenant audit sources (Management Activity + Graph). Accepted auth modes: oauth2_client_credentials.",
     "maturity": "stable",
     "fields": [
       {
@@ -351,7 +351,7 @@
   {
     "kind": "source",
     "name": "gcp",
-    "description": "Google Cloud audit + security sources (service-account auth).",
+    "description": "Google Cloud audit + security sources (service-account auth). Accepted auth modes: jwt_bearer, gce_metadata, bearer.",
     "maturity": "stable",
     "fields": [
       {
@@ -447,7 +447,7 @@
   {
     "kind": "source",
     "name": "github",
-    "description": "GitHub org / Enterprise Cloud audit-log events.",
+    "description": "GitHub org / Enterprise Cloud audit-log events. Accepted auth modes: bearer.",
     "maturity": "alpha",
     "fields": [
       {
@@ -507,7 +507,7 @@
   {
     "kind": "source",
     "name": "okta",
-    "description": "Okta System Log events for one tenant.",
+    "description": "Okta System Log events for one tenant. Accepted auth modes: api_key, bearer.",
     "maturity": "alpha",
     "fields": [
       {
@@ -568,7 +568,7 @@
   {
     "kind": "source",
     "name": "cloudflare",
-    "description": "Cloudflare account audit-log events.",
+    "description": "Cloudflare account audit-log events. Accepted auth modes: bearer.",
     "maturity": "alpha",
     "fields": [
       {
@@ -628,7 +628,7 @@
   {
     "kind": "source",
     "name": "onepassword",
-    "description": "1Password Events Reporting API (Business/Enterprise).",
+    "description": "1Password Events Reporting API (Business/Enterprise). Accepted auth modes: bearer.",
     "maturity": "alpha",
     "fields": [
       {
@@ -696,7 +696,7 @@
   {
     "kind": "source",
     "name": "crowdstrike",
-    "description": "CrowdStrike Falcon alerts via OAuth2 client-credentials.",
+    "description": "CrowdStrike Falcon alerts via OAuth2 client-credentials. Accepted auth modes: oauth2_client_credentials.",
     "maturity": "alpha",
     "fields": [
       {
@@ -756,7 +756,7 @@
   {
     "kind": "source",
     "name": "slack",
-    "description": "Slack Enterprise Grid audit-log events.",
+    "description": "Slack Enterprise Grid audit-log events. Accepted auth modes: bearer.",
     "maturity": "alpha",
     "fields": [
       {
@@ -810,7 +810,7 @@
   {
     "kind": "source",
     "name": "bitwarden",
-    "description": "Bitwarden organisation Events API (OAuth2 client-credentials).",
+    "description": "Bitwarden organisation Events API (OAuth2 client-credentials). Accepted auth modes: oauth2_client_credentials.",
     "maturity": "alpha",
     "fields": [
       {
@@ -850,7 +850,7 @@
   {
     "kind": "source",
     "name": "duo",
-    "description": "Duo Admin API authentication events (HMAC-SHA1 signed).",
+    "description": "Duo Admin API authentication events (HMAC-SHA1 signed). Accepted auth modes: duo_hmac.",
     "maturity": "alpha",
     "fields": [
       {
@@ -904,7 +904,7 @@
   {
     "kind": "source",
     "name": "pypi",
-    "description": "PyPI package metadata (supply-chain monitoring; no auth). Single-connection.",
+    "description": "PyPI package metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none.",
     "maturity": "alpha",
     "fields": [
       {
@@ -925,7 +925,7 @@
   {
     "kind": "source",
     "name": "crates_io",
-    "description": "crates.io crate metadata (supply-chain monitoring; no auth). Single-connection.",
+    "description": "crates.io crate metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none.",
     "maturity": "alpha",
     "fields": [
       {
@@ -946,7 +946,7 @@
   {
     "kind": "source",
     "name": "go_modules",
-    "description": "Go module-proxy metadata (supply-chain monitoring; no auth). Single-connection.",
+    "description": "Go module-proxy metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none.",
     "maturity": "alpha",
     "fields": [
       {
@@ -967,7 +967,7 @@
   {
     "kind": "source",
     "name": "google_workspace",
-    "description": "Google Workspace Reports API per-application activity (domain-wide-delegation SA).",
+    "description": "Google Workspace Reports API per-application activity (domain-wide-delegation SA). Accepted auth modes: jwt_bearer.",
     "maturity": "alpha",
     "fields": [
       {
@@ -1021,7 +1021,7 @@
   {
     "kind": "source",
     "name": "gcp_pubsub",
-    "description": "GCP Pub/Sub pull source (Log Sink delivery). Single-connection.",
+    "description": "GCP Pub/Sub pull source (Log Sink delivery). Single-connection. Accepted auth modes: jwt_bearer, gce_metadata.",
     "maturity": "alpha",
     "fields": [
       {
@@ -1077,7 +1077,7 @@
   {
     "kind": "source",
     "name": "object_store",
-    "description": "Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection.",
+    "description": "Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection. Accepted auth modes: sigv4.",
     "maturity": "alpha",
     "children": [
       {
@@ -1136,7 +1136,7 @@
   {
     "kind": "source",
     "name": "salesforce",
-    "description": "Salesforce audit surfaces via REST (JWT-bearer or client-credentials OAuth2).",
+    "description": "Salesforce audit surfaces via REST (JWT-bearer or client-credentials OAuth2). Accepted auth modes: jwt_bearer, oauth2_client_credentials.",
     "maturity": "alpha",
     "fields": [
       {
