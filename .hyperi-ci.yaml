@@ -42,8 +42,15 @@ build:
   strategies:
     - native
   rust:
+    # What the release image ships. Without an engine here, a `sources.db` or
+    # `file-tail` config is refused at load by a binary that never compiled it.
+    # `db-odbc` stays out: it needs `libodbc2` and a driver package per engine
+    # in the runtime image, which is a Dockerfile change, not a feature flag.
     features:
       - "jemalloc"
+      - "db-clickhouse"
+      - "db-mongodb"
+      - "file-tail"
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
