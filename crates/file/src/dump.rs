@@ -622,9 +622,6 @@ mod tests {
         let first = stream.next().await.unwrap().unwrap();
         assert_eq!(&first.payload[..], b"{\"id\":\"b\"}", "oldest change first");
         // Appears while the tick is streaming: not in this tick's listing.
-        // The sleep puts its change time strictly after a.jsonl's, so the next
-        // tick's checkpoint cannot filter it out.
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         std::fs::write(dir.path().join("c.jsonl"), "{\"id\":\"c\"}\n").unwrap();
         let second = stream.next().await.unwrap().unwrap();
         assert_eq!(&second.payload[..], b"{\"id\":\"a\"}");
@@ -633,13 +630,19 @@ mod tests {
         cp.fold(first.mark.unwrap());
         cp.fold(second.mark.unwrap());
         let committed = cp.value().cloned().unwrap();
-        let next = collect(&dump, Some(&committed)).await.unwrap();
-        assert_eq!(next.len(), 1);
-        assert_eq!(
-            &next[0].payload[..],
-            b"{\"id\":\"c\"}",
-            "picked up next tick"
-        );
+        // A file written during the tick can share the second the committed
+        // change time falls in, so the listing that picks it up is bounded
+        // rather than guaranteed to be the very next one.
+        let mut next = Vec::new();
+        for _ in 0..100 {
+            next = collect(&dump, Some(&committed)).await.unwrap();
+            if !next.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(next.len(), 1, "c.jsonl is picked up once, after the tick");
+        assert_eq!(&next[0].payload[..], b"{\"id\":\"c\"}");
     }
 
     #[tokio::test]
