@@ -12,8 +12,12 @@
 //! constructed. Resolves `env:VAR_NAME` / `vault:path:key` / literal specs
 //! on fields that opt in to the syntax.
 //!
-//! Currently resolves:
-//! - `sources.aws.region` (type-level and each `connections[].region`)
+//! Currently resolves, each at block level and on every connection:
+//! - `sources.aws.region`
+//! - `sources.azure.tenant_id` and `sources.azure.subscription_id`
+//! - `sources.m365.tenant_id`
+//! - `sources.gcp.project_id`
+//! - `ingest.auth_token`
 
 use crate::config::Config;
 use crate::credential::{CredentialError, resolve};
@@ -30,8 +34,34 @@ pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialE
     }
     // Unresolved, a `vault:`/`env:` spec here becomes the literal bearer token
     // the server accepts -- an auth setting that reads as configured and is not.
-    if let Some(token) = &config.ingest.auth_token {
-        config.ingest.auth_token = Some(resolve(token).await?);
+    resolve_opt(&mut config.ingest.auth_token).await?;
+    // The identity fields are not secrets, but they are specs: unresolved they
+    // reach the provider as literal text and come back as a bad tenant or
+    // project rather than as a configuration error.
+    let azure = &mut config.sources.azure;
+    resolve_opt(&mut azure.tenant_id).await?;
+    resolve_opt(&mut azure.subscription_id).await?;
+    for conn in &mut azure.connections {
+        resolve_opt(&mut conn.tenant_id).await?;
+        resolve_opt(&mut conn.subscription_id).await?;
+    }
+    let m365 = &mut config.sources.m365;
+    resolve_opt(&mut m365.tenant_id).await?;
+    for conn in &mut m365.connections {
+        resolve_opt(&mut conn.tenant_id).await?;
+    }
+    let gcp = &mut config.sources.gcp;
+    resolve_opt(&mut gcp.project_id).await?;
+    for conn in &mut gcp.connections {
+        resolve_opt(&mut conn.project_id).await?;
+    }
+    Ok(())
+}
+
+/// Resolve an optional spec field in place; `None` stays `None`.
+async fn resolve_opt(field: &mut Option<String>) -> Result<(), CredentialError> {
+    if let Some(spec) = field.as_deref() {
+        *field = Some(resolve(spec).await?);
     }
     Ok(())
 }
@@ -87,6 +117,83 @@ mod tests {
             !base_config().ingest.enabled,
             "a fetcher offers no send-to surface unless asked"
         );
+    }
+
+    /// Unresolved, these reach the provider as literal text: Entra answers
+    /// AADSTS900023 about a tenant named after the spec string itself.
+    #[tokio::test]
+    async fn identity_fields_resolve_at_block_and_connection_level() {
+        // SAFETY: test-only; unique var names so parallel tests do not collide.
+        unsafe {
+            std::env::set_var("DFE_FETCHER_TEST_TENANT", "tenant-uuid");
+            std::env::set_var("DFE_FETCHER_TEST_SUBSCRIPTION", "sub-uuid");
+            std::env::set_var("DFE_FETCHER_TEST_PROJECT", "proj-id");
+        }
+
+        let mut cfg = base_config();
+        cfg.sources.azure.tenant_id = Some("env:DFE_FETCHER_TEST_TENANT".to_string());
+        cfg.sources.azure.subscription_id = Some("env:DFE_FETCHER_TEST_SUBSCRIPTION".to_string());
+        cfg.sources
+            .azure
+            .connections
+            .push(crate::config::AzureConnection {
+                tenant_id: Some("env:DFE_FETCHER_TEST_TENANT".to_string()),
+                subscription_id: Some("env:DFE_FETCHER_TEST_SUBSCRIPTION".to_string()),
+                ..Default::default()
+            });
+        cfg.sources.m365.tenant_id = Some("env:DFE_FETCHER_TEST_TENANT".to_string());
+        cfg.sources.gcp.project_id = Some("env:DFE_FETCHER_TEST_PROJECT".to_string());
+        // A literal is left alone.
+        cfg.sources
+            .m365
+            .connections
+            .push(crate::config::M365Connection {
+                tenant_id: Some("literal-tenant".to_string()),
+                ..Default::default()
+            });
+
+        resolve_config_specs(&mut cfg).await.unwrap();
+
+        assert_eq!(cfg.sources.azure.tenant_id.as_deref(), Some("tenant-uuid"));
+        assert_eq!(
+            cfg.sources.azure.subscription_id.as_deref(),
+            Some("sub-uuid")
+        );
+        assert_eq!(
+            cfg.sources.azure.connections[0].tenant_id.as_deref(),
+            Some("tenant-uuid"),
+            "a connection carries its own identity and must resolve too"
+        );
+        assert_eq!(
+            cfg.sources.azure.connections[0].subscription_id.as_deref(),
+            Some("sub-uuid")
+        );
+        assert_eq!(cfg.sources.m365.tenant_id.as_deref(), Some("tenant-uuid"));
+        assert_eq!(cfg.sources.gcp.project_id.as_deref(), Some("proj-id"));
+        assert_eq!(
+            cfg.sources.m365.connections[0].tenant_id.as_deref(),
+            Some("literal-tenant"),
+            "a literal passes through unchanged"
+        );
+
+        unsafe {
+            std::env::remove_var("DFE_FETCHER_TEST_TENANT");
+            std::env::remove_var("DFE_FETCHER_TEST_SUBSCRIPTION");
+            std::env::remove_var("DFE_FETCHER_TEST_PROJECT");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unresolvable_identity_spec_fails_at_startup() {
+        let mut cfg = base_config();
+        cfg.sources.gcp.project_id = Some("env:DFE_FETCHER_NONEXISTENT_PROJECT_XYZ".to_string());
+        let err = resolve_config_specs(&mut cfg).await.unwrap_err();
+        match err {
+            CredentialError::MissingEnvVar { name } => {
+                assert_eq!(name, "DFE_FETCHER_NONEXISTENT_PROJECT_XYZ");
+            }
+            other => panic!("expected MissingEnvVar, got {other:?}"),
+        }
     }
 
     #[tokio::test]
