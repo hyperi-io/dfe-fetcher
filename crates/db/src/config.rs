@@ -852,7 +852,7 @@ stores:
     /// engine gate out so the test reads the same on a build without it.
     fn mongo_uri_issues(uri: &str) -> Vec<String> {
         let inst = instance(&format!(
-            "engine: mongodb\nconnection_string: \"{uri}\"\ntopic: t\nstores: [{{ unit: a, database: d, collection: c }}]\n"
+            "engine: mongodb\nconnection_string: \"{uri}\"\ntopic: t\nstores: [{{ unit: a, mongodb: {{ database: d, collection: c }} }}]\n"
         ));
         inst.validate()
             .into_iter()
@@ -925,7 +925,7 @@ stores:
         // A referenced spec cannot be read at load; the same check runs at
         // connect, where the resolved text is first seen.
         let referenced = instance(
-            "engine: mongodb\nconnection_string: \"env:MONGO_URI\"\ntopic: t\nstores: [{ unit: a, database: d, collection: c }]\n",
+            "engine: mongodb\nconnection_string: \"env:MONGO_URI\"\ntopic: t\nstores: [{ unit: a, mongodb: { database: d, collection: c } }]\n",
         );
         assert!(
             without_build_gate(referenced.validate()).is_empty(),
