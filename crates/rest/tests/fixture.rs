@@ -590,7 +590,7 @@ async fn retries_a_429_with_retry_after_and_never_a_403() {
 
     let err = fetch(&s, "forbidden", None).await.unwrap_err();
     match err {
-        Error::Api { status, text } => {
+        Error::Api { status, text, .. } => {
             assert_eq!(status, 403);
             assert_eq!(
                 text, "the API client grant does not permit this",
@@ -607,7 +607,7 @@ async fn retries_a_429_with_retry_after_and_never_a_403() {
 
     let err = fetch(&s, "bad", None).await.unwrap_err();
     assert!(
-        matches!(&err, Error::Api { status: 400, text } if text == "missing or invalid _oid Parameter"),
+        matches!(&err, Error::Api { status: 400, text, .. } if text == "missing or invalid _oid Parameter"),
         "{err:?}"
     );
     assert_eq!(err.api_error_code(), "4xx");
@@ -1481,7 +1481,7 @@ async fn a_manifest_unit_fetches_each_item_and_marks_its_rows_with_the_item() {
     );
     let err = fetch_rows(&strict, "content", None).await.unwrap_err();
     assert!(
-        matches!(&err, Error::Api { status: 404, text } if text == "Content requested has already expired."),
+        matches!(&err, Error::Api { status: 404, text, .. } if text == "Content requested has already expired."),
         "an item the request does not ignore fails the tick with the API's text: {err:?}"
     );
 
@@ -1539,7 +1539,7 @@ async fn a_prelude_runs_once_per_tick_before_the_first_page_and_ignores_its_stat
 
     let err = fetch(&s, "refused", None).await.unwrap_err();
     assert!(
-        matches!(&err, Error::Api { status: 403, text } if text == "the application lacks ActivityFeed.Read"),
+        matches!(&err, Error::Api { status: 403, text, .. } if text == "the application lacks ActivityFeed.Read"),
         "a refused step fails the tick with the API's text: {err:?}"
     );
     assert_eq!(fx.requests_to("/prelude/refused").len(), 1);

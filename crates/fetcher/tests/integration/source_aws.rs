@@ -19,6 +19,8 @@
 //! serves it through the framework driver.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
@@ -373,6 +375,176 @@ async fn test_aws_fetch_cloudtrail_pagination() {
         ["evt-1", "evt-2", "evt-3", "evt-4"],
         "the whole window lands"
     );
+}
+
+/// Requests a second LookupEvents allows per account and region.
+const PACED_TPS: f64 = 2.0;
+
+/// What the paced mock has seen: when each request arrived, and the tokens
+/// left after the last one.
+struct Paced {
+    seen: Vec<Instant>,
+    tokens: f64,
+}
+
+impl Paced {
+    /// Take a token for a request arriving at `now`, having refilled for the
+    /// time since the previous one; `false` is the refusal. The bucket holds
+    /// one request of burst over the rate, as the API's does, so a sequence
+    /// paced at 2 a second is never refused for the latency an arrival
+    /// carries while a burst is refused on its third request.
+    fn take(&mut self, now: Instant) -> bool {
+        if let Some(last) = self.seen.last() {
+            let refill = now.duration_since(*last).as_secs_f64() * PACED_TPS;
+            self.tokens = (self.tokens + refill).min(PACED_TPS);
+        }
+        self.seen.push(now);
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
+/// LookupEvents as AWS paces it: a page of `per_page` events with a
+/// `NextToken` until page `pages`, and anything faster than the documented
+/// rate refused the way the API refuses it.
+struct PacedLookupEvents {
+    pages: usize,
+    per_page: usize,
+    state: Arc<Mutex<Paced>>,
+}
+
+impl Respond for PacedLookupEvents {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        if !self.state.lock().unwrap().take(Instant::now()) {
+            return ResponseTemplate::new(400).set_body_json(
+                json!({"__type": "ThrottlingException", "message": "Rate exceeded"}),
+            );
+        }
+        // The page comes off the token the pager fed back, so a retried
+        // request is answered with the page it asked for.
+        let page: usize = body_of(request)["NextToken"]
+            .as_str()
+            .and_then(|token| token.strip_prefix("page-"))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(1);
+        let events: Vec<Value> = (0..self.per_page)
+            .map(|i| event(&format!("evt-{page}-{i}")))
+            .collect();
+        let mut body = json!({"Events": events});
+        if page < self.pages {
+            body["NextToken"] = json!(format!("page-{}", page + 1));
+        }
+        ok(body)
+    }
+}
+
+/// Mount `pages` pages of paced LookupEvents, handing back what the mock
+/// records as each request arrives.
+async fn mount_paced(server: &MockServer, pages: usize, per_page: usize) -> Arc<Mutex<Paced>> {
+    let state = Arc::new(Mutex::new(Paced {
+        seen: Vec::new(),
+        tokens: PACED_TPS,
+    }));
+    json_target(LOOKUP_EVENTS)
+        .respond_with(PacedLookupEvents {
+            pages,
+            per_page,
+            state: Arc::clone(&state),
+        })
+        .mount(server)
+        .await;
+    state
+}
+
+/// LookupEvents allows 2 requests a second, and the unit's declared rate
+/// holds its page sequence to that, so a window several pages wide drains
+/// with the API never refusing a call. (Without the rate the third request
+/// of the window came back 400 `ThrottlingException`, which the retry
+/// policy did not recognise, and the tick failed with the window unfetched.)
+#[tokio::test]
+async fn test_aws_cloudtrail_paces_pages_to_the_documented_limit() {
+    let server = MockServer::start().await;
+    let paced = mount_paced(&server, 6, 50).await;
+
+    let (outcome, rows) = run(one(&server, "cloudtrail"), None).await;
+    outcome.expect("fetch");
+
+    assert_eq!(
+        requests_targeting(&server, LOOKUP_EVENTS).await.len(),
+        6,
+        "six pages, none of them refused"
+    );
+    assert_eq!(rows.len(), 300, "fifty events a page, every page landed");
+    let landed = ids(&rows, "EventId");
+    assert_eq!(landed.first().map(String::as_str), Some("evt-1-0"));
+    assert_eq!(
+        landed.last().map(String::as_str),
+        Some("evt-6-49"),
+        "the pages land in order"
+    );
+
+    let seen = paced.lock().unwrap().seen.clone();
+    assert_eq!(seen.len(), 6, "the mock was asked six times, refusing none");
+    let span = seen[5].duration_since(seen[0]);
+    // Five waits of 500ms, less the latency the first arrival carried; an
+    // unpaced sequence spans a few milliseconds.
+    assert!(
+        span >= Duration::from_millis(2_000),
+        "six pages at 2 a second cannot arrive inside {span:?}"
+    );
+}
+
+/// A declared throttle is retried rather than failing the tick: the profile
+/// names AWS's 400 `ThrottlingException` as one, so the next attempt lands
+/// the page. (It read as a plain 400 before, so it was never retried and
+/// never counted a throttle.)
+#[tokio::test]
+async fn test_aws_cloudtrail_throttle_is_retried_then_lands() {
+    let server = MockServer::start().await;
+    json_target(LOOKUP_EVENTS)
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(
+                json!({"__type": "ThrottlingException", "message": "Rate exceeded"}),
+            ),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    json_target(LOOKUP_EVENTS)
+        .respond_with(ok(json!({"Events": [event("evt-1")]})))
+        .mount(&server)
+        .await;
+
+    let (outcome, rows) = run(one(&server, "cloudtrail"), None).await;
+    outcome.expect("fetch");
+    assert_eq!(
+        requests_targeting(&server, LOOKUP_EVENTS).await.len(),
+        2,
+        "the throttle is retried"
+    );
+    assert_eq!(ids(&rows, "EventId"), ["evt-1"]);
+}
+
+/// A window wider than the default page ceiling drains in one tick: the unit
+/// raises its own ceiling, so the window is not abandoned with rows
+/// unfetched. (At the profile default of 50 pages a busier account failed
+/// every tick with `PageCeiling` and never advanced its cursor.)
+#[tokio::test]
+async fn test_aws_cloudtrail_window_wider_than_the_default_ceiling_drains() {
+    let server = MockServer::start().await;
+    mount_paced(&server, 60, 1).await;
+
+    let (outcome, rows) = run(one(&server, "cloudtrail"), None).await;
+    let failure = outcome.err().unwrap_or_default();
+    assert!(
+        !failure.contains("max_pages"),
+        "the ceiling must not cut a window short: {failure}"
+    );
+    assert!(failure.is_empty(), "{failure}");
+    assert_eq!(rows.len(), 60, "sixty pages of one event each");
 }
 
 /// A 5xx from the provider is retried, then fails the tick, so the

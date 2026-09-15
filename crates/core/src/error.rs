@@ -8,8 +8,9 @@
 
 //! The framework's error type.
 //!
-//! Shapes carry the HTTP status they saw in [`Error::Api`] so the metrics label
-//! comes from the typed status, never from matching on the message text.
+//! Shapes carry the HTTP status they saw in [`Error::Api`], and whether the
+//! profile declared that refusal a throttle, so the metrics label comes from
+//! typed fields rather than from matching on the message text.
 
 use thiserror::Error;
 
@@ -35,6 +36,10 @@ pub enum Error {
         status: u16,
         /// The provider's error text, read from the profile's `error.at` when set.
         text: String,
+        /// Whether the refusal was the profile's declared throttle
+        /// (`retry.throttle_when`), which a status alone cannot say: AWS
+        /// answers 400 with a `ThrottlingException` body.
+        throttled: bool,
     },
 
     /// A response body could not be framed into rows.
@@ -99,12 +104,16 @@ impl Error {
     /// `timeout`, `network`, `oversize_page` or `page_ceiling`.
     ///
     /// An [`Error::Api`] classifies from its TYPED status (an S3 `SlowDown`
-    /// is a 503 that means throttle); anything else is not an HTTP answer,
-    /// so it is a timeout or a network failure by its text.
+    /// is a 503 that means throttle) or from the profile's declared
+    /// throttle; anything else is not an HTTP answer, so it is a timeout or
+    /// a network failure by its text.
     #[must_use]
     pub fn api_error_code(&self) -> &'static str {
         match self {
-            Error::Api { status, text } => match status {
+            Error::Api {
+                throttled: true, ..
+            } => "throttle",
+            Error::Api { status, text, .. } => match status {
                 429 => "throttle",
                 408 => "timeout",
                 503 if text.contains("SlowDown") => "throttle",
@@ -151,23 +160,53 @@ mod tests {
         let throttled = Error::Api {
             status: 429,
             text: "nothing about rates in here".into(),
+            throttled: false,
         };
         assert_eq!(throttled.api_error_code(), "throttle");
         let forbidden = Error::Api {
             status: 403,
             text: "500 is mentioned in the body".into(),
+            throttled: false,
         };
         assert_eq!(forbidden.api_error_code(), "4xx");
         let upstream = Error::Api {
             status: 502,
             text: String::new(),
+            throttled: false,
         };
         assert_eq!(upstream.api_error_code(), "5xx");
         let slow = Error::Api {
             status: 408,
             text: String::new(),
+            throttled: false,
         };
         assert_eq!(slow.api_error_code(), "timeout");
+    }
+
+    /// A refusal the profile declared a throttle classifies as one whatever
+    /// its status: AWS paces CloudTrail with a 400 carrying
+    /// `ThrottlingException`, which would otherwise be counted a client bug
+    /// and never retried.
+    #[test]
+    fn a_declared_throttle_classifies_as_throttle_not_by_its_status() {
+        assert_eq!(
+            Error::Api {
+                status: 400,
+                text: r#"{"__type":"ThrottlingException"}"#.into(),
+                throttled: true,
+            }
+            .api_error_code(),
+            "throttle"
+        );
+        assert_eq!(
+            Error::Api {
+                status: 400,
+                text: r#"{"__type":"ValidationException"}"#.into(),
+                throttled: false,
+            }
+            .api_error_code(),
+            "4xx"
+        );
     }
 
     #[test]
@@ -189,6 +228,7 @@ mod tests {
             Error::Api {
                 status: 503,
                 text: "<Error><Code>SlowDown</Code></Error>".into(),
+                throttled: false,
             }
             .api_error_code(),
             "throttle",
@@ -198,6 +238,7 @@ mod tests {
             Error::Api {
                 status: 503,
                 text: "Service Unavailable".into(),
+                throttled: false,
             }
             .api_error_code(),
             "5xx"
@@ -215,6 +256,7 @@ mod tests {
         let inside = Error::Api {
             status: 503,
             text: "SlowDown".into(),
+            throttled: false,
         }
         .in_item("logs/a.json");
         assert_eq!(
@@ -235,6 +277,7 @@ mod tests {
         let err = Error::Api {
             status: 403,
             text: "the API client grant does not permit this".into(),
+            throttled: false,
         };
         assert_eq!(
             err.to_string(),

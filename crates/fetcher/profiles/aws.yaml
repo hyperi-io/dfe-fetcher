@@ -48,6 +48,9 @@ window:
 retry:
   never_retry: [401, 403]
   retry_non_idempotent: true
+  # A throttled AWS call is a 400 carrying `ThrottlingException`, which no
+  # status alone tells apart from a malformed request.
+  throttle_when: { status: 400, body_contains: ThrottlingException }
 # No `error.at`: a refusal is `{"__type": ..., "message"|"Message": ...}` and
 # the whole body names both halves.
 vars:
@@ -78,6 +81,11 @@ endpoints:
       EndTime: "{{ int(window.end) }}"
       MaxResults: 50
     rows: { decoder: json_at, at: "/Events" }
+    # LookupEvents allows 2 requests a second per account and region.
+    rate: { requests_per_sec: 2 }
+    # 200 pages of 50 is 10,000 events a window, because the default 50 pages
+    # stalls any account busier than 2,500 events an hour.
+    max_pages: 200
   # GuardDuty: the detectors the account has, each detector's finding ids
   # 50 a page, and the findings 50 ids a call, looked up under the detector
   # that listed them.

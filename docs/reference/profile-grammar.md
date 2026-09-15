@@ -130,6 +130,7 @@ with the same scope share one token.
 | `retry.never_retry` | Statuses never retried whatever `retry_on` says (every shipped profile lists 401 and 403). |
 | `retry.retry_after_header` | Honour `Retry-After` on a retried response. |
 | `retry.retry_non_idempotent` | Retry POST as well as GET; off by default, set where every POST of the profile is a read. |
+| `retry.throttle_when` | What a refusal meaning "slow down" looks like where the status does not say so (`status` and `body_contains`, as AWS answers 400 with a `ThrottlingException` body): retried whatever `retry_on` lists, and counted `throttle` rather than a client error. A status in `never_retry` is never one. |
 | `error.at` | JSON pointer to the error text in a non-2xx body; the whole body is used when unset. |
 | `quota.headers` | Gauge-name suffix -> response header, surfaced as `dfe_fetcher_api_quota_<suffix>` labelled by source. |
 
@@ -154,7 +155,8 @@ renders a JSON number.
 
 Each entry of `endpoints` is one unit of the source. `defaults` carries the
 same keys (except `unit`, `shape`, `base_url`, `auth`, `window`, `vars`,
-`row_key`, `fail_when`, `add_fields`, `fold`, `lister`, `ignore_status`) and
+`row_key`, `fail_when`, `add_fields`, `fold`, `lister`, `ignore_status`,
+`timeout_secs`) and
 every endpoint inherits them unless it sets its own; a `defaults.body` reaches
 POST endpoints only, and an endpoint's own `prelude: []` or `construct: {}`
 opts out of the defaults'.
@@ -176,6 +178,7 @@ opts out of the defaults'.
 | `paginate` | Pagination ([Pagination](#pagination)). |
 | `fail_when` | CEL over a 2xx body; true fails the tick with the text at `error.at`. |
 | `max_pages` | Page ceiling per tick. |
+| `rate` | The provider's rate limit for this unit's requests (`requests_per_sec`, a fraction for a limit slower than one a second), held to across its pages, window steps and ticks; the defaults' when unset, and unpaced when neither sets one. |
 | `timeout_secs` | Total bound on one request of this endpoint, its body included. Refused on a unit whose decoder streams: a streamed store takes as long as it takes and the client's idle read timeout bounds each read instead. |
 | `max_page_bytes` | Bytes a page-bounded decoder may buffer. |
 | `add_fields` | Fields added to every row: a template, or a JSON object or array whose string leaves are templates; one that reads `key` renders per key of the unit's keyset. |

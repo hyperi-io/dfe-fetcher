@@ -135,6 +135,7 @@ async fn cached_token(
                 "token exchange refused: {}",
                 text.chars().take(512).collect::<String>()
             ),
+            throttled: false,
         });
     }
     let body: Value = response

@@ -447,7 +447,7 @@ endpoints:
         .await
         .expect_err("the cloud client has no inventory grant");
     match &refused {
-        Error::Api { status, text } => {
+        Error::Api { status, text, .. } => {
             assert_eq!(*status, 403, "refused, not a 400 for a missing _oid");
             assert!(!text.is_empty(), "error.at read the refusal text");
             eprintln!("runzero cloud: export refused with status {status}");
