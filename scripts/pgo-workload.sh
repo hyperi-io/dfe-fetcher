@@ -300,7 +300,7 @@ sources:
     interval_secs: 1
     topic: "gcp"
     services:
-      - name: audit_logs
+      - name: cloud_logging
         filter: "logName:cloudaudit.googleapis.com"
     api_url_override: "http://127.0.0.1:19090/gcp"
     token_url_override: "http://127.0.0.1:19090/oauth/token"

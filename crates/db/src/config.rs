@@ -757,4 +757,55 @@ stores:
             "an array is not a query document"
         );
     }
+
+    /// One grammar for every engine. The tests above pin the REFUSALS -- a key
+    /// one engine cannot read is named rather than ignored -- and this pins the
+    /// other half: every engine accepts the whole common surface, so no shared
+    /// key can quietly become engine-specific. Only the store's identity
+    /// differs, because a SQL engine names a query and mongodb names a
+    /// collection.
+    #[test]
+    fn every_engine_accepts_the_common_keys() {
+        for (engine, extra, identity) in [
+            (
+                "odbc",
+                "dialect: postgres\n",
+                r#"query: "SELECT 1", key: [id]"#,
+            ),
+            ("clickhouse", "", r#"query: "SELECT 1", key: [id]"#),
+            ("mongodb", "", "database: d, collection: c"),
+        ] {
+            let yaml = format!(
+                r#"
+enabled: true
+engine: {engine}
+{extra}connection_string: "env:DSN"
+interval_secs: 900
+topic: inventory
+filter: 'kept == true'
+batch: {{ max_rows: 100, max_bytes: 1048576, max_text_bytes: 4096, max_binary_bytes: 8192 }}
+stores:
+  - {{ unit: rows, shape: tail, limit: 50, max_pages_per_tick: 3, row_key: "/id", {identity} }}
+"#
+            );
+            let inst = instance(&yaml);
+            assert!(
+                without_build_gate(inst.validate()).is_empty(),
+                "`{engine}` refused the common surface: {:?}",
+                inst.validate()
+            );
+            assert!(inst.enabled);
+            assert_eq!(inst.interval_secs, Some(900));
+            assert_eq!(inst.topic, "inventory");
+            assert_eq!(inst.filter.as_deref(), Some("kept == true"));
+            assert_eq!(inst.batch.max_rows, 100);
+            assert_eq!(inst.batch.max_bytes, 1_048_576);
+            assert_eq!(inst.batch.max_text_bytes, 4096);
+            assert_eq!(inst.batch.max_binary_bytes, 8192);
+            assert_eq!(inst.stores[0].shape, StoreShape::Tail);
+            assert_eq!(inst.stores[0].limit, 50);
+            assert_eq!(inst.stores[0].max_pages_per_tick, 3);
+            assert_eq!(inst.stores[0].row_key.as_deref(), Some("/id"));
+        }
+    }
 }
