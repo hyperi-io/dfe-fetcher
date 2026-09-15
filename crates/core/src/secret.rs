@@ -28,6 +28,75 @@ pub trait ResolveSecret {
     fn resolve(spec: &str) -> impl Future<Output = Result<SensitiveString>> + Send;
 }
 
+/// Prefixes the resolver strips and resolves; a spec starting with anything
+/// else is a literal credential.
+const RESOLVED_PREFIXES: [&str; 2] = ["vault:", "env:"];
+
+/// Prefixes that read like a credential spec but resolve to nothing, so one
+/// reaches its consumer as its own literal text.
+const UNRESOLVED_PREFIXES: [&str; 2] = ["file:", "bao:"];
+
+/// The credential-spec prefix `spec` carries, and whether it is written
+/// exactly as the resolver matches it.
+///
+/// The resolver compares the prefix exactly, so `Vault:` and a leading space
+/// are near misses that resolve to nothing; they are recognised here so
+/// [`spec_issue`] can refuse them rather than let them reach a driver or a
+/// provider as literal text.
+fn spec_prefix(spec: &str) -> Option<(&'static str, bool)> {
+    let candidate = spec.trim_start().to_ascii_lowercase();
+    RESOLVED_PREFIXES
+        .iter()
+        .chain(UNRESOLVED_PREFIXES.iter())
+        .find(|prefix| candidate.starts_with(**prefix))
+        .map(|prefix| (*prefix, spec.starts_with(prefix)))
+}
+
+/// Whether `spec` references a credential rather than carrying one, so its
+/// text is a path or a variable name and never the value itself.
+#[must_use]
+pub fn is_reference(spec: &str) -> bool {
+    spec_prefix(spec).is_some()
+}
+
+/// What is wrong with `spec` as a credential reference, or `None` when the
+/// resolver can be left to it.
+///
+/// A spec the resolver cannot read otherwise reaches its consumer as literal
+/// text and fails as a bad DSN or a rejected credential rather than as a
+/// configuration error. The caller prefixes its own field path; every message
+/// names the prefix alone, because the rest of a spec is a path.
+#[must_use]
+pub fn spec_issue(spec: &str) -> Option<String> {
+    let resolvable = || {
+        RESOLVED_PREFIXES
+            .iter()
+            .map(|p| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join(" or ")
+    };
+    match spec_prefix(spec) {
+        Some((prefix, _)) if UNRESOLVED_PREFIXES.contains(&prefix) => Some(format!(
+            "`{prefix}` is not a credential spec the resolver handles; use {}",
+            resolvable()
+        )),
+        Some((prefix, false)) => Some(format!(
+            "a `{prefix}` spec is matched exactly; write it in lower case with no leading space"
+        )),
+        Some(("vault:", true)) if !vault_spec_names_a_key(spec) => {
+            Some("a vault spec is `vault:<path>:<key>` and this one names no key".to_owned())
+        }
+        _ => None,
+    }
+}
+
+/// Whether a `vault:` spec carries the `:key` the resolver splits on.
+fn vault_spec_names_a_key(spec: &str) -> bool {
+    spec.trim_start()
+        .strip_prefix("vault:")
+        .is_some_and(|rest| rest.contains(':'))
+}
+
 /// A credential spec resolved on first use through `R`.
 pub struct Secret<R> {
     spec: SensitiveString,
@@ -106,6 +175,61 @@ mod tests {
         assert!(
             !debug.contains("Server=y") && !debug.contains("SERVER=Y"),
             "neither the spec nor the value is printed: {debug}"
+        );
+    }
+
+    /// Fixtures are written out rather than built from the prefix lists, so
+    /// emptying either list fails this test instead of passing vacuously.
+    #[test]
+    fn a_spec_the_resolver_cannot_read_is_named_and_a_usable_one_is_left_alone() {
+        for spec in [
+            "vault:kv/data/team/db:uri",
+            "env:INVENTORY_DSN",
+            "Driver=PostgreSQL Unicode;Server=db",
+            "mongodb://user:pw@host:27017/?authSource=admin",
+            "http://user:pw@host:8123/db",
+        ] {
+            assert!(spec_issue(spec).is_none(), "{spec}");
+        }
+
+        // A prefix that reads like a spec and resolves to nothing.
+        for spec in ["file:/run/secrets/token", "bao:kv/data/team/db:uri"] {
+            let issue = spec_issue(spec).unwrap_or_else(|| panic!("{spec} is refused"));
+            assert!(issue.contains("is not a credential spec"), "{issue}");
+            assert!(
+                issue.contains("`vault:`") && issue.contains("`env:`"),
+                "the refusal names what does work: {issue}"
+            );
+            assert!(
+                !issue.contains("/run/secrets") && !issue.contains("team"),
+                "the refusal names the prefix alone, never the path: {issue}"
+            );
+        }
+
+        // The resolver matches exactly, so a near miss is refused rather than
+        // silently treated as a literal.
+        for spec in ["Vault:kv/data/x:k", " env:VAR", "ENV:VAR"] {
+            let issue = spec_issue(spec).unwrap_or_else(|| panic!("{spec} is refused"));
+            assert!(issue.contains("matched exactly"), "{spec}: {issue}");
+        }
+
+        // A vault spec the resolver cannot split names no key.
+        let no_key = spec_issue("vault:kv/data/team/db").expect("refused");
+        assert!(no_key.contains("names no key"), "{no_key}");
+    }
+
+    #[test]
+    fn only_a_prefixed_spec_is_a_reference() {
+        assert!(is_reference("vault:kv/data/x:k"));
+        assert!(is_reference("env:VAR"));
+        // Unresolvable prefixes are references too: the text is a path, so it
+        // must not be inspected as a literal credential.
+        assert!(is_reference("file:/run/secrets/token"));
+        assert!(is_reference("bao:kv/data/x:k"));
+        assert!(!is_reference("Driver=PostgreSQL Unicode;Server=db"));
+        assert!(
+            !is_reference("mongodb://user:pw@host/"),
+            "a DSN carrying colons is not a spec"
         );
     }
 

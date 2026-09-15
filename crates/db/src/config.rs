@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use dfe_fetcher_core::UnitShape;
 use dfe_fetcher_core::batch::AccumulateConfig;
+use dfe_fetcher_core::secret::{is_reference, spec_issue};
 
 use crate::store::Dialect;
 
@@ -267,14 +268,6 @@ impl Default for DbInstance {
     }
 }
 
-/// Credential-spec prefixes the resolver strips and resolves; a connection
-/// string starting with anything else is a literal.
-const RESOLVED_PREFIXES: [&str; 2] = ["vault:", "env:"];
-
-/// Prefixes that read like a credential spec but resolve to nothing, so one
-/// would reach the driver as its own literal text.
-const UNRESOLVED_PREFIXES: [&str; 2] = ["file:", "bao:"];
-
 /// The value of one option in a MongoDB URI's query string: the name is
 /// matched without regard to case and the value percent-decoded, both as the
 /// driver does before it reads them.
@@ -342,32 +335,6 @@ impl DbInstance {
         }
     }
 
-    /// The credential-spec prefix this connection string carries, and whether
-    /// it is written exactly as the resolver matches it.
-    ///
-    /// The resolver compares the prefix exactly, so `Vault:` and a leading
-    /// space are near misses that resolve to nothing; they are recognised here
-    /// so [`DbInstance::validate`] can refuse them rather than let them reach
-    /// the driver as literal text.
-    fn spec_prefix(&self) -> Option<(&'static str, bool)> {
-        let spec = self.connection_string.expose();
-        let candidate = spec.trim_start().to_ascii_lowercase();
-        RESOLVED_PREFIXES
-            .iter()
-            .chain(UNRESOLVED_PREFIXES.iter())
-            .find(|prefix| candidate.starts_with(**prefix))
-            .map(|prefix| (*prefix, spec.starts_with(prefix)))
-    }
-
-    /// Whether a `vault:` spec carries the `:key` the resolver splits on.
-    fn vault_spec_names_a_key(&self) -> bool {
-        self.connection_string
-            .expose()
-            .trim_start()
-            .strip_prefix("vault:")
-            .is_some_and(|rest| rest.contains(':'))
-    }
-
     /// Whether the connection string is a literal rather than a reference, so
     /// it can be inspected at load.
     ///
@@ -375,9 +342,8 @@ impl DbInstance {
     /// unusable one is refused separately by [`DbInstance::validate`], so it
     /// never also draws a complaint about a missing streaming knob.
     fn literal_connection_string(&self) -> Option<&str> {
-        self.spec_prefix()
-            .is_none()
-            .then_some(self.connection_string.expose())
+        let spec = self.connection_string.expose();
+        (!is_reference(spec)).then_some(spec)
     }
 
     /// Every problem with this instance, each as `field: problem`.
@@ -392,33 +358,8 @@ impl DbInstance {
         }
         // A spec the resolver cannot read otherwise reaches the driver as
         // literal text and fails about the DSN, not the credential.
-        // Every message names the prefix only; the rest may be a path.
-        let resolvable = || {
-            RESOLVED_PREFIXES
-                .iter()
-                .map(|p| format!("`{p}`"))
-                .collect::<Vec<_>>()
-                .join(" or ")
-        };
-        match self.spec_prefix() {
-            Some((prefix, _)) if UNRESOLVED_PREFIXES.contains(&prefix) => {
-                issues.push(format!(
-                    "connection_string: `{prefix}` is not a credential spec the resolver handles; use {}",
-                    resolvable()
-                ));
-            }
-            Some((prefix, false)) => {
-                issues.push(format!(
-                    "connection_string: a `{prefix}` spec is matched exactly; write it in lower case with no leading space"
-                ));
-            }
-            Some(("vault:", true)) if !self.vault_spec_names_a_key() => {
-                issues.push(
-                    "connection_string: a vault spec is `vault:<path>:<key>` and this one names no key"
-                        .to_owned(),
-                );
-            }
-            _ => {}
+        if let Some(issue) = spec_issue(self.connection_string.expose()) {
+            issues.push(format!("connection_string: {issue}"));
         }
         if !self.engine.is_built() {
             issues.push(format!(

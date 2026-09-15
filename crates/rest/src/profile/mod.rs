@@ -2199,6 +2199,50 @@ impl InstanceAuth {
         .count()
     }
 
+    /// Every credential-spec field that is set, as `(field, spec)`.
+    ///
+    /// Destructured exhaustively so a field added to the struct cannot
+    /// quietly escape the load-time spec check: the plain identifiers are
+    /// named and discarded, the specs are listed.
+    #[must_use]
+    pub fn credential_specs(&self) -> Vec<(&'static str, &SensitiveString)> {
+        let Self {
+            mode: _,
+            username: _,
+            client_id: _,
+            scope: _,
+            integration_key: _,
+            assume_role_arn: _,
+            token,
+            key,
+            password,
+            client_secret,
+            secret_key,
+            service_account_key,
+            service_account_key_file,
+            private_key,
+            access_key_id,
+            secret_access_key,
+            credentials_json,
+        } = self;
+        [
+            ("token", token),
+            ("key", key),
+            ("password", password),
+            ("client_secret", client_secret),
+            ("secret_key", secret_key),
+            ("service_account_key", service_account_key),
+            ("service_account_key_file", service_account_key_file),
+            ("private_key", private_key),
+            ("access_key_id", access_key_id),
+            ("secret_access_key", secret_access_key),
+            ("credentials_json", credentials_json),
+        ]
+        .into_iter()
+        .filter_map(|(field, spec)| spec.as_ref().map(|spec| (field, spec)))
+        .collect()
+    }
+
     /// Whether the `sigv4` identity is complete: the JSON document alone, or
     /// both halves of the key pair.
     #[must_use]
@@ -2399,6 +2443,13 @@ impl RestInstance {
                 "only the `sigv4` mode assumes a role",
             ));
         }
+        // A spec the resolver cannot read otherwise reaches the provider as
+        // literal text and comes back as a 401 about the credential's value.
+        for (field, spec) in self.auth.credential_specs() {
+            if let Some(issue) = dfe_fetcher_core::secret::spec_issue(spec.expose()) {
+                issues.push(Issue::new(format!("auth.{field}"), issue));
+            }
+        }
         if let Some(expr) = &self.filter
             && let Err(e) = dfe_fetcher_core::rules::RowRules::compile(Some(expr), Vec::new())
         {
@@ -2489,6 +2540,103 @@ endpoints:
 
     fn parse(yaml: &str) -> RestProfile {
         serde_yaml_ng::from_str(yaml).unwrap()
+    }
+
+    /// Every credential field is checked, not the mode's own alone, and the
+    /// refusal names the field and the prefix without echoing the spec.
+    #[test]
+    fn a_credential_spec_the_resolver_cannot_read_is_refused_at_load() {
+        let profile = parse(RUNZERO);
+        let bearer = |spec: &str| {
+            let instance: RestInstance = serde_yaml_ng::from_str(&format!(
+                "profile: x\ntopic: t\nauth: {{ mode: bearer, token: \"{spec}\" }}\n"
+            ))
+            .unwrap();
+            instance.validate(&profile)
+        };
+
+        for spec in ["env:RUNZERO_TOKEN", "vault:kv/data/team/x:token"] {
+            assert!(bearer(spec).is_empty(), "{spec}: {:?}", bearer(spec));
+        }
+
+        let issues = bearer("file:/run/secrets/token");
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.token");
+        assert!(
+            issues[0].message.contains("is not a credential spec"),
+            "{:?}",
+            issues[0]
+        );
+        assert!(
+            !issues[0].message.contains("/run/secrets"),
+            "the refusal never echoes the spec: {:?}",
+            issues[0]
+        );
+
+        for (spec, wanted) in [
+            ("Vault:kv/data/x:k", "matched exactly"),
+            ("vault:kv/data/x", "names no key"),
+        ] {
+            let issues = bearer(spec);
+            assert_eq!(issues.len(), 1, "{spec}: {issues:?}");
+            assert!(
+                issues[0].message.contains(wanted),
+                "{spec}: {:?}",
+                issues[0]
+            );
+        }
+
+        // A field of another mode is checked the same way.
+        let oauth: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: id, client_secret: \"bao:kv/data/x:k\" }\n",
+        )
+        .unwrap();
+        let issues = oauth.validate(&profile);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.client_secret");
+
+        // Every spec-carrying field is enumerated, so none escapes the check.
+        let mut auth = InstanceAuth {
+            token: Some("env:A".into()),
+            key: Some("env:A".into()),
+            password: Some("env:A".into()),
+            client_secret: Some("env:A".into()),
+            secret_key: Some("env:A".into()),
+            service_account_key: Some("env:A".into()),
+            service_account_key_file: Some("env:A".into()),
+            private_key: Some("env:A".into()),
+            access_key_id: Some("env:A".into()),
+            secret_access_key: Some("env:A".into()),
+            credentials_json: Some("env:A".into()),
+            ..InstanceAuth::default()
+        };
+        let fields: Vec<&str> = auth
+            .credential_specs()
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "token",
+                "key",
+                "password",
+                "client_secret",
+                "secret_key",
+                "service_account_key",
+                "service_account_key_file",
+                "private_key",
+                "access_key_id",
+                "secret_access_key",
+                "credentials_json"
+            ]
+        );
+        auth.token = None;
+        assert_eq!(
+            auth.credential_specs().len(),
+            10,
+            "only the fields that are set"
+        );
     }
 
     #[test]
