@@ -267,6 +267,14 @@ impl Default for DbInstance {
     }
 }
 
+/// Credential-spec prefixes the resolver strips and resolves; a connection
+/// string starting with anything else is a literal.
+const RESOLVED_PREFIXES: [&str; 2] = ["vault:", "env:"];
+
+/// Prefixes that read like a credential spec but resolve to nothing, so one
+/// would reach the driver as its own literal text.
+const UNRESOLVED_PREFIXES: [&str; 2] = ["file:", "bao:"];
+
 impl DbInstance {
     /// The dialect in force: the configured one, ClickHouse for that engine,
     /// none for MongoDB.
@@ -279,15 +287,42 @@ impl DbInstance {
         }
     }
 
-    /// Whether the connection string is a literal rather than a `vault:` or
-    /// `env:` reference, so it can be inspected at load.
-    fn literal_connection_string(&self) -> Option<&str> {
+    /// The credential-spec prefix this connection string carries, and whether
+    /// it is written exactly as the resolver matches it.
+    ///
+    /// The resolver compares the prefix exactly, so `Vault:` and a leading
+    /// space are near misses that resolve to nothing; they are recognised here
+    /// so [`DbInstance::validate`] can refuse them rather than let them reach
+    /// the driver as literal text.
+    fn spec_prefix(&self) -> Option<(&'static str, bool)> {
         let spec = self.connection_string.expose();
-        let referenced = spec.starts_with("vault:")
-            || spec.starts_with("env:")
-            || spec.starts_with("file:")
-            || spec.starts_with("bao:");
-        (!referenced).then_some(spec)
+        let candidate = spec.trim_start().to_ascii_lowercase();
+        RESOLVED_PREFIXES
+            .iter()
+            .chain(UNRESOLVED_PREFIXES.iter())
+            .find(|prefix| candidate.starts_with(**prefix))
+            .map(|prefix| (*prefix, spec.starts_with(prefix)))
+    }
+
+    /// Whether a `vault:` spec carries the `:key` the resolver splits on.
+    fn vault_spec_names_a_key(&self) -> bool {
+        self.connection_string
+            .expose()
+            .trim_start()
+            .strip_prefix("vault:")
+            .is_some_and(|rest| rest.contains(':'))
+    }
+
+    /// Whether the connection string is a literal rather than a reference, so
+    /// it can be inspected at load.
+    ///
+    /// Anything carrying a spec prefix is a reference and is not inspected; an
+    /// unusable one is refused separately by [`DbInstance::validate`], so it
+    /// never also draws a complaint about a missing streaming knob.
+    fn literal_connection_string(&self) -> Option<&str> {
+        self.spec_prefix()
+            .is_none()
+            .then_some(self.connection_string.expose())
     }
 
     /// Every problem with this instance, each as `field: problem`.
@@ -299,6 +334,36 @@ impl DbInstance {
         }
         if self.connection_string.expose().trim().is_empty() {
             issues.push("connection_string: is required".to_owned());
+        }
+        // A spec the resolver cannot read otherwise reaches the driver as
+        // literal text and fails about the DSN, not the credential.
+        // Every message names the prefix only; the rest may be a path.
+        let resolvable = || {
+            RESOLVED_PREFIXES
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        };
+        match self.spec_prefix() {
+            Some((prefix, _)) if UNRESOLVED_PREFIXES.contains(&prefix) => {
+                issues.push(format!(
+                    "connection_string: `{prefix}` is not a credential spec the resolver handles; use {}",
+                    resolvable()
+                ));
+            }
+            Some((prefix, false)) => {
+                issues.push(format!(
+                    "connection_string: a `{prefix}` spec is matched exactly; write it in lower case with no leading space"
+                ));
+            }
+            Some(("vault:", true)) if !self.vault_spec_names_a_key() => {
+                issues.push(
+                    "connection_string: a vault spec is `vault:<path>:<key>` and this one names no key"
+                        .to_owned(),
+                );
+            }
+            _ => {}
         }
         if !self.engine.is_built() {
             issues.push(format!(
@@ -557,6 +622,73 @@ stores:
             "engine: odbc\ndialect: mysql\nconnection_string: \"env:INVENTORY_DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
         );
         assert!(without_build_gate(inst.validate()).is_empty());
+    }
+
+    /// Both halves of the prefix contract, so the accepted list and the
+    /// resolver cannot drift apart again: a prefix the resolver handles is
+    /// accepted and left uninspected, and one it does not is refused at load
+    /// naming the prefix. An unresolvable prefix otherwise reaches the driver
+    /// as literal text and fails talking about the DSN, not the credential.
+    /// One instance of `engine: odbc` carrying `spec` as its connection string.
+    fn with_spec(spec: &str) -> Vec<String> {
+        without_build_gate(
+            instance(&format!(
+                "engine: odbc\ndialect: mysql\nconnection_string: \"{spec}\"\ntopic: t\nstores: [{{ unit: a, query: 'SELECT 1' }}]\n"
+            ))
+            .validate(),
+        )
+    }
+
+    /// A connection_string issue, or nothing.
+    fn spec_issues(spec: &str) -> Vec<String> {
+        with_spec(spec)
+            .into_iter()
+            .filter(|i| i.starts_with("connection_string:"))
+            .collect()
+    }
+
+    #[test]
+    fn a_spec_the_resolver_cannot_read_is_refused_at_load() {
+        // Well formed, so accepted and left uninspected; a vault spec carries
+        // its `:key`.
+        for spec in ["vault:kv/data/team/db:dsn", "env:INVENTORY_DSN"] {
+            assert!(
+                with_spec(spec).is_empty(),
+                "`{spec}` is a spec the resolver reads, so nothing is wrong with it"
+            );
+        }
+        // Not derived from the consts under test, so emptying one fails here.
+        for (spec, secret) in [
+            ("file:/run/secrets/dsn", "run/secrets/dsn"),
+            ("bao:secret/data/team/db:dsn", "team/db"),
+        ] {
+            let issues = spec_issues(spec);
+            assert!(!issues.is_empty(), "`{spec}` must be refused");
+            assert!(
+                !issues.iter().any(|i| i.contains(secret)),
+                "the refusal names the prefix only, never the rest of the spec: {issues:?}"
+            );
+            assert!(
+                !with_spec(spec)
+                    .iter()
+                    .any(|i| i.contains("UseDeclareFetch")),
+                "a refused spec must not also be inspected for a streaming knob"
+            );
+        }
+        // The resolver matches a prefix exactly, so a near miss resolves to
+        // nothing and must not be mistaken for a reference.
+        for spec in ["Vault:kv/data/team/db:dsn", " vault:kv/data/team/db:dsn"] {
+            assert!(
+                !spec_issues(spec).is_empty(),
+                "`{spec}` is not written as the resolver matches it, so it must be refused"
+            );
+        }
+        // Split into path and key only at resolve time, so a missing key is
+        // otherwise a per-tick failure rather than a load error.
+        assert!(
+            !spec_issues("vault:kv/data/team/db").is_empty(),
+            "a vault spec naming no key must be refused at load"
+        );
     }
 
     #[test]

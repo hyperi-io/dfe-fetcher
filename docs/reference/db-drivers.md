@@ -1,6 +1,6 @@
 <!-- Project:   dfe-fetcher                            -->
 <!-- File:      docs/reference/db-drivers.md            -->
-<!-- Purpose:   Reference for the database engines: driver, licence, image, connection form, tail key, checkpoint -->
+<!-- Purpose:   Reference for the database engines: driver, licence, image, connection form, authentication, tail key, checkpoint -->
 <!-- Language:  Markdown                                 -->
 <!--                                                     -->
 <!-- License:   BUSL-1.1                                 -->
@@ -19,6 +19,7 @@ annotated in `config.example.yaml`; the code is `crates/db/src/`.
 
 - [What the image ships](#what-the-image-ships)
 - [The matrix](#the-matrix)
+- [Authentication](#authentication)
 - [Dialect notes](#dialect-notes)
 - [What the tail commits](#what-the-tail-commits)
 - [What is proven where](#what-is-proven-where)
@@ -55,6 +56,58 @@ under its own licence, in the image or in a driver layer. `db-clickhouse` and
 
 The driver name in a connection string is whatever `odbcinst -q -d` lists on
 the host; the names above are the packages' defaults.
+
+## Authentication
+
+`connection_string` is ONE string, resolved once when the store first
+connects. So an auth form works here only if the whole credential fits in that
+string, or in files the container already carries. A form that needs a
+short-lived token minted per connection does not work, because nothing
+re-resolves the string between connects; those are listed as unsupported below
+rather than left to fail at connect time.
+
+Two limits apply to every row. The string is a credential spec, so it may be
+`vault:` or `env:` and the plaintext never sits in config; those are the only
+two prefixes that resolve, and a `file:` or `bao:` prefix is refused at load
+naming the prefix rather than reaching the driver as literal text. And a
+credential the driver reads from disk (a key file, a wallet, a certificate) has
+to be mounted into the image; the spec mechanism does not fetch it.
+
+| Engine | Expressible in the connection string | Needs a file mounted | Not expressible here |
+|--------|--------------------------------------|----------------------|----------------------|
+| PostgreSQL | User and password (`Uid`, `Pwd`). TLS client certificate through psqlodbc's `pqopt`, which forwards libpq's `sslmode`, `sslcert`, `sslkey`, `sslrootcert` | The certificate, key and root CA | Kerberos and GSSAPI: libpq has `krbsrvname`, `gssencmode` and `gsslib`, but psqlodbc documents no keyword for them and only demonstrates `pqopt` with the TLS set, so treat it as undocumented rather than available. Azure Database for PostgreSQL Entra auth -- see below |
+| MariaDB, MySQL | User and password. TLS client certificate (`SSLCERT`, `SSLKEY`, `SSLCA`, `SSLVERIFY=1`); absolute paths are required | The certificate, key and CA | -- |
+| ClickHouse | User and password in the URL (`http[s]://user:password@host/db`) | -- | -- |
+| SQL Server, Azure SQL, Synapse | User and password. Entra service principal (`Authentication=ActiveDirectoryServicePrincipal`, client id in `UID`, secret in `PWD`). Managed identity (`Authentication=ActiveDirectoryMsi`, with `UID` for a user-assigned identity). Kerberos (`Trusted_Connection=yes`) | Nothing for the Entra forms. Kerberos needs an external ticket cache the driver does not create | An Entra ACCESS TOKEN. Microsoft documents no DSN or connection-string keyword for it: it is set through a connection attribute whose buffer must outlive the connection handle, so a config-driven caller cannot supply it. Client certificates are documented only for loopback connections on SQL Server on Linux, not as a general login |
+| Oracle | User and password. Nothing else: the ODBC keyword set has no auth parameter beyond these | Wallet and TCPS, and Kerberos, are Oracle Net configuration in `tnsnames.ora` and `sqlnet.ora` found through `TNS_ADMIN`, so the credential is entirely out of band and the string carries none of it | -- |
+| Snowflake | User and password. Key-pair JWT (`AUTHENTICATOR=SNOWFLAKE_JWT` with `PRIV_KEY_FILE`, plus `PRIV_KEY_FILE_PWD` for an encrypted key) -- the driver signs the assertion itself. OAuth client credentials (`AUTHENTICATOR=oauth_client_credentials` with `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_REQUEST_URL`) -- the driver performs the exchange. Workload identity (`AUTHENTICATOR=workload_identity` with `WORKLOAD_IDENTITY_PROVIDER`), which needs no key file at all. A programmatic access token, which the driver's parameter list takes as `AUTHENTICATOR=programmatic_access_token` with `token` while the feature's own guide describes putting it in the password | The private key for the key-pair form | An OAuth token minted elsewhere (`AUTHENTICATOR=oauth` with `token`) -- that is a caller-supplied token, not a static credential |
+| Databricks | A personal access token (`AuthMech=3`, `UID=token`, the token in `PWD`). OAuth machine-to-machine (`AuthMech=11`, `Auth_Flow=1`, with `Auth_Client_ID`, `Auth_Client_Secret` and `Auth_Scope=all-apis`), where the driver performs the exchange | -- | Token pass-through (`Auth_Flow=0` with `Auth_AccessToken`), where the caller supplies an OAuth token |
+| BigQuery | A service-account key (`OAuthMechanism=0` with `Email` and `KeyFilePath`, or `KeyFile` for the key inline). Application Default Credentials (`OAuthMechanism=3`), which falls back to the metadata server's default service account and so needs no key at all. Workload identity federation (`OAuthMechanism=4`). Service-account impersonation (`SAI_Email`, `SAI_Lifetime`, `SAI_Scopes`) | The key file, unless `KeyFile` carries it inline or `OAuthMechanism=3` is used | -- |
+| Redshift | IAM with explicit keys (`IAM=1` with `AccessKeyID`, `SecretAccessKey`, optional `SessionToken`), a shared profile (`Profile`), or the instance role (`InstanceProfile=1`). The driver calls STS and requests cluster credentials itself | `Profile` reads a shared credentials file | The IdP token plugin, which the vendor states the calling application must generate |
+| SQLite | Nothing: the file is the database and the driver takes no credential | The database file itself | -- |
+| MongoDB | SCRAM (`authMechanism=SCRAM-SHA-256` or `SCRAM-SHA-1`, with `authSource`) | -- | `MONGODB-AWS` and `MONGODB-OIDC` are gated behind driver build features this binary does not enable, so a connection string naming them fails at connect (#121). `MONGODB-X509` is URI-shaped and needs no auth feature, but the driver's own documentation demonstrates X.509 only through a programmatic credential, so it is unproven here rather than supported |
+
+### Forms that need a token minted per connection
+
+These are unsupported today, and the reason is the same in each case: the
+credential is a token valid for minutes to an hour, and `connection_string`
+resolves once. Supporting them means re-resolving the string per connect, which
+#111 also asks for.
+
+- **Azure Database for PostgreSQL** with Entra. The user name is the Entra
+  principal and the PASSWORD is an access token, obtained out of band and valid
+  for a matter of minutes.
+- **Google Cloud SQL** with IAM database authentication. The password is a login
+  token valid for about an hour; Google's own guidance is that long-lived or
+  pooled processes use a connector rather than a pasted token, and the token can
+  exceed a client's password field.
+- **Caller-supplied OAuth tokens** on Snowflake, Databricks and Redshift, listed
+  per engine above. The driver accepts a token but will not obtain one, so
+  something outside the fetcher has to mint and rotate it.
+
+Everything else in the matrix either fits in the string or sits in a file, which
+is why the supported set is wider than user and password while still being a
+static configuration.
 
 ## Dialect notes
 
