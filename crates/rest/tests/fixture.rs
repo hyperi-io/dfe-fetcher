@@ -217,6 +217,52 @@ async fn a_redirect_off_the_origin_is_not_followed_and_the_key_stays_home() {
     assert_eq!(fx.requests_to("/array/items.json").len(), 1);
 }
 
+/// A transport failure must not carry the credential. reqwest's `Display`
+/// appends the request URL, which holds the key when `auth.api_key.query`
+/// puts it there, so every error site strips it with `without_url()`. Nothing
+/// but this test stops a later change putting the URL back.
+#[tokio::test]
+async fn a_transport_failure_never_carries_the_query_key() {
+    // A port that was free and is now closed, so the connection is refused
+    // rather than answered: the only path that reaches the transport-error
+    // arm, since a status code takes the other one.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead = listener.local_addr().unwrap();
+    drop(listener);
+
+    let p = "profile: keyed\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { query: api_key }\nretry: { min_backoff_ms: 1, max_backoff_ms: 5 }\nendpoints:\n  - { unit: items, path: /array/items.json, rows: { decoder: json_array } }\n";
+    let mut inst: RestInstance = serde_yaml_ng::from_str(
+        "profile: x\ntopic: t\nauth: { mode: api_key, key: super-secret-key }\n",
+    )
+    .unwrap();
+    inst.vars
+        .insert("base_url".into(), Value::String(format!("http://{dead}")));
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        dfe_fetcher_rest::request::http_client().unwrap(),
+    )
+    .expect("bind");
+
+    let text = fetch(&s, "items", None)
+        .await
+        .expect_err("nothing is listening on a closed port")
+        .to_string();
+    assert!(
+        !text.contains("super-secret-key"),
+        "the credential must never reach the error text: {text}"
+    );
+    assert!(
+        !text.contains("api_key="),
+        "nor the query parameter carrying it: {text}"
+    );
+    assert!(
+        !text.contains(&dead.to_string()),
+        "the URL is stripped, so the address does not appear either: {text}"
+    );
+}
+
 /// The page ceiling on a unit that reads the window is a failed tick, so the
 /// scheduler does not advance the window past the pages never fetched; on a
 /// dump, which has no window to lose, the sequence is cut short.
