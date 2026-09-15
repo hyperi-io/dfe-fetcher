@@ -122,8 +122,8 @@ fn change_stream_error(e: &mongodb::error::Error, unit: &str) -> Error {
     if let ErrorKind::Command(cmd) = e.kind.as_ref() {
         if cmd.code == CHANGE_STREAM_NEEDS_REPLICA_SET {
             return Error::Config(format!(
-                "mongodb ({} {}): {}; a change stream needs a replica set -- set `tail: keyset` \
-                 for a standalone server",
+                "mongodb ({} {}): {}; a change stream needs a replica set -- set \
+                 `mongodb.tail: keyset` for a standalone server",
                 cmd.code, cmd.code_name, cmd.message
             ));
         }
@@ -211,33 +211,30 @@ impl MongoStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] when the spec names no database or
-    /// collection, or its filter is not a BSON document.
+    /// Returns [`Error::Config`] when the spec carries no `mongodb` block or
+    /// its filter is not a BSON document.
     pub fn new(
         spec: &StoreSpec,
         uri: Arc<Secret>,
         batch: BatchSpec,
         lease: Arc<dyn Lease>,
     ) -> Result<Self> {
-        let database = spec
-            .database
-            .clone()
-            .ok_or_else(|| Error::Config("database: is required for the mongodb engine".into()))?;
-        let collection = spec.collection.clone().ok_or_else(|| {
-            Error::Config("collection: is required for the mongodb engine".into())
-        })?;
-        let filter = match &spec.filter {
+        let mongo = spec
+            .mongodb
+            .as_ref()
+            .ok_or_else(|| Error::Config("mongodb: is required for the mongodb engine".into()))?;
+        let filter = match &mongo.filter {
             Some(map) => Document::try_from(map.clone())
-                .map_err(|e| Error::Config(format!("filter: not a BSON document: {e}")))?,
+                .map_err(|e| Error::Config(format!("mongodb.filter: not a BSON document: {e}")))?,
             None => Document::new(),
         };
         Ok(Self {
             uri,
             client: OnceCell::new(),
-            database,
-            collection,
+            database: mongo.database.clone(),
+            collection: mongo.collection.clone(),
             filter,
-            tail: spec.tail_mode(),
+            tail: mongo.tail_mode(),
             batch_size: u32::try_from(batch.max_rows).unwrap_or(u32::MAX),
             lease,
             unit: Arc::from(spec.unit.as_str()),
@@ -533,7 +530,7 @@ mod tests {
     #[test]
     fn the_keyset_filter_folds_the_operator_filter_in_with_the_id_predicate() {
         let s = store(
-            "unit: a\nshape: tail\ntail: keyset\ndatabase: d\ncollection: c\nfilter: { alive: true }\n",
+            "unit: a\nshape: tail\nmongodb: { database: d, collection: c, tail: keyset, filter: { alive: true } }\n",
         );
         assert_eq!(s.tail_mode(), TailMode::Keyset);
         assert_eq!(s.keyset_filter(None).unwrap(), doc! { "alive": true });
@@ -543,7 +540,8 @@ mod tests {
             s.keyset_filter(Some(&after)).unwrap(),
             doc! { "$and": [{ "alive": true }, { "_id": { "$gt": oid } }] }
         );
-        let bare = store("unit: a\nshape: tail\ntail: keyset\ndatabase: d\ncollection: c\n");
+        let bare =
+            store("unit: a\nshape: tail\nmongodb: { database: d, collection: c, tail: keyset }\n");
         assert_eq!(
             bare.keyset_filter(Some(&serde_json::json!(7))).unwrap(),
             doc! { "_id": { "$gt": 7 } }
@@ -552,11 +550,11 @@ mod tests {
 
     #[test]
     fn the_default_tail_is_the_change_stream_and_a_bad_filter_is_a_config_error() {
-        let s = store("unit: a\nshape: tail\ndatabase: d\ncollection: c\n");
+        let s = store("unit: a\nshape: tail\nmongodb: { database: d, collection: c }\n");
         assert_eq!(s.tail_mode(), TailMode::ChangeStream);
         assert_eq!(s.batch_size, 5000);
         let spec: StoreSpec = serde_yaml_ng::from_str(
-            "unit: a\ndatabase: d\ncollection: c\nfilter: { at: { $date: 'not a date' } }\n",
+            "unit: a\nmongodb: { database: d, collection: c, filter: { at: { $date: 'not a date' } } }\n",
         )
         .unwrap();
         let Err(err) = MongoStore::new(
@@ -601,7 +599,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_multi_value_checkpoint_is_refused_before_any_connection() {
-        let s = store("unit: a\nshape: tail\ndatabase: d\ncollection: c\n");
+        let s = store("unit: a\nshape: tail\nmongodb: { database: d, collection: c }\n");
         let values = [serde_json::json!(1), serde_json::json!(2)];
         let err = s
             .tail(Some(values.to_vec()), 10)
@@ -662,7 +660,10 @@ mod tests {
         );
         let mapped = change_stream_error(&standalone, "changes");
         assert!(matches!(mapped, Error::Config(_)), "{mapped}");
-        assert!(mapped.to_string().contains("tail: keyset"), "{mapped}");
+        assert!(
+            mapped.to_string().contains("mongodb.tail: keyset"),
+            "the error must name the key as the grammar spells it: {mapped}"
+        );
 
         // The oplog has rolled past the committed token: the operator has to
         // clear that unit's checkpoint, so the error names it.

@@ -4935,31 +4935,10 @@ $defs:
         - string
         - 'null'
         default: null
-      database:
-        description: 'MongoDB: the database holding the collection.'
-        type:
-        - string
-        - 'null'
-        default: null
-      collection:
-        description: 'MongoDB: the collection.'
-        type:
-        - string
-        - 'null'
-        default: null
-      filter:
-        description: |-
-          MongoDB: a query document over what the store yields -- the documents
-          of a dump or keyset tail, the change events of a change stream.
-        type:
-        - object
-        - 'null'
-        additionalProperties: true
-        default: null
-      tail:
-        description: 'MongoDB tail only: change stream (the default) or keyset over `_id`.'
+      mongodb:
+        description: MongoDB only; refused for a SQL engine.
         anyOf:
-        - $ref: '#/$defs/TailMode'
+        - $ref: '#/$defs/MongoStoreSpec'
         - type: 'null'
         default: null
     additionalProperties: false
@@ -4972,6 +4951,39 @@ $defs:
     - description: Rows past the last committed key tuple, in key order.
       type: string
       const: tail
+  MongoStoreSpec:
+    description: |-
+      What the MongoDB engine needs of a store, which is a collection rather than
+      a query.
+
+      It sits in its own block so the keys every engine shares stay one
+      vocabulary: `filter` here is a query document sent to the server, distinct
+      from the instance-level `filter`, which is a CEL expression over each row.
+    type: object
+    properties:
+      database:
+        description: The database holding the collection.
+        type: string
+      collection:
+        description: The collection.
+        type: string
+      filter:
+        description: |-
+          A query document over what the store yields -- the documents of a dump
+          or keyset tail, the change events of a change stream.
+        type:
+        - object
+        - 'null'
+        additionalProperties: true
+      tail:
+        description: 'Tail only: change stream (the default) or keyset over `_id`.'
+        anyOf:
+        - $ref: '#/$defs/TailMode'
+        - type: 'null'
+    additionalProperties: false
+    required:
+    - database
+    - collection
   TailMode:
     description: How a MongoDB tail follows its collection.
     oneOf:
