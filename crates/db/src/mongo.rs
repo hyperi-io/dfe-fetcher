@@ -62,7 +62,7 @@ use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::{Mark, Row, RowStream};
 
-use crate::config::{BatchSpec, StoreSpec, TailMode};
+use crate::config::{BatchSpec, StoreSpec, TailMode, mongodb_auth_issue};
 use crate::lines::{LeasedBlock, rows_of_blocks};
 use crate::secret::Secret;
 use crate::store::Store;
@@ -254,6 +254,12 @@ impl MongoStore {
         self.client
             .get_or_try_init(|| async {
                 let uri = self.uri.value().await?;
+                // A referenced spec could not be inspected at load; the same
+                // check runs here so the message names our feature, not the
+                // driver's.
+                if let Some(issue) = mongodb_auth_issue(uri) {
+                    return Err(Error::Config(format!("connection_string: {issue}")));
+                }
                 Client::with_uri_str(uri).await.map_err(|e| mongo_error(&e))
             })
             .await

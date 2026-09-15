@@ -61,10 +61,13 @@ url = { workspace = true, optional = true }
 # keyset over `_id`. TLS is rustls over aws-lc-rs, the provider the rest of
 # the graph already links; `dns-resolver` serves the `mongodb+srv://` form
 # Atlas hands out; `compat-3-3-0` is the crate's own forward-compatibility
-# marker, demanded once default features are off. `bson` is named so its
-# relaxed extended JSON writer (`serde_json-1`) is on: ObjectId and dates land
-# as JSON, not debug text.
-mongodb = { version = "3.9.1", default-features = false, features = ["bson-3", "compat-3-3-0", "rustls-tls-aws-lc", "dns-resolver"], optional = true }
+# marker, demanded once default features are off. `azure-oidc` and `gcp-oidc`
+# let `MONGODB-OIDC` mint from those metadata services over the reqwest the
+# graph already carries; `aws-auth` is deliberately absent, because it links
+# the AWS SDK's credential-provider stack and its own HTTP client. `bson` is
+# named so its relaxed extended JSON writer (`serde_json-1`) is on: ObjectId
+# and dates land as JSON, not debug text.
+mongodb = { version = "3.9.1", default-features = false, features = ["bson-3", "compat-3-3-0", "rustls-tls-aws-lc", "dns-resolver", "azure-oidc", "gcp-oidc"], optional = true }
 bson = { version = "3.1.0", default-features = false, features = ["serde", "serde_json-1"], optional = true }
 
 [dev-dependencies]

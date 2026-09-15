@@ -275,6 +275,52 @@ const RESOLVED_PREFIXES: [&str; 2] = ["vault:", "env:"];
 /// would reach the driver as its own literal text.
 const UNRESOLVED_PREFIXES: [&str; 2] = ["file:", "bao:"];
 
+/// The value of one option in a MongoDB URI's query string, matched by name
+/// without regard to case as the driver matches it.
+fn uri_option<'a>(uri: &'a str, name: &str) -> Option<&'a str> {
+    let (_, query) = uri.split_once('?')?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v)
+}
+
+/// A MongoDB auth mechanism this binary cannot perform, named with the
+/// reason, or `None` when the driver can be left to it.
+///
+/// `MONGODB-AWS` and `GSSAPI` sit behind driver build features this crate
+/// does not enable. `MONGODB-OIDC` needs a token callback, which the driver
+/// supplies only for the `azure`, `gcp` and `k8s` environments; any other
+/// form expects the application to hand one over, and this one does not.
+/// Left to the driver these fail at connect naming its feature rather than
+/// the binary, so a literal string is checked at load and a resolved
+/// reference at connect.
+#[must_use]
+pub fn mongodb_auth_issue(uri: &str) -> Option<String> {
+    let mechanism = uri_option(uri, "authMechanism")?.to_ascii_uppercase();
+    match mechanism.as_str() {
+        "MONGODB-AWS" | "GSSAPI" => Some(format!("`{mechanism}` is not built into this binary")),
+        "MONGODB-OIDC" => {
+            let environment = uri_option(uri, "authMechanismProperties").and_then(|props| {
+                props
+                    .split(',')
+                    .filter_map(|p| p.split_once(':'))
+                    .find(|(k, _)| k.trim().eq_ignore_ascii_case("ENVIRONMENT"))
+                    .map(|(_, v)| v.trim().to_ascii_lowercase())
+            });
+            match environment.as_deref() {
+                Some("azure" | "gcp" | "k8s") => None,
+                _ => Some(
+                    "`MONGODB-OIDC` needs a token callback this binary does not provide; set `authMechanismProperties=ENVIRONMENT:` to `azure`, `gcp` or `k8s` so the driver mints from that environment"
+                        .to_owned(),
+                ),
+            }
+        }
+        _ => None,
+    }
+}
+
 impl DbInstance {
     /// The dialect in force: the configured one, ClickHouse for that engine,
     /// none for MongoDB.
@@ -385,6 +431,12 @@ impl DbInstance {
                 d.as_str()
             )),
             _ => {}
+        }
+        if self.engine == Engine::Mongodb
+            && let Some(literal) = self.literal_connection_string()
+            && let Some(issue) = mongodb_auth_issue(literal)
+        {
+            issues.push(format!("connection_string: {issue}"));
         }
         if let (Some(dialect), Some(literal)) = (self.dialect(), self.literal_connection_string())
             && let Some(knob) = dialect.streaming_knob()
@@ -831,6 +883,74 @@ stores:
                 "{issues:?}"
             );
         }
+    }
+
+    /// One mongodb instance carrying `uri` as a literal connection string;
+    /// only the `connection_string` issues are returned, which leaves the
+    /// engine gate out so the test reads the same on a build without it.
+    fn mongo_uri_issues(uri: &str) -> Vec<String> {
+        let inst = instance(&format!(
+            "engine: mongodb\nconnection_string: \"{uri}\"\ntopic: t\nstores: [{{ unit: a, database: d, collection: c }}]\n"
+        ));
+        inst.validate()
+            .into_iter()
+            .filter(|i| i.starts_with("connection_string:"))
+            .collect()
+    }
+
+    #[test]
+    fn a_mongodb_mechanism_this_binary_cannot_perform_is_refused_at_load() {
+        // SCRAM, X.509 and the three OIDC environments the driver mints from
+        // are the driver's to validate; nothing is said here.
+        for uri in [
+            "mongodb://u:p@h/?authSource=admin&authMechanism=SCRAM-SHA-256",
+            "mongodb://h/?authMechanism=MONGODB-X509&tls=true",
+            "mongodb://u:p@h/",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:x",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=TOKEN_RESOURCE:x,ENVIRONMENT:gcp",
+        ] {
+            assert!(mongo_uri_issues(uri).is_empty(), "{uri}");
+        }
+
+        // Mechanisms behind driver features this crate leaves off, and the
+        // callback-only OIDC form, are refused naming the reason.
+        for (uri, names) in [
+            (
+                "mongodb://h/?authMechanism=MONGODB-AWS",
+                "`MONGODB-AWS` is not built",
+            ),
+            ("mongodb://h/?authMechanism=GSSAPI", "`GSSAPI` is not built"),
+            (
+                "mongodb://h/?authMechanism=MONGODB-OIDC",
+                "`azure`, `gcp` or `k8s`",
+            ),
+            (
+                "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:test",
+                "`azure`, `gcp` or `k8s`",
+            ),
+        ] {
+            let issues = mongo_uri_issues(uri);
+            assert_eq!(issues.len(), 1, "{uri}: {issues:?}");
+            assert!(issues[0].contains(names), "{uri}: {issues:?}");
+        }
+
+        // The option name and the mechanism are matched without regard to
+        // case, as the driver matches the name, so neither is a way past.
+        let lower = "mongodb://h/?authmechanism=mongodb-aws";
+        assert_eq!(mongo_uri_issues(lower).len(), 1, "{lower}");
+
+        // A referenced spec cannot be read at load; the same check runs at
+        // connect, where the resolved text is first seen.
+        let referenced = instance(
+            "engine: mongodb\nconnection_string: \"env:MONGO_URI\"\ntopic: t\nstores: [{ unit: a, database: d, collection: c }]\n",
+        );
+        assert!(
+            without_build_gate(referenced.validate()).is_empty(),
+            "{:?}",
+            referenced.validate()
+        );
+        assert!(mongodb_auth_issue("mongodb://h/?authMechanism=GSSAPI").is_some());
     }
 
     #[test]
