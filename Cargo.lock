@@ -1880,6 +1880,7 @@ dependencies = [
  "metrics",
  "mongodb",
  "odbc-api",
+ "percent-encoding",
  "scalo",
  "schemars 1.2.1",
  "serde",

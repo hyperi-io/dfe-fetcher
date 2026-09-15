@@ -28,6 +28,8 @@ dfe-fetcher-core = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 metrics = { workspace = true }
+# The MongoDB URI check decodes option values the way the driver does.
+percent-encoding = { workspace = true }
 # secrets for the connection-string spec, config-schema so SensitiveString
 # carries the secret marker into the app's config schema.
 scalo = { workspace = true, features = ["secrets", "secrets-vault", "config-schema"] }

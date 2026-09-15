@@ -275,39 +275,48 @@ const RESOLVED_PREFIXES: [&str; 2] = ["vault:", "env:"];
 /// would reach the driver as its own literal text.
 const UNRESOLVED_PREFIXES: [&str; 2] = ["file:", "bao:"];
 
-/// The value of one option in a MongoDB URI's query string, matched by name
-/// without regard to case as the driver matches it.
-fn uri_option<'a>(uri: &'a str, name: &str) -> Option<&'a str> {
+/// The value of one option in a MongoDB URI's query string: the name is
+/// matched without regard to case and the value percent-decoded, both as the
+/// driver does before it reads them.
+fn uri_option(uri: &str, name: &str) -> Option<String> {
     let (_, query) = uri.split_once('?')?;
     query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
         .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v)
+        .map(|(_, v)| {
+            percent_encoding::percent_decode_str(v)
+                .decode_utf8_lossy()
+                .into_owned()
+        })
 }
 
 /// A MongoDB auth mechanism this binary cannot perform, named with the
 /// reason, or `None` when the driver can be left to it.
 ///
 /// `MONGODB-AWS` and `GSSAPI` sit behind driver build features this crate
-/// does not enable. `MONGODB-OIDC` needs a token callback, which the driver
+/// does not enable, and the driver refuses `MONGODB-CR` outright as
+/// deprecated. `MONGODB-OIDC` needs a token callback, which the driver
 /// supplies only for the `azure`, `gcp` and `k8s` environments; any other
 /// form expects the application to hand one over, and this one does not.
 /// Left to the driver these fail at connect naming its feature rather than
 /// the binary, so a literal string is checked at load and a resolved
-/// reference at connect.
+/// reference at connect. The mechanism is compared without regard to case
+/// so a mis-cased spelling is refused here rather than at connect; the
+/// property key and value are the driver's to match exactly.
 #[must_use]
 pub fn mongodb_auth_issue(uri: &str) -> Option<String> {
     let mechanism = uri_option(uri, "authMechanism")?.to_ascii_uppercase();
     match mechanism.as_str() {
         "MONGODB-AWS" | "GSSAPI" => Some(format!("`{mechanism}` is not built into this binary")),
+        "MONGODB-CR" => Some("`MONGODB-CR` is refused by the driver as deprecated".to_owned()),
         "MONGODB-OIDC" => {
             let environment = uri_option(uri, "authMechanismProperties").and_then(|props| {
                 props
                     .split(',')
                     .filter_map(|p| p.split_once(':'))
-                    .find(|(k, _)| k.trim().eq_ignore_ascii_case("ENVIRONMENT"))
-                    .map(|(_, v)| v.trim().to_ascii_lowercase())
+                    .find(|(k, _)| *k == "ENVIRONMENT")
+                    .map(|(_, v)| v.to_owned())
             });
             match environment.as_deref() {
                 Some("azure" | "gcp" | "k8s") => None,
@@ -596,10 +605,13 @@ stores:
   - { unit: events, shape: tail, query: "SELECT * FROM events", key: [ts, id], limit: 100 }
 "#;
 
+    /// The issues minus the engine gate, so a test reads the same on a build
+    /// without the engine. Only the `engine:` line is set aside: a mechanism
+    /// refusal on `connection_string:` uses the same words and must stay.
     fn without_build_gate(issues: Vec<String>) -> Vec<String> {
         issues
             .into_iter()
-            .filter(|i| !i.contains("not built into this binary"))
+            .filter(|i| !(i.starts_with("engine:") && i.contains("not built into this binary")))
             .collect()
     }
 
@@ -901,7 +913,10 @@ stores:
     #[test]
     fn a_mongodb_mechanism_this_binary_cannot_perform_is_refused_at_load() {
         // SCRAM, X.509 and the three OIDC environments the driver mints from
-        // are the driver's to validate; nothing is said here.
+        // are the driver's to validate; nothing is said here. The driver
+        // percent-decodes each value before reading it, so an encoded
+        // property list is the same list; the `+srv` and `/db?` forms put
+        // the query in the same place.
         for uri in [
             "mongodb://u:p@h/?authSource=admin&authMechanism=SCRAM-SHA-256",
             "mongodb://h/?authMechanism=MONGODB-X509&tls=true",
@@ -909,18 +924,28 @@ stores:
             "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
             "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:x",
             "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=TOKEN_RESOURCE:x,ENVIRONMENT:gcp",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT%3Ak8s",
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT%3Aazure%2CTOKEN_RESOURCE%3Aapi%3A%2F%2Fx",
+            "mongodb+srv://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
+            "mongodb://h/admin?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
         ] {
             assert!(mongo_uri_issues(uri).is_empty(), "{uri}");
         }
 
-        // Mechanisms behind driver features this crate leaves off, and the
-        // callback-only OIDC form, are refused naming the reason.
+        // Mechanisms behind driver features this crate leaves off, the one
+        // the driver refuses as deprecated, and the callback-only OIDC form
+        // are refused naming the reason, an encoded spelling included.
         for (uri, names) in [
             (
                 "mongodb://h/?authMechanism=MONGODB-AWS",
                 "`MONGODB-AWS` is not built",
             ),
+            (
+                "mongodb://h/?authMechanism=MONGODB%2DAWS",
+                "`MONGODB-AWS` is not built",
+            ),
             ("mongodb://h/?authMechanism=GSSAPI", "`GSSAPI` is not built"),
+            ("mongodb://h/?authMechanism=MONGODB-CR", "deprecated"),
             (
                 "mongodb://h/?authMechanism=MONGODB-OIDC",
                 "`azure`, `gcp` or `k8s`",
@@ -939,6 +964,13 @@ stores:
         // case, as the driver matches the name, so neither is a way past.
         let lower = "mongodb://h/?authmechanism=mongodb-aws";
         assert_eq!(mongo_uri_issues(lower).len(), 1, "{lower}");
+
+        // The property key is matched exactly, as the driver matches it, so
+        // a mis-cased key is no environment at all and the string is the
+        // callback-only form the driver would refuse too.
+        let cased =
+            "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=environment:k8s";
+        assert_eq!(mongo_uri_issues(cased).len(), 1, "{cased}");
 
         // A referenced spec cannot be read at load; the same check runs at
         // connect, where the resolved text is first seen.
