@@ -15,6 +15,7 @@ description: |-
   - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
   - `sources.*.filter` -- CEL filter re-evaluated on each record
   - `cursor.default_window_hours` -- lookback window re-read when no cursor exists
+  - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 
   **Requires pod restart:**
   - `output.*` -- transport connections established at startup
@@ -24,7 +25,7 @@ description: |-
   - `metrics.*` -- metrics server binds at startup
   - `instance_id` -- cursor key prefix set at startup
   - `cursor.directory` -- cursor store created at startup
-  - `sources.*.enabled` -- source registration at startup
+  - adding a source, or `sources.*.enabled: true` -- source registration at startup
   - `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup
   - `scheduler.max_concurrent_fetches` -- semaphore created at startup
   - `dlq.*` -- DLQ created at startup

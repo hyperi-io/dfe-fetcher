@@ -3715,4 +3715,82 @@ mod tests {
             "no implicit connection now"
         );
     }
+
+    #[test]
+    fn the_scheduled_set_is_every_enabled_builtin_connection_plus_the_enabled_entries() {
+        let mut sources = SourcesConfig {
+            github: GithubSourceConfig {
+                org: None,
+                connections: vec![
+                    GithubConnection {
+                        id: "gh-acme".into(),
+                        org: Some("acme".into()),
+                        ..GithubConnection::default()
+                    },
+                    GithubConnection {
+                        id: "gh-beta".into(),
+                        org: Some("beta".into()),
+                        ..GithubConnection::default()
+                    },
+                ],
+                ..github()
+            },
+            okta: OktaSourceConfig {
+                enabled: false,
+                ..okta()
+            },
+            ..SourcesConfig::default()
+        };
+        for (id, enabled) in [("rest-on", true), ("rest-off", false)] {
+            sources.rest.insert(
+                id.into(),
+                dfe_fetcher_rest::RestInstance {
+                    enabled,
+                    ..dfe_fetcher_rest::RestInstance::default()
+                },
+            );
+        }
+        for (id, enabled) in [("db-on", true), ("db-off", false)] {
+            sources.db.insert(
+                id.into(),
+                dfe_fetcher_db::DbInstance {
+                    enabled,
+                    ..dfe_fetcher_db::DbInstance::default()
+                },
+            );
+        }
+        for (id, enabled) in [("file-on", true), ("file-off", false)] {
+            sources.file.insert(
+                id.into(),
+                dfe_fetcher_file::FileInstance {
+                    enabled,
+                    ..dfe_fetcher_file::FileInstance::default()
+                },
+            );
+        }
+
+        // The two halves must stay in step: a set that under-reports would
+        // cancel a source the config still schedules.
+        let mut expected: std::collections::BTreeSet<String> = sources
+            .builtin_instances()
+            .unwrap()
+            .into_iter()
+            .map(|b| b.connection_id)
+            .collect();
+        assert_eq!(
+            expected,
+            ["gh-acme".to_string(), "gh-beta".to_string()]
+                .into_iter()
+                .collect(),
+            "the disabled block contributes nothing"
+        );
+        expected.extend(["rest-on".to_string(), "db-on".into(), "file-on".into()]);
+
+        let scheduled: std::collections::BTreeSet<String> = sources
+            .scheduled_connection_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(scheduled, expected);
+    }
 }

@@ -16,6 +16,7 @@
 //! - Concurrency limiting across all sources
 //! - Graceful shutdown with in-flight fetch completion
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -252,6 +253,43 @@ impl Scheduler {
         });
     }
 
+    /// Watch the shared config and cancel the fetch task of any source a
+    /// reload has removed.
+    ///
+    /// `running` maps a connection id to the child token its fetch task and
+    /// its driver hold, and the watcher is its only writer -- no lock. The
+    /// diff is on IDENTITY alone: a source whose settings changed but whose id
+    /// is still configured keeps running, because the driver and the scheduler
+    /// re-read the config every tick.
+    pub fn spawn_source_watch(
+        &self,
+        mut running: HashMap<String, CancellationToken>,
+        shutdown: CancellationToken,
+    ) {
+        let shared_config = self.shared_config.clone();
+
+        tokio::spawn(async move {
+            let mut versions = shared_config.subscribe();
+
+            // Reconcile once up front: a reload between the startup spawn and
+            // this subscription would otherwise go unseen.
+            reconcile_running_sources(&shared_config, &mut running);
+
+            loop {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => return,
+                    changed = versions.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                    }
+                }
+                reconcile_running_sources(&shared_config, &mut running);
+            }
+        });
+    }
+
     /// Calculate the effective interval for a source (for logging at startup).
     ///
     /// This reads the current shared config. In the spawn loop, the interval
@@ -261,6 +299,46 @@ impl Scheduler {
         let base_secs = source_interval.unwrap_or(config.scheduler.default_interval_secs);
         let jitter_secs = calculate_jitter(base_secs, config.scheduler.jitter_percent);
         Duration::from_secs(base_secs + jitter_secs)
+    }
+}
+
+/// Cancel the fetch task of every running source the live config no longer
+/// schedules, and warn about a source it schedules that is not running.
+///
+/// Cancelling the child token stops the task at its next select and aborts an
+/// in-flight tick through the driver's non-alerting shutdown path. Adding a
+/// source still needs a restart (dfe-fetcher#134), so its id is named in a
+/// warning rather than silently ignored.
+fn reconcile_running_sources(
+    shared_config: &SharedConfig,
+    running: &mut HashMap<String, CancellationToken>,
+) {
+    let desired: BTreeSet<String> = shared_config.with(|config| {
+        config
+            .sources
+            .scheduled_connection_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    });
+
+    running.retain(|id, cancel| {
+        if desired.contains(id) {
+            return true;
+        }
+        info!(source = %id, "source removed from the config; stopping its fetch schedule");
+        cancel.cancel();
+        false
+    });
+
+    for id in desired
+        .iter()
+        .filter(|id| !running.contains_key(id.as_str()))
+    {
+        warn!(
+            source = %id,
+            "source added to the config; a restart is needed to start fetching it"
+        );
     }
 }
 
@@ -699,6 +777,97 @@ mod tests {
         );
 
         shutdown.cancel();
+    }
+
+    /// A reload that removes the source must stop its fetch schedule: the
+    /// watcher cancels the source's child token, the task returns and the
+    /// driver it held is freed.
+    #[tokio::test]
+    async fn a_source_dropped_by_a_reload_stops_ticking() {
+        tokio::time::pause();
+
+        // `scheduled_connection_ids` reports "counting" only while the
+        // instance is in the config; the post-reload config keeps the same
+        // cadence so the tick count can only change by the cancel.
+        let interval_secs = 2;
+        let with_source = || {
+            let mut cfg = test_config_no_jitter();
+            cfg.scheduler.default_interval_secs = interval_secs;
+            cfg
+        };
+        let mut cfg = with_source();
+        cfg.sources
+            .rest
+            .insert("counting".into(), dfe_fetcher_rest::RestInstance::default());
+        let shared = SharedConfig::new(cfg);
+
+        let scheduler_config = SchedulerConfig {
+            default_interval_secs: interval_secs,
+            max_concurrent_fetches: 10,
+            jitter_percent: 0,
+        };
+        let scheduler = Scheduler::new(&scheduler_config, shared.clone(), None, "test".into());
+
+        let metrics = Arc::new(Metrics::new());
+        let ticks = Arc::new(AtomicU64::new(0));
+        let driver = counting_driver(&shared, &metrics, "counting", Arc::clone(&ticks));
+        assert_eq!(driver.connection_id(), "counting");
+        let driver_alive = Arc::downgrade(&driver);
+
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.child_token();
+        scheduler.spawn_source_task(
+            driver,
+            None,
+            Arc::clone(&metrics),
+            cancel.clone(),
+            Arc::new(|| true),
+        );
+        scheduler.spawn_source_watch(
+            HashMap::from([("counting".to_string(), cancel.clone())]),
+            shutdown.clone(),
+        );
+
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        let ticks_while_live = ticks.load(Ordering::Relaxed);
+        assert!(
+            ticks_while_live >= 1,
+            "the source should tick while it is configured, got {ticks_while_live}"
+        );
+
+        // Drop the source: the unit-level equivalent of a rewritten
+        // fetcher.yaml that no longer lists it.
+        shared.update(with_source());
+
+        // No time passes here, so nothing but the cancel can end the cadence.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            cancel.is_cancelled(),
+            "the watcher should cancel the removed source"
+        );
+
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            ticks.load(Ordering::Relaxed),
+            ticks_while_live,
+            "a removed source must not tick again"
+        );
+        assert!(
+            driver_alive.upgrade().is_none(),
+            "the cancelled task should have dropped its driver"
+        );
+        assert!(
+            !shutdown.is_cancelled(),
+            "cancelling one source must not shut the process down"
+        );
     }
 
     // -- write_cursor tests --
