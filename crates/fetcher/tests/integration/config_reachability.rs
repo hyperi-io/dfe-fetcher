@@ -202,6 +202,51 @@ fn documented_env_form_reaches_the_config_over_an_explicit_file() {
     );
 }
 
+/// The cascade runs before the resolver: a spec in the file resolves when
+/// nothing overrides it, and a flat env var replaces the spec outright, so
+/// the resolver sees the operator's value and never the spec it displaced.
+#[test]
+fn a_flat_env_var_beats_a_spec_and_a_spec_beats_the_file() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(
+        &dir,
+        "sources:\n  azure:\n    enabled: true\n    tenant_id: env:DFE_FETCHER_TEST_PRECEDENCE_TENANT\n",
+    );
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let resolve = |mut config: Config| {
+        rt.block_on(dfe_fetcher::config::resolve::resolve_config_specs(
+            &mut config,
+        ))
+        .expect("resolves");
+        config
+    };
+
+    // SAFETY: test-only; both removed before the assertions run.
+    unsafe { std::env::set_var("DFE_FETCHER_TEST_PRECEDENCE_TENANT", "from-spec") };
+    let spec_only = resolve(Config::load_from_file(&path).expect("config loads"));
+    assert_eq!(
+        spec_only.sources.azure.tenant_id.as_deref(),
+        Some("from-spec"),
+        "with nothing above it the spec resolves"
+    );
+
+    unsafe { std::env::set_var("DFE_FETCHER_SOURCES__AZURE__TENANT_ID", "from-flat-env") };
+    let loaded = Config::load_from_file(&path);
+    unsafe {
+        std::env::remove_var("DFE_FETCHER_SOURCES__AZURE__TENANT_ID");
+        std::env::remove_var("DFE_FETCHER_TEST_PRECEDENCE_TENANT");
+    }
+    let overridden = resolve(loaded.expect("config loads"));
+    assert_eq!(
+        overridden.sources.azure.tenant_id.as_deref(),
+        Some("from-flat-env"),
+        "the flat env var replaces the spec before it resolves and passes through as the literal it is"
+    );
+}
+
 /// The file still wins over nothing, and an env var still wins over the file.
 #[test]
 fn env_overrides_the_file_and_the_file_overrides_the_default() {
