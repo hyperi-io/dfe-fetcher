@@ -3,6 +3,16 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.25](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.24...v1.4.25) (2026-09-15)
+
+### Bug Fixes
+
+* **auth:** refuse unreadable credential specs and resolve the identity fields ([610aa89](https://github.com/hyperi-io/dfe-fetcher/commit/610aa893f3c02013ff762ccce98f6be3031ee631)), closes [#111](https://github.com/hyperi-io/dfe-fetcher/issues/111) [#121](https://github.com/hyperi-io/dfe-fetcher/issues/121) [#122](https://github.com/hyperi-io/dfe-fetcher/issues/122)
+* **ci:** ship the database engines and the file tail in the release image ([e6dba41](https://github.com/hyperi-io/dfe-fetcher/commit/e6dba411ac5774293f96790c03dbb6a9f98c6e41)), closes [hyperi-ci#130](https://github.com/hyperi-io/hyperi-ci/issues/130)
+* **db:** one config grammar for every database engine ([1eb2542](https://github.com/hyperi-io/dfe-fetcher/commit/1eb25429698752f6fb69e263d2119a3fa9f498ed)), closes [dfe-infra#304](https://github.com/hyperi-io/dfe-infra/issues/304)
+* **test:** prove the api-key redaction rather than trust the call sites ([057a094](https://github.com/hyperi-io/dfe-fetcher/commit/057a0947b8fe11581c0d2806dae9d079bc7324fa)), closes [#102](https://github.com/hyperi-io/dfe-fetcher/issues/102)
+* **test:** spell the mongodb store fixtures the way the grammar does ([ae9bdf5](https://github.com/hyperi-io/dfe-fetcher/commit/ae9bdf5ce465882cbc14877789262ea1c4a875e7))
+
 ## [1.4.24](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.23...v1.4.24) (2026-09-15)
 
 ### Bug Fixes
