@@ -945,14 +945,18 @@ scaling:
 #       topic: "assets"
 #       batch: { max_rows: 1000 }       # documents per driver batch (find batch_size / change-stream batch size)
 #       stores:
+#         # What this engine needs of a store sits under `mongodb`, so the keys
+#         # every engine shares stay one vocabulary. Note `mongodb.filter` is a
+#         # query document sent to the server, distinct from the instance-level
+#         # `filter` above, which is CEL over each row.
 #         # Documents land as relaxed extended JSON: ObjectId as {"$oid": ...}, dates as {"$date": ...}.
-#         - { unit: hosts, shape: dump, database: inventory, collection: hosts, filter: { alive: true }, row_key: "/_id/$oid" }
-#         # tail: change_stream (default) needs a replica set and sees every insert, update and delete,
-#         # resumed from the last acknowledged event's resume token; tail: keyset follows _id on a
-#         # standalone server and sees inserts only. `filter` matches what the store yields: the
+#         - { unit: hosts, shape: dump, row_key: "/_id/$oid", mongodb: { database: inventory, collection: hosts, filter: { alive: true } } }
+#         # mongodb.tail: change_stream (default) needs a replica set and sees every insert, update and
+#         # delete, resumed from the last acknowledged event's resume token; keyset follows _id on a
+#         # standalone server and sees inserts only. mongodb.filter matches what the store yields: the
 #         # documents of a dump or keyset tail, the change EVENTS of a change stream.
-#         - { unit: changes, shape: tail, database: inventory, collection: hosts, limit: 5000 }
-#         - { unit: appended, shape: tail, tail: keyset, database: inventory, collection: audit, limit: 5000 }
+#         - { unit: changes, shape: tail, limit: 5000, mongodb: { database: inventory, collection: hosts } }
+#         - { unit: appended, shape: tail, limit: 5000, mongodb: { database: inventory, collection: audit, tail: keyset } }
 
 # =============================================================================
 # File sources (sources.file) -- the file shapes of the source framework

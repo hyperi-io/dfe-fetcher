@@ -184,15 +184,8 @@ pub struct StoreSpec {
     pub max_pages_per_tick: u32,
     /// JSON pointer to the row's identity, for the oversize stub and logs.
     pub row_key: Option<String>,
-    /// MongoDB: the database holding the collection.
-    pub database: Option<String>,
-    /// MongoDB: the collection.
-    pub collection: Option<String>,
-    /// MongoDB: a query document over what the store yields -- the documents
-    /// of a dump or keyset tail, the change events of a change stream.
-    pub filter: Option<serde_json::Map<String, serde_json::Value>>,
-    /// MongoDB tail only: change stream (the default) or keyset over `_id`.
-    pub tail: Option<TailMode>,
+    /// MongoDB only; refused for a SQL engine.
+    pub mongodb: Option<MongoStoreSpec>,
 }
 
 impl Default for StoreSpec {
@@ -205,18 +198,35 @@ impl Default for StoreSpec {
             limit: 5000,
             max_pages_per_tick: 10,
             row_key: None,
-            database: None,
-            collection: None,
-            filter: None,
-            tail: None,
+            mongodb: None,
         }
     }
 }
 
-impl StoreSpec {
-    /// The MongoDB tail mode in force: the configured one, else the change
-    /// stream, because it is the lossless one and a keyset over `_id` only
-    /// sees inserts.
+/// What the MongoDB engine needs of a store, which is a collection rather than
+/// a query.
+///
+/// It sits in its own block so the keys every engine shares stay one
+/// vocabulary: `filter` here is a query document sent to the server, distinct
+/// from the instance-level `filter`, which is a CEL expression over each row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MongoStoreSpec {
+    /// The database holding the collection.
+    pub database: String,
+    /// The collection.
+    pub collection: String,
+    /// A query document over what the store yields -- the documents of a dump
+    /// or keyset tail, the change events of a change stream.
+    pub filter: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Tail only: change stream (the default) or keyset over `_id`.
+    pub tail: Option<TailMode>,
+}
+
+impl MongoStoreSpec {
+    /// The tail mode in force: the configured one, else the change stream,
+    /// because it is the lossless one and a keyset over `_id` only sees
+    /// inserts.
     #[must_use]
     pub fn tail_mode(&self) -> TailMode {
         self.tail.unwrap_or_default()
@@ -417,15 +427,8 @@ fn sql_store_issues(store: &StoreSpec) -> Vec<(&'static str, String)> {
         )),
         _ => {}
     }
-    for (field, set) in [
-        ("database", store.database.is_some()),
-        ("collection", store.collection.is_some()),
-        ("filter", store.filter.is_some()),
-        ("tail", store.tail.is_some()),
-    ] {
-        if set {
-            issues.push((field, "only the mongodb engine reads it".to_owned()));
-        }
+    if store.mongodb.is_some() {
+        issues.push(("mongodb", "only the mongodb engine reads it".to_owned()));
     }
     issues
 }
@@ -436,8 +439,7 @@ fn mongo_store_issues(store: &StoreSpec) -> Vec<(&'static str, String)> {
     if !store.query.trim().is_empty() {
         issues.push((
             "query",
-            "the mongodb engine reads a collection, not SQL; name `database` and `collection`"
-                .to_owned(),
+            "the mongodb engine reads a collection, not SQL; name it under `mongodb`".to_owned(),
         ));
     }
     if !store.key.is_empty() {
@@ -447,16 +449,20 @@ fn mongo_store_issues(store: &StoreSpec) -> Vec<(&'static str, String)> {
                 .to_owned(),
         ));
     }
+    let Some(mongo) = &store.mongodb else {
+        issues.push(("mongodb", "is required for the mongodb engine".to_owned()));
+        return issues;
+    };
     for (field, value) in [
-        ("database", store.database.as_deref()),
-        ("collection", store.collection.as_deref()),
+        ("mongodb.database", mongo.database.as_str()),
+        ("mongodb.collection", mongo.collection.as_str()),
     ] {
-        if value.is_none_or(|v| v.trim().is_empty()) {
-            issues.push((field, "is required for the mongodb engine".to_owned()));
+        if value.trim().is_empty() {
+            issues.push((field, "must not be empty".to_owned()));
         }
     }
-    if store.shape == StoreShape::Dump && store.tail.is_some() {
-        issues.push(("tail", "only a tail has a tail mode".to_owned()));
+    if store.shape == StoreShape::Dump && mongo.tail.is_some() {
+        issues.push(("mongodb.tail", "only a tail has a tail mode".to_owned()));
     }
     issues
 }
@@ -652,9 +658,9 @@ engine: mongodb
 connection_string: "vault:kv/data/dfe/mongo:uri"
 topic: inventory
 stores:
-  - { unit: assets, shape: dump, database: inventory, collection: assets, filter: { alive: true }, row_key: "/_id/$oid" }
-  - { unit: changes, shape: tail, database: inventory, collection: assets, limit: 100 }
-  - { unit: rows, shape: tail, database: inventory, collection: assets, tail: keyset }
+  - { unit: assets, shape: dump, row_key: "/_id/$oid", mongodb: { database: inventory, collection: assets, filter: { alive: true } } }
+  - { unit: changes, shape: tail, limit: 100, mongodb: { database: inventory, collection: assets } }
+  - { unit: rows, shape: tail, mongodb: { database: inventory, collection: assets, tail: keyset } }
 "#;
 
     #[test]
@@ -667,10 +673,13 @@ stores:
             "{:?}",
             inst.validate()
         );
-        assert_eq!(inst.stores[1].tail_mode(), TailMode::ChangeStream);
-        assert_eq!(inst.stores[2].tail_mode(), TailMode::Keyset);
+        let mongo = |i: usize| inst.stores[i].mongodb.as_ref().expect("mongodb block");
+        assert_eq!(mongo(0).database, "inventory");
+        assert_eq!(mongo(0).collection, "assets");
+        assert_eq!(mongo(1).tail_mode(), TailMode::ChangeStream);
+        assert_eq!(mongo(2).tail_mode(), TailMode::Keyset);
         assert_eq!(
-            inst.stores[0].filter.as_ref().unwrap()["alive"],
+            mongo(0).filter.as_ref().unwrap()["alive"],
             serde_json::json!(true)
         );
         assert_eq!(Engine::Mongodb.feature(), "db-mongodb");
@@ -702,7 +711,7 @@ stores:
     }
 
     #[test]
-    fn a_mongodb_store_refuses_sql_keys_and_needs_its_collection() {
+    fn a_mongodb_store_refuses_sql_keys_and_needs_its_block() {
         let inst = instance(
             r#"
 engine: mongodb
@@ -710,9 +719,10 @@ dialect: postgres
 connection_string: "env:MONGO"
 topic: t
 stores:
-  - { unit: a, shape: tail, query: "SELECT 1", key: [id], database: d, collection: c }
-  - { unit: b, shape: dump, tail: keyset }
-  - { unit: c, shape: dump, database: "", collection: c }
+  - { unit: a, shape: tail, query: "SELECT 1", key: [id], mongodb: { database: d, collection: c } }
+  - { unit: b, shape: dump }
+  - { unit: c, shape: dump, mongodb: { database: "", collection: c } }
+  - { unit: d, shape: dump, mongodb: { database: d, collection: c, tail: keyset } }
 "#,
         );
         let issues = without_build_gate(inst.validate());
@@ -720,10 +730,9 @@ stores:
             "dialect: the mongodb engine speaks no SQL dialect, drop `postgres`",
             "stores[0].query: the mongodb engine reads a collection, not SQL",
             "stores[0].key: the mongodb engine tails by change stream or by `_id`",
-            "stores[1].database: is required for the mongodb engine",
-            "stores[1].collection: is required for the mongodb engine",
-            "stores[1].tail: only a tail has a tail mode",
-            "stores[2].database: is required for the mongodb engine",
+            "stores[1].mongodb: is required for the mongodb engine",
+            "stores[2].mongodb.database: must not be empty",
+            "stores[3].mongodb.tail: only a tail has a tail mode",
         ] {
             assert!(
                 issues.iter().any(|i| i.starts_with(expected)),
@@ -732,26 +741,49 @@ stores:
         }
     }
 
+    /// A block missing one of its required names fails to PARSE rather than
+    /// reaching validation, because serde enforces presence.
+    #[test]
+    fn a_mongodb_block_without_its_names_does_not_parse() {
+        assert!(
+            serde_yaml_ng::from_str::<DbInstance>(
+                "engine: mongodb\nstores: [{ unit: a, mongodb: { collection: c } }]\n"
+            )
+            .is_err(),
+            "database is required inside the mongodb block"
+        );
+    }
+
+    /// The old flat spelling is refused outright, so a config written for the
+    /// previous grammar fails at load rather than silently fetching nothing.
+    #[test]
+    fn the_flat_mongodb_keys_are_no_longer_accepted() {
+        assert!(
+            serde_yaml_ng::from_str::<DbInstance>(
+                "engine: mongodb\nstores: [{ unit: a, database: d, collection: c }]\n"
+            )
+            .is_err(),
+            "database at store level is not part of the grammar"
+        );
+    }
+
     #[test]
     fn a_sql_store_refuses_the_mongodb_keys() {
         let inst = instance(
-            "engine: odbc\ndialect: postgres\nconnection_string: \"env:DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1', database: d, collection: c, filter: {}, tail: keyset }]\n",
+            "engine: odbc\ndialect: postgres\nconnection_string: \"env:DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1', mongodb: { database: d, collection: c } }]\n",
         );
         let issues = without_build_gate(inst.validate());
-        for field in ["database", "collection", "filter", "tail"] {
-            let expected = format!("stores[0].{field}: only the mongodb engine reads it");
-            assert!(
-                issues.contains(&expected),
-                "missing `{expected}` in {issues:?}"
-            );
-        }
+        assert!(
+            issues.contains(&"stores[0].mongodb: only the mongodb engine reads it".to_owned()),
+            "{issues:?}"
+        );
     }
 
     #[test]
     fn a_mongodb_filter_must_be_a_document() {
         assert!(
             serde_yaml_ng::from_str::<DbInstance>(
-                "engine: mongodb\nstores: [{ unit: a, database: d, collection: c, filter: [1] }]\n"
+                "engine: mongodb\nstores: [{ unit: a, mongodb: { database: d, collection: c, filter: [1] } }]\n"
             )
             .is_err(),
             "an array is not a query document"
@@ -773,7 +805,7 @@ stores:
                 r#"query: "SELECT 1", key: [id]"#,
             ),
             ("clickhouse", "", r#"query: "SELECT 1", key: [id]"#),
-            ("mongodb", "", "database: d, collection: c"),
+            ("mongodb", "", "mongodb: { database: d, collection: c }"),
         ] {
             let yaml = format!(
                 r#"

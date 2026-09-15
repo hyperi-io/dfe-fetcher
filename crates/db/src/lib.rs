@@ -48,6 +48,8 @@ pub mod secret;
 pub mod shape;
 pub mod store;
 
-pub use config::{BatchSpec, DbInstance, Engine, StoreShape, StoreSpec, TailMode};
+pub use config::{
+    BatchSpec, DbInstance, Engine, MongoStoreSpec, StoreShape, StoreSpec, TailMode,
+};
 pub use shape::DbShape;
 pub use store::{Dialect, Store};
