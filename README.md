@@ -154,6 +154,21 @@ Credential fields accept three forms:
 - `env:VARIABLE_NAME` -- read from an environment variable
 - a literal value -- used as-is
 
+A source's identity fields accept the same three forms: the identifiers a
+provider is addressed by (tenant, subscription, project, account, organisation,
+user, client id, tenant URL, API host), at block level and on every connection.
+The pass in `crates/fetcher/src/config/resolve.rs` is the list. They resolve
+once at startup, before any source is built, so an unresolvable spec stops the
+process with a configuration error instead of reaching the provider as literal
+text. A block that is not enabled is skipped.
+
+Any key can also be set from the environment as
+`DFE_FETCHER_SOURCES__<BLOCK>__<FIELD>` (a single leading separator is
+accepted too), which the cascade applies before resolution. The order is the
+file, then an `env:` or `vault:` spec written in the file, then the environment
+variable, which replaces whatever the file says and is itself resolved if it is
+a spec.
+
 ## Sources
 
 Each source is a shipped profile under `crates/fetcher/profiles/`. Its
