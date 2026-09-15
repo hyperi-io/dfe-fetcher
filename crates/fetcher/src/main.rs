@@ -16,6 +16,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,6 +27,7 @@ use scalo::config::reloader::{ConfigReloader, ReloaderConfig};
 use scalo::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
 use scalo::logger::security;
 use scalo::scaling::ScalingComponent;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
@@ -247,6 +249,10 @@ async fn main() {
 struct SpawnEntry {
     driver: Arc<Driver>,
     interval_secs: Option<u64>,
+
+    /// A child of the global shutdown token, held by both the driver and the
+    /// fetch task, so a reload that drops this source stops just this one.
+    cancel: CancellationToken,
 }
 
 /// Main service loop -- called by the ServiceApp lifecycle after logging and config.
@@ -487,7 +493,13 @@ async fn run_fetcher_service(
     // One Driver per connection, all sharing the memory guard's pressure
     // latch so a buffer that grows anywhere pauses polling everywhere.
     let pressure = build_pressure(&config, pipeline_state.memory_guard())?;
-    let framework_driver = |shape: Shape, id: &str, accumulate: Option<AccumulateConfig>| {
+    // Each driver takes its source's OWN cancel token, not the global one, so
+    // dropping the source from the config aborts its in-flight tick through
+    // the driver's non-alerting shutdown path.
+    let framework_driver = |shape: Shape,
+                            id: &str,
+                            accumulate: Option<AccumulateConfig>,
+                            cancel: CancellationToken| {
         let accumulate = accumulate.unwrap_or(config.accumulate);
         Driver::new(DriverParts {
             shape,
@@ -505,7 +517,7 @@ async fn run_fetcher_service(
             memory_guard: Arc::clone(pipeline_state.memory_guard()),
             checkpoints: framework_cursor_store.clone(),
             metrics: Arc::clone(&metrics),
-            shutdown: shutdown_token.clone(),
+            shutdown: cancel,
         })
     };
 
@@ -531,9 +543,16 @@ async fn run_fetcher_service(
             dfe_fetcher::profiles::shipped(),
         )?;
         let shape = Shape::for_rest_instance(&profile, instance, id, http_client.clone())?;
+        let cancel = shutdown_token.child_token();
         entries.push(SpawnEntry {
-            driver: Arc::new(framework_driver(shape, id, instance.accumulate)),
+            driver: Arc::new(framework_driver(
+                shape,
+                id,
+                instance.accumulate,
+                cancel.clone(),
+            )),
             interval_secs: instance.interval_secs,
+            cancel,
         });
     }
 
@@ -548,13 +567,16 @@ async fn run_fetcher_service(
         );
         let shape = DbShape::from_instance(instance, id, &lease)
             .map_err(|e| anyhow::anyhow!("sources.db.{id}: {e}"))?;
+        let cancel = shutdown_token.child_token();
         entries.push(SpawnEntry {
             driver: Arc::new(framework_driver(
                 Shape::Db(Box::new(shape)),
                 id,
                 instance.accumulate,
+                cancel.clone(),
             )),
             interval_secs: instance.interval_secs,
+            cancel,
         });
     }
 
@@ -569,18 +591,24 @@ async fn run_fetcher_service(
         );
         let shape = FileShape::from_instance(instance, id, &lease)
             .map_err(|e| anyhow::anyhow!("sources.file.{id}: {e}"))?;
+        let cancel = shutdown_token.child_token();
         entries.push(SpawnEntry {
             driver: Arc::new(framework_driver(
                 Shape::File(Box::new(shape)),
                 id,
                 instance.accumulate,
+                cancel.clone(),
             )),
             interval_secs: instance.interval_secs,
+            cancel,
         });
     }
 
-    // Start one fetch task per connection.
-    for entry in &entries {
+    // Start one fetch task per connection. The entries are consumed so the
+    // fetch task holds the only `Arc<Driver>`: a cancelled task then drops its
+    // driver and releases the connection's credentials and client.
+    let mut running: HashMap<String, CancellationToken> = HashMap::new();
+    for entry in entries {
         // Surface non-stable sources at startup: the profile declares the
         // maturity, and anything not stable is code-complete but not
         // production-validated until promoted.
@@ -603,14 +631,22 @@ async fn run_fetcher_service(
             "Starting fetch schedule (interval is hot-reloaded)"
         );
 
+        running.insert(
+            entry.driver.connection_id().to_owned(),
+            entry.cancel.clone(),
+        );
         scheduler.spawn_source_task(
-            Arc::clone(&entry.driver),
+            entry.driver,
             entry.interval_secs,
             Arc::clone(&metrics),
-            shutdown_token.clone(),
+            entry.cancel,
             Arc::new(move || ready_state.is_ready()),
         );
     }
+
+    // Diff the running fetch tasks against every reload, so a source dropped
+    // from the config stops fetching without a restart.
+    scheduler.spawn_source_watch(running, shutdown_token.clone());
 
     // Start ingest HTTP server (for container extractors using HTTP communication)
     {

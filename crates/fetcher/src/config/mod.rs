@@ -32,7 +32,7 @@ mod shared;
 pub use builtin::{Block, BuiltinInstance, REGISTRY};
 pub use shared::SharedConfig;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dfe_fetcher_core::batch::AccumulateConfig;
 use dfe_fetcher_core::envelope::OversizePolicy;
@@ -65,6 +65,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
 /// - `sources.*.filter` -- CEL filter re-evaluated on each record
 /// - `cursor.default_window_hours` -- lookback window re-read when no cursor exists
+/// - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 ///
 /// **Requires pod restart:**
 /// - `output.*` -- transport connections established at startup
@@ -74,7 +75,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `metrics.*` -- metrics server binds at startup
 /// - `instance_id` -- cursor key prefix set at startup
 /// - `cursor.directory` -- cursor store created at startup
-/// - `sources.*.enabled` -- source registration at startup
+/// - adding a source, or `sources.*.enabled: true` -- source registration at startup
 /// - `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup
 /// - `scheduler.max_concurrent_fetches` -- semaphore created at startup
 /// - `dlq.*` -- DLQ created at startup
@@ -1138,6 +1139,40 @@ impl SourcesConfig {
             || self.rest.values().any(|r| r.enabled)
             || self.db.values().any(|d| d.enabled)
             || self.file.values().any(|f| f.enabled)
+    }
+
+    /// Every connection id the config schedules a fetch task for: each
+    /// enabled built-in block's resolved connections, plus each enabled
+    /// `sources.rest`, `sources.db` and `sources.file` entry. Exactly the set
+    /// `main` expands at start, so the set of running tasks can be diffed
+    /// against the live config.
+    ///
+    /// Infallible, so a reload can never skip the diff for a config error.
+    #[must_use]
+    pub fn scheduled_connection_ids(&self) -> BTreeSet<&str> {
+        builtin::REGISTRY
+            .iter()
+            .filter(|block| block.enabled(self))
+            .flat_map(|block| block.connection_ids(self))
+            .chain(
+                self.rest
+                    .iter()
+                    .filter(|(_, instance)| instance.enabled)
+                    .map(|(id, _)| id.as_str()),
+            )
+            .chain(
+                self.db
+                    .iter()
+                    .filter(|(_, instance)| instance.enabled)
+                    .map(|(id, _)| id.as_str()),
+            )
+            .chain(
+                self.file
+                    .iter()
+                    .filter(|(_, instance)| instance.enabled)
+                    .map(|(id, _)| id.as_str()),
+            )
+            .collect()
     }
 
     /// The CEL keep-filter of the source a driver runs, by its connection
