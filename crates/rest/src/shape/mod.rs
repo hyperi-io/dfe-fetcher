@@ -331,7 +331,7 @@ impl RestShape {
         // not know) is an empty page, and the page sequence ends there.
         let Some(response) = self
             .send_request(
-                self.auth_for(endpoint),
+                endpoint,
                 ctx,
                 stage.request,
                 url.clone(),
@@ -372,15 +372,8 @@ impl RestShape {
                 &Pager::None.first(),
                 ctx,
             )?;
-            self.send_request(
-                self.auth_for(endpoint),
-                ctx,
-                step,
-                url,
-                headers,
-                body.as_ref(),
-            )
-            .await?;
+            self.send_request(endpoint, ctx, step, url, headers, body.as_ref())
+                .await?;
         }
         Ok(())
     }
@@ -423,7 +416,7 @@ impl RestShape {
         url.set_query((!query.is_empty()).then(|| query.join("&")).as_deref());
         let headers = self.render_headers(ctx, Some(&request.headers))?;
         let Some(response) = self
-            .send_request(self.auth_for(endpoint), ctx, request, url, headers, None)
+            .send_request(endpoint, ctx, request, url, headers, None)
             .await?
         else {
             return Ok(None);
@@ -535,19 +528,23 @@ impl RestShape {
         })
     }
 
-    /// Build and send one request through the executor with `auth`; a
-    /// `reqwest::Request` is single-use, so the builder runs per attempt.
-    /// `ctx` is the request's own context, which a signing mode reads for
-    /// its scope. `None` is a status the request ignores.
+    /// Build and send one request of `endpoint` through the executor, with
+    /// the credential that unit signs with and after its rate gate hands out
+    /// a slot; a `reqwest::Request` is single-use, so the builder runs per
+    /// attempt. `ctx` is the request's own context, which a signing mode
+    /// reads for its scope. `None` is a status the request ignores.
     async fn send_request(
         &self,
-        auth: &AuthMode,
+        endpoint: &BoundEndpoint,
         ctx: &TemplateCtx,
         request: &BoundRequest,
         url: reqwest::Url,
         headers: HeaderMap,
         body: Option<&Value>,
     ) -> Result<Option<reqwest::Response>> {
+        if let Some(gate) = &endpoint.rate {
+            gate.wait().await;
+        }
         let client = self.executor.client().clone();
         let wire = reqwest_method(request.method);
         let make = || {
@@ -567,7 +564,7 @@ impl RestShape {
         self.executor
             .send(
                 &self.bound.connection_id,
-                auth,
+                self.auth_for(endpoint),
                 ctx,
                 request.idempotent(),
                 &request.ignore_status,
@@ -593,14 +590,7 @@ impl RestShape {
             ctx,
         )?;
         let Some(response) = self
-            .send_request(
-                self.auth_for(endpoint),
-                ctx,
-                request,
-                url,
-                headers,
-                body.as_ref(),
-            )
+            .send_request(endpoint, ctx, request, url, headers, body.as_ref())
             .await?
         else {
             return Ok(Vec::new());
@@ -855,7 +845,7 @@ impl<'a> LookupBatch<'a> {
         let Some(response) = self
             .shape
             .send_request(
-                self.shape.auth_for(self.endpoint),
+                self.endpoint,
                 &request_ctx,
                 &self.lookup.request,
                 url,

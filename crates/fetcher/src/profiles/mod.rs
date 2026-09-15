@@ -1635,7 +1635,25 @@ mod tests {
                 "MaxResults": 50
             }))
         );
-        assert_eq!(profile.max_pages_of(cloudtrail), 50);
+        assert_eq!(
+            profile.max_pages_of(cloudtrail),
+            200,
+            "CloudTrail raises its own ceiling over the profile's 50"
+        );
+        assert_eq!(
+            profile.rate_of(cloudtrail).map(|r| r.requests_per_sec),
+            Some(2.0),
+            "LookupEvents allows 2 requests a second"
+        );
+        assert_eq!(
+            profile
+                .retry
+                .throttle_when
+                .as_ref()
+                .map(|t| (t.status, t.body_contains.as_str())),
+            Some((400, "ThrottlingException")),
+            "an AWS throttle is a 400 the retry policy must recognise"
+        );
 
         let guardduty = unit("guardduty");
         assert_eq!(profile.path_of(guardduty), "/detector/{{ key }}/findings");

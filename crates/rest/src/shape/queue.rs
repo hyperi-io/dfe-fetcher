@@ -177,7 +177,7 @@ impl RowSource for QueueShape {
                 )?;
                 self.rest
                     .send_request(
-                        self.rest.auth_for(endpoint),
+                        endpoint,
                         &ctx,
                         &queue.ack_request,
                         url,

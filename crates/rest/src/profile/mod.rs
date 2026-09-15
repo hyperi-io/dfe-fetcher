@@ -334,6 +334,17 @@ impl schemars::JsonSchema for StatusMatch {
     }
 }
 
+/// What a provider's refusal looks like when it means "slow down" and the
+/// status alone does not say so (AWS answers 400 with a `__type` body).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThrottleSpec {
+    /// The status such a refusal carries.
+    pub status: u16,
+    /// Text the body must contain for the refusal to be a throttle.
+    pub body_contains: String,
+}
+
 /// Retry policy for one profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -352,6 +363,9 @@ pub struct RetrySpec {
     pub retry_after_header: bool,
     /// Retry POST as well as GET; off unless the endpoint dedupes.
     pub retry_non_idempotent: bool,
+    /// The refusal that means "slow down" on an API whose status does not
+    /// say so; retried and counted a throttle whatever `retry_on` lists.
+    pub throttle_when: Option<ThrottleSpec>,
 }
 
 impl Default for RetrySpec {
@@ -368,6 +382,7 @@ impl Default for RetrySpec {
             never_retry: vec![401, 403],
             retry_after_header: true,
             retry_non_idempotent: false,
+            throttle_when: None,
         }
     }
 }
@@ -377,6 +392,18 @@ impl RetrySpec {
     #[must_use]
     pub fn retries(&self, status: u16) -> bool {
         !self.never_retry.contains(&status) && self.retry_on.iter().any(|m| m.matches(status))
+    }
+
+    /// Whether this refusal is the declared throttle. A status in
+    /// `never_retry` is not one, so a profile cannot turn a 403 into a
+    /// retried throttle by naming text a refusal body happens to carry.
+    #[must_use]
+    pub fn throttled(&self, status: u16, text: &str) -> bool {
+        self.throttle_when.as_ref().is_some_and(|spec| {
+            spec.status == status
+                && !self.never_retry.contains(&status)
+                && text.contains(&spec.body_contains)
+        })
     }
 }
 
@@ -938,6 +965,25 @@ pub struct ConstructSpec {
     pub queue: Option<QueueSpec>,
 }
 
+/// The provider's documented rate limit for one unit's requests.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RateSpec {
+    /// Requests a second this unit may send; a fraction expresses a limit
+    /// slower than one a second.
+    pub requests_per_sec: f64,
+}
+
+/// Compared by bits so a rate-bearing endpoint stays `Eq` like every other
+/// spec of the grammar; a rate is written by hand, never computed.
+impl PartialEq for RateSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.requests_per_sec.to_bits() == other.requests_per_sec.to_bits()
+    }
+}
+
+impl Eq for RateSpec {}
+
 /// Values every endpoint inherits unless it sets its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -959,6 +1005,8 @@ pub struct EndpointDefaults {
     pub paginate: Option<PaginateSpec>,
     /// Page ceiling per tick.
     pub max_pages: Option<u32>,
+    /// Rate limit of every endpoint that sets none.
+    pub rate: Option<RateSpec>,
     /// Bytes a page-bounded decoder may buffer.
     pub max_page_bytes: Option<usize>,
     /// Prelude of every endpoint that sets none; an endpoint's own
@@ -1028,6 +1076,10 @@ pub struct EndpointSpec {
     pub fail_when: Option<String>,
     /// Page ceiling per tick.
     pub max_pages: Option<u32>,
+    /// The provider's rate limit for this unit's requests, held to across
+    /// its pages, window steps and ticks; the defaults' when unset, and
+    /// unpaced when neither sets one.
+    pub rate: Option<RateSpec>,
     /// Fields added to every row: a value is a template, or a JSON object
     /// or array whose string leaves are templates. One that reads `key` is
     /// rendered per key of the unit's keyset.
@@ -1078,6 +1130,7 @@ impl Default for EndpointSpec {
             paginate: None,
             fail_when: None,
             max_pages: None,
+            rate: None,
             add_fields: BTreeMap::new(),
             fold: None,
             lister: None,
@@ -1337,6 +1390,13 @@ impl RestProfile {
             .unwrap_or(DEFAULT_MAX_PAGES)
     }
 
+    /// The effective rate limit of an endpoint, when it or the defaults
+    /// declare one.
+    #[must_use]
+    pub fn rate_of<'a>(&'a self, endpoint: &'a EndpointSpec) -> Option<&'a RateSpec> {
+        endpoint.rate.as_ref().or(self.defaults.rate.as_ref())
+    }
+
     /// The effective page buffer bound of an endpoint.
     #[must_use]
     pub fn max_page_bytes_of(&self, endpoint: &EndpointSpec) -> usize {
@@ -1492,6 +1552,7 @@ impl RestProfile {
                 "must be at least min_backoff_ms",
             ));
         }
+        issues.extend(rate_issue("defaults.rate", self.defaults.rate.as_ref()));
         if let Some(at) = &self.error.at {
             issues.extend(pointer_issue("error.at", at));
         }
@@ -1643,6 +1704,7 @@ impl RestProfile {
             if endpoint.max_pages == Some(0) {
                 issues.push(Issue::new(at("max_pages"), "must be at least 1"));
             }
+            issues.extend(rate_issue(&at("rate"), endpoint.rate.as_ref()));
             if endpoint.max_page_bytes == Some(0) {
                 issues.push(Issue::new(at("max_page_bytes"), "must be at least 1"));
             }
@@ -1678,6 +1740,20 @@ impl RestProfile {
             }
         }
         issues
+    }
+}
+
+/// Problems with a `rate` at `field`: a pace is only expressible from a
+/// finite, positive number of requests a second.
+fn rate_issue(field: &str, rate: Option<&RateSpec>) -> Vec<Issue> {
+    match rate {
+        Some(rate) if !(rate.requests_per_sec.is_finite() && rate.requests_per_sec > 0.0) => {
+            vec![Issue::new(
+                format!("{field}.requests_per_sec"),
+                "must be a positive number of requests a second",
+            )]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -2698,6 +2774,96 @@ endpoints:
             .unwrap_err()
             .to_string();
         assert!(err.contains("max_page") && err.contains("line"), "{err}");
+    }
+
+    /// A rate that names no interval is a load error, not a unit that
+    /// quietly sends as fast as it can.
+    #[test]
+    fn a_rate_that_is_not_a_positive_number_of_requests_is_refused() {
+        for bad in ["0", "-2", ".nan"] {
+            let yaml = GITHUB.replace(
+                "max_pages: 50",
+                &format!("max_pages: 50\n    rate: {{ requests_per_sec: {bad} }}"),
+            );
+            let issues = parse(&yaml).validate();
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.field == "endpoints[0].rate.requests_per_sec"),
+                "{bad}: {issues:?}"
+            );
+        }
+        let yaml = GITHUB.replace(
+            "max_pages: 50",
+            "max_pages: 50\n    rate: { requests_per_sec: 0.2 }",
+        );
+        assert!(
+            parse(&yaml).validate().is_empty(),
+            "a fraction is how a limit slower than one a second is written"
+        );
+    }
+
+    /// A unit's own rate wins over the defaults', and a profile that
+    /// declares neither is unpaced.
+    #[test]
+    fn an_endpoint_rate_overrides_the_defaults_rate() {
+        let yaml = format!(
+            "{}defaults: {{ rate: {{ requests_per_sec: 10 }}, rows: {{ decoder: json_at, at: /items }} }}\nendpoints:\n  - {{ unit: a, path: /a }}\n  - {{ unit: b, path: /b, rate: {{ requests_per_sec: 2 }} }}\n",
+            GITHUB.split("endpoints:").next().unwrap()
+        );
+        let profile = parse(&yaml);
+        let [a, b] = profile.endpoints.as_slice() else {
+            panic!("two units")
+        };
+        assert_eq!(
+            profile.rate_of(a).map(|r| r.requests_per_sec),
+            Some(10.0),
+            "the defaults' rate reaches a unit that sets none"
+        );
+        assert_eq!(profile.rate_of(b).map(|r| r.requests_per_sec), Some(2.0));
+        assert!(profile.validate().is_empty(), "{:?}", profile.validate());
+        assert!(
+            parse(GITHUB).rate_of(&parse(GITHUB).endpoints[0]).is_none(),
+            "no rate anywhere is no pacing"
+        );
+    }
+
+    /// `retry.throttle_when` round-trips, and a status the profile never
+    /// retries is not turned into a throttle by text a refusal carries.
+    #[test]
+    fn a_declared_throttle_is_recognised_but_never_over_never_retry() {
+        let yaml = GITHUB.replace(
+            "retry: { never_retry: [401, 403] }",
+            "retry: { never_retry: [401, 403], throttle_when: { status: 400, body_contains: ThrottlingException } }",
+        );
+        let profile = parse(&yaml);
+        assert_eq!(
+            profile.retry.throttle_when,
+            Some(ThrottleSpec {
+                status: 400,
+                body_contains: "ThrottlingException".into()
+            })
+        );
+        assert!(profile.validate().is_empty(), "{:?}", profile.validate());
+        let retry = &profile.retry;
+        assert!(retry.throttled(400, r#"{"__type":"ThrottlingException"}"#));
+        assert!(
+            !retry.throttled(400, r#"{"__type":"ValidationException"}"#),
+            "another 400 is the client's bug, not a throttle"
+        );
+        assert!(!retry.throttled(429, "ThrottlingException"), "wrong status");
+        assert!(
+            !RetrySpec::default().throttled(400, "ThrottlingException"),
+            "a profile that declares none has no throttle to recognise"
+        );
+
+        let forbidden = parse(&yaml.replace("status: 400", "status: 403"));
+        assert!(
+            !forbidden
+                .retry
+                .throttled(403, "ThrottlingException, slow down"),
+            "never_retry wins, so a refusal cannot be retried as a throttle"
+        );
     }
 
     #[test]

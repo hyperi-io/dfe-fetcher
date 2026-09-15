@@ -3270,6 +3270,7 @@ $defs:
           - 403
           retry_after_header: true
           retry_non_idempotent: false
+          throttle_when: null
       error:
         description: Where a non-2xx body keeps its error text.
         $ref: '#/$defs/ErrorSpec'
@@ -3305,6 +3306,7 @@ $defs:
           rows: null
           paginate: null
           max_pages: null
+          rate: null
           max_page_bytes: null
           prelude: null
           construct: null
@@ -3632,6 +3634,14 @@ $defs:
         description: Retry POST as well as GET; off unless the endpoint dedupes.
         type: boolean
         default: false
+      throttle_when:
+        description: |-
+          The refusal that means "slow down" on an API whose status does not
+          say so; retried and counted a throttle whatever `retry_on` lists.
+        anyOf:
+        - $ref: '#/$defs/ThrottleSpec'
+        - type: 'null'
+        default: null
     additionalProperties: false
   StatusMatch:
     description: An HTTP status code (100-599) or a class string such as "5xx"
@@ -3641,6 +3651,25 @@ $defs:
       maximum: 599
     - type: string
       pattern: ^[1-5]xx$
+  ThrottleSpec:
+    description: |-
+      What a provider's refusal looks like when it means "slow down" and the
+      status alone does not say so (AWS answers 400 with a `__type` body).
+    type: object
+    properties:
+      status:
+        description: The status such a refusal carries.
+        type: integer
+        format: uint16
+        minimum: 0
+        maximum: 65535
+      body_contains:
+        description: Text the body must contain for the refusal to be a throttle.
+        type: string
+    additionalProperties: false
+    required:
+    - status
+    - body_contains
   ErrorSpec:
     description: Where the provider's error text lives in a non-2xx body.
     type: object
@@ -3782,6 +3811,12 @@ $defs:
         - 'null'
         format: uint32
         minimum: 0
+        default: null
+      rate:
+        description: Rate limit of every endpoint that sets none.
+        anyOf:
+        - $ref: '#/$defs/RateSpec'
+        - type: 'null'
         default: null
       max_page_bytes:
         description: Bytes a page-bounded decoder may buffer.
@@ -4013,6 +4048,19 @@ $defs:
     - description: The next request's full URL read from the body or a header.
       type: string
       const: request_path
+  RateSpec:
+    description: The provider's documented rate limit for one unit's requests.
+    type: object
+    properties:
+      requests_per_sec:
+        description: |-
+          Requests a second this unit may send; a fraction expresses a limit
+          slower than one a second.
+        type: number
+        format: double
+    additionalProperties: false
+    required:
+    - requests_per_sec
   LookupRequest:
     description: |-
       A secondary request of a unit: what a lookup sends for one batch of ids
@@ -4392,6 +4440,15 @@ $defs:
         - 'null'
         format: uint32
         minimum: 0
+        default: null
+      rate:
+        description: |-
+          The provider's rate limit for this unit's requests, held to across
+          its pages, window steps and ticks; the defaults' when unset, and
+          unpaced when neither sets one.
+        anyOf:
+        - $ref: '#/$defs/RateSpec'
+        - type: 'null'
         default: null
       add_fields:
         description: |-
