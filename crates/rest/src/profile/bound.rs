@@ -29,6 +29,7 @@ use super::{
 use crate::decode::Decoder;
 use crate::hooks::{Lister, RowBuilder};
 use crate::page::Pager;
+use crate::request::RateGate;
 
 /// One request shape with its templates compiled: a unit's page request,
 /// a lookup's batch request, a keyset's key request, a manifest's item
@@ -127,6 +128,10 @@ pub struct BoundEndpoint {
     pub fail_when: Option<Predicate>,
     /// Page ceiling per window step.
     pub max_pages: u32,
+    /// The pace this unit's requests are held to, when it declares a rate;
+    /// one gate per unit, so its pages, window steps and ticks share the
+    /// one sequence of slots.
+    pub rate: Option<RateGate>,
     /// Bound on a page-bounded decoder's buffer.
     pub max_page_bytes: usize,
     /// The context every request of this unit renders from: the instance's
@@ -561,6 +566,9 @@ fn bind_endpoint(
             .transpose()
             .map_err(|e| Error::Config(format!("{}: {e}", at("fail_when"))))?,
         max_pages: profile.max_pages_of(endpoint),
+        rate: profile
+            .rate_of(endpoint)
+            .and_then(|rate| RateGate::new(rate.requests_per_sec)),
         max_page_bytes: profile.max_page_bytes_of(endpoint),
         ctx,
         keyset,

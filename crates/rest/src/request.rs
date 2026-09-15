@@ -15,7 +15,12 @@
 //! backoff and jitter, honouring `Retry-After` up to the backoff ceiling.
 //! 401 and 403 are never retried: a refused call ticks the provider's own
 //! throttle and a second refusal only lengthens the penalty. The metrics label
-//! comes from the TYPED status; nothing here matches on message text.
+//! comes from the TYPED status or from the profile's declared
+//! `retry.throttle_when`; nothing here matches on message text of its own.
+//!
+//! [`RateGate`] is the other half of staying inside a provider's limits: a
+//! unit that declares a rate claims a slot from its gate before each send,
+//! so it never has to be told to slow down.
 //!
 //! scalo's `HttpClient::execute` has the same retry loop but only a synchronous
 //! customise hook, and signing is async, so the loop lives here as well.
@@ -99,6 +104,44 @@ fn same_origin_only(attempt: reqwest::redirect::Attempt) -> reqwest::redirect::A
         attempt.follow()
     } else {
         attempt.stop()
+    }
+}
+
+/// The pace one unit's requests are held to: a slot every `min_interval`,
+/// claimed in arrival order, so the pages of a window, the window steps and
+/// the ticks after them all draw from one sequence.
+#[derive(Debug)]
+pub struct RateGate {
+    min_interval: Duration,
+    next_allowed: std::sync::Mutex<tokio::time::Instant>,
+}
+
+impl RateGate {
+    /// A gate over a declared rate; `None` when the rate names no
+    /// expressible interval (zero, negative, or so slow it overflows).
+    #[must_use]
+    pub fn new(requests_per_sec: f64) -> Option<Self> {
+        let min_interval = Duration::try_from_secs_f64(1.0 / requests_per_sec).ok()?;
+        Some(Self {
+            min_interval,
+            next_allowed: std::sync::Mutex::new(tokio::time::Instant::now()),
+        })
+    }
+
+    /// Claim the next slot, then wait for it.
+    pub async fn wait(&self) {
+        // The guard is dropped before the sleep: the claim is the only work
+        // done under the lock.
+        let at = {
+            let mut next = self
+                .next_allowed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let at = (*next).max(tokio::time::Instant::now());
+            *next = at + self.min_interval;
+            at
+        };
+        tokio::time::sleep_until(at).await;
     }
 }
 
@@ -187,8 +230,13 @@ impl RequestExecutor {
                     let status = response.status().as_u16();
                     let retry_after = self.retry_after(&response);
                     let text = self.error_text(response).await;
-                    let error = Error::Api { status, text };
-                    if !(may_retry && self.retry.retries(status)) {
+                    let throttled = self.retry.throttled(status, &text);
+                    let error = Error::Api {
+                        status,
+                        text,
+                        throttled,
+                    };
+                    if !(may_retry && (throttled || self.retry.retries(status))) {
                         return Err(self.fail(source, error));
                     }
                     (error, retry_after)

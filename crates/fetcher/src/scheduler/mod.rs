@@ -753,6 +753,32 @@ mod tests {
         assert_eq!(stored.last_fetch_records, 7);
     }
 
+    /// The cursor moves the window on every tick: the next window starts
+    /// where the written one ended, so a source that needs several ticks to
+    /// drain a busy window never re-reads what it has already landed.
+    #[tokio::test]
+    async fn test_the_next_window_starts_where_the_written_cursor_ended() {
+        use crate::cursor::file::FileCursorStore;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+
+        let first = build_fetch_window(Some(&store), "source.paced", 1, &metrics, "test").await;
+        write_cursor(Some(&store), "source.paced", &first, 10_000, &metrics).await;
+        let second = build_fetch_window(Some(&store), "source.paced", 1, &metrics, "test").await;
+
+        assert_eq!(
+            second.start, first.end,
+            "the second window starts at the first window's end"
+        );
+        assert!(second.end > second.start);
+        assert!(
+            second.start > first.start,
+            "the window moved rather than being re-read from the lookback"
+        );
+    }
+
     // -- build_fetch_window with corrupt cursor --
 
     #[tokio::test]
@@ -978,6 +1004,7 @@ mod tests {
         Error::Framework(dfe_fetcher_core::Error::Api {
             status,
             text: text.to_owned(),
+            throttled: false,
         })
     }
 
