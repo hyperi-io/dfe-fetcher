@@ -173,6 +173,7 @@ fn the_example_config_carries_a_pasteable_db_stanza() {
     }
     let assets = &config.sources.db["assets"];
     assert_eq!(assets.stores.len(), 3);
-    assert_eq!(assets.stores[1].tail_mode(), TailMode::ChangeStream);
-    assert_eq!(assets.stores[2].tail_mode(), TailMode::Keyset);
+    let mongo = |i: usize| assets.stores[i].mongodb.as_ref().expect("mongodb block");
+    assert_eq!(mongo(1).tail_mode(), TailMode::ChangeStream);
+    assert_eq!(mongo(2).tail_mode(), TailMode::Keyset);
 }
