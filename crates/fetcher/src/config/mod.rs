@@ -36,6 +36,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use dfe_fetcher_core::batch::AccumulateConfig;
 use dfe_fetcher_core::envelope::OversizePolicy;
+use dfe_fetcher_core::secret::spec_issue;
 use dfe_fetcher_db::DbInstance;
 use dfe_fetcher_file::FileInstance;
 use dfe_fetcher_rest::RestInstance;
@@ -456,6 +457,17 @@ impl Config {
                         "container extractor '{}' has empty topic",
                         container.name
                     )));
+                }
+                // An env value is handed to the container verbatim, so a spec
+                // the resolver cannot read reaches the tool as literal text
+                // and comes back as that tool's auth error, not ours.
+                for (key, value) in &container.env {
+                    if let Some(issue) = spec_issue(value) {
+                        return Err(Error::Config(format!(
+                            "container extractor '{}' env '{key}': {issue}",
+                            container.name
+                        )));
+                    }
                 }
             }
         }
@@ -5065,6 +5077,60 @@ mod tests {
         assert!(
             err.contains("duplicate container extractor name"),
             "Expected duplicate name error, got: {err}"
+        );
+    }
+
+    /// An extractor env value is handed to the container verbatim, so a spec
+    /// the resolver cannot read would reach the tool as literal text and fail
+    /// as that tool's auth error rather than as a credential-configuration
+    /// error of ours.
+    #[test]
+    fn a_container_env_spec_the_resolver_cannot_read_is_refused_at_load() {
+        let container = |value: &str| ContainerExtractorConfig {
+            name: "env-spec-test".to_string(),
+            image: "img:latest".to_string(),
+            runtime: None,
+            mode: "scheduled".to_string(),
+            communication: "stdout".to_string(),
+            topic: "t".to_string(),
+            interval_secs: None,
+            env: HashMap::from([("AWS_SECRET_ACCESS_KEY".to_string(), value.to_string())]),
+            volumes: vec![],
+            network: None,
+            memory_limit: None,
+            cpu_limit: None,
+            command: None,
+            timeout_secs: None,
+            pull_policy: "if-not-present".to_string(),
+            max_restart_attempts: 0,
+            max_restart_backoff_secs: 60,
+            stable_after_secs: 300,
+        };
+
+        // What the resolver handles, and a plain value, both pass through.
+        for value in [
+            "vault:kv/data/aws:secret_key",
+            "env:AWS_SECRET",
+            "AKIAEXAMPLE",
+        ] {
+            let mut cfg = valid_config();
+            cfg.extractors.containers = vec![container(value)];
+            cfg.validate()
+                .unwrap_or_else(|e| panic!("{value} should load: {e}"));
+        }
+
+        let mut cfg = valid_config();
+        cfg.extractors.containers = vec![container("bao:kv/data/aws:secret_key")];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("env-spec-test")
+                && err.contains("AWS_SECRET_ACCESS_KEY")
+                && err.contains("is not a credential spec"),
+            "{err}"
+        );
+        assert!(
+            !err.contains("kv/data/aws"),
+            "the refusal names the prefix and never echoes the path: {err}"
         );
     }
 
