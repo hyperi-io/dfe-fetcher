@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.26](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.25...v1.4.26) (2026-09-15)
+
+### Bug Fixes
+
+* **config:** refuse a container env spec the resolver cannot read ([0cde15c](https://github.com/hyperi-io/dfe-fetcher/commit/0cde15ca515af73d88149e8a335b513a9ed13b64)), closes [#125](https://github.com/hyperi-io/dfe-fetcher/issues/125)
+
 ## [1.4.25](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.24...v1.4.25) (2026-09-15)
 
 ### Bug Fixes
