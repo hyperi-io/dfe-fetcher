@@ -534,7 +534,8 @@ mod tests {
             s.keyset_filter(Some(&after)).unwrap(),
             doc! { "$and": [{ "alive": true }, { "_id": { "$gt": oid } }] }
         );
-        let bare = store("unit: a\nshape: tail\nmongodb: { database: d, collection: c, tail: keyset }\n");
+        let bare =
+            store("unit: a\nshape: tail\nmongodb: { database: d, collection: c, tail: keyset }\n");
         assert_eq!(
             bare.keyset_filter(Some(&serde_json::json!(7))).unwrap(),
             doc! { "_id": { "$gt": 7 } }
