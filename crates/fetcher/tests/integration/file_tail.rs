@@ -163,8 +163,22 @@ async fn tailed_lines_land_incrementally_and_offsets_are_committed_after_the_ack
     assert_eq!(files[0].1, 24, "offset just past the third line");
 
     append(&log, &["{\"n\":4}"]);
-    assert_eq!(d.run_tick(None).await.expect("tick 2").rows, 1);
-    assert_eq!(d.run_tick(None).await.expect("tick 3").rows, 0);
+    // The tailer does not re-glob inside `glob_minimum_cooldown_ms`, so the
+    // tick straight after an append can legitimately see nothing.
+    let mut tailed = 0;
+    for _ in 0..100 {
+        tailed += d.run_tick(None).await.expect("tick after the append").rows;
+        if tailed == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(tailed, 1, "the appended line is tailed exactly once");
+    assert_eq!(
+        d.run_tick(None).await.expect("caught up").rows,
+        0,
+        "nothing is left once the appended line has been tailed"
+    );
 
     let frames = landed(&h.transport).await;
     assert!(frames.iter().all(|(topic, _)| topic == "app-logs_land"));
