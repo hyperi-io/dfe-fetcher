@@ -74,7 +74,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `instance_id` -- cursor key prefix set at startup
 /// - `cursor.directory` -- cursor store created at startup
 /// - `sources.*.enabled` -- source registration at startup
-/// - `sources.*.credential_secret` / `tenant_id` / `client_id` etc. -- credentials resolved once
+/// - `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup
 /// - `scheduler.max_concurrent_fetches` -- semaphore created at startup
 /// - `dlq.*` -- DLQ created at startup
 /// - `buffer.*` -- buffer manager created at startup
@@ -4926,6 +4926,38 @@ mod tests {
     // =========================================================================
     // 1. Config validation edge cases (expected failures)
     // =========================================================================
+
+    /// The credential-spec refusal reaches every TYPED block, not just
+    /// `sources.rest`: `validate_builtin_instances` maps each enabled block
+    /// onto an instance of its shipped profile and validates that.
+    #[test]
+    fn a_typed_block_credential_spec_the_resolver_cannot_read_is_refused_at_load() {
+        let mut cfg = valid_config();
+        cfg.sources.okta.enabled = true;
+        cfg.sources.okta.tenant_url = Some("https://example.okta.com".to_string());
+        cfg.sources.okta.services = vec![OktaService {
+            name: "system_log".to_string(),
+            config: HashMap::new(),
+        }];
+        cfg.sources.okta.token = Some("vault:kv/data/okta:token".into());
+        cfg.validate().expect("a well-formed vault spec loads");
+
+        cfg.sources.okta.token = Some("file:/run/secrets/token".into());
+        let err = cfg.validate().unwrap_err().to_string();
+        // Okta defaults to the SSWS header, so its token maps onto the
+        // `api_key` mode and the refusal names `auth.key` rather than
+        // `auth.token`.
+        assert!(
+            err.contains("sources.okta")
+                && err.contains("auth.key")
+                && err.contains("is not a credential spec"),
+            "{err}"
+        );
+        assert!(
+            !err.contains("/run/secrets"),
+            "the refusal names the prefix and never echoes the spec: {err}"
+        );
+    }
 
     #[test]
     fn test_validate_grpc_output_without_endpoint() {
