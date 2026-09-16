@@ -55,9 +55,10 @@ sha1 = { workspace = true }
 # the client the fetcher always shipped; `form` is the token exchange's
 # urlencoded body.
 reqwest = { workspace = true, features = ["charset", "http2", "system-proxy", "json", "form", "rustls", "gzip", "brotli", "stream"] }
-# secrets for credential specs, http for the client config, config-schema so
-# SensitiveString carries the secret marker into the app's config schema.
-scalo = { workspace = true, features = ["expression", "secrets", "secrets-vault", "http", "config-schema"] }
+# secrets for credential specs, http for the client config, auth for the
+# request signer the executor signs through, config-schema so SensitiveString
+# carries the secret marker into the app's config schema.
+scalo = { workspace = true, features = ["expression", "secrets", "secrets-vault", "http", "auth", "config-schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }
 # raw_value: zero-copy row slices out of a buffered page.
@@ -76,5 +77,7 @@ axum = { workspace = true }
 # A throwaway RSA key per JWT-bearer test, so no private key is committed.
 aws-lc-rs = { workspace = true }
 flate2 = { workspace = true }
+# A snapshotting recorder so a test can read the executor's `metrics` series.
+metrics-util = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

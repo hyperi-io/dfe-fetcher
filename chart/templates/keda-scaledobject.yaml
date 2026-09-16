@@ -31,7 +31,10 @@ spec:
         {{- end }}
         lagThreshold: {{ .Values.keda.kafka.lagThreshold | quote }}
         activationLagThreshold: {{ .Values.keda.kafka.activationLagThreshold | quote }}
-        saslType: scram_sha512
+        # `sasl`, not `saslType`: the kafka trigger replaced the old `authMode`
+        # property with `sasl` + `tls`, and an unrecognised key is ignored, so
+        # the mechanism was being supplied nowhere at all.
+        sasl: scram_sha512
         tls: disable
     {{- if .Values.keda.cpu.enabled }}
     # CPU utilisation (secondary scaler)

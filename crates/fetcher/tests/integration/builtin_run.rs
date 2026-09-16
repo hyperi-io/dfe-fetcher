@@ -163,6 +163,7 @@ fn driver_with(
         &built.instance,
         &built.connection_id,
         reqwest::Client::new(),
+        &dfe_fetcher_rest::exchange_client().map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     let config = h.shared.get();

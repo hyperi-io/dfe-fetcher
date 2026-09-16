@@ -525,6 +525,9 @@ async fn run_fetcher_service(
     // (`sources.github`, `sources.okta`, `sources.slack`, ...), then every
     // `sources.rest` entry.
     let http_client = dfe_fetcher_rest::http_client()?;
+    // One exchange client for the whole process: every instance's credential
+    // mode posts its token exchange through it.
+    let exchange_client = dfe_fetcher_rest::exchange_client()?;
     let builtin = config.sources.builtin_instances()?;
     let rest_instances = builtin
         .iter()
@@ -542,7 +545,13 @@ async fn run_fetcher_service(
             instance,
             dfe_fetcher::profiles::shipped(),
         )?;
-        let shape = Shape::for_rest_instance(&profile, instance, id, http_client.clone())?;
+        let shape = Shape::for_rest_instance(
+            &profile,
+            instance,
+            id,
+            http_client.clone(),
+            &exchange_client,
+        )?;
         let cancel = shutdown_token.child_token();
         entries.push(SpawnEntry {
             driver: Arc::new(framework_driver(

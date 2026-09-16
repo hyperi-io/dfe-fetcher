@@ -143,6 +143,7 @@ fn shape(profile: &RestProfile, inst: &RestInstance, connection_id: &str) -> Res
         inst,
         connection_id,
         dfe_fetcher_rest::http_client().expect("http client"),
+        &dfe_fetcher_rest::exchange_client().expect("exchange client"),
     )
     .unwrap_or_else(|e| panic!("bind {connection_id}: {e}"))
 }

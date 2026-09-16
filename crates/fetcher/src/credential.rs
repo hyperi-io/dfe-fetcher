@@ -9,7 +9,8 @@
 //! Credential resolution.
 //!
 //! `resolve` / `resolve_optional` / `CredentialError` are re-exported from
-//! [`scalo::secrets`] for the config cascade's `env:` / `vault:` specs; the
+//! [`scalo::secrets`] for the config cascade's `env:`, `vault:` (also spelled
+//! `bao:` and `openbao:`) and `file:` specs; the
 //! HTTP client and token minting live in the REST crate.
 
 pub use scalo::secrets::{CredentialError, resolve, resolve_optional};

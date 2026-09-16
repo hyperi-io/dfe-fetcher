@@ -36,12 +36,18 @@ fn instance(fixture: &common::Fixture, yaml: &str) -> RestInstance {
     inst
 }
 
+/// The client a credential exchange posts through, as the app builds it.
+fn exchange() -> std::sync::Arc<dfe_fetcher_rest::ExchangeClient> {
+    dfe_fetcher_rest::exchange_client().unwrap()
+}
+
 fn shape(fixture: &common::Fixture, profile_yaml: &str, instance_yaml: &str) -> RestShape {
     RestShape::from_instance(
         &profile(profile_yaml),
         &instance(fixture, instance_yaml),
         "conn",
         reqwest::Client::new(),
+        &exchange(),
     )
     .unwrap_or_else(|e| panic!("bind failed: {e}"))
 }
@@ -100,6 +106,7 @@ fn shape_with_client(
         &instance(fixture, instance_yaml),
         "conn",
         client,
+        &exchange(),
     )
     .unwrap_or_else(|e| panic!("bind failed: {e}"))
 }
@@ -242,6 +249,7 @@ async fn a_transport_failure_never_carries_the_query_key() {
         &inst,
         "conn",
         dfe_fetcher_rest::request::http_client().unwrap(),
+        &exchange(),
     )
     .expect("bind");
 
@@ -948,6 +956,7 @@ async fn a_disabled_unit_is_not_bound_and_an_unknown_one_is_refused_at_bind() {
         ),
         "conn",
         reqwest::Client::new(),
+        &exchange(),
     )
     .unwrap_err();
     assert!(err.to_string().contains("units.zzz"), "{err}");
@@ -1002,7 +1011,14 @@ async fn a_unit_names_its_own_base_url() {
         "other_url".into(),
         Value::String(format!("{}/", fx.base_url())),
     );
-    let s = RestShape::from_instance(&profile(p), &inst, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     assert_eq!(fetch(&s, "here", None).await.unwrap().len(), 4);
     let err = fetch(&s, "there", None).await.unwrap_err();
     assert!(
@@ -1024,7 +1040,14 @@ async fn rows_content_is_bound_from_the_vars_and_a_binary_dump_is_refused() {
         "{PLAIN}vars: {{ output_format: json }}\nendpoints:\n  - unit: metrics\n    path: /array/items.json\n    rows: {{ decoder: json_array, content: \"{{{{ vars.output_format == 'otlp' ? 'binary' : 'json' }}}}\" }}\n  - unit: raw\n    path: /array/items.json\n    rows: {{ decoder: document, content: binary }}\n"
     );
     let inst = instance(&fx, BEARER_INSTANCE);
-    let s = RestShape::from_instance(&profile(&p), &inst, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(&p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     let content = |name: &str| {
         s.units()
             .iter()
@@ -1037,7 +1060,14 @@ async fn rows_content_is_bound_from_the_vars_and_a_binary_dump_is_refused() {
     let mut otlp = inst.clone();
     otlp.vars
         .insert("output_format".into(), Value::String("otlp".into()));
-    let s = RestShape::from_instance(&profile(&p), &otlp, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(&p),
+        &otlp,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     assert!(
         s.units()
             .iter()
@@ -1077,6 +1107,7 @@ async fn rows_content_is_bound_from_the_vars_and_a_binary_dump_is_refused() {
         &inst,
         "conn",
         reqwest::Client::new(),
+        &exchange(),
     )
     .unwrap_err();
     assert!(
@@ -1098,7 +1129,14 @@ async fn a_columnar_table_page_becomes_one_row_per_table_row() {
     let mut inst = instance(&fx, BEARER_INSTANCE);
     inst.vars
         .insert("kql".into(), Value::String("Heartbeat | take 10".into()));
-    let s = RestShape::from_instance(&profile(&p), &inst, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(&p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     let w = FetchWindow {
         start: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
         end: Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
@@ -1135,7 +1173,14 @@ async fn a_jwt_bearer_instance_signs_an_assertion_the_provider_verifies() {
     let p = "profile: jwt\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [jwt_bearer]\n  jwt_bearer:\n    token_url: \"{{ auth.token_uri }}\"\n    claims: { iss: \"{{ auth.client_email }}\", scope: \"{{ vars.scope }}\", aud: \"{{ auth.token_url }}\", sub: \"{{ vars.admin_email }}\" }\n    ttl_secs: 600\nvars: { scope: cloud-platform, admin_email: \"\" }\nendpoints:\n  - { unit: oauth, path: /auth/oauth, rows: { decoder: json_array } }\n  - { unit: scoped, path: /scoped/reports, auth: { scope: reports }, rows: { decoder: json_array } }\n";
     let mut inst = instance(&fx, "profile: x\ntopic: t\nauth: { mode: jwt_bearer }\n");
     inst.auth.service_account_key = Some(key_json.clone().into());
-    let s = RestShape::from_instance(&profile(p), &inst, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(
@@ -1171,8 +1216,14 @@ async fn a_jwt_bearer_instance_signs_an_assertion_the_provider_verifies() {
         "admin_email".into(),
         Value::String("admin@example.com".into()),
     );
-    let s =
-        RestShape::from_instance(&profile(p), &by_file, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(p),
+        &by_file,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(fx.assertions()[2]["sub"], "admin@example.com");
 
@@ -1184,8 +1235,14 @@ async fn a_jwt_bearer_instance_signs_an_assertion_the_provider_verifies() {
         "token_url: \"{{ auth.token_uri }}\"",
         "token_url: \"{{ base_url }}/token\"",
     );
-    let s =
-        RestShape::from_instance(&profile(&bare), &wrong, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(&bare),
+        &wrong,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     let err = fetch(&s, "oauth", None).await.unwrap_err();
     assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
 }
@@ -1201,7 +1258,14 @@ async fn gce_metadata_fetches_the_workload_token_from_the_metadata_server() {
         "metadata_url".into(),
         Value::String(format!("{}/metadata/token", fx.base_url())),
     );
-    let s = RestShape::from_instance(&profile(p), &inst, "conn", reqwest::Client::new()).unwrap();
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
     assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(fx.metadata_hits(), 1, "cached for its 3599 s");

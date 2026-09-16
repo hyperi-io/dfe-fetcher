@@ -1383,6 +1383,7 @@ fn pubsub_shape(cfg: &GcpPubsubSourceConfig) -> dfe_fetcher_rest::shape::queue::
         &built.instance,
         &built.connection_id,
         dfe_fetcher_rest::http_client().expect("http client"),
+        &dfe_fetcher_rest::exchange_client().expect("exchange client"),
     )
     .and_then(dfe_fetcher_rest::shape::queue::QueueShape::new)
     .unwrap_or_else(|e| panic!("bind {}: {e}", built.connection_id))

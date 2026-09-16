@@ -5324,7 +5324,7 @@
       ]
     },
     "InstanceAuth": {
-      "description": "The identity half of the auth axis: the mode picked and its credentials.\n\nSecret fields are credential specs (`vault:<mount>/data/<path>:<key>`,\n`env:VAR`, or a literal) resolved when first used.",
+      "description": "The identity half of the auth axis: the mode picked and its credentials.\n\nSecret fields are credential specs (`vault:<mount>/data/<path>:<key>` and\nits `bao:` and `openbao:` spellings, `env:VAR`, `file:<path>`, or a\nliteral) resolved when first used.",
       "type": "object",
       "properties": {
         "mode": {
@@ -5597,7 +5597,7 @@
           "default": null
         },
         "connection_string": {
-          "description": "The connection string or URL as a credential spec (`vault:...`,\n`env:VAR`, or a literal), resolved on first use and never logged.",
+          "description": "The connection string or URL as a credential spec (`vault:...`, also\nspelled `bao:` or `openbao:`, `env:VAR`, `file:<path>`, or a literal),\nresolved on first use and never logged.",
           "type": "string",
           "x-dfe-secret": true,
           "writeOnly": true,

@@ -25,6 +25,7 @@ pub mod queue;
 pub mod window;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -48,7 +49,7 @@ use crate::profile::bound::{
 };
 use crate::profile::template::TemplateCtx;
 use crate::profile::{Method, RestInstance, RestProfile};
-use crate::request::RequestExecutor;
+use crate::request::{ExchangeClient, RequestExecutor};
 use window::Step;
 
 /// The REST shape of one instance.
@@ -64,8 +65,8 @@ pub struct RestShape {
 }
 
 impl RestShape {
-    /// Bind `profile` to `instance` and build its auth mode over `client`,
-    /// plus one per scope the units name.
+    /// Bind `profile` to `instance` and build its auth mode over `exchange`,
+    /// plus one per scope the units name; data requests go out on `client`.
     ///
     /// # Errors
     ///
@@ -76,16 +77,21 @@ impl RestShape {
         instance: &RestInstance,
         connection_id: &str,
         client: reqwest::Client,
+        exchange: &Arc<ExchangeClient>,
     ) -> Result<Self> {
         let bound = bind(profile, instance, connection_id)?;
-        let auth = AuthMode::build(&bound.auth, &instance.auth, client.clone())?;
+        let auth = AuthMode::build(&bound.auth, &instance.auth, Arc::clone(exchange))?;
         let mut scoped_auth = BTreeMap::new();
         for scope in bound.endpoints.iter().filter_map(|e| e.auth_scope.clone()) {
             if scoped_auth.contains_key(&scope) {
                 continue;
             }
-            let mode =
-                AuthMode::build_scoped(&bound.auth, &instance.auth, client.clone(), Some(&scope))?;
+            let mode = AuthMode::build_scoped(
+                &bound.auth,
+                &instance.auth,
+                Arc::clone(exchange),
+                Some(&scope),
+            )?;
             scoped_auth.insert(scope, mode);
         }
         Ok(Self::with_scoped_auth(

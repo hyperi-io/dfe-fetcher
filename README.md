@@ -146,15 +146,22 @@ so an empty config is not a startup failure.
 
 ### Credential resolution
 
-Credential fields accept three forms:
+Credential fields accept these forms:
 
 - `vault:<mount>/data/<path>:<key>` -- resolve from the secrets manager
   (OpenBao / Vault). The KV v2 mount is followed by a literal `data` segment;
   without it the whole path is read under the default `secret` mount.
+  `bao:` and `openbao:` are the same lookup under the names the OpenBao
+  tooling uses.
 - `env:VARIABLE_NAME` -- read from an environment variable
+- `file:<path>` -- read a local file, typically a mounted Kubernetes Secret
 - a literal value -- used as-is
 
-A source's identity fields accept the same three forms: the identifiers a
+`aws:` is in the resolver's vocabulary but needs a secrets feature the fetcher
+does not build, so it is refused at load rather than reaching a provider as
+literal text; AWS keys come in as `sigv4` identity fields instead.
+
+A source's identity fields accept the same forms: the identifiers a
 provider is addressed by (tenant, subscription, project, account, organisation,
 user, client id, tenant URL, API host), at block level and on every connection.
 The pass in `crates/fetcher/src/config/resolve.rs` is the list. They resolve

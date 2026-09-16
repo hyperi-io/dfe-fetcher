@@ -128,6 +128,7 @@ async fn a_rest_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id() {
         &instance(&base_url),
         "fixture_dump",
         reqwest::Client::new(),
+        &dfe_fetcher_rest::exchange_client().expect("exchange client"),
     )
     .expect("bind");
     let build_driver = |shape: RestShape| {
@@ -199,6 +200,7 @@ async fn a_rest_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id() {
             &instance(&base_url),
             "fixture_dump",
             reqwest::Client::new(),
+            &dfe_fetcher_rest::exchange_client().expect("exchange client"),
         )
         .unwrap(),
     );
