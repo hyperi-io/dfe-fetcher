@@ -858,11 +858,13 @@ version_check:
 # from where they left off instead of re-fetching the same time range.
 # One file PER KEY under a PVC-backed directory. Persists across pod restarts.
 # directory REQUIRES RESTART (cursor store created at startup).
-# default_window_hours is HOT-RELOADED (re-read when no cursor exists).
+# default_window_hours is HOT-RELOADED. It caps how wide ONE tick's window can
+# be, so a source hours behind drains a span per tick instead of asking for the
+# whole backlog, and it is the lookback when no cursor exists.
 # Unset, the store falls back to the directory holding the config file.
 # cursor:
 #   directory: "/var/lib/dfe-fetcher/cursors"  # REQUIRES RESTART
-#   default_window_hours: 1                     # hot-reloaded
+#   default_window_hours: 1                     # hot-reloaded, caps one tick
 
 # =============================================================================
 # Horizontal scaling pressure (rustlib 2.8.10+ engine) -- REQUIRES RESTART

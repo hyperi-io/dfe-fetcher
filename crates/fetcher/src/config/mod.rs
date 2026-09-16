@@ -64,7 +64,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `scheduler.jitter_percent` -- jitter re-computed each cycle
 /// - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
 /// - `sources.*.filter` -- CEL filter re-evaluated on each record
-/// - `cursor.default_window_hours` -- lookback window re-read when no cursor exists
+/// - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
 /// - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 ///
 /// **Requires pod restart:**
@@ -4579,7 +4579,9 @@ pub struct CursorConfig {
     /// Empty = fall back to config file directory (with warning).
     pub directory: String,
 
-    /// Default lookback window in hours when no cursor exists.
+    /// The widest span one tick fetches, in hours, and the lookback when no
+    /// cursor exists -- a source further behind than this drains a span per
+    /// tick, floored at the fetch interval.
     pub default_window_hours: u64,
 }
 
