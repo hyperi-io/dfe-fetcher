@@ -158,7 +158,7 @@ dotenvy = "0.15"
 wiremock = "0.6"
 # The suites talk to wiremock and the live providers directly; the app itself
 # reaches HTTP only through the REST crate.
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["json", "rustls"] }
 # `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
 # ships ZERO default features, so this must be explicit (not transitive on axum).
 tower = { version = "0.5", features = ["util"] }

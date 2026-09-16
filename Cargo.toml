@@ -61,12 +61,14 @@ serde_json = "1.0.151"
 serde_yaml_ng = "0.10.0"
 bytes = "1.12.1"
 
-# HTTP client. HELD on 0.12: reqwest and reqsign move together -- reqsign signs
-# an http::request::Parts and its default context sends over reqwest 0.12, so
-# bumping reqwest alone stops every SigV4 call site compiling. Members pick
-# features; `default-features = false` drops native-tls so rustls is the only
-# TLS in the binary.
-reqwest = { version = "0.12", default-features = false }
+# HTTP client. The REST path, reqsign's default context and scalo all send over
+# this line, so the signed-request tests and scalo's request signer see ONE
+# reqwest. Members pick features: `default-features = false` leaves charset,
+# http2 and system-proxy to the members that want them, and `form` and `query`
+# are opt-in regardless. TLS is rustls over aws-lc-rs verifying against the OS
+# trust store (rustls-platform-verifier), so an operator-installed CA in the
+# image is honoured.
+reqwest = { version = "0.13", default-features = false }
 async-compression = { version = "0.4.46", features = ["tokio", "gzip"] }
 backon = "1.6.0"
 url = "2.5.8"
@@ -95,9 +97,9 @@ jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 # Test-only RSA key generation for the JWT-bearer fixtures, jsonwebtoken's
 # own backend so no second crypto crate enters the graph.
 aws-lc-rs = "1"
-# AWS SigV4 signing (reqsign -- lightweight, no AWS SDK dependency). HELD with
-# reqwest 0.12: reqsign signs an http::request::Parts and its default context
-# sends over reqwest 0.12.
+# AWS SigV4 signing (reqsign -- lightweight, no AWS SDK dependency). reqsign
+# signs an http::request::Parts and its default context sends STS and metadata
+# calls over the same reqwest line as the REST path.
 reqsign = { version = "0.20", default-features = false, features = ["aws", "default-context"] }
 # reqsign signs an http::request::Parts, so the SigV4 mode projects one.
 http = "1"

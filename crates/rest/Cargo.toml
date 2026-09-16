@@ -52,8 +52,9 @@ quick-xml = { workspace = true }
 reqsign = { workspace = true }
 sha1 = { workspace = true }
 # The one HTTP client: rustls is the only TLS; charset/http2/system-proxy keep
-# the client the fetcher always shipped.
-reqwest = { workspace = true, features = ["charset", "http2", "system-proxy", "json", "rustls-tls", "gzip", "brotli", "stream"] }
+# the client the fetcher always shipped; `form` is the token exchange's
+# urlencoded body.
+reqwest = { workspace = true, features = ["charset", "http2", "system-proxy", "json", "form", "rustls", "gzip", "brotli", "stream"] }
 # secrets for credential specs, http for the client config, config-schema so
 # SensitiveString carries the secret marker into the app's config schema.
 scalo = { workspace = true, features = ["expression", "secrets", "secrets-vault", "http", "config-schema"] }
