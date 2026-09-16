@@ -4992,6 +4992,9 @@ mod tests {
         cfg.validate().expect("a well-formed vault spec loads");
 
         cfg.sources.okta.token = Some("file:/run/secrets/token".into());
+        cfg.validate().expect("a file spec loads");
+
+        cfg.sources.okta.token = Some("aws:prod/okta:token".into());
         let err = cfg.validate().unwrap_err().to_string();
         // Okta defaults to the SSWS header, so its token maps onto the
         // `api_key` mode and the refusal names `auth.key` rather than
@@ -4999,11 +5002,12 @@ mod tests {
         assert!(
             err.contains("sources.okta")
                 && err.contains("auth.key")
-                && err.contains("is not a credential spec"),
+                && err.contains("is not a credential spec")
+                && err.contains("`secrets-aws`"),
             "{err}"
         );
         assert!(
-            !err.contains("/run/secrets"),
+            !err.contains("prod/okta"),
             "the refusal names the prefix and never echoes the spec: {err}"
         );
     }
@@ -5172,6 +5176,9 @@ mod tests {
         // What the resolver handles, and a plain value, both pass through.
         for value in [
             "vault:kv/data/aws:secret_key",
+            "bao:kv/data/aws:secret_key",
+            "openbao:kv/data/aws:secret_key",
+            "file:/run/secrets/aws_secret_key",
             "env:AWS_SECRET",
             "AKIAEXAMPLE",
         ] {
@@ -5182,16 +5189,17 @@ mod tests {
         }
 
         let mut cfg = valid_config();
-        cfg.extractors.containers = vec![container("bao:kv/data/aws:secret_key")];
+        cfg.extractors.containers = vec![container("aws:prod/aws:secret_key")];
         let err = cfg.validate().unwrap_err().to_string();
         assert!(
             err.contains("env-spec-test")
                 && err.contains("AWS_SECRET_ACCESS_KEY")
-                && err.contains("is not a credential spec"),
+                && err.contains("is not a credential spec")
+                && err.contains("`secrets-aws`"),
             "{err}"
         );
         assert!(
-            !err.contains("kv/data/aws"),
+            !err.contains("prod/aws"),
             "the refusal names the prefix and never echoes the path: {err}"
         );
     }

@@ -67,9 +67,10 @@ re-resolves the string between connects; those are listed as unsupported below
 rather than left to fail at connect time.
 
 Two limits apply to every row. The string is a credential spec, so it may be
-`vault:` or `env:` and the plaintext never sits in config; those are the only
-two prefixes that resolve, and a `file:` or `bao:` prefix is refused at load
-naming the prefix rather than reaching the driver as literal text. And a
+`vault:`, `bao:`, `openbao:`, `env:` or `file:` and the plaintext never sits in
+config; an `aws:` prefix needs a secrets feature the fetcher does not build and
+is refused at load naming the prefix rather than reaching the driver as literal
+text. And a
 credential the driver reads from disk (a key file, a wallet, a certificate) has
 to be mounted into the image; the spec mechanism does not fetch it.
 

@@ -34,5 +34,5 @@ pub mod request;
 pub mod shape;
 
 pub use profile::{RestInstance, RestProfile};
-pub use request::{HttpClient, http_client};
+pub use request::{ExchangeClient, HttpClient, exchange_client, http_client};
 pub use shape::RestShape;

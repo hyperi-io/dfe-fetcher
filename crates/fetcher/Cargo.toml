@@ -172,7 +172,7 @@ testcontainers = "0.27"
 # readiness line predates MongoDB 8.
 testcontainers-modules = { version = "0.15", features = ["localstack", "kafka", "postgres", "mariadb", "clickhouse"] }
 # A snapshotting recorder so a test can read the framework's `metrics` series.
-metrics-util = { version = "0.20.4", features = ["debugging"] }
+metrics-util = { workspace = true }
 smallvec = { workspace = true }
 # The in-test Duo provider verifies each request's HMAC-SHA1 signature.
 hmac = { workspace = true }

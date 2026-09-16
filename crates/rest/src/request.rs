@@ -22,18 +22,24 @@
 //! unit that declares a rate claims a slot from its gate before each send,
 //! so it never has to be told to slow down.
 //!
-//! scalo's `HttpClient::execute` has the same retry loop but only a synchronous
-//! customise hook, and signing is async, so the loop lives here as well.
+//! The credential goes on through scalo's [`RequestSigner`] hook, so a mode
+//! over a scalo credential source and a mode applying its own credential reach
+//! the request the same way. The loop itself stays here because scalo's has no
+//! per-source metrics, no throttle classified from the body text, no
+//! ignore-statuses, no quota headers, and no `Retry-After` capped at the
+//! profile's own ceiling.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use backon::BackoffBuilder;
 use bytes::Bytes;
+use scalo::http_client::{HttpClientConfig, RequestSigner};
 
 use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::metric_names;
 
-use crate::auth::AuthMode;
+use crate::auth::{AuthMode, credential_error};
 use crate::profile::RetrySpec;
 use crate::profile::template::TemplateCtx;
 
@@ -43,6 +49,11 @@ const ERROR_BODY_BYTES: usize = 4096;
 /// The HTTP client every REST shape sends through, named here so the app
 /// never spells the HTTP crate.
 pub type HttpClient = reqwest::Client;
+
+/// The client a credential exchange posts through: scalo's, which owns the
+/// retry schedule and the request metrics for a token endpoint. Named apart
+/// from [`HttpClient`] because that name is already the data path's.
+pub type ExchangeClient = scalo::http_client::HttpClient;
 
 /// How long a connection may take to open.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -90,6 +101,42 @@ pub fn http_client_with(connect: Duration, read: Duration) -> Result<HttpClient>
         .pool_max_idle_per_host(10)
         .build()
         .map_err(|e| Error::Source(format!("failed to build HTTP client: {e}")))
+}
+
+/// How long a credential exchange may take in total. A token endpoint answers
+/// with a small document or not at all, so unlike a data request it takes a
+/// total bound rather than an idle read one.
+pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Build the one client every credential exchange posts through.
+///
+/// The config is spelled out here rather than read from the cascade: the
+/// cascade's `http_client` section is scalo's own key and the fetcher declares
+/// no such block, so reading it would take its timeouts from a section no
+/// operator is told about. Redirects are refused outright -- reqwest carries
+/// the body across a cross-origin hop, and a token exchange's body is the
+/// client secret.
+///
+/// It carries no retry schedule of its own: the executor decides what a failed
+/// credential means, and an exchange building its own request through
+/// [`ExchangeClient::client`] takes the timeouts and the `User-Agent` only.
+///
+/// # Errors
+///
+/// Returns [`Error::Source`] when the TLS backend cannot be initialised.
+pub fn exchange_client() -> Result<Arc<ExchangeClient>> {
+    let config = HttpClientConfig {
+        timeout_secs: EXCHANGE_TIMEOUT.as_secs(),
+        connect_timeout_secs: CONNECT_TIMEOUT.as_secs(),
+        max_retries: 0,
+        min_retry_interval_ms: 0,
+        max_retry_interval_ms: 0,
+        retry_non_idempotent: false,
+        user_agent: Some(concat!("dfe-fetcher/", env!("CARGO_PKG_VERSION")).to_owned()),
+    };
+    ExchangeClient::with_redirect_policy(config, reqwest::redirect::Policy::none())
+        .map(Arc::new)
+        .map_err(|e| Error::Source(format!("failed to build the exchange HTTP client: {e}")))
 }
 
 /// Follow a redirect only when it stays on the origin the request went to.
@@ -172,7 +219,8 @@ impl RequestExecutor {
         }
     }
 
-    /// The HTTP client, for the token exchange.
+    /// The client the shape builds its requests on, so a request reaches
+    /// [`Self::send`] already carrying this executor's connection pool.
     #[must_use]
     pub fn client(&self) -> &reqwest::Client {
         &self.client
@@ -206,7 +254,9 @@ impl RequestExecutor {
             .build();
         loop {
             let mut request = make()?;
-            auth.authorize(&mut request, auth_ctx).await?;
+            if let Err(e) = RequestSigner::sign(&auth.signer(auth_ctx), &mut request).await {
+                return Err(self.fail(source, credential_error(e)));
+            }
             let started = Instant::now();
             let outcome = self.client.execute(request).await;
             metrics::histogram!(metric_names::API_DURATION_SECONDS, "source" => source.to_owned())
@@ -325,10 +375,78 @@ impl RequestExecutor {
 
 #[cfg(test)]
 mod tests {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
     use super::*;
+    use crate::auth::Secret;
 
     #[test]
     fn the_shared_client_builds_on_this_platform() {
         assert!(http_client().is_ok());
+        assert!(exchange_client().is_ok());
+    }
+
+    /// A refused redirect is what keeps a token exchange's form body -- the
+    /// client secret -- from being replayed to a host the profile never named.
+    #[test]
+    fn the_exchange_client_carries_the_fetchers_identity_and_no_redirects() {
+        let client = exchange_client().unwrap();
+        let config = client.config();
+        assert_eq!(config.connect_timeout_secs, CONNECT_TIMEOUT.as_secs());
+        assert_eq!(config.timeout_secs, EXCHANGE_TIMEOUT.as_secs());
+        assert_eq!(config.max_retries, 0);
+        assert_eq!(
+            config.user_agent.as_deref(),
+            Some(concat!("dfe-fetcher/", env!("CARGO_PKG_VERSION")))
+        );
+    }
+
+    /// A credential that does not resolve used to return through `?` before the
+    /// counter was touched, so a source failing on every tick showed no API
+    /// errors at all.
+    #[tokio::test]
+    async fn a_credential_that_does_not_resolve_is_counted_like_any_other_failure() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        // One recorder per process; nextest runs each test in its own.
+        let _ = recorder.install();
+
+        let auth = AuthMode::Bearer(Secret::new(
+            "env:DFE_FETCHER_TEST_MISSING_SECRET_VAR".into(),
+        ));
+        let executor = RequestExecutor::new(
+            reqwest::Client::new(),
+            RetrySpec::default(),
+            None,
+            Vec::new(),
+        );
+        let err = executor
+            .send("counted", &auth, &TemplateCtx::new(), true, &[], || {
+                Ok(reqwest::Request::new(
+                    reqwest::Method::GET,
+                    "https://api.example/x".parse().unwrap(),
+                ))
+            })
+            .await
+            .expect_err("the spec does not resolve");
+        assert!(matches!(err, Error::Credential(_)), "{err:?}");
+
+        let counted = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .find(|(key, _, _, _)| {
+                key.key().name() == metric_names::API_ERRORS_TOTAL
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "source" && l.value() == "counted")
+            })
+            .expect("the credential failure reached the counter");
+        assert!(
+            matches!(counted.3, DebugValue::Counter(1)),
+            "{:?}",
+            counted.3
+        );
     }
 }

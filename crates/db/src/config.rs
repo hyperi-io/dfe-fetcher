@@ -244,8 +244,9 @@ pub struct DbInstance {
     pub engine: Engine,
     /// The SQL dialect; required for `odbc`, implied for `clickhouse`.
     pub dialect: Option<Dialect>,
-    /// The connection string or URL as a credential spec (`vault:...`,
-    /// `env:VAR`, or a literal), resolved on first use and never logged.
+    /// The connection string or URL as a credential spec (`vault:...`, also
+    /// spelled `bao:` or `openbao:`, `env:VAR`, `file:<path>`, or a literal),
+    /// resolved on first use and never logged.
     pub connection_string: SensitiveString,
     /// Fetch interval; the scheduler default when unset.
     pub interval_secs: Option<u64>,
@@ -660,9 +661,15 @@ stores:
 
     #[test]
     fn a_spec_the_resolver_cannot_read_is_refused_at_load() {
-        // Well formed, so accepted and left uninspected; a vault spec carries
+        // Well formed, so accepted and left uninspected; a KV spec carries
         // its `:key`.
-        for spec in ["vault:kv/data/team/db:dsn", "env:INVENTORY_DSN"] {
+        for spec in [
+            "vault:kv/data/team/db:dsn",
+            "bao:kv/data/team/db:dsn",
+            "openbao:kv/data/team/db:dsn",
+            "env:INVENTORY_DSN",
+            "file:/run/secrets/dsn",
+        ] {
             assert!(
                 with_spec(spec).is_empty(),
                 "`{spec}` is a spec the resolver reads, so nothing is wrong with it"
@@ -670,8 +677,8 @@ stores:
         }
         // Not derived from the consts under test, so emptying one fails here.
         for (spec, secret) in [
-            ("file:/run/secrets/dsn", "run/secrets/dsn"),
-            ("bao:secret/data/team/db:dsn", "team/db"),
+            ("aws:prod/team/db", "team/db"),
+            ("aws:prod/team/db:dsn", "team/db"),
         ] {
             let issues = spec_issues(spec);
             assert!(!issues.is_empty(), "`{spec}` must be refused");
@@ -696,10 +703,16 @@ stores:
         }
         // Split into path and key only at resolve time, so a missing key is
         // otherwise a per-tick failure rather than a load error.
-        assert!(
-            !spec_issues("vault:kv/data/team/db").is_empty(),
-            "a vault spec naming no key must be refused at load"
-        );
+        for spec in [
+            "vault:kv/data/team/db",
+            "bao:kv/data/team/db",
+            "openbao:kv/data/team/db",
+        ] {
+            assert!(
+                !spec_issues(spec).is_empty(),
+                "`{spec}` names no key, so it must be refused at load"
+            );
+        }
     }
 
     #[test]

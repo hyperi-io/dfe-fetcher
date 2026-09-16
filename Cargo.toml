@@ -38,7 +38,7 @@ dfe-fetcher-file = { path = "crates/file" }
 
 # scalo shared library (crates.io). Features are chosen per member; the core
 # takes `expression` only.
-scalo = { version = ">=2.12.1, <3", default-features = false }
+scalo = { version = ">=2.12.3, <3", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
 cel = { version = ">=0.13, <0.14", features = ["json"] }
@@ -120,6 +120,8 @@ metrics = ">=0.24, <0.25"
 
 # Dev
 tempfile = "3"
+# A snapshotting recorder so a test can read the `metrics` series a crate emits.
+metrics-util = { version = "0.20.4", features = ["debugging"] }
 
 # `deny`, not `forbid`: the integration test binary allows `unsafe_code` around
 # `std::env::set_var`, and a workspace `forbid` cannot be allowed back. The

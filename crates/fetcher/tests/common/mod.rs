@@ -844,6 +844,7 @@ pub fn builtin_shape(
         &built.instance,
         &built.connection_id,
         dfe_fetcher_rest::http_client().expect("http client"),
+        &dfe_fetcher_rest::exchange_client().expect("exchange client"),
     )
     .unwrap_or_else(|e| panic!("bind {}: {e}", built.connection_id))
 }

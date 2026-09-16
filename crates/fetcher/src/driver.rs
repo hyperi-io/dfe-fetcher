@@ -50,7 +50,7 @@ use dfe_fetcher_core::{
 };
 use dfe_fetcher_db::DbShape;
 use dfe_fetcher_file::FileShape;
-use dfe_fetcher_rest::{HttpClient, RestShape};
+use dfe_fetcher_rest::{ExchangeClient, HttpClient, RestShape};
 
 use crate::config::{Config, SharedConfig};
 use crate::emit::{EmitReport, Emitter};
@@ -87,8 +87,9 @@ impl Shape {
         instance: &dfe_fetcher_rest::profile::RestInstance,
         connection_id: &str,
         client: HttpClient,
+        exchange: &Arc<ExchangeClient>,
     ) -> dfe_fetcher_core::Result<Self> {
-        let rest = RestShape::from_instance(profile, instance, connection_id, client)?;
+        let rest = RestShape::from_instance(profile, instance, connection_id, client, exchange)?;
         if profile.is_queue() {
             let queue = dfe_fetcher_rest::shape::queue::QueueShape::new(rest)?;
             return Ok(Shape::Custom(Box::new(queue)));

@@ -2220,8 +2220,9 @@ impl<'de> Deserialize<'de> for ProfileRef {
 
 /// The identity half of the auth axis: the mode picked and its credentials.
 ///
-/// Secret fields are credential specs (`vault:<mount>/data/<path>:<key>`,
-/// `env:VAR`, or a literal) resolved when first used.
+/// Secret fields are credential specs (`vault:<mount>/data/<path>:<key>` and
+/// its `bao:` and `openbao:` spellings, `env:VAR`, `file:<path>`, or a
+/// literal) resolved when first used.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct InstanceAuth {
@@ -2644,20 +2645,27 @@ endpoints:
             instance.validate(&profile)
         };
 
-        for spec in ["env:RUNZERO_TOKEN", "vault:kv/data/team/x:token"] {
+        for spec in [
+            "env:RUNZERO_TOKEN",
+            "vault:kv/data/team/x:token",
+            "bao:kv/data/team/x:token",
+            "openbao:kv/data/team/x:token",
+            "file:/run/secrets/token",
+        ] {
             assert!(bearer(spec).is_empty(), "{spec}: {:?}", bearer(spec));
         }
 
-        let issues = bearer("file:/run/secrets/token");
+        let issues = bearer("aws:prod/runzero:token");
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].field, "auth.token");
         assert!(
-            issues[0].message.contains("is not a credential spec"),
+            issues[0].message.contains("is not a credential spec")
+                && issues[0].message.contains("`secrets-aws`"),
             "{:?}",
             issues[0]
         );
         assert!(
-            !issues[0].message.contains("/run/secrets"),
+            !issues[0].message.contains("runzero"),
             "the refusal never echoes the spec: {:?}",
             issues[0]
         );
@@ -2677,7 +2685,7 @@ endpoints:
 
         // A field of another mode is checked the same way.
         let oauth: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: id, client_secret: \"bao:kv/data/x:k\" }\n",
+            "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: id, client_secret: \"aws:prod/x:k\" }\n",
         )
         .unwrap();
         let issues = oauth.validate(&profile);

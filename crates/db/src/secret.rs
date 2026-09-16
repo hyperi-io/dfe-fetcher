@@ -8,7 +8,8 @@
 
 //! The connection string as a secret.
 //!
-//! The spec (`vault:<mount>/data/<path>:<key>`, `env:VAR`, or a literal) is
+//! The spec (`vault:<mount>/data/<path>:<key>` and its `bao:` and `openbao:`
+//! spellings, `env:VAR`, `file:<path>`, or a literal) is
 //! resolved through scalo's secret resolver the first time a store connects
 //! and cached for the life of the shape by the core's once-resolved cell.
 
