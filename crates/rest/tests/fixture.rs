@@ -534,13 +534,23 @@ async fn bearer_api_key_and_oauth2_modes_authenticate_and_oauth2_refreshes_on_ex
     assert_eq!(fetch(&oauth, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(
         fx.token_exchanges(),
+        1,
+        "a token still inside its hold is reused"
+    );
+    // The token lives a second and the profile asks to refresh a second early,
+    // a margin not shorter than the lifetime, so half the lifetime is held.
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    assert_eq!(fetch(&oauth, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(
+        fx.token_exchanges(),
         2,
-        "the one-second token was past its early-refresh point"
+        "the token was past its renewal point"
     );
     let seen = fx.requests_to("/auth/oauth");
     assert_eq!(
         seen.last().unwrap().authorization.as_deref(),
-        Some("Bearer tok-2")
+        Some("Bearer tok-2"),
+        "the request after the renewal carried the fresh token, not the stale one"
     );
 
     let wrong = shape(
@@ -548,10 +558,18 @@ async fn bearer_api_key_and_oauth2_modes_authenticate_and_oauth2_refreshes_on_ex
         &p,
         "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: client-a, client_secret: wrong }\n",
     );
-    let err = fetch(&wrong, "oauth", None).await.unwrap_err();
-    assert!(
-        matches!(err, Error::Api { status: 401, .. }),
-        "token refusal is terminal: {err:?}"
+    let before = fx.token_exchanges();
+    for _ in 0..2 {
+        let err = fetch(&wrong, "oauth", None).await.unwrap_err();
+        assert!(
+            matches!(err, Error::Api { status: 401, .. }),
+            "token refusal is terminal: {err:?}"
+        );
+    }
+    assert_eq!(
+        fx.token_exchanges() - before,
+        2,
+        "a refusal is not held, so a rotated secret is picked up on the next tick"
     );
 }
 
@@ -997,6 +1015,30 @@ async fn a_unit_scope_mints_its_own_token_and_units_sharing_it_share_one() {
     assert_eq!(
         graph[0].authorization, graph[1].authorization,
         "shared token"
+    );
+}
+
+/// A cold mode reached by many callers at once mints ONE token: the callers
+/// that arrive while the exchange is in flight wait on it instead of each
+/// posting to the token endpoint.
+#[tokio::test]
+async fn a_cold_mode_reached_by_many_callers_at_once_mints_one_token() {
+    let fx = common::start().await;
+    let p = "profile: rush\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials: { token_url: \"{{ base_url }}/token\" }\nendpoints:\n  - { unit: oauth, path: /auth/oauth, rows: { decoder: json_array } }\n";
+    let s = shape(
+        &fx,
+        p,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: client-a, client_secret: secret-a }\n",
+    );
+    let ticks = (0..8).map(|_| fetch(&s, "oauth", None));
+    for rows in futures::future::join_all(ticks).await {
+        assert_eq!(rows.unwrap().len(), 1);
+    }
+    assert_eq!(fx.requests_to("/auth/oauth").len(), 8);
+    assert_eq!(
+        fx.token_exchanges(),
+        1,
+        "the callers that arrived during the exchange waited on it"
     );
 }
 
@@ -1714,7 +1756,7 @@ async fn an_exposed_token_field_reaches_the_templates_and_a_relative_next_url_re
     );
     assert!(
         fx.token_exchanges() >= 1,
-        "the render minted the token (the fixture's one-second token re-mints per use)"
+        "the render minted the token the exposed field came from"
     );
 
     let err = fetch(&s, "leak", None).await.unwrap_err();

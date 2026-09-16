@@ -117,9 +117,12 @@ pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// the body across a cross-origin hop, and a token exchange's body is the
 /// client secret.
 ///
-/// It carries no retry schedule of its own: the executor decides what a failed
-/// credential means, and an exchange building its own request through
-/// [`ExchangeClient::client`] takes the timeouts and the `User-Agent` only.
+/// It grants no retries. A credential exchange runs on scalo's own request
+/// loop, which takes its schedule from here, and the scheduler already retries
+/// a failed tick over the same window; a second schedule would only lengthen
+/// how long one mint can hold a mode's renewal gate, and it would post to a
+/// token endpoint more often than the fetcher does today. What a failed
+/// credential means is still the executor's call.
 ///
 /// # Errors
 ///
@@ -378,7 +381,7 @@ mod tests {
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
     use super::*;
-    use crate::auth::Secret;
+    use crate::auth::{Placed, Secret};
 
     #[test]
     fn the_shared_client_builds_on_this_platform() {
@@ -411,9 +414,9 @@ mod tests {
         // One recorder per process; nextest runs each test in its own.
         let _ = recorder.install();
 
-        let auth = AuthMode::Bearer(Secret::new(
+        let auth = AuthMode::Bearer(Placed::bearer(Secret::new(
             "env:DFE_FETCHER_TEST_MISSING_SECRET_VAR".into(),
-        ));
+        )));
         let executor = RequestExecutor::new(
             reqwest::Client::new(),
             RetrySpec::default(),
