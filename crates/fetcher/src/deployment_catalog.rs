@@ -916,6 +916,39 @@ mod tests {
         assert!(checked > 0, "the example lists no profile-backed service");
     }
 
+    /// The other direction: every service the catalog describes is a unit its
+    /// block's shipped profile declares, so a child no profile serves cannot
+    /// advertise a source that never runs. A dotted unit is named by the head
+    /// segment, which is the service an operator lists. Blocks whose units
+    /// are subscription ids, bucket tags or Workspace application names have
+    /// no fixed list to check.
+    #[test]
+    fn every_catalog_service_is_a_unit_of_its_block_profile() {
+        let shipped = crate::profiles::shipped();
+        let open_ended = ["google_workspace", "gcp_pubsub", "object_store"];
+        let mut checked = 0;
+        for cap in capabilities() {
+            if open_ended.contains(&cap.name.as_str()) {
+                continue;
+            }
+            let profile = &shipped[&cap.name];
+            for child in cap.children.iter().filter(|c| c.kind == "service") {
+                checked += 1;
+                assert!(
+                    profile.unit_names().iter().any(|unit| *unit == child.name
+                        || unit
+                            .split_once('.')
+                            .is_some_and(|(head, _)| head == child.name)),
+                    "the catalog describes service `{}` for `{}`, which that profile has no \
+                     unit for",
+                    child.name,
+                    cap.name
+                );
+            }
+        }
+        assert!(checked > 0, "the catalog describes no services at all");
+    }
+
     #[test]
     fn aws_has_cloudwatch_logs_knob() {
         let caps = capabilities();

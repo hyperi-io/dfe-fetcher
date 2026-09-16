@@ -304,7 +304,8 @@ place of the instance's), `query` and `headers` (merged over the endpoint's),
 Binding an instance to its profile reports every problem with its field path
 rather than the first: a mode the profile does not accept, a missing
 credential field for the mode, a `units.<name>` the profile has no unit for
-(or that instantiates an endpoint under a name the profile already declares),
+-- the refusal names the units the profile declares -- or one that
+instantiates an endpoint under a name the profile already declares,
 an empty `topic`, a filter or template that does not compile, a `base_url`
 that is a literal, a pointer that does not start with `/`, an `offset` pager
 without `page_size` or `total_at`, a keyset with both or neither of `from` and

@@ -1300,6 +1300,13 @@ fn expose_issues(field: &str, expose: &[String]) -> Vec<Issue> {
 }
 
 impl RestProfile {
+    /// The unit names the profile declares, in endpoint order -- what an
+    /// instance's `units` keys and a typed block's `services[].name` may be.
+    #[must_use]
+    pub fn unit_names(&self) -> Vec<&str> {
+        self.endpoints.iter().map(|e| e.unit.as_str()).collect()
+    }
+
     /// The effective method of an endpoint (its own, else the defaults',
     /// else GET).
     #[must_use]
@@ -2541,7 +2548,10 @@ impl RestInstance {
             match &unit.endpoint {
                 None if !declared => issues.push(Issue::new(
                     format!("units.{name}"),
-                    "the profile has no such unit",
+                    format!(
+                        "the profile has no such unit; it declares {}",
+                        profile.unit_names().join(", ")
+                    ),
                 )),
                 Some(_) if declared => issues.push(Issue::new(
                     format!("units.{name}.endpoint"),
@@ -2550,7 +2560,10 @@ impl RestInstance {
                 Some(endpoint) if !profile.endpoints.iter().any(|e| e.unit == *endpoint) => {
                     issues.push(Issue::new(
                         format!("units.{name}.endpoint"),
-                        format!("the profile has no endpoint `{endpoint}`"),
+                        format!(
+                            "the profile has no endpoint `{endpoint}`; it declares {}",
+                            profile.unit_names().join(", ")
+                        ),
                     ));
                 }
                 _ => {}
@@ -4108,6 +4121,40 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
                 .any(|i| i.field == "units.acme_audit.topic"),
             "{:?}",
             blank.validate(&profile)
+        );
+    }
+
+    /// A misspelt unit name is refused with the names the profile declares,
+    /// so the operator need not open the profile file to find the right one.
+    #[test]
+    fn an_unknown_unit_names_the_units_the_profile_declares() {
+        let profile = parse(GITHUB);
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits: { audit_logs: {} }\n",
+        )
+        .unwrap();
+
+        let issues = instance.validate(&profile);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "units.audit_logs");
+        assert!(
+            issues[0].message.contains("audit_log"),
+            "names the unit the profile declares: {}",
+            issues[0].message
+        );
+
+        let misinstantiated: RestInstance = serde_yaml_ng::from_str(
+            "profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits:\n  acme:\n    endpoint: audit_logs\n",
+        )
+        .unwrap();
+
+        let issues = misinstantiated.validate(&profile);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "units.acme.endpoint");
+        assert!(
+            issues[0].message.contains("it declares audit_log"),
+            "an instantiated endpoint is refused the same way: {}",
+            issues[0].message
         );
     }
 }

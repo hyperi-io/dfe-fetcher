@@ -5006,6 +5006,31 @@ mod tests {
         );
     }
 
+    /// A misspelt `services[].name` is refused with the block's own name and
+    /// the units its shipped profile declares, so the operator can correct
+    /// the typo without opening the profile file.
+    #[test]
+    fn a_typed_block_service_the_profile_has_no_unit_for_is_refused_naming_the_accepted_names() {
+        let mut cfg = valid_config();
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.credential_secret = Some("vault:kv/data/aws:credentials".to_string());
+        cfg.sources.aws.services = vec![AwsService {
+            name: "cloudtrial".to_string(),
+            config: HashMap::new(),
+        }];
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("sources.aws"), "names the block: {err}");
+        assert!(err.contains("cloudtrial"), "names the typo: {err}");
+        assert!(
+            err.contains("cloudtrail") && err.contains("guardduty"),
+            "lists the units the profile declares: {err}"
+        );
+
+        cfg.sources.aws.services[0].name = "cloudtrail".to_string();
+        cfg.validate().expect("a declared unit name loads");
+    }
+
     #[test]
     fn test_validate_grpc_output_without_endpoint() {
         let mut cfg = valid_config();
