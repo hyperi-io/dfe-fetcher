@@ -54,6 +54,7 @@ entry.
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
 | | `duo_hmac` (Duo's HMAC-SHA1 request signing) | duo |
 | | `sigv4` (AWS Signature v4, service and region rendered per request) | aws, object_store |
+| | `credentials` (more than one credential on the one request, each where the profile places it; a placement may compose several into one value) | datadog |
 | Pager (`paginate.strategy`) | `none` | runzero, azure `log_analytics` |
 | | `link_header` (RFC 5988 `rel="next"`) | github, okta |
 | | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path; a list cursor is comma-joined) | aws, bitwarden, crowdstrike, duo, gcp, google_workspace, onepassword, slack |
@@ -114,11 +115,90 @@ instance, never here.
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
+| `credentials` | A list of placements, applied in order: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
 | `bearer`, `basic`, `duo_hmac`, `none` | No profile-side shape. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
 `jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
 with the same scope share one token.
+
+### More than one credential on a request
+
+Several prominent APIs authenticate a call with two credentials, and there is no
+config workaround: a static added header is not a secret reference, and a key
+does not go in plain config. The `credentials` mode is the shape for them. The
+PROFILE declares where each credential goes and the name it is read under; the
+INSTANCE supplies a spec per name, because a profile carries no identity. Each
+name resolves once however many placements carry it, and the placements are
+applied to the one built request in the order they are written.
+
+Two credentials in two headers of their own -- Datadog, where the api key names
+the organisation and the application key scopes the call to a user, so neither
+can be dropped:
+
+```yaml
+# profile
+auth:
+  accepts: [credentials]
+  credentials:
+    - { header: DD-API-KEY, from: api_key }
+    - { header: DD-APPLICATION-KEY, from: application_key }
+```
+
+```yaml
+# instance
+auth:
+  mode: credentials
+  credentials:
+    api_key: "vault:kv/data/datadog/prod:api_key"
+    application_key: "vault:kv/data/datadog/prod:application_key"
+```
+
+Two credentials composed into ONE header value -- Tenable Vulnerability
+Management, whose `Authorization` carries both halves of the key pair, so the
+single-header shape does not help. Tenable Security Center is the same shape
+under `x-apikey` with the field names lower-cased:
+
+```yaml
+# profile
+auth:
+  accepts: [credentials]
+  credentials:
+    - header: Authorization
+      value: "accessKey={{ credentials.access_key }};secretKey={{ credentials.secret_key }}"
+```
+
+```yaml
+# instance
+auth:
+  mode: credentials
+  credentials:
+    access_key: "vault:kv/data/tenable/vm:access_key"
+    secret_key: "vault:kv/data/tenable/vm:secret_key"
+```
+
+A `value` is composed, not computed. Its only substitution is
+`{{ credentials.<name> }}`: anything else between the braces is refused at load,
+so no expression ever runs over a secret and no context -- `vars`, `unit`,
+`window` -- can reach a credential value. That is also why a composed value needs
+no per-unit check of its own: there is nothing in it a unit could change. The
+composed string is built once, on first use, and the placement that writes it
+marks the header sensitive, as it does a single credential.
+
+Refused at load, each naming the placement's index:
+
+- a placement that names neither or both of `header` and `query`, or neither or
+  both of `from` and `value`
+- a `header` that is not a header name, or an empty `query` or `from`
+- two placements writing the one header or query parameter, where the second
+  would overwrite the first
+- a `value` in a `query`: a composed value carries more than one secret and a
+  query parameter is written into every access log and proxy on the path, so it
+  goes in a header. A single credential may still go in a query.
+- a `prefix` beside a `value`, which says the whole header value already
+- a name the profile places and the instance supplies no spec for, and a name
+  the instance supplies that no placement reads -- so a misspelling is refused
+  from both ends rather than authenticating as half a credential
 
 ### What the token endpoint and the claims may read
 
@@ -311,6 +391,7 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |
 | `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling) |
+| `credentials` | `credentials`, a spec per name the profile's placements read ([More than one credential on a request](#more-than-one-credential-on-a-request)) |
 
 `vault:`, `bao:`, `openbao:`, `env:` and `file:` resolve, and the prefix is
 matched exactly: an `aws:` spec, which needs a secrets feature the fetcher does
@@ -334,5 +415,6 @@ an empty `topic`, a filter or template that does not compile, a `base_url`
 that is a literal, a pointer that does not start with `/`, an `offset` pager
 without `page_size` or `total_at`, a keyset with both or neither of `from` and
 `request`, `key` in `add_fields` without a keyset, a queue unit that also
-declares a lookup or manifest, a `defaults.body` on a GET, and an `expose`
-entry naming a credential.
+declares a lookup or manifest, a `defaults.body` on a GET, an `expose`
+entry naming a credential, and a malformed or unmatched credential placement
+([More than one credential on a request](#more-than-one-credential-on-a-request)).

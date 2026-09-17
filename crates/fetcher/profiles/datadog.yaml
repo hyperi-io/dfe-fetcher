@@ -1,0 +1,73 @@
+# Project:   dfe-fetcher
+# File:      crates/fetcher/profiles/datadog.yaml
+# Purpose:   Datadog audit trail and security signals as a declarative REST profile
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# The SHAPE of the Datadog v2 API: no site, no keys. Datadog authenticates a
+# request with TWO credentials -- `DD-API-KEY` identifies the organisation and
+# `DD-APPLICATION-KEY` scopes the call to a user's permissions -- and refuses
+# the call if either is missing, so the instance supplies both under the
+# `credentials` mode. `api_url` is the API host of the instance's site
+# (`https://api.datadoghq.eu` and the regional hosts are the other spellings).
+#
+# Two incremental units, both cursor paged: the audit trail
+# (`audit_management_read`) and security signals
+# (`security_monitoring_signals_read`). The scheduler's window becomes
+# `filter[from]`/`filter[to]` in RFC 3339 with millisecond precision, oldest
+# first, `page[limit]` per page, with an optional `filter[query]` in Datadog's
+# own search syntax narrowing either unit through `units.<name>.vars`. Pages
+# are `{data, meta}`; `meta.page.after` is the next cursor and is absent on the
+# last page. Errors come back under `errors`.
+#
+# No probe: Datadog's cheap validation endpoint checks the api key alone, and a
+# health check that passed on half the credential is worse than none, so the
+# check resolves both specs instead.
+profile: datadog
+maturity: alpha
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [credentials]
+  credentials:
+    - { header: DD-API-KEY, from: api_key }
+    - { header: DD-APPLICATION-KEY, from: application_key }
+headers:
+  Accept: application/json
+window:
+  format: rfc3339_millis
+  lookback: 1h
+retry:
+  never_retry: [401, 403]
+error:
+  at: "/errors"
+quota:
+  headers:
+    api_rate_limit: x-ratelimit-limit
+    api_rate_remaining: x-ratelimit-remaining
+# `api_url` is the US1 site unless the instance names its own. An empty
+# `filter_query` is omitted from the request; a unit narrows it with
+# `units.<name>.vars.filter_query`.
+vars:
+  api_url: "https://api.datadoghq.com"
+  page_limit: 100
+  filter_query: ""
+defaults:
+  query:
+    "filter[from]": "{{ window.start }}"
+    "filter[to]": "{{ window.end }}"
+    "filter[query]": "{{ vars.filter_query }}"
+    "page[limit]": "{{ vars.page_limit }}"
+    sort: timestamp
+  rows: { decoder: json_at, at: "/data" }
+  paginate:
+    strategy: cursor
+    from: "body:/meta/page/after"
+    into: "query:page[cursor]"
+  max_pages: 50
+endpoints:
+  - unit: audit_events
+    path: /api/v2/audit/events
+  - unit: security_signals
+    path: /api/v2/security_monitoring/signals

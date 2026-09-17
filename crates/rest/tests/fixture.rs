@@ -751,6 +751,72 @@ async fn two_instances_of_one_profile_carry_different_credential_kinds() {
     );
 }
 
+/// Datadog wants `DD-API-KEY` and `DD-APPLICATION-KEY` on the same request: the
+/// api key authenticates it and the application key scopes it to a user. The
+/// fixture refuses either alone, so the rows are proof both reached the provider
+/// from one instance's specs.
+#[tokio::test]
+async fn two_credentials_reach_the_provider_on_one_request() {
+    let fx = common::start().await;
+    let p = "profile: two_keys\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [credentials]\n  credentials:\n    - { header: DD-API-KEY, from: api_key }\n    - { header: DD-APPLICATION-KEY, from: application_key }\nendpoints:\n  - { unit: events, path: /auth/twokeys, rows: { decoder: json_array } }\n".to_string();
+    let s = shape(
+        &fx,
+        &p,
+        "profile: x\ntopic: t\nauth: { mode: credentials, credentials: { api_key: api-key-value, application_key: app-key-value } }\n",
+    );
+
+    assert_eq!(fetch(&s, "events", None).await.unwrap().len(), 1);
+
+    let seen = fx.requests_to("/auth/twokeys");
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].header("dd-api-key"), Some("api-key-value"));
+    assert_eq!(seen[0].header("dd-application-key"), Some("app-key-value"));
+    assert!(
+        seen[0].query.is_empty(),
+        "a credential in a header never reaches the URL"
+    );
+
+    // Dropping one of the two is refused by the provider, which is why the
+    // grammar has to carry both.
+    let one = shape(
+        &fx,
+        "profile: one_key\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [credentials]\n  credentials:\n    - { header: DD-API-KEY, from: api_key }\nendpoints:\n  - { unit: events, path: /auth/twokeys, rows: { decoder: json_array } }\n",
+        "profile: x\ntopic: t\nauth: { mode: credentials, credentials: { api_key: api-key-value } }\n",
+    );
+    let err = fetch(&one, "events", None)
+        .await
+        .expect_err("the application key scopes the request and is not optional");
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+}
+
+/// Tenable Vulnerability Management wants ONE header carrying both halves of the
+/// key pair, so the single-header shape does not save us. The fixture checks the
+/// composed string, so the rows are proof the two secrets were composed at the
+/// fetcher and placed whole.
+#[tokio::test]
+async fn a_composed_credential_value_reaches_the_provider_whole() {
+    let fx = common::start().await;
+    let p = "profile: composed\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [credentials]\n  credentials:\n    - header: Authorization\n      value: \"accessKey={{ credentials.access_key }};secretKey={{ credentials.secret_key }}\"\nendpoints:\n  - { unit: assets, path: /auth/composed, rows: { decoder: json_array } }\n".to_string();
+    let s = shape(
+        &fx,
+        &p,
+        "profile: x\ntopic: t\nauth: { mode: credentials, credentials: { access_key: access-key-value, secret_key: secret-key-value } }\n",
+    );
+
+    assert_eq!(fetch(&s, "assets", None).await.unwrap().len(), 1);
+
+    let seen = fx.requests_to("/auth/composed");
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].authorization.as_deref(),
+        Some("accessKey=access-key-value;secretKey=secret-key-value")
+    );
+    assert!(
+        seen[0].query.is_empty(),
+        "a composed value never reaches the URL"
+    );
+}
+
 #[tokio::test]
 async fn retries_a_429_with_retry_after_and_never_a_403() {
     let fx = common::start().await;

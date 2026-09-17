@@ -3173,6 +3173,7 @@ $defs:
           secret_access_key: null
           credentials_json: null
           assume_role_arn: null
+          credentials: {}
       vars:
         description: Values the profile's templates read as `vars.*`.
         type: object
@@ -3248,6 +3249,7 @@ $defs:
           sigv4:
             service: ''
             region: ''
+          credentials: []
       headers:
         description: Header templates on every request.
         type: object
@@ -3397,6 +3399,14 @@ $defs:
         default:
           service: ''
           region: ''
+      credentials:
+        description: |-
+          Shape of the `credentials` mode: every place a credential goes, in the
+          order the request is signed.
+        type: array
+        items:
+          $ref: '#/$defs/CredentialPlacementSpec'
+        default: []
     additionalProperties: false
   AuthKind:
     description: |-
@@ -3440,6 +3450,13 @@ $defs:
         body's SHA-256 as the payload hash.
       type: string
       const: sigv4
+    - description: |-
+        More than one credential on the one request, each in the place the
+        profile names: two headers of their own (Datadog's `DD-API-KEY` and
+        `DD-APPLICATION-KEY`), or one header whose value is composed from
+        several (Tenable's `accessKey=...;secretKey=...`).
+      type: string
+      const: credentials
   ApiKeySpec:
     description: Where an API key goes.
     type: object
@@ -3583,6 +3600,47 @@ $defs:
         description: The region of the credential scope, a template.
         type: string
         default: ''
+    additionalProperties: false
+  CredentialPlacementSpec:
+    description: |-
+      One place a credential goes under the `credentials` mode, and which of the
+      instance's named credentials it carries.
+
+      `from` puts one credential where the API wants it, as it resolved. `value`
+      composes several into one value, for an API that wants both halves of a key
+      pair inside one header. A value is NOT a template: its only substitution is
+      `{{ credentials.<name> }}`, so nothing but a named credential can reach a
+      credential value and the value cannot vary by unit, request or var.
+    type: object
+    properties:
+      header:
+        description: Header name carrying the credential.
+        type:
+        - string
+        - 'null'
+        default: null
+      query:
+        description: Query parameter carrying it.
+        type:
+        - string
+        - 'null'
+        default: null
+      prefix:
+        description: Text put in front of it in a header, e.g. `Bearer `.
+        type: string
+        default: ''
+      from:
+        description: The one named credential this placement carries, as it resolved.
+        type:
+        - string
+        - 'null'
+        default: null
+      value:
+        description: The value this placement carries, composed from named credentials.
+        type:
+        - string
+        - 'null'
+        default: null
     additionalProperties: false
   RetrySpec:
     description: Retry policy for one profile.
@@ -4712,6 +4770,17 @@ $defs:
         - string
         - 'null'
         default: null
+      credentials:
+        description: |-
+          `credentials`: the credential specs the profile's placements read, by
+          the names they read them under. Each resolves once however many
+          placements carry it.
+        type: object
+        additionalProperties:
+          type: string
+          x-dfe-secret: true
+          writeOnly: true
+        default: {}
     additionalProperties: false
   UnitOverride:
     description: Per-unit narrowing an instance applies.

@@ -42,6 +42,19 @@ pub struct Seen {
     pub query: Vec<(String, String)>,
     pub authorization: Option<String>,
     pub body: Option<Value>,
+    /// Every header of the request, lower-cased, for a provider whose
+    /// credential does not travel in `Authorization`.
+    pub headers: Vec<(String, String)>,
+}
+
+impl Seen {
+    /// The value of a header the request carried.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(seen, _)| seen == name)
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -217,6 +230,15 @@ fn record(
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
         body,
+        headers: headers
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_owned(), value.to_owned()))
+            })
+            .collect(),
     });
 }
 
@@ -776,6 +798,21 @@ async fn auth_gate(
         "bearer" => auth == "Bearer secret-token",
         "oauth" => auth.starts_with("Bearer tok-") || auth.starts_with("Bearer meta-"),
         "apikey" => auth == "SSWS the-key",
+        // Two credentials on the one request, as Datadog wants them: the gate
+        // refuses either key alone, so a 2xx is proof both arrived.
+        "twokeys" => {
+            let key = |name: &str| {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+            };
+            key("dd-api-key") == "api-key-value" && key("dd-application-key") == "app-key-value"
+        }
+        // Both halves of a key pair inside one header value, as Tenable wants
+        // them: the gate checks the composed string, so a 2xx is proof it was
+        // composed and placed whole.
+        "composed" => auth == "accessKey=access-key-value;secretKey=secret-key-value",
         _ => false,
     };
     if ok {
