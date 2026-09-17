@@ -18,16 +18,21 @@ dfe-fetcher pulls events from the Okta System Log API at
 time-bounded, ascending window (`since` / `until` / `limit` /
 `sortOrder=ASCENDING`) and pages through the RFC 5988 `Link: rel="next"`
 header. An optional service-config `filter` (Okta OData syntax) narrows
-results server-side. Authentication is one of two schemes, selected by the
-`use_ssws_header` config toggle:
+results server-side. Authentication is one of three schemes:
 
-- `use_ssws_header: true` (default) - sends `Authorization: SSWS <token>`
-  using a legacy Okta API token.
+- `use_ssws_header: true` (default on the `sources.okta` block) - sends
+  `Authorization: SSWS <token>` using a legacy Okta API token.
 - `use_ssws_header: false` - sends `Authorization: Bearer <token>` using an
-  OAuth 2.0 access token minted with the `okta.logs.read` scope.
+  OAuth 2.0 access token someone else minted with the `okta.logs.read` scope.
+- An API Services app and its key pair, configured as a `sources.rest`
+  instance of the same profile: the fetcher mints its own access token, signing
+  a private-key JWT for the client-credentials exchange.
 
-Okta recommends OAuth 2.0 over SSWS for management APIs. SSWS remains
-supported and is the simplest path; OAuth is the better long-term choice.
+Okta recommends OAuth 2.0 over SSWS for management APIs, and the service-app
+key pair over both: an SSWS token is static and carries the permissions of the
+admin who minted it, where a service app is granted `okta.logs.read` alone and
+the private half of its key never leaves the deployment. SSWS remains supported
+and is the simplest path.
 
 The source is the shipped `okta` REST profile
 (`crates/fetcher/profiles/okta.yaml`); the `sources.okta` block below maps
@@ -81,22 +86,21 @@ All access is read-only.
      -H "Accept: application/json"
    ```
 
-### Option B - OAuth 2.0 service app (recommended long term)
+### Option B - OAuth 2.0 service app (recommended)
 
 1. **Admin Console -> Applications -> Applications -> Create App
    Integration -> API Services**. Name it `dfe-fetcher`.
 2. On the app's **General** tab, configure the client-credentials flow with a
    public/private key pair (JWT client assertion). Save the public key in
-   Okta and keep the private key for the token caller.
+   Okta and keep the private key for the fetcher.
 3. **Okta API Scopes** tab -> grant **`okta.logs.read`**.
 4. Assign the app an admin role with System Log access (Super Admin, Read-only
    Admin, or a custom role with **System Log query**).
-5. The caller mints a one-hour access token via the client-credentials grant
-   (POST to `{tenant_url}/oauth2/v1/token` with a signed `client_assertion`)
-   and supplies it to dfe-fetcher as `token`, with `use_ssws_header: false`.
-   Because OAuth access tokens expire hourly, drive this through
-   `credential_secret` plus your secrets manager's rotation, not a static
-   config value.
+5. Note the app's client id. The fetcher mints and renews the access token
+   itself: it signs a short-lived assertion with the private key and posts it to
+   `{tenant_url}/oauth2/v1/token`, so nothing in the config expires hourly and
+   no rotation job is needed. Keep the private key in your secrets manager and
+   reference it as a spec.
 
 ## dfe-fetcher Configuration
 
@@ -118,8 +122,29 @@ sources:
     # filter: 'eventType != "user.session.access_token"'   # CEL, hot-reloaded
 ```
 
-For OAuth, set `use_ssws_header: false` and supply an OAuth access token as
-`token` (preferably via `credential_secret`).
+For an access token someone else mints, set `use_ssws_header: false` and supply
+it as `token` (preferably via `credential_secret`).
+
+For the service app, configure the same profile as a `sources.rest` instance so
+the fetcher can hold the key and mint its own token:
+
+```yaml
+sources:
+  rest:
+    okta:
+      profile: okta
+      topic: "okta"
+      auth:
+        mode: oauth2_client_credentials
+        client_id: "0oa1example"
+        private_key: "vault:kv/data/okta:private_key"
+      vars:
+        base_url: "https://your-tenant.okta.com"
+```
+
+The private key is the app's own PEM, the one whose public half was uploaded to
+Okta. Scope and assertion lifetime come from the profile, so nothing about the
+exchange has to be restated here.
 
 ### Environment Variables
 
@@ -168,6 +193,9 @@ sources:
 - **Common failure modes.**
   - `401 Unauthorized`: wrong scheme - SSWS token sent as Bearer (or vice
     versa). Flip `use_ssws_header` to match the token type.
+  - `401` on the token exchange with `invalid_client`: the public key Okta
+    holds does not pair with the configured `private_key`, or the `client_id`
+    is another app's.
   - `403 Forbidden`: the token's admin role lacks System Log access, or the
     OAuth app was not granted `okta.logs.read`.
   - `404` / connection error: `tenant_url` typo, trailing slash, or wrong

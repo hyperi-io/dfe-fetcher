@@ -306,6 +306,10 @@ pub struct OAuth2Spec {
     /// `auth.<name>` (Salesforce's `instance_url`); an allow-list, so a
     /// refresh or id token the response also carries never reaches a URL.
     pub expose: Vec<String>,
+    /// The signed assertion the exchange authenticates with in place of a
+    /// client secret, when the API accepts one; unset means the client secret
+    /// is the only way in.
+    pub client_assertion: Option<ClientAssertionSpec>,
 }
 
 impl Default for OAuth2Spec {
@@ -316,6 +320,41 @@ impl Default for OAuth2Spec {
             expires_in_fallback_secs: 3600,
             early_refresh_secs: 60,
             expose: Vec::new(),
+            client_assertion: None,
+        }
+    }
+}
+
+/// Authenticating the client-credentials exchange with a private-key JWT
+/// (RFC 7523 s2.2), which Okta and Microsoft Entra both call
+/// `private_key_jwt`.
+///
+/// The exchange posts `grant_type=client_credentials` with
+/// `client_assertion_type` and a `client_assertion` the fetcher signs, instead
+/// of a `client_secret`. The instance carries the key, so declaring this block
+/// says the API accepts the path; an instance picks it by supplying a
+/// `private_key` rather than a `client_secret`.
+///
+/// The assertion always carries `iss` and `sub` as the client id, `aud` as the
+/// rendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:
+/// Okta refuses a replayed assertion, so no two carry the same id. `claims`
+/// adds to those or overrides the first three, each a template over the
+/// instance's `vars`, `base_url` and the `auth.token_url` the exchange renders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientAssertionSpec {
+    /// Claim templates added to the assertion, or replacing `iss`, `sub` or
+    /// `aud`.
+    pub claims: BTreeMap<String, String>,
+    /// Assertion lifetime, `exp - iat`. Okta caps it at an hour.
+    pub ttl_secs: u64,
+}
+
+impl Default for ClientAssertionSpec {
+    fn default() -> Self {
+        Self {
+            claims: BTreeMap::new(),
+            ttl_secs: 300,
         }
     }
 }
@@ -656,10 +695,23 @@ impl AuthSpec {
     #[must_use]
     pub fn credential_templates(&self, mode: AuthKind) -> Vec<(String, &str)> {
         match mode {
-            AuthKind::Oauth2ClientCredentials => vec![(
-                "auth.oauth2_client_credentials.token_url".to_owned(),
-                self.oauth2_client_credentials.token_url.as_str(),
-            )],
+            AuthKind::Oauth2ClientCredentials => {
+                let mut templates = vec![(
+                    "auth.oauth2_client_credentials.token_url".to_owned(),
+                    self.oauth2_client_credentials.token_url.as_str(),
+                )];
+                if let Some(assertion) = &self.oauth2_client_credentials.client_assertion {
+                    templates.extend(assertion.claims.iter().map(|(name, value)| {
+                        (
+                            format!(
+                                "auth.oauth2_client_credentials.client_assertion.claims.{name}"
+                            ),
+                            value.as_str(),
+                        )
+                    }));
+                }
+                templates
+            }
             AuthKind::JwtBearer => {
                 let mut templates = vec![(
                     "auth.jwt_bearer.token_url".to_owned(),
@@ -691,6 +743,15 @@ impl AuthSpec {
         }
     }
 
+    /// Whether `mode` authenticates its token exchange with a signed assertion
+    /// rather than a client secret, which is a choice the INSTANCE makes by
+    /// supplying a private key -- so this says only that the profile offers it.
+    #[must_use]
+    pub const fn offers_client_assertion(&self, mode: AuthKind) -> bool {
+        matches!(mode, AuthKind::Oauth2ClientCredentials)
+            && self.oauth2_client_credentials.client_assertion.is_some()
+    }
+
     /// The credentials the `credentials` mode's placements read, in the order
     /// the profile writes them, each named once.
     #[must_use]
@@ -714,6 +775,11 @@ impl AuthSpec {
         let mut names = Vec::new();
         if mode == AuthKind::JwtBearer {
             names.extend(["client_email", "token_uri", "token_url"]);
+        }
+        // A client assertion is signed over the endpoint it is posted to, so
+        // its claims read the rendered endpoint and the client id.
+        if self.offers_client_assertion(mode) {
+            names.extend(["token_url", "client_id"]);
         }
         let expose = match mode {
             AuthKind::JwtBearer => &self.jwt_bearer.expose,
@@ -2400,6 +2466,26 @@ impl RestProfile {
                 "auth.oauth2_client_credentials.expose",
                 &oauth.expose,
             ));
+            if let Some(assertion) = &oauth.client_assertion {
+                let at = |field: &str| {
+                    format!("auth.oauth2_client_credentials.client_assertion.{field}")
+                };
+                for (name, value) in &assertion.claims {
+                    issues.extend(template_issue(&at(&format!("claims.{name}")), value));
+                }
+                for reserved in ["iat", "exp", "jti"] {
+                    if assertion.claims.contains_key(reserved) {
+                        issues.push(Issue::new(
+                            at(&format!("claims.{reserved}")),
+                            "is set on every assertion: `iat` and `exp` from `ttl_secs`, and \
+                             `jti` fresh so no two assertions carry the same id",
+                        ));
+                    }
+                }
+                if assertion.ttl_secs == 0 {
+                    issues.push(Issue::new(at("ttl_secs"), "must be at least 1"));
+                }
+            }
         }
         if self.retry.max_backoff_ms < self.retry.min_backoff_ms {
             issues.push(Issue::new(
@@ -3361,11 +3447,24 @@ impl RestInstance {
             }
             AuthKind::Oauth2ClientCredentials => {
                 needs("client_id", self.auth.client_id.is_some(), &mut issues);
-                needs(
-                    "client_secret",
-                    self.auth.client_secret.is_some(),
-                    &mut issues,
-                );
+                // Which credential the instance carries picks the path: the
+                // secret posts `client_secret`, the key signs a client
+                // assertion. Both would leave which one authenticated the
+                // exchange to the order the arms happen to be written in.
+                match (&self.auth.client_secret, &self.auth.private_key) {
+                    (Some(_), None) => {}
+                    (None, Some(_)) if profile.auth.offers_client_assertion(self.auth.mode) => {}
+                    (None, Some(_)) => issues.push(Issue::new(
+                        "auth.private_key",
+                        "signs a client assertion, and the profile declares no \
+                         `auth.oauth2_client_credentials.client_assertion`",
+                    )),
+                    _ => issues.push(Issue::new(
+                        "auth.client_secret",
+                        "`oauth2_client_credentials` needs exactly one of `client_secret` or \
+                         `private_key`",
+                    )),
+                }
             }
             AuthKind::Signature => {
                 needs("secret_key", self.auth.secret_key.is_some(), &mut issues);

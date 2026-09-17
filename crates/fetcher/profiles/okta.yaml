@@ -6,10 +6,16 @@
 # Copyright: (c) 2026 HYPERI PTY LIMITED
 
 # The SHAPE of the Okta System Log API: no tenant, no token. An instance
-# supplies its tenant URL as `base_url` and its token as either an API key
-# (`Authorization: SSWS <token>`, Okta's own API-token header) or a plain
-# bearer (an OAuth access token). The typed `sources.okta` block maps onto an
-# instance of this profile at load, so its config surface is unchanged.
+# supplies its tenant URL as `base_url` and its credential as an API key
+# (`Authorization: SSWS <token>`, Okta's own API-token header), a plain bearer
+# (an OAuth access token someone else minted), or the service-app key pair
+# Okta's own documentation steers integrations towards -- an API Services app
+# whose client-credentials exchange authenticates with a private-key JWT and is
+# granted `okta.logs.read` alone, rather than a static token carrying the
+# permissions of the admin who minted it. The typed `sources.okta` block maps
+# onto an api_key or bearer instance of this profile at load, so its config
+# surface is unchanged; the service-app path is configured as a
+# `sources.rest` instance naming this profile.
 #
 # One incremental unit: the scheduler's window becomes `since`/`until` in ISO
 # 8601 with millisecond precision and a `Z` zone, oldest first, `limit`
@@ -22,10 +28,21 @@ maturity: alpha
 base_url: "{{ vars.base_url }}"
 shape: incremental
 auth:
-  accepts: [api_key, bearer]
+  accepts: [api_key, bearer, oauth2_client_credentials]
   api_key:
     header: Authorization
     prefix: "SSWS "
+  # The org authorisation server's token endpoint. An instance carrying a
+  # `private_key` authenticates the exchange with a signed assertion; one
+  # carrying a `client_secret` posts that instead, for a custom authorisation
+  # server that accepts one. Okta caps an assertion at an hour and refuses a
+  # `jti` it has already seen, so the assertion is short-lived and every mint
+  # carries its own id.
+  oauth2_client_credentials:
+    token_url: "{{ base_url }}/oauth2/v1/token"
+    scope: okta.logs.read
+    client_assertion:
+      ttl_secs: 300
 headers:
   Accept: application/json
 window:

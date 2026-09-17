@@ -81,6 +81,13 @@ use crate::request::ExchangeClient;
 /// The form field of the JWT-bearer grant (RFC 7523).
 const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
+/// The grant a client-credentials exchange asks for (RFC 6749 s4.4).
+const CLIENT_CREDENTIALS_GRANT: &str = "client_credentials";
+
+/// What a client authenticating with a signed JWT says it is presenting
+/// (RFC 7523 s2.2), which Okta and Entra both call `private_key_jwt`.
+const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
 /// A credential acquisition's own result: scalo's error rather than the
 /// framework's, so a refusal keeps its status all the way to the executor.
 type Acquired<T> = std::result::Result<T, AuthError>;
@@ -213,18 +220,11 @@ impl Placed {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] when the username carries a colon: the colon
-    /// separates the two halves of a basic credential and RFC 7617 gives the
-    /// username no way to escape one, so the request would authenticate as
-    /// something other than what was configured. The username is as static as
-    /// the `api_key` header name, so it is refused here rather than on the
-    /// first request it would have gone out on.
+    /// Returns [`Error::Config`] for a username [`basic_username_issue`]
+    /// refuses.
     fn basic(password: Secret, username: &str) -> Result<Self> {
-        if username.contains(':') {
-            return Err(Error::Config(format!(
-                "auth mode `basic` username `{username}` carries a colon, which separates the \
-                 username from the password and cannot be escaped"
-            )));
+        if let Some(reason) = basic_username_issue(username) {
+            return Err(Error::Config(format!("auth mode `basic` {reason}")));
         }
         let source = Resolved::new(password);
         Ok(Self {
@@ -241,6 +241,22 @@ impl Placed {
             .map(|_| ())
             .map_err(acquisition_error)
     }
+}
+
+/// Why `username` cannot be half of a basic credential, or `None` when it can.
+///
+/// The colon separates the two halves and RFC 7617 gives the username no way to
+/// escape one, so a request would authenticate as something other than what was
+/// configured. A username is as static as a header name, so every mode that
+/// sends one refuses it when the instance binds rather than on the first
+/// request it would have gone out on.
+fn basic_username_issue(username: &str) -> Option<String> {
+    username.contains(':').then(|| {
+        format!(
+            "username `{username}` carries a colon, which separates the username from the \
+             password and cannot be escaped"
+        )
+    })
 }
 
 /// One piece of a composed credential value: text the profile wrote, or a
@@ -403,22 +419,39 @@ fn cached<E: Exchange>(exchange: E) -> Cached<E> {
     Cached::new(exchange).with_failure_backoff(Duration::ZERO)
 }
 
+/// How a client-credentials exchange proves which client it is.
+///
+/// The provider decides which it accepts and the profile says so; the INSTANCE
+/// picks by which credential it carries, because one deployment of an API that
+/// takes both may hold a secret and another a key pair.
+enum OAuth2Source {
+    /// The client secret, posted as `client_secret` (RFC 6749 s4.4). The
+    /// exchange is built on first use, because the secret resolves then, and
+    /// is boxed so the arm not taken costs a pointer rather than an exchange.
+    Secret {
+        client_secret: Secret,
+        exchange: OnceCell<Box<Cached<ClientCredentials>>>,
+    },
+    /// A JWT the fetcher signs with the instance's private key, posted as
+    /// `client_assertion` (RFC 7523 s2.2). The key is read inside the exchange,
+    /// so there is nothing left to build lazily.
+    Assertion(Cached<AssertionExchange>),
+}
+
 /// An OAuth2 client-credentials exchange behind scalo's cache.
 ///
 /// The token endpoint is rendered when the mode is built and held as text, so
-/// one mode has one endpoint however many units carry its token. The exchange
-/// itself is built on first use, because the client secret resolves then.
+/// one mode has one endpoint however many units carry its token.
 pub struct OAuth2Client {
     token_url: String,
     client_id: String,
-    client_secret: Secret,
     /// Unset rather than empty: `scope=` is a request for no scopes, which some
     /// providers refuse.
     scope: Option<String>,
     reading: TokenReading,
     exposes: bool,
     http: Arc<ExchangeClient>,
-    source: OnceCell<Cached<ClientCredentials>>,
+    source: OAuth2Source,
 }
 
 /// Hand-written because the exchange client has no `Debug`, and because the
@@ -453,23 +486,170 @@ impl OAuth2Client {
     /// The cached credential, exchanged now when none is held or the held one
     /// has reached its renewal point.
     async fn credential(&self) -> Acquired<Arc<Credential>> {
-        self.source
-            .get_or_try_init(|| self.exchange())
-            .await?
-            .credential()
-            .await
+        match &self.source {
+            OAuth2Source::Secret {
+                client_secret,
+                exchange,
+            } => {
+                exchange
+                    .get_or_try_init(|| self.exchange(client_secret))
+                    .await?
+                    .credential()
+                    .await
+            }
+            OAuth2Source::Assertion(source) => source.credential().await,
+        }
+    }
+
+    /// Drop the held token, so the next request exchanges again.
+    fn invalidate(&self) {
+        match &self.source {
+            OAuth2Source::Secret { exchange, .. } => {
+                if let Some(source) = exchange.get() {
+                    source.invalidate();
+                }
+            }
+            OAuth2Source::Assertion(source) => source.invalidate(),
+        }
     }
 
     /// The exchange, once the client secret has resolved.
-    async fn exchange(&self) -> Acquired<Cached<ClientCredentials>> {
-        let secret = SensitiveString::from(self.client_secret.value().await.map_err(unavailable)?);
+    async fn exchange(&self, client_secret: &Secret) -> Acquired<Box<Cached<ClientCredentials>>> {
+        let secret = SensitiveString::from(client_secret.value().await.map_err(unavailable)?);
         let mut exchange =
             ClientCredentials::new(&self.http, self.token_url.as_str(), &self.client_id, secret)?
                 .with_reading(self.reading.clone());
         if let Some(scope) = &self.scope {
             exchange = exchange.with_scope(scope.as_str());
         }
-        Ok(cached(exchange))
+        Ok(Box::new(cached(exchange)))
+    }
+}
+
+/// The private-key JWT a client-credentials exchange authenticates with in
+/// place of a client secret (RFC 7523 s2.2).
+///
+/// The endpoint and the client id are rendered when the mode is built, so one
+/// mode signs as one client however many units carry its token; the key is read
+/// on the first mint. `iss`, `sub` and `aud` are what the grant requires, and a
+/// profile may replace them; `iat`, `exp` and `jti` are set on every assertion
+/// here, and the grammar refuses a profile that writes them.
+struct ClientAssertion {
+    token_url: String,
+    client_id: String,
+    claims: Vec<(String, Template)>,
+    ttl: Duration,
+    private_key: Secret,
+    key: OnceCell<jsonwebtoken::EncodingKey>,
+    ctx: TemplateCtx,
+}
+
+/// Hand-written: the signing key has no `Debug`, and the context carries
+/// whatever the profile exposed to its templates.
+impl fmt::Debug for ClientAssertion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientAssertion")
+            .field("token_url", &endpoint_name(&self.token_url))
+            .field("client_id", &self.client_id)
+            .field("claims", &self.claims)
+            .field("ttl", &self.ttl)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ClientAssertion {
+    /// The signing key, read on first use.
+    async fn key(&self) -> Result<&jsonwebtoken::EncodingKey> {
+        self.key
+            .get_or_try_init(|| async {
+                let pem = self.private_key.value().await?;
+                jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes())
+                    .map_err(|e| Error::Credential(format!("client assertion private key: {e}")))
+            })
+            .await
+    }
+
+    /// A freshly signed assertion; the claim templates see the endpoint and the
+    /// client id as `auth.*`.
+    async fn mint(&self) -> Result<String> {
+        let key = self.key().await?;
+        let mut ctx = self.ctx.clone();
+        ctx.set(
+            "auth",
+            serde_json::json!({
+                "token_url": self.token_url,
+                "client_id": self.client_id,
+            }),
+        );
+        let mut claims = serde_json::Map::new();
+        for (name, value) in [
+            ("iss", self.client_id.as_str()),
+            ("sub", self.client_id.as_str()),
+            ("aud", self.token_url.as_str()),
+        ] {
+            claims.insert(name.to_owned(), Value::String(value.to_owned()));
+        }
+        for (name, template) in &self.claims {
+            let value = template.render_value(&ctx)?;
+            if value.is_null() || value.as_str().is_some_and(str::is_empty) {
+                continue;
+            }
+            claims.insert(name.clone(), value);
+        }
+        let now = chrono::Utc::now().timestamp();
+        claims.insert("iat".into(), Value::from(now));
+        claims.insert(
+            "exp".into(),
+            Value::from(now.saturating_add(i64::try_from(self.ttl.as_secs()).unwrap_or(i64::MAX))),
+        );
+        // Okta refuses an assertion whose `jti` it has already seen, so no two
+        // mints of one instance carry the same id.
+        claims.insert(
+            "jti".into(),
+            Value::String(uuid::Uuid::new_v4().simple().to_string()),
+        );
+        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        jsonwebtoken::encode(&header, &Value::Object(claims), key)
+            .map_err(|e| Error::Credential(format!("client assertion signing: {e}")))
+    }
+}
+
+/// One client-assertion exchange: a fresh assertion, posted as the grant's form.
+///
+/// The assertion is minted per acquisition rather than held, so a renewal signs
+/// again -- and carries a new `jti` -- instead of replaying the last one.
+struct AssertionExchange {
+    assertion: Arc<ClientAssertion>,
+    scope: Option<String>,
+    reading: TokenReading,
+    http: Arc<ExchangeClient>,
+}
+
+/// Hand-written because the exchange client has no `Debug`.
+impl fmt::Debug for AssertionExchange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AssertionExchange")
+            .field("assertion", &self.assertion)
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Exchange for AssertionExchange {
+    async fn acquire(&self) -> Acquired<Credential> {
+        let assertion = self.assertion.mint().await.map_err(unavailable)?;
+        let mut post = TokenPost::new(&self.http, self.assertion.token_url.as_str())?
+            .with_form_field("grant_type", CLIENT_CREDENTIALS_GRANT)
+            .with_form_field("client_assertion_type", CLIENT_ASSERTION_TYPE)
+            .with_form_field("client_assertion", assertion);
+        if let Some(scope) = &self.scope {
+            post = post.with_form_field("scope", scope.as_str());
+        }
+        post.with_reading(self.reading.clone()).acquire().await
+    }
+
+    fn timeout(&self) -> Duration {
+        exchange_deadline(&self.http)
     }
 }
 
@@ -1464,8 +1644,10 @@ pub enum AuthMode {
     JwtBearer(JwtBearer),
     /// The GCE metadata server's token.
     GceMetadata(GceMetadata),
-    /// AWS SigV4 signing.
-    SigV4(SigV4),
+    /// AWS SigV4 signing. Boxed because its two rendered scope templates and
+    /// its assumed-role session make it half again the size of any other arm,
+    /// and every instance's mode is held at the size of the largest.
+    SigV4(Box<SigV4>),
     /// More than one credential, each where the profile places it.
     Credentials(Credentials),
 }
@@ -1562,27 +1744,78 @@ impl AuthMode {
                     .map(str::to_owned)
                     .or_else(|| identity.scope.clone())
                     .unwrap_or_else(|| oauth.scope.clone());
+                let scope = (!scope.is_empty()).then_some(scope);
+                let token_url = render_at_bind(
+                    "auth.oauth2_client_credentials.token_url",
+                    &oauth.token_url,
+                    ctx,
+                )?;
+                let client_id = identity.client_id.clone().ok_or_else(|| {
+                    Error::Config("auth mode `oauth2_client_credentials` needs `client_id`".into())
+                })?;
+                let reading = token_reading(
+                    oauth.expires_in_fallback_secs,
+                    oauth.early_refresh_secs,
+                    &oauth.expose,
+                );
+                // Which credential the instance carries picks the path. Holding
+                // both would leave which one authenticated the exchange to the
+                // order these arms happen to be written in.
+                let source = match (
+                    &oauth.client_assertion,
+                    &identity.private_key,
+                    &identity.client_secret,
+                ) {
+                    (Some(assertion), Some(pem), None) => {
+                        let mut claims = Vec::with_capacity(assertion.claims.len());
+                        for (name, value) in &assertion.claims {
+                            let field = format!(
+                                "auth.oauth2_client_credentials.client_assertion.claims.{name}"
+                            );
+                            claims.push((name.clone(), compile_at_bind(&field, value)?));
+                        }
+                        OAuth2Source::Assertion(cached(AssertionExchange {
+                            assertion: Arc::new(ClientAssertion {
+                                token_url: token_url.clone(),
+                                client_id: client_id.clone(),
+                                claims,
+                                ttl: Duration::from_secs(assertion.ttl_secs),
+                                private_key: Secret::new(pem.clone()),
+                                key: OnceCell::new(),
+                                ctx: ctx.clone(),
+                            }),
+                            scope: scope.clone(),
+                            reading: reading.clone(),
+                            http: Arc::clone(&http),
+                        }))
+                    }
+                    (_, None, Some(_)) => OAuth2Source::Secret {
+                        client_secret: need("client_secret", identity.client_secret.as_ref())?,
+                        exchange: OnceCell::new(),
+                    },
+                    (None, Some(_), _) => {
+                        return Err(Error::Config(
+                            "auth mode `oauth2_client_credentials`: `private_key` signs a client \
+                             assertion, and the profile declares no `client_assertion`"
+                                .into(),
+                        ));
+                    }
+                    _ => {
+                        return Err(Error::Config(
+                            "auth mode `oauth2_client_credentials` needs exactly one of \
+                             `client_secret` or `private_key`"
+                                .into(),
+                        ));
+                    }
+                };
                 AuthMode::OAuth2ClientCredentials(OAuth2Client {
-                    token_url: render_at_bind(
-                        "auth.oauth2_client_credentials.token_url",
-                        &oauth.token_url,
-                        ctx,
-                    )?,
-                    client_id: identity.client_id.clone().ok_or_else(|| {
-                        Error::Config(
-                            "auth mode `oauth2_client_credentials` needs `client_id`".into(),
-                        )
-                    })?,
-                    client_secret: need("client_secret", identity.client_secret.as_ref())?,
-                    scope: (!scope.is_empty()).then_some(scope),
-                    reading: token_reading(
-                        oauth.expires_in_fallback_secs,
-                        oauth.early_refresh_secs,
-                        &oauth.expose,
-                    ),
+                    token_url,
+                    client_id,
+                    scope,
+                    reading,
                     exposes: !oauth.expose.is_empty(),
                     http,
-                    source: OnceCell::new(),
+                    source,
                 })
             }
             AuthKind::Signature => {
@@ -1695,7 +1928,7 @@ impl AuthMode {
                         ));
                     }
                 };
-                AuthMode::SigV4(SigV4 {
+                AuthMode::SigV4(Box::new(SigV4 {
                     service: Template::compile(&spec.sigv4.service)?,
                     region: Template::compile(&spec.sigv4.region)?,
                     keys,
@@ -1705,7 +1938,7 @@ impl AuthMode {
                         context: reqsign::default_context(),
                         session: OnceCell::new(),
                     }),
-                })
+                }))
             }
             AuthKind::Credentials => AuthMode::Credentials(build_credentials(spec, identity)?),
         })
@@ -1766,11 +1999,7 @@ impl AuthMode {
     /// signs afresh each time.
     pub fn invalidate(&self) {
         match self {
-            AuthMode::OAuth2ClientCredentials(client) => {
-                if let Some(source) = client.source.get() {
-                    source.invalidate();
-                }
-            }
+            AuthMode::OAuth2ClientCredentials(client) => client.invalidate(),
             AuthMode::JwtBearer(client) => client.source.invalidate(),
             AuthMode::GceMetadata(client) => client.source.invalidate(),
             AuthMode::None
@@ -1977,7 +2206,13 @@ mod tests {
     use reqwest::header::AUTHORIZATION;
 
     use super::*;
-    use crate::profile::{CredentialPlacementSpec, SignaturePreset};
+    use crate::profile::{
+        ClientAssertionSpec, CredentialPlacementSpec, RestProfile, SignaturePreset,
+    };
+
+    /// The value every mode in these tests is built with, so a render that
+    /// leaks one is visible whichever mode leaked it.
+    const NEVER_PRINTED: &str = "s3cr3t-do-not-print";
 
     fn exchange() -> Arc<ExchangeClient> {
         crate::request::exchange_client().unwrap()
@@ -2231,31 +2466,39 @@ mod tests {
         for kind in every.accepts.clone() {
             let mut id = InstanceAuth {
                 mode: kind,
-                token: Some("s3cr3t-do-not-print".into()),
-                key: Some("s3cr3t-do-not-print".into()),
+                token: Some(NEVER_PRINTED.into()),
+                key: Some(NEVER_PRINTED.into()),
                 username: Some("account".into()),
-                password: Some("s3cr3t-do-not-print".into()),
+                password: Some(NEVER_PRINTED.into()),
                 client_id: Some("client-42".into()),
-                client_secret: Some("s3cr3t-do-not-print".into()),
+                client_secret: Some(NEVER_PRINTED.into()),
                 key_id: Some("DI".into()),
-                secret_key: Some("s3cr3t-do-not-print".into()),
+                secret_key: Some(NEVER_PRINTED.into()),
                 ..InstanceAuth::default()
             };
-            id.private_key = Some("s3cr3t-do-not-print".into());
+            // A bare PEM is `jwt_bearer`'s here. The client assertion carries
+            // one too, and is built below with a profile that declares it,
+            // because an instance holds one of the two oauth2 credentials.
+            if kind == AuthKind::JwtBearer {
+                id.private_key = Some(NEVER_PRINTED.into());
+            }
             id.access_key_id = Some("AKIA".into());
-            id.secret_access_key = Some("s3cr3t-do-not-print".into());
+            id.secret_access_key = Some(NEVER_PRINTED.into());
             id.credentials = ["one", "two"]
                 .into_iter()
-                .map(|name| (name.to_owned(), "s3cr3t-do-not-print".into()))
+                .map(|name| (name.to_owned(), NEVER_PRINTED.into()))
                 .collect();
             let mode = build(&every, &id).unwrap_or_else(|e| panic!("{}: {e}", kind.as_str()));
             let rendered = format!("{mode:?}");
             assert!(
-                !rendered.contains("s3cr3t-do-not-print"),
+                !rendered.contains(NEVER_PRINTED),
                 "{}: {rendered}",
                 kind.as_str()
             );
         }
+
+        let rendered = format!("{:?}", okta_assertion_mode().unwrap());
+        assert!(!rendered.contains(NEVER_PRINTED), "{rendered}");
     }
 
     /// Duo's own integration key and secret key from its published signing
@@ -3097,7 +3340,7 @@ mod tests {
         };
         let role = signer.assume_role.as_ref().expect("a role to assume");
         assert_eq!(role.role_arn, "arn:aws:iam::123456789012:role/dfe-reader");
-        let mode = AuthMode::SigV4(SigV4 {
+        let mode = AuthMode::SigV4(Box::new(SigV4 {
             service: Template::compile("{{ vars.service }}").unwrap(),
             region: Template::compile("ap-southeast-2").unwrap(),
             keys: SigV4Keys::Pair {
@@ -3110,7 +3353,7 @@ mod tests {
                 context: reqsign::Context::new().with_http_send(sts.clone()),
                 session: OnceCell::new(),
             }),
-        });
+        }));
         let mut ctx = TemplateCtx::new();
         ctx.set("vars", serde_json::json!({"service": "cloudtrail"}));
 
@@ -3721,6 +3964,108 @@ mod tests {
         let err = build(&spec(&[AuthKind::Credentials]), &credentials(&[]))
             .expect_err("a mode that places nothing authenticates nothing");
         assert!(err.to_string().contains("auth.credentials"), "{err}");
+    }
+
+    /// An Okta service app on the client-assertion path, its key the value no
+    /// render may print.
+    fn okta_assertion_mode() -> Result<AuthMode> {
+        let mut okta = spec(&[AuthKind::Oauth2ClientCredentials]);
+        okta.oauth2_client_credentials.token_url = "https://acme.okta.com/oauth2/v1/token".into();
+        okta.oauth2_client_credentials.scope = "okta.logs.read".into();
+        okta.oauth2_client_credentials.client_assertion = Some(ClientAssertionSpec::default());
+        build(
+            &okta,
+            &InstanceAuth {
+                mode: AuthKind::Oauth2ClientCredentials,
+                client_id: Some("0oaserviceapp".into()),
+                private_key: Some(NEVER_PRINTED.into()),
+                ..InstanceAuth::default()
+            },
+        )
+    }
+
+    /// A profile that offers the assertion and an instance carrying a key
+    /// authenticate the exchange with one; an instance carrying the secret
+    /// takes the RFC 6749 path over the same profile.
+    #[test]
+    fn the_oauth2_credential_the_instance_carries_picks_the_exchange() {
+        let mode = okta_assertion_mode().expect("a key against a declared assertion");
+        assert_eq!(mode.kind(), AuthKind::Oauth2ClientCredentials);
+        assert!(matches!(
+            mode,
+            AuthMode::OAuth2ClientCredentials(OAuth2Client {
+                source: OAuth2Source::Assertion(_),
+                ..
+            })
+        ));
+
+        let mut okta = spec(&[AuthKind::Oauth2ClientCredentials]);
+        okta.oauth2_client_credentials.token_url = "https://acme.okta.com/oauth2/v1/token".into();
+        okta.oauth2_client_credentials.client_assertion = Some(ClientAssertionSpec::default());
+        let secret = build(&okta, &identity(AuthKind::Oauth2ClientCredentials))
+            .expect("the same profile takes a client secret");
+        assert!(matches!(
+            secret,
+            AuthMode::OAuth2ClientCredentials(OAuth2Client {
+                source: OAuth2Source::Secret { .. },
+                ..
+            })
+        ));
+
+        // Both credentials, and neither, are refused when the instance binds.
+        let mut both = identity(AuthKind::Oauth2ClientCredentials);
+        both.private_key = Some(NEVER_PRINTED.into());
+        let err = build(&okta, &both).expect_err("one of the two, never both");
+        assert!(err.to_string().contains("exactly one"), "{err}");
+        assert!(!err.to_string().contains(NEVER_PRINTED), "{err}");
+
+        let mut neither = identity(AuthKind::Oauth2ClientCredentials);
+        neither.client_secret = None;
+        let err = build(&okta, &neither).expect_err("a client with no credential");
+        assert!(err.to_string().contains("exactly one"), "{err}");
+
+        // A key against a profile that declares no assertion is refused naming
+        // the block it would need.
+        let mut plain = spec(&[AuthKind::Oauth2ClientCredentials]);
+        plain.oauth2_client_credentials.token_url = "https://idp.example/token".into();
+        let mut key_only = identity(AuthKind::Oauth2ClientCredentials);
+        key_only.client_secret = None;
+        key_only.private_key = Some(NEVER_PRINTED.into());
+        let err = build(&plain, &key_only).expect_err("no assertion declared");
+        assert!(err.to_string().contains("client_assertion"), "{err}");
+    }
+
+    /// `iat`, `exp` and `jti` are set on every assertion, so a profile writing
+    /// one of them is refused at load rather than having it overwritten.
+    #[test]
+    fn a_profile_cannot_write_the_claims_every_assertion_carries() {
+        let mut okta = RestProfile {
+            profile: "okta".to_owned(),
+            base_url: "{{ vars.base_url }}".to_owned(),
+            ..RestProfile::default()
+        };
+        okta.auth.accepts = vec![AuthKind::Oauth2ClientCredentials];
+        okta.auth.oauth2_client_credentials.token_url = "{{ base_url }}/oauth2/v1/token".to_owned();
+        okta.auth.oauth2_client_credentials.client_assertion = Some(ClientAssertionSpec {
+            claims: ["iat", "exp", "jti"]
+                .into_iter()
+                .map(|name| (name.to_owned(), "1".to_owned()))
+                .collect(),
+            ttl_secs: 0,
+        });
+        let fields: Vec<String> = okta.validate().into_iter().map(|i| i.field).collect();
+        for reserved in ["iat", "exp", "jti"] {
+            assert!(
+                fields.contains(&format!(
+                    "auth.oauth2_client_credentials.client_assertion.claims.{reserved}"
+                )),
+                "{fields:?}"
+            );
+        }
+        assert!(
+            fields.contains(&"auth.oauth2_client_credentials.client_assertion.ttl_secs".to_owned()),
+            "{fields:?}"
+        );
     }
 
     /// The executor reaches a mode through the hook, so the header a mode puts

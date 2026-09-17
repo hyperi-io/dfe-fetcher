@@ -1502,6 +1502,106 @@ async fn a_jwt_bearer_instance_signs_an_assertion_the_provider_verifies() {
     assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
 }
 
+/// Okta's recommended path for a service app: the client-credentials exchange
+/// authenticates with a private-key JWT instead of a client secret. The
+/// provider verifies the signature, checks the assertion type names the grant,
+/// and refuses a `jti` it has already seen -- so a token minted twice is proof
+/// the fetcher signs afresh each time rather than replaying.
+#[tokio::test]
+async fn a_client_assertion_authenticates_the_exchange_in_place_of_a_client_secret() {
+    let fx = common::start().await;
+    let (private_pem, public_pem) = common::rsa_key_pair();
+    fx.accept_assertions_from(&public_pem);
+    // Every exchange is due the moment it lands, so the second request mints
+    // again and the fixture sees two assertions rather than one.
+    fx.set_token_ttl(0);
+    let p = "profile: okta\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials:\n    token_url: \"{{ base_url }}/token\"\n    scope: okta.logs.read\n    client_assertion: { ttl_secs: 300 }\nendpoints:\n  - { unit: oauth, path: /auth/oauth, rows: { decoder: json_array } }\n";
+    let mut inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: 0oaserviceapp }\n",
+    );
+    inst.auth.private_key = Some(private_pem.into());
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+
+    let claims = fx.assertions();
+    assert_eq!(claims.len(), 2, "a zero-lived token mints on every request");
+    for assertion in &claims {
+        assert_eq!(
+            assertion["iss"], "0oaserviceapp",
+            "the client is the issuer"
+        );
+        assert_eq!(assertion["sub"], "0oaserviceapp", "and the subject");
+        assert_eq!(
+            assertion["aud"],
+            format!("{}/token", fx.base_url()),
+            "the audience is the endpoint it is posted to"
+        );
+        assert_eq!(
+            assertion["exp"].as_i64().unwrap() - assertion["iat"].as_i64().unwrap(),
+            300
+        );
+    }
+    assert_ne!(
+        claims[0]["jti"], claims[1]["jti"],
+        "the provider refuses a replayed assertion, so every mint carries its own id"
+    );
+    assert_eq!(
+        fx.scope_of("tok-1").as_deref(),
+        Some("okta.logs.read"),
+        "the scope rides beside the assertion"
+    );
+
+    // The profile's claims add to the assertion and may replace the three the
+    // grant requires.
+    let audience = p.replace(
+        "client_assertion: { ttl_secs: 300 }",
+        "client_assertion: { ttl_secs: 300, claims: { aud: \"{{ vars.audience }}\" } }",
+    );
+    let mut audienced = inst.clone();
+    audienced.vars.insert(
+        "audience".into(),
+        Value::String("https://acme.okta.com/oauth2/v1/token".into()),
+    );
+    let s = RestShape::from_instance(
+        &profile(&audience),
+        &audienced,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(
+        fx.assertions()[2]["aud"],
+        "https://acme.okta.com/oauth2/v1/token"
+    );
+
+    // A key the provider cannot verify is a terminal refusal, not a retry.
+    let (other_private, _) = common::rsa_key_pair();
+    let mut wrong = inst.clone();
+    wrong.auth.private_key = Some(other_private.into());
+    let s = RestShape::from_instance(
+        &profile(p),
+        &wrong,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let err = fetch(&s, "oauth", None).await.unwrap_err();
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+}
+
 /// The GCE metadata mode asks the metadata server for the workload's token
 /// with the `Metadata-Flavor` header it requires and caches it.
 #[tokio::test]

@@ -3703,7 +3703,8 @@
               "scope": "",
               "expires_in_fallback_secs": 3600,
               "early_refresh_secs": 60,
-              "expose": []
+              "expose": [],
+              "client_assertion": null
             },
             "jwt_bearer": {
               "token_url": "",
@@ -3902,7 +3903,8 @@
             "scope": "",
             "expires_in_fallback_secs": 3600,
             "early_refresh_secs": 60,
-            "expose": []
+            "expose": [],
+            "client_assertion": null
           }
         },
         "jwt_bearer": {
@@ -4079,6 +4081,40 @@
             "type": "string"
           },
           "default": []
+        },
+        "client_assertion": {
+          "description": "The signed assertion the exchange authenticates with in place of a\nclient secret, when the API accepts one; unset means the client secret\nis the only way in.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientAssertionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClientAssertionSpec": {
+      "description": "Authenticating the client-credentials exchange with a private-key JWT\n(RFC 7523 s2.2), which Okta and Microsoft Entra both call\n`private_key_jwt`.\n\nThe exchange posts `grant_type=client_credentials` with\n`client_assertion_type` and a `client_assertion` the fetcher signs, instead\nof a `client_secret`. The instance carries the key, so declaring this block\nsays the API accepts the path; an instance picks it by supplying a\n`private_key` rather than a `client_secret`.\n\nThe assertion always carries `iss` and `sub` as the client id, `aud` as the\nrendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:\nOkta refuses a replayed assertion, so no two carry the same id. `claims`\nadds to those or overrides the first three, each a template over the\ninstance's `vars`, `base_url` and the `auth.token_url` the exchange renders.",
+      "type": "object",
+      "properties": {
+        "claims": {
+          "description": "Claim templates added to the assertion, or replacing `iss`, `sub` or\n`aud`.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "ttl_secs": {
+          "description": "Assertion lifetime, `exp - iat`. Okta caps it at an hour.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 300
         }
       },
       "additionalProperties": false

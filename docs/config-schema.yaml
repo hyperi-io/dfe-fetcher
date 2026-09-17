@@ -3267,6 +3267,7 @@ $defs:
             expires_in_fallback_secs: 3600
             early_refresh_secs: 60
             expose: []
+            client_assertion: null
           jwt_bearer:
             token_url: ''
             claims: {}
@@ -3419,6 +3420,7 @@ $defs:
           expires_in_fallback_secs: 3600
           early_refresh_secs: 60
           expose: []
+          client_assertion: null
       jwt_bearer:
         description: Shape of the `jwt_bearer` mode.
         $ref: '#/$defs/JwtBearerSpec'
@@ -3571,6 +3573,49 @@ $defs:
         items:
           type: string
         default: []
+      client_assertion:
+        description: |-
+          The signed assertion the exchange authenticates with in place of a
+          client secret, when the API accepts one; unset means the client secret
+          is the only way in.
+        anyOf:
+        - $ref: '#/$defs/ClientAssertionSpec'
+        - type: 'null'
+        default: null
+    additionalProperties: false
+  ClientAssertionSpec:
+    description: |-
+      Authenticating the client-credentials exchange with a private-key JWT
+      (RFC 7523 s2.2), which Okta and Microsoft Entra both call
+      `private_key_jwt`.
+
+      The exchange posts `grant_type=client_credentials` with
+      `client_assertion_type` and a `client_assertion` the fetcher signs, instead
+      of a `client_secret`. The instance carries the key, so declaring this block
+      says the API accepts the path; an instance picks it by supplying a
+      `private_key` rather than a `client_secret`.
+
+      The assertion always carries `iss` and `sub` as the client id, `aud` as the
+      rendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:
+      Okta refuses a replayed assertion, so no two carry the same id. `claims`
+      adds to those or overrides the first three, each a template over the
+      instance's `vars`, `base_url` and the `auth.token_url` the exchange renders.
+    type: object
+    properties:
+      claims:
+        description: |-
+          Claim templates added to the assertion, or replacing `iss`, `sub` or
+          `aud`.
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+      ttl_secs:
+        description: Assertion lifetime, `exp - iat`. Okta caps it at an hour.
+        type: integer
+        format: uint64
+        minimum: 0
+        default: 300
     additionalProperties: false
   JwtBearerSpec:
     description: |-

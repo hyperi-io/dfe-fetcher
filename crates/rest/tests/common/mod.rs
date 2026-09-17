@@ -78,6 +78,9 @@ pub struct Recorded {
     pub assertions: Vec<Value>,
     /// The RSA public key (SPKI PEM) assertions are verified against.
     pub jwt_public_key: Option<String>,
+    /// Every `jti` an assertion has already been accepted with; a repeat is
+    /// refused, as Okta refuses a replayed assertion.
+    pub assertion_ids: std::collections::HashSet<String>,
     pub metadata_hits: u32,
     /// The content types `/prelude/start` has enabled, in order.
     pub started: Vec<String>,
@@ -252,9 +255,14 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     enc.finish().unwrap()
 }
 
-/// The token endpoint: client credentials for `client-a`, or a JWT-bearer
-/// assertion verified against the public key a test registered. A minted
-/// token remembers the scope it was exchanged for.
+/// What a client authenticating with a signed JWT says it is presenting
+/// (RFC 7523 s2.2).
+const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+/// The token endpoint: client credentials for `client-a`, a client assertion
+/// in place of that secret (Okta's `private_key_jwt`), or a JWT-bearer
+/// assertion -- the last two verified against the public key a test
+/// registered. A minted token remembers the scope it was exchanged for.
 async fn token(
     State(state): State<Shared>,
     headers: HeaderMap,
@@ -280,6 +288,24 @@ async fn token(
     // is not about expiry is never racing one.
     let ttl = recorded.token_ttl_secs.unwrap_or(3600);
     let (scope, expires_in) = match form.get("grant_type").map(String::as_str) {
+        // The client proves itself with a signed assertion rather than a
+        // secret. Okta refuses a reused `jti`, so this does too: a mint that
+        // replayed the last assertion is a failed exchange, not a silent pass.
+        Some("client_credentials") if form.contains_key("client_assertion") => {
+            if form.get("client_assertion_type").map(String::as_str) != Some(CLIENT_ASSERTION_TYPE)
+            {
+                return refused();
+            }
+            let Some(claims) = verified_claims(&mut recorded, form.get("client_assertion")) else {
+                return refused();
+            };
+            let jti = claims["jti"].as_str().unwrap_or_default().to_owned();
+            if jti.is_empty() || !recorded.assertion_ids.insert(jti) {
+                return refused();
+            }
+            recorded.assertions.push(claims);
+            (form.get("scope").cloned().unwrap_or_default(), ttl)
+        }
         Some("client_credentials") => {
             if form.get("client_id").map(String::as_str) != Some("client-a")
                 || form.get("client_secret").map(String::as_str) != Some("secret-a")
@@ -289,21 +315,11 @@ async fn token(
             (form.get("scope").cloned().unwrap_or_default(), ttl)
         }
         Some("urn:ietf:params:oauth:grant-type:jwt-bearer") => {
-            let Some(public) = recorded.jwt_public_key.clone() else {
+            let Some(claims) = verified_claims(&mut recorded, form.get("assertion")) else {
                 return refused();
             };
-            let Some(assertion) = form.get("assertion") else {
-                return refused();
-            };
-            let key = jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).unwrap();
-            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-            validation.validate_aud = false;
-            validation.set_required_spec_claims(&["exp", "iat"]);
-            let Ok(data) = jsonwebtoken::decode::<Value>(assertion, &key, &validation) else {
-                return refused();
-            };
-            let scope = data.claims["scope"].as_str().unwrap_or_default().to_owned();
-            recorded.assertions.push(data.claims);
+            let scope = claims["scope"].as_str().unwrap_or_default().to_owned();
+            recorded.assertions.push(claims);
             (scope, ttl)
         }
         _ => return refused(),
@@ -320,6 +336,20 @@ async fn token(
         "refresh_token": "never-exposed"
     }))
     .into_response()
+}
+
+/// The claims of an RS256 assertion verified against the public key a test
+/// registered, or `None` when there is no key, no assertion, or the signature
+/// does not check out.
+fn verified_claims(recorded: &mut Recorded, assertion: Option<&String>) -> Option<Value> {
+    let public = recorded.jwt_public_key.clone()?;
+    let key = jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).unwrap();
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.validate_aud = false;
+    validation.set_required_spec_claims(&["exp", "iat"]);
+    jsonwebtoken::decode::<Value>(assertion?, &key, &validation)
+        .ok()
+        .map(|data| data.claims)
 }
 
 /// The Salesforce SOQL shape behind an instance URL the token named: a

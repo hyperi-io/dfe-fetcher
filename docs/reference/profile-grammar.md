@@ -49,7 +49,7 @@ entry.
 | | `bearer` (static token) | github, cloudflare, onepassword, slack, okta, runzero, gcp |
 | | `api_key` (named header with a prefix, or a query parameter) | okta (`SSWS`) |
 | | `basic` | none shipped |
-| | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates) | azure, m365, bitwarden, crowdstrike, salesforce, runzero |
+| | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates; `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
 | | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM; claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
 | | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical shape and placement the profile names; Duo's versions are presets of it) | duo |
@@ -111,7 +111,7 @@ instance, never here.
 | Mode shape | Fields |
 |------------|--------|
 | `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `SSWS `; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
-| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
+| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
@@ -122,6 +122,60 @@ instance, never here.
 A mode that mints a token for a scope (`oauth2_client_credentials`,
 `jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
 with the same scope share one token.
+
+### Authenticating the exchange with a key instead of a secret
+
+A client secret is a static credential the deployment holds and the exchange
+posts. Where a provider offers it, a key pair is the better trade: the private
+half never leaves the deployment, and the grant it buys is scoped to the
+integration rather than carrying the permissions of whoever minted a token.
+Okta steers its API Services apps this way and calls it `private_key_jwt`;
+Microsoft Entra, Zscaler OneAPI and Snowflake all take the same shape.
+
+It is not a mode of its own. The exchange is still client credentials, so the
+profile declares `client_assertion` inside the
+`oauth2_client_credentials` block and the exchange posts
+`grant_type=client_credentials`, `client_assertion_type` naming RFC 7523's
+JWT-bearer assertion, the signed `client_assertion` and the scope, in place of
+the `client_secret`:
+
+```yaml
+# profile
+auth:
+  accepts: [api_key, bearer, oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ base_url }}/oauth2/v1/token"
+    scope: okta.logs.read
+    client_assertion:
+      ttl_secs: 300
+```
+
+```yaml
+# instance
+auth:
+  mode: oauth2_client_credentials
+  client_id: "0oa1example"
+  private_key: "vault:<mount>/data/<path>:<key>"
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ttl_secs` | Assertion lifetime, `exp - iat`. Okta caps it at an hour; short is right, because an assertion is spent the moment it is posted. |
+| `claims` | Claim templates added to the assertion, or replacing `iss`, `sub` or `aud`. Each reads `vars`, `base_url` and `auth.token_url` / `auth.client_id`, and is held to the instance's context like every other credential template. |
+
+The assertion always carries `iss` and `sub` as the client id and `aud` as the
+rendered token endpoint, which is what RFC 7523 s2.2 requires of a client
+authenticating as itself; `iat` and `exp` come from `ttl_secs`, and `jti` is
+fresh on every mint, because Okta refuses an assertion whose id it has already
+seen. A profile that writes `iat`, `exp` or `jti` in `claims` is refused at
+load rather than having them overwritten.
+
+Declaring the block says the API accepts the path. Which path an instance takes
+is decided by the credential it carries -- `client_secret` posts the secret,
+`private_key` signs the assertion -- so one deployment of an API that takes both
+may hold a secret and another a key pair. An instance carrying neither or both
+is refused when it binds, as is a `private_key` against a profile that declares
+no `client_assertion`.
 
 ### More than one credential on a request
 
@@ -381,8 +435,8 @@ authenticate as another.
 ### What the token endpoint and the claims may read
 
 A credential is minted once per instance, and once per scope a unit names, so
-`token_url`, `gce_metadata.url` and every `jwt_bearer` claim render against the
-INSTANCE's context -- not per unit and not per request. They may read `vars`,
+`token_url`, `gce_metadata.url` and every `jwt_bearer` or `client_assertion`
+claim render against the INSTANCE's context -- not per unit and not per request. They may read `vars`,
 `base_url` and the `auth.*` the authenticator exposes. One that reads `unit`,
 `window`, `page`, `key` or `item`, or that renders differently under a unit's
 own `vars` or `base_url`, is refused when the instance binds: a claim deciding
@@ -566,7 +620,7 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `bearer` | `token` |
 | `api_key` | `key` |
 | `basic` | `username`, `password` |
-| `oauth2_client_credentials` | `client_id` (the literal id), `client_secret`, optional `scope` overriding the profile's |
+| `oauth2_client_credentials` | `client_id` (the literal id), then exactly one of `client_secret` or `private_key` (a bare RSA PEM signing a client assertion, where the profile declares one), optional `scope` overriding the profile's |
 | `signature` | `key_id` (the public half naming the key -- Duo's integration key; also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |
