@@ -10,8 +10,12 @@
 # =============================================================================
 # Instance Identity
 # =============================================================================
-# Auto-derived from source config if omitted.
-# Explicit ID recommended for production -- prevents cursor key collisions.
+# Auto-derived from the aws, azure, m365 or gcp block when omitted, and
+# `dfe-fetcher` when none of them is enabled.
+# REQUIRED once this fetcher runs more than one source: the id prefixes every
+# cursor key and labels every metric series, so two fetchers on the fallback
+# read and write each other's fetch windows. A config that schedules more than
+# one source without it is refused at load.
 # instance_id: "contoso-m365"
 
 # =============================================================================

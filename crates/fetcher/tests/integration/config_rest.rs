@@ -250,6 +250,11 @@ fn the_example_runzero_instances_bind_to_the_shipped_profile_once_enabled() {
     for id in ["runzero_self_hosted", "runzero_cloud"] {
         config.sources.rest.get_mut(id).unwrap().enabled = true;
     }
+    // Enabling both makes the example a two-source deployment, which the load
+    // refuses until it is named -- the field the example documents at the top.
+    let err = config.validate().unwrap_err().to_string();
+    assert!(err.contains("instance_id"), "{err}");
+    config.instance_id = Some("runzero".to_string());
     config
         .validate()
         .expect("both example instances bind to the shipped profile");
@@ -263,8 +268,10 @@ fn the_example_runzero_instances_bind_to_the_shipped_profile_once_enabled() {
 #[test]
 fn two_instances_of_one_inline_profile_carry_their_own_identity() {
     let dir = tempfile::TempDir::new().unwrap();
+    // Two instances run in the one pod, so the deployment names itself rather
+    // than sharing the derivation's fallback with every other fetcher.
     let body = format!(
-        "{INLINE}    inventory_cloud:\n      topic: inventory-cloud\n      auth: {{ mode: oauth2_client_credentials, client_id: id, client_secret: \"env:CLOUD_SECRET\" }}\n      vars: {{ base_url: \"https://console.example/api/v1.0\", org_id: org-1 }}\n      profile:\n        base_url: \"{{{{ vars.base_url }}}}\"\n        shape: dump\n        auth:\n          accepts: [bearer, oauth2_client_credentials]\n          oauth2_client_credentials: {{ token_url: \"{{{{ base_url }}}}/account/api/token\" }}\n        endpoints:\n          - {{ unit: assets, path: /export/org/assets.jsonl, rows: {{ decoder: ndjson }} }}\n"
+        "instance_id: inventory-pod\n{INLINE}    inventory_cloud:\n      topic: inventory-cloud\n      auth: {{ mode: oauth2_client_credentials, client_id: id, client_secret: \"env:CLOUD_SECRET\" }}\n      vars: {{ base_url: \"https://console.example/api/v1.0\", org_id: org-1 }}\n      profile:\n        base_url: \"{{{{ vars.base_url }}}}\"\n        shape: dump\n        auth:\n          accepts: [bearer, oauth2_client_credentials]\n          oauth2_client_credentials: {{ token_url: \"{{{{ base_url }}}}/account/api/token\" }}\n        endpoints:\n          - {{ unit: assets, path: /export/org/assets.jsonl, rows: {{ decoder: ndjson }} }}\n"
     );
     let config = Config::load_from_file(&write(&dir, &body)).expect("loads");
     config.validate().expect("both bind");

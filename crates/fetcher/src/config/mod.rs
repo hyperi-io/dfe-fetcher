@@ -531,8 +531,48 @@ impl Config {
         self.validate_rest_instances()?;
         self.validate_db_instances()?;
         self.validate_file_instances()?;
+        // Last: a property of the whole deployment, meaningful once the
+        // sources it counts are known to be sound.
+        self.validate_instance_id()?;
 
         Ok(())
+    }
+
+    /// Refuse a config that schedules more than one source and sets no
+    /// `instance_id`.
+    ///
+    /// The instance id prefixes every cursor key (`{instance_id}.{connection_id}`)
+    /// and labels every metric series. [`derive_instance_id`] reads only the
+    /// aws, azure, m365 and gcp blocks, so a deployment built from
+    /// `sources.rest`, `sources.db`, `sources.file` or any other typed block
+    /// falls through to [`FALLBACK_INSTANCE_ID`] and shares it with every
+    /// fetcher in the same position -- two of them then read and write each
+    /// other's fetch windows. Deriving an id from the generic families instead
+    /// would have to pick one source out of several, which is no more distinct
+    /// than the fallback, so the config is refused and the operator names the
+    /// deployment.
+    ///
+    /// More than one source means more than one entry in
+    /// [`scheduled_connection_ids`](SourcesConfig::scheduled_connection_ids),
+    /// which is exactly the set the instance id is joined with to form a cursor
+    /// key. A single-source fetcher keeps loading: that is the standalone
+    /// shape, and there is nothing to pick between.
+    fn validate_instance_id(&self) -> Result<()> {
+        if self.instance_id.is_some() || derive_instance_id(self) != FALLBACK_INSTANCE_ID {
+            return Ok(());
+        }
+        let scheduled = self.sources.scheduled_connection_ids();
+        if scheduled.len() < 2 {
+            return Ok(());
+        }
+        Err(Error::Config(format!(
+            "instance_id is unset and cannot be derived from these sources, so this fetcher \
+             would run as '{FALLBACK_INSTANCE_ID}' -- the id every other fetcher without one \
+             also gets. The instance id prefixes every cursor key and labels every metric \
+             series, so two fetchers sharing it read and write each other's fetch windows. \
+             Set instance_id to a value unique to this deployment. Sources scheduled here: {}",
+            scheduled.into_iter().collect::<Vec<_>>().join(", ")
+        )))
     }
 
     /// Map every enabled built-in block (`sources.github`, `sources.okta`)
@@ -805,6 +845,12 @@ fn validate_connection_ids(type_name: &str, ids: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// The instance id [`derive_instance_id`] falls back to when nothing in the
+/// config names or distinguishes the deployment. Every fetcher that reaches it
+/// gets the same one, which is why [`Config::validate`] refuses it for a config
+/// carrying more than one source.
+const FALLBACK_INSTANCE_ID: &str = "dfe-fetcher";
+
 /// Derive instance ID from config. Uses explicit value if set,
 /// otherwise auto-derives from first enabled source's distinguishing config.
 #[must_use]
@@ -849,7 +895,7 @@ pub fn derive_instance_id(config: &Config) -> String {
         return format!("gcp-{hash}");
     }
 
-    "dfe-fetcher".to_string()
+    FALLBACK_INSTANCE_ID.to_string()
 }
 
 /// Reload configuration from the same source.
@@ -5537,6 +5583,86 @@ sources:
         let id1 = derive_instance_id(&cfg);
         let id2 = derive_instance_id(&cfg);
         assert_eq!(id1, id2, "Same config must produce same instance ID");
+    }
+
+    /// One generic source, the standalone shape: no `instance_id` and none
+    /// derivable, and it still loads.
+    const ONE_GENERIC_SOURCE: &str = r#"
+kafka:
+  brokers: ["localhost:9092"]
+sources:
+  file:
+    exports:
+      topic: exports
+      units:
+        - unit: assets
+          dump: { paths: ["/data/exports/assets-*.jsonl"] }
+"#;
+
+    /// The same config with a second generic source, which is the composed
+    /// deployment the derivation never covered.
+    const TWO_GENERIC_SOURCES: &str = r#"
+kafka:
+  brokers: ["localhost:9092"]
+sources:
+  file:
+    exports:
+      topic: exports
+      units:
+        - unit: assets
+          dump: { paths: ["/data/exports/assets-*.jsonl"] }
+    inventory:
+      topic: inventory
+      units:
+        - unit: hosts
+          dump: { paths: ["/data/inventory/hosts-*.jsonl"] }
+"#;
+
+    fn from_yaml(yaml: &str) -> Config {
+        serde_yaml_ng::from_str(yaml).expect("the config parses")
+    }
+
+    #[test]
+    fn one_generic_source_without_an_instance_id_still_loads() {
+        let cfg = from_yaml(ONE_GENERIC_SOURCE);
+        assert!(cfg.instance_id.is_none());
+        assert_eq!(derive_instance_id(&cfg), FALLBACK_INSTANCE_ID);
+        cfg.validate().expect("the standalone shape is not refused");
+    }
+
+    #[test]
+    fn two_generic_sources_without_an_instance_id_are_refused_naming_the_field() {
+        let cfg = from_yaml(TWO_GENERIC_SOURCES);
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("instance_id"), "names the fix: {err}");
+        assert!(
+            err.contains("exports") && err.contains("inventory"),
+            "names the sources it counted: {err}"
+        );
+    }
+
+    #[test]
+    fn two_generic_sources_with_an_instance_id_load() {
+        let mut cfg = from_yaml(TWO_GENERIC_SOURCES);
+        cfg.instance_id = Some("exports-pod".to_string());
+        cfg.validate().expect("an explicit id is the fix");
+        assert_eq!(derive_instance_id(&cfg), "exports-pod");
+    }
+
+    /// A typed block the derivation reads produces a distinct id, so the
+    /// refusal never fires however many generic sources run beside it.
+    #[test]
+    fn a_derived_typed_block_id_is_not_refused_alongside_generic_sources() {
+        let mut cfg = from_yaml(TWO_GENERIC_SOURCES);
+        cfg.sources.aws.enabled = true;
+        cfg.sources.aws.credential_secret = Some("vault:kv/data/aws:credentials".to_string());
+        cfg.sources.aws.services = vec![AwsService {
+            name: "cloudtrail".to_string(),
+            config: HashMap::new(),
+        }];
+        assert!(cfg.instance_id.is_none());
+        assert!(derive_instance_id(&cfg).starts_with("aws-"));
+        cfg.validate().expect("a derived id distinguishes the pod");
     }
 
     #[test]
