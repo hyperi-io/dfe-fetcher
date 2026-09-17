@@ -230,12 +230,13 @@ async fn a_redirect_off_the_origin_is_not_followed_and_the_key_stays_home() {
 /// but this test stops a later change putting the URL back.
 #[tokio::test]
 async fn a_transport_failure_never_carries_the_query_key() {
-    // A port that was free and is now closed, so the connection is refused
-    // rather than answered: the only path that reaches the transport-error
-    // arm, since a status code takes the other one.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let dead = listener.local_addr().unwrap();
-    drop(listener);
+    // Port 1 on loopback, so the connection is refused rather than answered:
+    // the only path that reaches the transport-error arm, since a status code
+    // takes the other one. Binding an ephemeral port and dropping it hands the
+    // number back to the pool, and a fixture server in a test running beside
+    // this one takes it and answers. Port 1 needs a capability no test has, so
+    // nothing in this suite can be listening on it.
+    let dead: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
 
     let p = "profile: keyed\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { query: api_key }\nretry: { min_backoff_ms: 1, max_backoff_ms: 5 }\nendpoints:\n  - { unit: items, path: /array/items.json, rows: { decoder: json_array } }\n";
     let mut inst: RestInstance = serde_yaml_ng::from_str(
