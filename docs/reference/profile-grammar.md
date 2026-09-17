@@ -49,12 +49,13 @@ entry.
 | | `bearer` (static token) | github, cloudflare, onepassword, slack, okta, runzero, gcp |
 | | `api_key` (named header with a prefix, or a query parameter) | okta (`SSWS`) |
 | | `basic` | none shipped |
-| | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates) | azure, m365, bitwarden, crowdstrike, salesforce, runzero |
+| | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates; `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
 | | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM; claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
 | | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical shape and placement the profile names; Duo's versions are presets of it) | duo |
 | | `sigv4` (AWS Signature v4, service and region rendered per request) | aws, object_store |
 | | `credentials` (more than one credential on the one request, each where the profile places it; a placement may compose several into one value) | datadog |
+| | `session_login` (a login call mints a session token, read from a JSON pointer or a response header and carried in a header of the appliance's naming) | none shipped |
 | Pager (`paginate.strategy`) | `none` | runzero, azure `log_analytics` |
 | | `link_header` (RFC 5988 `rel="next"`) | github, okta |
 | | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path; a list cursor is comma-joined) | aws, bitwarden, crowdstrike, duo, gcp, google_workspace, onepassword, slack |
@@ -111,17 +112,81 @@ instance, never here.
 | Mode shape | Fields |
 |------------|--------|
 | `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `SSWS `; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
-| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
+| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
 | `signature` | `preset` (a shipped scheme by name), or the scheme spelled out: `digest`, `keying`, `canonical`, `encoding`, `headers`, `signed_header_prefix`, `place`, `header`, `prefix`. See [Signing a request](#signing-a-request). |
 | `credentials` | A list of placements: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
+| `session_login` | `url` (the login endpoint, a template), `send`, `username_field` / `password_field`, `body`, `token_at` or `token_header`, `ttl_secs`, `early_refresh_secs`, `header`, `prefix`. See [Logging in for a session token](#logging-in-for-a-session-token). |
 | `bearer`, `basic`, `none` | No profile-side shape. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
 `jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
 with the same scope share one token.
+
+### Authenticating the exchange with a key instead of a secret
+
+A client secret is a static credential the deployment holds and the exchange
+posts. Where a provider offers it, a key pair is the better trade: the private
+half never leaves the deployment, and the grant it buys is scoped to the
+integration rather than carrying the permissions of whoever minted a token.
+Okta steers its API Services apps this way and calls it `private_key_jwt`;
+Microsoft Entra, Zscaler OneAPI and Snowflake all take the same shape.
+
+It is not a mode of its own. The exchange is still client credentials, so the
+profile declares `client_assertion` inside the
+`oauth2_client_credentials` block and the exchange posts
+`grant_type=client_credentials`, `client_assertion_type` naming RFC 7523's
+JWT-bearer assertion, the signed `client_assertion` and the scope, in place of
+the `client_secret`:
+
+```yaml
+# profile
+auth:
+  accepts: [api_key, bearer, oauth2_client_credentials]
+  oauth2_client_credentials:
+    token_url: "{{ base_url }}/oauth2/v1/token"
+    scope: okta.logs.read
+    client_assertion:
+      ttl_secs: 300
+```
+
+```yaml
+# instance
+auth:
+  mode: oauth2_client_credentials
+  client_id: "0oa1example"
+  private_key: "vault:<mount>/data/<path>:<key>"
+  private_key_id: "the kid the app holds the public half under"
+```
+
+| Field | Meaning |
+|-------|---------|
+| `ttl_secs` | Assertion lifetime, `exp - iat`. An hour at most -- a longer one is refused at load, because Okta answers `invalid_client` rather than shortening it. Short is right anyway: an assertion is spent the moment it is posted. |
+| `claims` | Claim templates added to the assertion, or replacing `iss`, `sub` or `aud`. Each reads `vars`, `base_url` and `auth.token_url` / `auth.client_id`, and is held to the instance's context like every other credential template. The `expose` fields of the token response are NOT among them: they arrive with the token the assertion is minting. |
+
+The assertion always carries `iss` and `sub` as the client id and `aud` as the
+rendered token endpoint, which is what RFC 7523 s2.2 requires of a client
+authenticating as itself; `iat` and `exp` come from `ttl_secs`, and `jti` is
+fresh on every mint, because Okta refuses an assertion whose id it has already
+seen. A profile that writes `iat`, `exp` or `jti` in `claims` is refused at
+load rather than having them overwritten.
+
+The signature is RS256, so `private_key` is an RSA private key PEM and a key of
+another kind is refused when it is read, naming the kind that is wanted. The
+instance's `private_key_id` becomes the `kid` of the JOSE header. An app holding
+ONE registered key pair resolves an assertion without it; an app holding two --
+which is what rotating a signing key looks like, the new public key registered
+beside the old -- resolves by `kid` alone and refuses an assertion that names
+none. So an instance whose app has ever been rotated carries it.
+
+Declaring the block says the API accepts the path. Which path an instance takes
+is decided by the credential it carries -- `client_secret` posts the secret,
+`private_key` signs the assertion -- so one deployment of an API that takes both
+may hold a secret and another a key pair. An instance carrying neither or both
+is refused when it binds, as is a `private_key` against a profile that declares
+no `client_assertion`.
 
 ### More than one credential on a request
 
@@ -134,11 +199,10 @@ name resolves once however many placements carry it, and every placement is
 applied to the one built request.
 
 `auth.credentials` is the mode for credentials the deployment supplies as specs
-and the profile places as they resolved. A later mode that MINTS or SIGNS will
-carry a placement list of the same shape under its own key, because where a
-credential goes is an axis of a request and not a mode of its own -- a session
-login, say, wants these placements over a token it minted rather than over a
-spec.
+and the profile places as they resolved. Where a credential goes is an axis of a
+request rather than a mode of its own, so a mode that MINTS carries its own
+placement under its own key: `session_login` names the `header` and `prefix` its
+token goes in, over a token it minted rather than over a spec.
 
 Two credentials in two headers of their own -- Datadog, where the api key names
 the organisation and the application key scopes the call to a user, so neither
@@ -225,6 +289,80 @@ Refused at load, each naming the field it sits on -- a placement by its index:
 - a name the profile places and the instance supplies no spec for, and a name
   the instance supplies that no placement reads -- so a misspelling is refused
   from both ends rather than authenticating as half a credential
+
+### Logging in for a session token
+
+An appliance rarely has an OAuth2 endpoint. It has a login call: post the
+administrator's credentials, get a token back, send that token on every later
+request. vCenter, Cisco Catalyst Centre, Check Point Management, F5 BIG-IP,
+Wazuh, Veeam, Zscaler's legacy API, Redfish and iDRAC BMCs and Qualys all work
+this way, and none of them speaks RFC 6749: the token comes back under a name
+the vendor chose, in the body or in a header, usually with nothing said about
+how long it lives.
+
+So `session_login` reads the token from where the profile points, holds it for
+the lifetime the profile declares, and carries it in the header the profile
+names. It is NOT a bearer, and the grammar does not pretend otherwise.
+
+| Field | Meaning |
+|-------|---------|
+| `url` | The login endpoint, a template (may read `base_url`). |
+| `send` | `body` puts the credentials in the JSON body, `basic` in the login's own `Authorization: Basic` header. |
+| `username_field`, `password_field` | The body members the credentials are written into under `send: body`; `username` and `password` unless the appliance names them otherwise. |
+| `body` | Further members of the login body, each a template (F5's `loginProviderName`). The profile's own text -- a credential never travels here. Refused under `send: basic`, which posts no body at all. |
+| `token_at` | JSON pointer to the token in the login response. The empty pointer is the whole body, which is what vCenter answers: a JSON string that IS the session id. |
+| `token_header` | The response header carrying the token instead (F5's `X-F5-Auth-Token`). Exactly one of this and `token_at`. |
+| `ttl_secs` | How long the token is held. The appliance does not say, so this is the session lifetime it documents. |
+| `early_refresh_secs` | How long before that lifetime is up the login runs again, with the same meaning it has on the OAuth2 spec: capped at half the lifetime. |
+| `header` | The request header every later request carries the token in. Required -- there is no default, because there is no convention. |
+| `prefix` | Text in front of the token in that header, for the appliances that want one. |
+
+The instance supplies `username` and `password`, the same two fields the `basic`
+mode takes.
+
+```yaml
+# profile
+auth:
+  accepts: [session_login]
+  session_login:
+    url: "{{ base_url }}/mgmt/shared/authn/login"
+    send: body
+    body: { loginProviderName: tmos }
+    token_at: /token/token
+    ttl_secs: 1200
+    header: X-F5-Auth-Token
+```
+
+```yaml
+# instance
+auth:
+  mode: session_login
+  username: "svc-dfe"
+  password: "vault:<mount>/data/<path>:<key>"
+```
+
+One login per instance: `url` and every `body` member render against the
+INSTANCE's context, and one that reads a name only a unit supplies is refused
+when the instance binds, as a token endpoint's is. A refused login carries its
+status and nothing of the response text -- a login body holds the password, and
+an appliance that answers a bad request by quoting what it was posted would put
+that password in the one line every consumer logs.
+
+`url` is held to the same rule as a token endpoint: https, or plain http on a
+loopback address so a fixture needs no certificate. Plain http anywhere else is
+refused however private the network, and so is any other scheme. An appliance on
+a management LAN is exactly where a captured administrator password is worth the
+most, and every appliance here serves https -- with its own certificate, which is
+a trust-store question and not a reason to send the password in the clear. The
+refusal is at BIND rather than at the first login, because the URL is rendered
+there.
+
+A login the appliance REFUSES is held for a few minutes and answered from rather
+than posted again. vCenter, F5 and Check Point all lock an account after a
+handful of failed logins, so a wrong or rotated password must not post the
+administrator's credentials once per unit per tick for as long as the deployment
+runs. An appliance that could not be reached is tried again by the next request,
+because that is not a failure the account is locked for.
 
 ### Signing a request
 
@@ -381,8 +519,9 @@ authenticate as another.
 ### What the token endpoint and the claims may read
 
 A credential is minted once per instance, and once per scope a unit names, so
-`token_url`, `gce_metadata.url` and every `jwt_bearer` claim render against the
-INSTANCE's context -- not per unit and not per request. They may read `vars`,
+`token_url`, `gce_metadata.url`, `session_login.url` and its `body`, and every
+`jwt_bearer` or `client_assertion` claim render against the INSTANCE's context
+-- not per unit and not per request. They may read `vars`,
 `base_url` and the `auth.*` the authenticator exposes. One that reads `unit`,
 `window`, `page`, `key` or `item`, or that renders differently under a unit's
 own `vars` or `base_url`, is refused when the instance binds: a claim deciding
@@ -398,7 +537,8 @@ about](#what-a-signature-may-be-about)).
   over the lifetime is logged; one between half and full is capped silently.
 - `token_url` must be an https URL or a loopback address, because the client
   secret is a field of the form that is posted. A self-hosted deployment reached
-  over plain http stops fetching, which is deliberate.
+  over plain http stops fetching, which is deliberate. `session_login.url` is
+  held to the same rule, for the same reason: it posts the password.
 - `gce_metadata.url` is exempt from that rule -- every cloud serves its metadata
   over plaintext -- and is held to its host instead: a loopback or link-local
   address, or a documented metadata host name.
@@ -566,12 +706,13 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `bearer` | `token` |
 | `api_key` | `key` |
 | `basic` | `username`, `password` |
-| `oauth2_client_credentials` | `client_id` (the literal id), `client_secret`, optional `scope` overriding the profile's |
+| `oauth2_client_credentials` | `client_id` (the literal id), then exactly one of `client_secret` or `private_key` (a bare RSA PEM signing a client assertion, where the profile declares one), optional `private_key_id` (the `kid` naming that key, not a secret) and optional `scope` overriding the profile's |
 | `signature` | `key_id` (the public half naming the key -- Duo's integration key; also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |
 | `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling) |
 | `credentials` | `credentials`, a spec per name the profile's placements read ([More than one credential on a request](#more-than-one-credential-on-a-request)) |
+| `session_login` | `username`, `password` ([Logging in for a session token](#logging-in-for-a-session-token)) |
 
 `vault:`, `bao:`, `openbao:`, `env:` and `file:` resolve, and the prefix is
 matched exactly: an `aws:` spec, which needs a secrets feature the fetcher does

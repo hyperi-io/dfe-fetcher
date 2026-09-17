@@ -3201,6 +3201,7 @@ $defs:
           service_account_key: null
           service_account_key_file: null
           private_key: null
+          private_key_id: null
           access_key_id: null
           secret_access_key: null
           credentials_json: null
@@ -3267,6 +3268,7 @@ $defs:
             expires_in_fallback_secs: 3600
             early_refresh_secs: 60
             expose: []
+            client_assertion: null
           jwt_bearer:
             token_url: ''
             claims: {}
@@ -3293,6 +3295,18 @@ $defs:
             header: authorization
             prefix: ''
           credentials: []
+          session_login:
+            url: ''
+            send: body
+            username_field: username
+            password_field: password
+            body: {}
+            token_at: null
+            token_header: null
+            ttl_secs: 1800
+            early_refresh_secs: 60
+            header: ''
+            prefix: ''
       headers:
         description: Header templates on every request.
         type: object
@@ -3419,6 +3433,7 @@ $defs:
           expires_in_fallback_secs: 3600
           early_refresh_secs: 60
           expose: []
+          client_assertion: null
       jwt_bearer:
         description: Shape of the `jwt_bearer` mode.
         $ref: '#/$defs/JwtBearerSpec'
@@ -3464,6 +3479,23 @@ $defs:
         items:
           $ref: '#/$defs/CredentialPlacementSpec'
         default: []
+      session_login:
+        description: |-
+          Shape of the `session_login` mode: the login call and where its token
+          is read and carried.
+        $ref: '#/$defs/SessionLoginSpec'
+        default:
+          url: ''
+          send: body
+          username_field: username
+          password_field: password
+          body: {}
+          token_at: null
+          token_header: null
+          ttl_secs: 1800
+          early_refresh_secs: 60
+          header: ''
+          prefix: ''
     additionalProperties: false
   AuthKind:
     description: |-
@@ -3517,6 +3549,14 @@ $defs:
         several (Tenable's `accessKey=...;secretKey=...`).
       type: string
       const: credentials
+    - description: |-
+        A login call that mints a session token, which is what an appliance
+        offers instead of an OAuth2 endpoint: the login posts the instance's
+        user name and password, the token comes back in a field of the response
+        or in a response header, and every later request carries it in the
+        header the profile names.
+      type: string
+      const: session_login
   ApiKeySpec:
     description: Where an API key goes.
     type: object
@@ -3571,6 +3611,54 @@ $defs:
         items:
           type: string
         default: []
+      client_assertion:
+        description: |-
+          The signed assertion the exchange authenticates with in place of a
+          client secret, when the API accepts one; unset means the client secret
+          is the only way in.
+        anyOf:
+        - $ref: '#/$defs/ClientAssertionSpec'
+        - type: 'null'
+        default: null
+    additionalProperties: false
+  ClientAssertionSpec:
+    description: |-
+      Authenticating the client-credentials exchange with a private-key JWT
+      (RFC 7523 s2.2), which Okta and Microsoft Entra both call
+      `private_key_jwt`.
+
+      The exchange posts `grant_type=client_credentials` with
+      `client_assertion_type` and a `client_assertion` the fetcher signs, instead
+      of a `client_secret`. The instance carries the key, so declaring this block
+      says the API accepts the path; an instance picks it by supplying a
+      `private_key` rather than a `client_secret`.
+
+      The assertion always carries `iss` and `sub` as the client id, `aud` as the
+      rendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:
+      Okta refuses a replayed assertion, so no two carry the same id. `claims`
+      adds to those or overrides the first three, each a template over the
+      instance's `vars`, `base_url` and the `auth.token_url` the exchange renders.
+
+      The assertion is signed RS256, and the instance's `private_key_id` becomes
+      the `kid` of its JOSE header.
+    type: object
+    properties:
+      claims:
+        description: |-
+          Claim templates added to the assertion, or replacing `iss`, `sub` or
+          `aud`.
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+      ttl_secs:
+        description: |-
+          Assertion lifetime, `exp - iat`. An hour at most: Okta refuses a longer
+          one as `invalid_client` rather than shortening it.
+        type: integer
+        format: uint64
+        minimum: 0
+        default: 300
     additionalProperties: false
   JwtBearerSpec:
     description: |-
@@ -3835,6 +3923,95 @@ $defs:
         - 'null'
         default: null
     additionalProperties: false
+  SessionLoginSpec:
+    description: |-
+      A login call that mints a session token.
+
+      The appliances this exists for -- vCenter, F5 BIG-IP, Check Point, Wazuh,
+      Redfish -- answer a login with a vendor-named token rather than an OAuth2
+      token response, put it in a field or a header of their own choosing, and say
+      nothing about how long it lives. So the token is read from where the profile
+      points, its lifetime is what the profile declares, and it is carried in the
+      header the profile names rather than as a bearer.
+    type: object
+    properties:
+      url:
+        description: The login endpoint, a template (may use `base_url`).
+        type: string
+        default: ''
+      send:
+        description: Where the credentials go on the login request.
+        $ref: '#/$defs/SessionCredentials'
+        default: body
+      username_field:
+        description: 'The body member carrying the user name under `send: body`.'
+        type: string
+        default: username
+      password_field:
+        description: 'The body member carrying the password under `send: body`.'
+        type: string
+        default: password
+      body:
+        description: |-
+          Further members of the login body, each a template over the instance's
+          context (F5's `loginProviderName`). A credential never travels here:
+          these are the profile's own text and carry no secret.
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
+      token_at:
+        description: |-
+          JSON pointer to the token in the login response; the empty pointer is
+          the whole body, which is what vCenter answers with.
+        type:
+        - string
+        - 'null'
+        default: null
+      token_header:
+        description: |-
+          The response header carrying the token, for an appliance that answers
+          with one instead.
+        type:
+        - string
+        - 'null'
+        default: null
+      ttl_secs:
+        description: |-
+          How long the token is held. The appliance does not say, so this is the
+          session lifetime it documents.
+        type: integer
+        format: uint64
+        minimum: 0
+        default: 1800
+      early_refresh_secs:
+        description: How long before that lifetime is up the token is minted again.
+        type: integer
+        format: uint64
+        minimum: 0
+        default: 60
+      header:
+        description: The request header every later request carries the token in.
+        type: string
+        default: ''
+      prefix:
+        description: Text put in front of the token in that header.
+        type: string
+        default: ''
+    additionalProperties: false
+  SessionCredentials:
+    description: Where the login call carries the instance's user name and password.
+    oneOf:
+    - description: |-
+        As two members of the JSON body the login posts, under the names
+        `username_field` and `password_field`.
+      type: string
+      const: body
+    - description: |-
+        As the `Authorization: Basic` header of the login request, which is
+        what vCenter and Wazuh want.
+      type: string
+      const: basic
   RetrySpec:
     description: Retry policy for one profile.
     type: object
@@ -4937,6 +5114,19 @@ $defs:
         - 'null'
         x-dfe-secret: true
         writeOnly: true
+        default: null
+      private_key_id:
+        description: |-
+          `oauth2_client_credentials`: the id the provider holds the public half
+          of `private_key` under, written as the `kid` of the client assertion's
+          JOSE header. Not a secret -- a key id is public.
+
+          Required once the app has more than one key pair registered, which is
+          what rotating a signing key looks like: an app with one key is resolved
+          without it, and an app with two refuses an assertion that names none.
+        type:
+        - string
+        - 'null'
         default: null
       access_key_id:
         description: '`sigv4`: the access key id, a credential spec.'

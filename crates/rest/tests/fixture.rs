@@ -1502,6 +1502,169 @@ async fn a_jwt_bearer_instance_signs_an_assertion_the_provider_verifies() {
     assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
 }
 
+/// Okta's recommended path for a service app: the client-credentials exchange
+/// authenticates with a private-key JWT instead of a client secret. The
+/// provider verifies the signature, checks the assertion type names the grant,
+/// and refuses a `jti` it has already seen -- so a token minted twice is proof
+/// the fetcher signs afresh each time rather than replaying.
+#[tokio::test]
+async fn a_client_assertion_authenticates_the_exchange_in_place_of_a_client_secret() {
+    let fx = common::start().await;
+    let (private_pem, public_pem) = common::rsa_key_pair();
+    fx.accept_assertions_from(&public_pem);
+    // Every exchange is due the moment it lands, so the second request mints
+    // again and the fixture sees two assertions rather than one.
+    fx.set_token_ttl(0);
+    let p = "profile: okta\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials:\n    token_url: \"{{ base_url }}/token\"\n    scope: okta.logs.read\n    client_assertion: { ttl_secs: 300 }\nendpoints:\n  - { unit: oauth, path: /auth/oauth, rows: { decoder: json_array } }\n";
+    let mut inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: 0oaserviceapp }\n",
+    );
+    inst.auth.private_key = Some(private_pem.into());
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+
+    let claims = fx.assertions();
+    assert_eq!(claims.len(), 2, "a zero-lived token mints on every request");
+    for assertion in &claims {
+        assert_eq!(
+            assertion["iss"], "0oaserviceapp",
+            "the client is the issuer"
+        );
+        assert_eq!(assertion["sub"], "0oaserviceapp", "and the subject");
+        assert_eq!(
+            assertion["aud"],
+            format!("{}/token", fx.base_url()),
+            "the audience is the endpoint it is posted to"
+        );
+        assert_eq!(
+            assertion["exp"].as_i64().unwrap() - assertion["iat"].as_i64().unwrap(),
+            300
+        );
+    }
+    assert_ne!(
+        claims[0]["jti"], claims[1]["jti"],
+        "the provider refuses a replayed assertion, so every mint carries its own id"
+    );
+    assert_eq!(
+        fx.scope_of("tok-1").as_deref(),
+        Some("okta.logs.read"),
+        "the scope rides beside the assertion"
+    );
+
+    // The profile's claims add to the assertion and may replace the three the
+    // grant requires.
+    let audience = p.replace(
+        "client_assertion: { ttl_secs: 300 }",
+        "client_assertion: { ttl_secs: 300, claims: { aud: \"{{ vars.audience }}\" } }",
+    );
+    let mut audienced = inst.clone();
+    audienced.vars.insert(
+        "audience".into(),
+        Value::String("https://acme.okta.com/oauth2/v1/token".into()),
+    );
+    let s = RestShape::from_instance(
+        &profile(&audience),
+        &audienced,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(
+        fx.assertions()[2]["aud"],
+        "https://acme.okta.com/oauth2/v1/token"
+    );
+
+    // A key the provider cannot verify is a terminal refusal, not a retry.
+    let (other_private, _) = common::rsa_key_pair();
+    let mut wrong = inst.clone();
+    wrong.auth.private_key = Some(other_private.into());
+    let s = RestShape::from_instance(
+        &profile(p),
+        &wrong,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let err = fetch(&s, "oauth", None).await.unwrap_err();
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+}
+
+/// Rotating a signing key means registering the new public key BESIDE the old,
+/// so the app holds two and can no longer resolve an assertion by having only
+/// one key to try: it reads the `kid` of the JOSE header. The instance names
+/// the key it signs with, the provider verifies against that one, and an
+/// instance naming none -- or naming a key the app does not hold -- is refused.
+#[tokio::test]
+async fn an_assertion_names_the_key_it_was_signed_with() {
+    let fx = common::start().await;
+    let (retired_private, retired_public) = common::rsa_key_pair();
+    let (current_private, current_public) = common::rsa_key_pair();
+    fx.register_key("retired-key", &retired_public);
+    fx.register_key("current-key", &current_public);
+    let p = "profile: okta\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials:\n    token_url: \"{{ base_url }}/token\"\n    scope: okta.logs.read\n    client_assertion: { ttl_secs: 300 }\nendpoints:\n  - { unit: oauth, path: /auth/oauth, rows: { decoder: json_array } }\n";
+    let named = |key: &str, kid: Option<&str>| {
+        let mut inst = instance(
+            &fx,
+            "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: 0oaserviceapp }\n",
+        );
+        inst.auth.private_key = Some(key.to_owned().into());
+        inst.auth.private_key_id = kid.map(str::to_owned);
+        RestShape::from_instance(
+            &profile(p),
+            &inst,
+            "conn",
+            reqwest::Client::new(),
+            &exchange(),
+        )
+        .unwrap()
+    };
+
+    let s = named(&current_private, Some("current-key"));
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(
+        fx.assertion_kids(),
+        [Some("current-key".to_owned())],
+        "the assertion names the key that signed it"
+    );
+
+    // The retired key is still registered, so an instance the rotation has not
+    // reached yet keeps working -- by naming itself, not by being the only one.
+    let s = named(&retired_private, Some("retired-key"));
+    assert_eq!(fetch(&s, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(
+        fx.assertion_kids()[1],
+        Some("retired-key".to_owned()),
+        "each instance names its own key"
+    );
+
+    // An assertion naming no key cannot be resolved against two, which is what
+    // Okta answers `The client_assertion JWT kid is invalid.` to. This is the
+    // moment a rotation would otherwise break a live tenant.
+    let s = named(&current_private, None);
+    let err = fetch(&s, "oauth", None).await.unwrap_err();
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+
+    // A key id the app does not hold is refused too, rather than falling back
+    // to whichever key happens to verify.
+    let s = named(&current_private, Some("no-such-key"));
+    let err = fetch(&s, "oauth", None).await.unwrap_err();
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+    assert_eq!(fx.assertion_kids().len(), 2, "neither refusal verified");
+}
+
 /// The GCE metadata mode asks the metadata server for the workload's token
 /// with the `Metadata-Flavor` header it requires and caches it.
 #[tokio::test]
@@ -1529,6 +1692,127 @@ async fn gce_metadata_fetches_the_workload_token_from_the_metadata_server() {
         Some("Bearer meta-1")
     );
     s.probe().await.unwrap();
+}
+
+/// An appliance that mints a token from a login call: the login posts the
+/// instance's credentials in the JSON body with the member the appliance wants
+/// beside them, the token comes back in a header of the appliance's own naming,
+/// and every later request carries it in the header the profile names after the
+/// prefix it writes. The token is held for the lifetime the profile declares,
+/// because the appliance says nothing about one.
+#[tokio::test]
+async fn a_session_login_mints_a_token_the_later_requests_carry() {
+    let fx = common::start().await;
+    let p = "profile: appliance\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [session_login]\n  session_login:\n    url: \"{{ base_url }}/appliance/login/body\"\n    send: body\n    body: { loginProviderName: \"{{ vars.provider }}\" }\n    token_header: x-auth-token\n    ttl_secs: 1200\n    header: x-session-id\n    prefix: \"SESSION \"\nvars: { provider: tmos }\nendpoints:\n  - { unit: data, path: /appliance/data, rows: { decoder: json_array } }\n";
+    let inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: session_login, username: admin, password: appliance-pw }\n",
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+
+    assert_eq!(fetch(&s, "data", None).await.unwrap().len(), 1);
+    assert_eq!(fetch(&s, "data", None).await.unwrap().len(), 1);
+
+    assert_eq!(
+        fx.sessions(),
+        ["session-1"],
+        "one login, the token held for the declared lifetime"
+    );
+    let login = fx.requests_to("/appliance/login/body");
+    assert_eq!(login.len(), 1);
+    assert_eq!(
+        login[0].body,
+        Some(serde_json::json!({
+            "username": "admin",
+            "password": "appliance-pw",
+            "loginProviderName": "tmos"
+        })),
+        "the credentials and the member the appliance wants beside them"
+    );
+    assert!(
+        login[0].authorization.is_none(),
+        "`send: body` puts nothing in the Authorization header"
+    );
+    for seen in fx.requests_to("/appliance/data") {
+        assert_eq!(seen.header("x-session-id"), Some("SESSION session-1"));
+        assert!(
+            seen.authorization.is_none(),
+            "a session token is not a bearer"
+        );
+    }
+
+    // The vCenter shape: the credentials are the login's own basic credential
+    // and the token is the whole response document.
+    let vcenter = "profile: vcenter\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [session_login]\n  session_login:\n    url: \"{{ base_url }}/appliance/login/basic\"\n    send: basic\n    token_at: \"\"\n    ttl_secs: 1800\n    header: x-session-id\n    prefix: \"SESSION \"\nendpoints:\n  - { unit: data, path: /appliance/data, rows: { decoder: json_array } }\n";
+    let s = RestShape::from_instance(
+        &profile(vcenter),
+        &instance(
+            &fx,
+            "profile: x\ntopic: t\nauth: { mode: session_login, username: admin, password: appliance-pw }\n",
+        ),
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    assert_eq!(fetch(&s, "data", None).await.unwrap().len(), 1);
+    assert_eq!(fx.sessions(), ["session-1", "session-2"]);
+    let login = fx.requests_to("/appliance/login/basic");
+    assert!(
+        login[0]
+            .authorization
+            .as_deref()
+            .is_some_and(|a| a.starts_with("Basic ")),
+        "{:?}",
+        login[0].authorization
+    );
+    s.probe().await.unwrap();
+
+    // A password the appliance refuses is a terminal refusal carrying the
+    // status, and neither the appliance's own message nor the password it was
+    // posted reaches the error.
+    let wrong = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: session_login, username: admin, password: s3cr3t-do-not-print }\n",
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &wrong,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let err = fetch(&s, "data", None).await.unwrap_err();
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+    assert!(
+        !err.to_string().contains("Cannot authenticate user"),
+        "a login body carries the password, so its error text is not kept: {err}"
+    );
+    assert!(
+        !err.to_string().contains("s3cr3t-do-not-print"),
+        "and the password it posted is not in it either: {err}"
+    );
+
+    // The next miss is answered from the held refusal rather than posting the
+    // administrator's credentials again: an appliance locks the account after a
+    // handful of failed logins, so a stale password must not post once per unit
+    // per tick for as long as the deployment runs.
+    let posted = fx.requests_to("/appliance/login/body").len();
+    let err = fetch(&s, "data", None).await.unwrap_err();
+    assert!(matches!(err, Error::Credential(_)), "{err:?}");
+    assert_eq!(
+        fx.requests_to("/appliance/login/body").len(),
+        posted,
+        "a refused login is held, not posted again on the next miss"
+    );
 }
 
 /// One `defaults.path` with `{{ unit.name }}` serves every unit that sets no

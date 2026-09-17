@@ -76,8 +76,17 @@ pub struct Recorded {
     pub token_scopes: HashMap<String, String>,
     /// The claims of every JWT-bearer assertion the exchange verified.
     pub assertions: Vec<Value>,
-    /// The RSA public key (SPKI PEM) assertions are verified against.
-    pub jwt_public_key: Option<String>,
+    /// The RSA public keys (SPKI PEM) assertions are verified against, each
+    /// under the key id the app registered it as. `None` is the key of an app
+    /// that registered one and named no id for it.
+    pub jwt_public_keys: Vec<(Option<String>, String)>,
+    /// The `kid` of the JOSE header of every assertion verified, in order.
+    pub assertion_kids: Vec<Option<String>>,
+    /// Every `jti` an assertion has already been accepted with; a repeat is
+    /// refused, as Okta refuses a replayed assertion.
+    pub assertion_ids: std::collections::HashSet<String>,
+    /// Session tokens minted by the appliance login routes, in order.
+    pub sessions: Vec<String>,
     pub metadata_hits: u32,
     /// The content types `/prelude/start` has enabled, in order.
     pub started: Vec<String>,
@@ -139,10 +148,31 @@ impl Fixture {
         self.recorded.lock().unwrap().assertions.clone()
     }
 
-    /// Accept JWT-bearer assertions signed by the key this public PEM pairs
-    /// with.
+    /// Accept assertions signed by the key this public PEM pairs with, as an
+    /// app that registered ONE key pair and so needs no key id to resolve it.
     pub fn accept_assertions_from(&self, public_key_pem: &str) {
-        self.recorded.lock().unwrap().jwt_public_key = Some(public_key_pem.to_owned());
+        self.recorded.lock().unwrap().jwt_public_keys = vec![(None, public_key_pem.to_owned())];
+    }
+
+    /// Register one more public key under the id the app holds it as, which is
+    /// what an administrator does to rotate a signing key. An app holding more
+    /// than one resolves an assertion by the `kid` of its JOSE header alone.
+    pub fn register_key(&self, kid: &str, public_key_pem: &str) {
+        self.recorded
+            .lock()
+            .unwrap()
+            .jwt_public_keys
+            .push((Some(kid.to_owned()), public_key_pem.to_owned()));
+    }
+
+    /// The key ids the verified assertions named, in order.
+    pub fn assertion_kids(&self) -> Vec<Option<String>> {
+        self.recorded.lock().unwrap().assertion_kids.clone()
+    }
+
+    /// The session tokens the appliance login routes have minted, in order.
+    pub fn sessions(&self) -> Vec<String> {
+        self.recorded.lock().unwrap().sessions.clone()
     }
 
     pub fn metadata_hits(&self) -> u32 {
@@ -252,9 +282,14 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     enc.finish().unwrap()
 }
 
-/// The token endpoint: client credentials for `client-a`, or a JWT-bearer
-/// assertion verified against the public key a test registered. A minted
-/// token remembers the scope it was exchanged for.
+/// What a client authenticating with a signed JWT says it is presenting
+/// (RFC 7523 s2.2).
+const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+
+/// The token endpoint: client credentials for `client-a`, a client assertion
+/// in place of that secret (Okta's `private_key_jwt`), or a JWT-bearer
+/// assertion -- the last two verified against the public key a test
+/// registered. A minted token remembers the scope it was exchanged for.
 async fn token(
     State(state): State<Shared>,
     headers: HeaderMap,
@@ -280,6 +315,24 @@ async fn token(
     // is not about expiry is never racing one.
     let ttl = recorded.token_ttl_secs.unwrap_or(3600);
     let (scope, expires_in) = match form.get("grant_type").map(String::as_str) {
+        // The client proves itself with a signed assertion rather than a
+        // secret. Okta refuses a reused `jti`, so this does too: a mint that
+        // replayed the last assertion is a failed exchange, not a silent pass.
+        Some("client_credentials") if form.contains_key("client_assertion") => {
+            if form.get("client_assertion_type").map(String::as_str) != Some(CLIENT_ASSERTION_TYPE)
+            {
+                return refused();
+            }
+            let Some(claims) = verified_claims(&mut recorded, form.get("client_assertion")) else {
+                return refused();
+            };
+            let jti = claims["jti"].as_str().unwrap_or_default().to_owned();
+            if jti.is_empty() || !recorded.assertion_ids.insert(jti) {
+                return refused();
+            }
+            recorded.assertions.push(claims);
+            (form.get("scope").cloned().unwrap_or_default(), ttl)
+        }
         Some("client_credentials") => {
             if form.get("client_id").map(String::as_str) != Some("client-a")
                 || form.get("client_secret").map(String::as_str) != Some("secret-a")
@@ -289,21 +342,11 @@ async fn token(
             (form.get("scope").cloned().unwrap_or_default(), ttl)
         }
         Some("urn:ietf:params:oauth:grant-type:jwt-bearer") => {
-            let Some(public) = recorded.jwt_public_key.clone() else {
+            let Some(claims) = verified_claims(&mut recorded, form.get("assertion")) else {
                 return refused();
             };
-            let Some(assertion) = form.get("assertion") else {
-                return refused();
-            };
-            let key = jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).unwrap();
-            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-            validation.validate_aud = false;
-            validation.set_required_spec_claims(&["exp", "iat"]);
-            let Ok(data) = jsonwebtoken::decode::<Value>(assertion, &key, &validation) else {
-                return refused();
-            };
-            let scope = data.claims["scope"].as_str().unwrap_or_default().to_owned();
-            recorded.assertions.push(data.claims);
+            let scope = claims["scope"].as_str().unwrap_or_default().to_owned();
+            recorded.assertions.push(claims);
             (scope, ttl)
         }
         _ => return refused(),
@@ -320,6 +363,126 @@ async fn token(
         "refresh_token": "never-exposed"
     }))
     .into_response()
+}
+
+/// The claims of an RS256 assertion verified against the public key the app
+/// registered, or `None` when there is no key, no assertion, the key cannot be
+/// resolved, or the signature does not check out.
+///
+/// The resolution is Okta's: an app holding ONE key verifies against it, an
+/// assertion naming a `kid` is verified against that key alone, and an app
+/// holding more than one refuses an assertion that names none -- which is
+/// exactly what registering a second key pair to rotate the first does.
+fn verified_claims(recorded: &mut Recorded, assertion: Option<&String>) -> Option<Value> {
+    let assertion = assertion?;
+    let named = jsonwebtoken::decode_header(assertion).ok()?.kid;
+    let public = match (&named, recorded.jwt_public_keys.as_slice()) {
+        (Some(kid), keys) => keys
+            .iter()
+            .find(|(id, _)| id.as_deref() == Some(kid.as_str()))
+            .map(|(_, pem)| pem.clone())?,
+        (None, [(_, pem)]) => pem.clone(),
+        (None, _) => return None,
+    };
+    let key = jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).unwrap();
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.validate_aud = false;
+    validation.set_required_spec_claims(&["exp", "iat"]);
+    let claims = jsonwebtoken::decode::<Value>(assertion, &key, &validation)
+        .ok()
+        .map(|data| data.claims)?;
+    recorded.assertion_kids.push(named);
+    Some(claims)
+}
+
+/// An appliance login: credentials in the JSON body (F5's shape, with its own
+/// `loginProviderName` member) with the token answered in a header, or as HTTP
+/// basic (vCenter's shape) with the token answered as the whole body.
+async fn appliance_login(
+    State(state): State<Shared>,
+    Path(shape): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let document: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    record(
+        &state,
+        &format!("/appliance/login/{shape}"),
+        &query,
+        &headers,
+        Some(document.clone()),
+    );
+    let field = |name: &str| document[name].as_str().unwrap_or_default().to_owned();
+    let ok = match shape.as_str() {
+        "body" => {
+            field("username") == "admin"
+                && field("password") == "appliance-pw"
+                && field("loginProviderName") == "tmos"
+        }
+        "basic" => {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Basic "))
+                .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+                .and_then(|v| String::from_utf8(v).ok())
+                .as_deref()
+                == Some("admin:appliance-pw")
+        }
+        _ => false,
+    };
+    if !ok {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"message": "Cannot authenticate user"})),
+        )
+            .into_response();
+    }
+    let mut recorded = state.lock().unwrap();
+    let token = format!("session-{}", recorded.sessions.len() + 1);
+    recorded.sessions.push(token.clone());
+    match shape.as_str() {
+        // F5 answers the token in a header of its own naming, with a body the
+        // reader never has to understand.
+        "body" => (
+            [("x-auth-token", token)],
+            axum::Json(json!({"username": "admin"})),
+        )
+            .into_response(),
+        // vCenter answers the session id as the whole document.
+        _ => axum::Json(Value::String(token)).into_response(),
+    }
+}
+
+/// The appliance's data behind its session header: the token goes in
+/// `x-session-id` after the prefix the profile writes, never as a bearer.
+async fn appliance_data(
+    State(state): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    record(&state, "/appliance/data", &query, &headers, None);
+    let carried = headers
+        .get("x-session-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let known = state
+        .lock()
+        .unwrap()
+        .sessions
+        .iter()
+        .any(|token| carried == format!("SESSION {token}"));
+    if known {
+        axum::Json(json!([{"session": carried}])).into_response()
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"message": "no valid session"})),
+        )
+            .into_response()
+    }
 }
 
 /// The Salesforce SOQL shape behind an instance URL the token named: a
@@ -1355,6 +1518,8 @@ pub async fn start() -> Fixture {
         .route("/s3/{bucket}/{*key}", get(s3_object))
         .route("/queue/pull", post(queue_pull))
         .route("/queue/ack", post(queue_ack))
+        .route("/appliance/login/{shape}", post(appliance_login))
+        .route("/appliance/data", get(appliance_data))
         .with_state(Arc::clone(&recorded));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

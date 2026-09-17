@@ -96,6 +96,12 @@ pub enum AuthKind {
     /// `DD-APPLICATION-KEY`), or one header whose value is composed from
     /// several (Tenable's `accessKey=...;secretKey=...`).
     Credentials,
+    /// A login call that mints a session token, which is what an appliance
+    /// offers instead of an OAuth2 endpoint: the login posts the instance's
+    /// user name and password, the token comes back in a field of the response
+    /// or in a response header, and every later request carries it in the
+    /// header the profile names.
+    SessionLogin,
 }
 
 impl AuthKind {
@@ -113,6 +119,7 @@ impl AuthKind {
             AuthKind::GceMetadata => "gce_metadata",
             AuthKind::SigV4 => "sigv4",
             AuthKind::Credentials => "credentials",
+            AuthKind::SessionLogin => "session_login",
         }
     }
 
@@ -306,6 +313,10 @@ pub struct OAuth2Spec {
     /// `auth.<name>` (Salesforce's `instance_url`); an allow-list, so a
     /// refresh or id token the response also carries never reaches a URL.
     pub expose: Vec<String>,
+    /// The signed assertion the exchange authenticates with in place of a
+    /// client secret, when the API accepts one; unset means the client secret
+    /// is the only way in.
+    pub client_assertion: Option<ClientAssertionSpec>,
 }
 
 impl Default for OAuth2Spec {
@@ -316,6 +327,124 @@ impl Default for OAuth2Spec {
             expires_in_fallback_secs: 3600,
             early_refresh_secs: 60,
             expose: Vec::new(),
+            client_assertion: None,
+        }
+    }
+}
+
+/// The longest assertion lifetime a provider accepts.
+///
+/// Okta refuses one over an hour as `invalid_client`, and an assertion is spent
+/// the moment it is posted, so nothing wants a longer one. Refused at load
+/// rather than clamped, because a profile asking for two hours is a profile
+/// written against a provider whose rules differ from the ones this grammar
+/// mints for.
+const MAX_CLIENT_ASSERTION_TTL_SECS: u64 = 3600;
+
+/// Authenticating the client-credentials exchange with a private-key JWT
+/// (RFC 7523 s2.2), which Okta and Microsoft Entra both call
+/// `private_key_jwt`.
+///
+/// The exchange posts `grant_type=client_credentials` with
+/// `client_assertion_type` and a `client_assertion` the fetcher signs, instead
+/// of a `client_secret`. The instance carries the key, so declaring this block
+/// says the API accepts the path; an instance picks it by supplying a
+/// `private_key` rather than a `client_secret`.
+///
+/// The assertion always carries `iss` and `sub` as the client id, `aud` as the
+/// rendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:
+/// Okta refuses a replayed assertion, so no two carry the same id. `claims`
+/// adds to those or overrides the first three, each a template over the
+/// instance's `vars`, `base_url` and the `auth.token_url` the exchange renders.
+///
+/// The assertion is signed RS256, and the instance's `private_key_id` becomes
+/// the `kid` of its JOSE header.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClientAssertionSpec {
+    /// Claim templates added to the assertion, or replacing `iss`, `sub` or
+    /// `aud`.
+    pub claims: BTreeMap<String, String>,
+    /// Assertion lifetime, `exp - iat`. An hour at most: Okta refuses a longer
+    /// one as `invalid_client` rather than shortening it.
+    pub ttl_secs: u64,
+}
+
+impl Default for ClientAssertionSpec {
+    fn default() -> Self {
+        Self {
+            claims: BTreeMap::new(),
+            ttl_secs: 300,
+        }
+    }
+}
+
+/// Where the login call carries the instance's user name and password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCredentials {
+    /// As two members of the JSON body the login posts, under the names
+    /// `username_field` and `password_field`.
+    Body,
+    /// As the `Authorization: Basic` header of the login request, which is
+    /// what vCenter and Wazuh want.
+    Basic,
+}
+
+/// A login call that mints a session token.
+///
+/// The appliances this exists for -- vCenter, F5 BIG-IP, Check Point, Wazuh,
+/// Redfish -- answer a login with a vendor-named token rather than an OAuth2
+/// token response, put it in a field or a header of their own choosing, and say
+/// nothing about how long it lives. So the token is read from where the profile
+/// points, its lifetime is what the profile declares, and it is carried in the
+/// header the profile names rather than as a bearer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionLoginSpec {
+    /// The login endpoint, a template (may use `base_url`).
+    pub url: String,
+    /// Where the credentials go on the login request.
+    pub send: SessionCredentials,
+    /// The body member carrying the user name under `send: body`.
+    pub username_field: String,
+    /// The body member carrying the password under `send: body`.
+    pub password_field: String,
+    /// Further members of the login body, each a template over the instance's
+    /// context (F5's `loginProviderName`). A credential never travels here:
+    /// these are the profile's own text and carry no secret.
+    pub body: BTreeMap<String, String>,
+    /// JSON pointer to the token in the login response; the empty pointer is
+    /// the whole body, which is what vCenter answers with.
+    pub token_at: Option<String>,
+    /// The response header carrying the token, for an appliance that answers
+    /// with one instead.
+    pub token_header: Option<String>,
+    /// How long the token is held. The appliance does not say, so this is the
+    /// session lifetime it documents.
+    pub ttl_secs: u64,
+    /// How long before that lifetime is up the token is minted again.
+    pub early_refresh_secs: u64,
+    /// The request header every later request carries the token in.
+    pub header: String,
+    /// Text put in front of the token in that header.
+    pub prefix: String,
+}
+
+impl Default for SessionLoginSpec {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            send: SessionCredentials::Body,
+            username_field: "username".to_owned(),
+            password_field: "password".to_owned(),
+            body: BTreeMap::new(),
+            token_at: None,
+            token_header: None,
+            ttl_secs: 1800,
+            early_refresh_secs: 60,
+            header: String::new(),
+            prefix: String::new(),
         }
     }
 }
@@ -644,6 +773,9 @@ pub struct AuthSpec {
     pub signature: SignatureSpec,
     /// Shape of the `credentials` mode: every place a credential goes.
     pub credentials: Vec<CredentialPlacementSpec>,
+    /// Shape of the `session_login` mode: the login call and where its token
+    /// is read and carried.
+    pub session_login: SessionLoginSpec,
 }
 
 impl AuthSpec {
@@ -656,10 +788,31 @@ impl AuthSpec {
     #[must_use]
     pub fn credential_templates(&self, mode: AuthKind) -> Vec<(String, &str)> {
         match mode {
-            AuthKind::Oauth2ClientCredentials => vec![(
-                "auth.oauth2_client_credentials.token_url".to_owned(),
-                self.oauth2_client_credentials.token_url.as_str(),
-            )],
+            AuthKind::Oauth2ClientCredentials => {
+                let mut templates = vec![(
+                    "auth.oauth2_client_credentials.token_url".to_owned(),
+                    self.oauth2_client_credentials.token_url.as_str(),
+                )];
+                if let Some(assertion) = &self.oauth2_client_credentials.client_assertion {
+                    templates.extend(assertion.claims.iter().map(|(name, value)| {
+                        (
+                            format!(
+                                "auth.oauth2_client_credentials.client_assertion.claims.{name}"
+                            ),
+                            value.as_str(),
+                        )
+                    }));
+                }
+                templates
+            }
+            AuthKind::SessionLogin => {
+                let login = &self.session_login;
+                let mut templates = vec![("auth.session_login.url".to_owned(), login.url.as_str())];
+                templates.extend(login.body.iter().map(|(name, value)| {
+                    (format!("auth.session_login.body.{name}"), value.as_str())
+                }));
+                templates
+            }
             AuthKind::JwtBearer => {
                 let mut templates = vec![(
                     "auth.jwt_bearer.token_url".to_owned(),
@@ -691,6 +844,15 @@ impl AuthSpec {
         }
     }
 
+    /// Whether `mode` authenticates its token exchange with a signed assertion
+    /// rather than a client secret, which is a choice the INSTANCE makes by
+    /// supplying a private key -- so this says only that the profile offers it.
+    #[must_use]
+    pub const fn offers_client_assertion(&self, mode: AuthKind) -> bool {
+        matches!(mode, AuthKind::Oauth2ClientCredentials)
+            && self.oauth2_client_credentials.client_assertion.is_some()
+    }
+
     /// The credentials the `credentials` mode's placements read, in the order
     /// the profile writes them, each named once.
     #[must_use]
@@ -707,20 +869,24 @@ impl AuthSpec {
     }
 
     /// The `auth.*` names a credential template of `mode` may read: what the
-    /// authenticator itself puts there, plus the token-response fields the
-    /// profile allow-lists.
+    /// authenticator itself puts there before the exchange runs.
+    ///
+    /// The `expose` fields of a token response are NOT among them, whatever a
+    /// profile allow-lists. Those are read by a REQUEST template, once a token
+    /// has been minted; a credential template is what mints it, so a claim
+    /// reading one would be rendered against a response that does not exist yet
+    /// and fail at every mint.
     #[must_use]
     pub fn exposed_names(&self, mode: AuthKind) -> Vec<&str> {
         let mut names = Vec::new();
         if mode == AuthKind::JwtBearer {
             names.extend(["client_email", "token_uri", "token_url"]);
         }
-        let expose = match mode {
-            AuthKind::JwtBearer => &self.jwt_bearer.expose,
-            AuthKind::Oauth2ClientCredentials => &self.oauth2_client_credentials.expose,
-            _ => return names,
-        };
-        names.extend(expose.iter().map(String::as_str));
+        // A client assertion is signed over the endpoint it is posted to, so
+        // its claims read the rendered endpoint and the client id.
+        if self.offers_client_assertion(mode) {
+            names.extend(["token_url", "client_id"]);
+        }
         names
     }
 }
@@ -736,6 +902,7 @@ impl Default for AuthSpec {
             sigv4: SigV4Spec::default(),
             signature: SignatureSpec::default(),
             credentials: Vec::new(),
+            session_login: SessionLoginSpec::default(),
         }
     }
 }
@@ -2039,6 +2206,97 @@ pub(crate) fn signature_spec_issues(spec: &SignatureSpec) -> Vec<Issue> {
     issues
 }
 
+/// Every problem with a session login's shape.
+///
+/// The login posts the instance's password and reads a token back, so the two
+/// ends that decide where the password goes and where the token comes from are
+/// refused here rather than on the first tick: a login that names neither place
+/// to read the token from would authenticate and then send nothing.
+pub(crate) fn session_login_issues(spec: &SessionLoginSpec) -> Vec<Issue> {
+    let at = |field: &str| format!("auth.session_login.{field}");
+    let mut issues = Vec::new();
+    if spec.url.trim().is_empty() {
+        issues.push(Issue::new(at("url"), "is required"));
+    } else {
+        issues.extend(template_issue(&at("url"), &spec.url));
+    }
+    match (&spec.token_at, &spec.token_header) {
+        (Some(pointer), None) => {
+            // The empty pointer is the whole body, which is the answer vCenter
+            // gives: a JSON string that IS the token.
+            if !pointer.is_empty() {
+                issues.extend(pointer_issue(&at("token_at"), pointer));
+            }
+        }
+        (None, Some(name)) => {
+            if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                issues.push(Issue::new(
+                    at("token_header"),
+                    format!("`{name}` is not a header name"),
+                ));
+            }
+        }
+        _ => issues.push(Issue::new(
+            at("token_at"),
+            "needs exactly one of `token_at` or `token_header`; the token is read from the \
+             response body or from a header of it",
+        )),
+    }
+    if spec.header.trim().is_empty() {
+        issues.push(Issue::new(
+            at("header"),
+            "is required: a session token is not a bearer, so the profile names the header it \
+             goes in",
+        ));
+    } else if reqwest::header::HeaderName::from_bytes(spec.header.as_bytes()).is_err() {
+        issues.push(Issue::new(
+            at("header"),
+            format!("`{}` is not a header name", spec.header),
+        ));
+    }
+    if let Some(reason) = header_text_issue(&spec.prefix) {
+        issues.push(Issue::new(at("prefix"), reason));
+    }
+    if spec.ttl_secs == 0 {
+        issues.push(Issue::new(at("ttl_secs"), "must be at least 1"));
+    }
+    if spec.send == SessionCredentials::Body {
+        for (field, name) in [
+            ("username_field", &spec.username_field),
+            ("password_field", &spec.password_field),
+        ] {
+            if name.trim().is_empty() {
+                issues.push(Issue::new(at(field), "is required under `send: body`"));
+            }
+        }
+        // The credentials are written last, so a body member of the same name
+        // would be replaced by one of them rather than sent.
+        for name in spec.body.keys() {
+            if name == &spec.username_field || name == &spec.password_field {
+                issues.push(Issue::new(
+                    at(&format!("body.{name}")),
+                    "is the member the login writes the credential into",
+                ));
+            }
+        }
+    } else {
+        // `send: basic` posts no document at all -- the credentials go in the
+        // login's own Authorization header -- so a member written here would be
+        // rendered when the instance binds and then dropped.
+        for name in spec.body.keys() {
+            issues.push(Issue::new(
+                at(&format!("body.{name}")),
+                "is not sent under `send: basic`, which posts no body; the member needs \
+                 `send: body`",
+            ));
+        }
+    }
+    for (name, value) in &spec.body {
+        issues.extend(template_issue(&at(&format!("body.{name}")), value));
+    }
+    issues
+}
+
 /// The query parameters a pager writes: the token's own when it goes into one,
 /// and the page or offset parameter.
 fn paginate_query_writers(at: &str, paginate: &PaginateSpec) -> Vec<(String, String)> {
@@ -2400,6 +2658,37 @@ impl RestProfile {
                 "auth.oauth2_client_credentials.expose",
                 &oauth.expose,
             ));
+            if let Some(assertion) = &oauth.client_assertion {
+                let at = |field: &str| {
+                    format!("auth.oauth2_client_credentials.client_assertion.{field}")
+                };
+                for (name, value) in &assertion.claims {
+                    issues.extend(template_issue(&at(&format!("claims.{name}")), value));
+                }
+                for reserved in ["iat", "exp", "jti"] {
+                    if assertion.claims.contains_key(reserved) {
+                        issues.push(Issue::new(
+                            at(&format!("claims.{reserved}")),
+                            "is set on every assertion: `iat` and `exp` from `ttl_secs`, and \
+                             `jti` fresh so no two assertions carry the same id",
+                        ));
+                    }
+                }
+                if assertion.ttl_secs == 0 {
+                    issues.push(Issue::new(at("ttl_secs"), "must be at least 1"));
+                } else if assertion.ttl_secs > MAX_CLIENT_ASSERTION_TTL_SECS {
+                    issues.push(Issue::new(
+                        at("ttl_secs"),
+                        format!(
+                            "must be at most {MAX_CLIENT_ASSERTION_TTL_SECS}: a longer assertion \
+                             is refused as `invalid_client` rather than shortened"
+                        ),
+                    ));
+                }
+            }
+        }
+        if self.auth.accepts.contains(&AuthKind::SessionLogin) {
+            issues.extend(session_login_issues(&self.auth.session_login));
         }
         if self.retry.max_backoff_ms < self.retry.min_backoff_ms {
             issues.push(Issue::new(
@@ -3109,6 +3398,14 @@ pub struct InstanceAuth {
     /// `jwt_bearer`: a bare RSA private key PEM as a credential spec, for an
     /// API whose issuer and audience come from `vars` alone.
     pub private_key: Option<SensitiveString>,
+    /// `oauth2_client_credentials`: the id the provider holds the public half
+    /// of `private_key` under, written as the `kid` of the client assertion's
+    /// JOSE header. Not a secret -- a key id is public.
+    ///
+    /// Required once the app has more than one key pair registered, which is
+    /// what rotating a signing key looks like: an app with one key is resolved
+    /// without it, and an app with two refuses an assertion that names none.
+    pub private_key_id: Option<String>,
     /// `sigv4`: the access key id, a credential spec.
     pub access_key_id: Option<SensitiveString>,
     /// `sigv4`: the secret access key, a credential spec.
@@ -3155,6 +3452,7 @@ impl InstanceAuth {
             client_id: _,
             scope: _,
             key_id: _,
+            private_key_id: _,
             signature_preset: _,
             assume_role_arn: _,
             token,
@@ -3221,6 +3519,7 @@ impl Default for InstanceAuth {
             service_account_key: None,
             service_account_key_file: None,
             private_key: None,
+            private_key_id: None,
             access_key_id: None,
             secret_access_key: None,
             credentials_json: None,
@@ -3361,11 +3660,28 @@ impl RestInstance {
             }
             AuthKind::Oauth2ClientCredentials => {
                 needs("client_id", self.auth.client_id.is_some(), &mut issues);
-                needs(
-                    "client_secret",
-                    self.auth.client_secret.is_some(),
-                    &mut issues,
-                );
+                // Which credential the instance carries picks the path: the
+                // secret posts `client_secret`, the key signs a client
+                // assertion. Both would leave which one authenticated the
+                // exchange to the order the arms happen to be written in.
+                match (&self.auth.client_secret, &self.auth.private_key) {
+                    (Some(_), None) => {}
+                    (None, Some(_)) if profile.auth.offers_client_assertion(self.auth.mode) => {}
+                    (None, Some(_)) => issues.push(Issue::new(
+                        "auth.private_key",
+                        "signs a client assertion, and the profile declares no \
+                         `auth.oauth2_client_credentials.client_assertion`",
+                    )),
+                    _ => issues.push(Issue::new(
+                        "auth.client_secret",
+                        "`oauth2_client_credentials` needs exactly one of `client_secret` or \
+                         `private_key`",
+                    )),
+                }
+            }
+            AuthKind::SessionLogin => {
+                needs("username", self.auth.username.is_some(), &mut issues);
+                needs("password", self.auth.password.is_some(), &mut issues);
             }
             AuthKind::Signature => {
                 needs("secret_key", self.auth.secret_key.is_some(), &mut issues);
@@ -5528,6 +5844,44 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "profile: aws\nbase_url: \"{{ vars.endpoint }}\"\nauth:\n  accepts: [sigv4]\n  sigv4: { service: \"{{ vars.service }}\", region: \"{{ vars.region }}\" }\nendpoints:\n  - { unit: trail, path: /, vars: { service: cloudtrail }, rows: { decoder: json_array } }\n",
         );
         assert!(scoped.validate().is_empty(), "{:?}", scoped.validate());
+    }
+
+    /// What a credential template may read is what the authenticator puts there
+    /// before the exchange runs, and never a field of the token response: the
+    /// response is what the credential mints, so a claim reading one of its
+    /// fields renders against a document that does not exist yet and fails at
+    /// every mint.
+    #[test]
+    fn a_credential_template_is_offered_no_field_of_the_response_it_mints() {
+        let assertion = parse(
+            "profile: okta\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials:\n    token_url: \"{{ base_url }}/oauth2/v1/token\"\n    expose: [instance_url]\n    client_assertion: { ttl_secs: 300 }\nendpoints:\n  - { unit: logs, path: /api/v1/logs, rows: { decoder: json_array } }\n",
+        );
+        assert_eq!(
+            assertion
+                .auth
+                .exposed_names(AuthKind::Oauth2ClientCredentials),
+            ["token_url", "client_id"]
+        );
+
+        let jwt = parse(
+            "profile: salesforce\nbase_url: \"{{ vars.login_url }}\"\nauth:\n  accepts: [jwt_bearer]\n  jwt_bearer:\n    token_url: \"{{ base_url }}/services/oauth2/token\"\n    expose: [instance_url]\nendpoints:\n  - { unit: events, path: /query, rows: { decoder: json_array } }\n",
+        );
+        assert_eq!(
+            jwt.auth.exposed_names(AuthKind::JwtBearer),
+            ["client_email", "token_uri", "token_url"]
+        );
+
+        // A profile with no assertion declared exposes nothing to the one
+        // template the mode has, which is its token endpoint.
+        let secret = parse(
+            "profile: idp\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials: { token_url: \"{{ base_url }}/token\", expose: [instance_url] }\nendpoints:\n  - { unit: logs, path: /logs, rows: { decoder: json_array } }\n",
+        );
+        assert!(
+            secret
+                .auth
+                .exposed_names(AuthKind::Oauth2ClientCredentials)
+                .is_empty()
+        );
     }
 
     /// A queue unit: its rows carry an ack id at a pointer and the ack

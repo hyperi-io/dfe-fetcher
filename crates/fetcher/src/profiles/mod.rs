@@ -258,12 +258,27 @@ mod tests {
 
         let profile = shipped().get("okta").expect("okta is shipped");
         assert_eq!(profile.shape, UnitShape::Incremental);
-        assert_eq!(profile.auth.accepts, [AuthKind::ApiKey, AuthKind::Bearer]);
+        assert_eq!(
+            profile.auth.accepts,
+            [
+                AuthKind::ApiKey,
+                AuthKind::Bearer,
+                AuthKind::Oauth2ClientCredentials
+            ]
+        );
         assert_eq!(
             profile.auth.api_key.header.as_deref(),
             Some("Authorization")
         );
         assert_eq!(profile.auth.api_key.prefix, "SSWS ");
+        let oauth = &profile.auth.oauth2_client_credentials;
+        assert_eq!(oauth.token_url, "{{ base_url }}/oauth2/v1/token");
+        assert_eq!(oauth.scope, "okta.logs.read", "the one grant the app needs");
+        assert_eq!(
+            oauth.client_assertion.as_ref().map(|a| a.ttl_secs),
+            Some(300),
+            "the service-app path Okta steers integrations towards"
+        );
         assert_eq!(
             profile.headers.get("Accept").map(String::as_str),
             Some("application/json")

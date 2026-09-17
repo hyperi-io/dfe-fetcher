@@ -323,7 +323,7 @@
       - git
 - kind: source
   name: okta
-  description: 'Okta System Log events for one tenant. Accepted auth modes: api_key, bearer.'
+  description: 'Okta System Log events for one tenant. Accepted auth modes: api_key, bearer, oauth2_client_credentials.'
   maturity: alpha
   fields:
   - name: id
