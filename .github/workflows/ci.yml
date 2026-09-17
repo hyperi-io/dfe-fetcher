@@ -41,7 +41,6 @@ jobs:
   ci:
     uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@main
     with:
-      publish-target: both
       tag: ${{ inputs.tag || '' }}
       from-head: ${{ inputs.from-head && 'true' || '' }}
       bump: ${{ inputs.bump || 'auto' }}
