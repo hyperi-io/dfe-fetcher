@@ -13,7 +13,7 @@
 # (`https://api.datadoghq.eu` and the regional hosts are the other spellings).
 #
 # Two incremental units, both cursor paged: the audit trail
-# (`audit_management_read`) and security signals
+# (`audit_logs_read`) and security signals
 # (`security_monitoring_signals_read`). The scheduler's window becomes
 # `filter[from]`/`filter[to]` in RFC 3339 with millisecond precision, oldest
 # first, `page[limit]` per page, with an optional `filter[query]` in Datadog's
