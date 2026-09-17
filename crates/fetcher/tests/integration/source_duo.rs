@@ -11,19 +11,24 @@
 //! Each test configures the typed `sources.duo` block, runs one tick through
 //! the real pipeline into scalo's memory transport, and asserts on the
 //! requests the provider recorded and VERIFIED (the provider recomputes the
-//! HMAC-SHA1 signature with the known secret key and refuses a mismatch as
-//! Duo does), how the v2 `next_offset` was followed, and the records that
-//! landed (the provider's auth log, semantically, plus what enrichment
-//! added). The typed config block is the operator's contract; the shipped
-//! `duo` profile serves it through the framework driver with the
-//! `duo_hmac` auth mode.
+//! signature with the known secret key and refuses a mismatch as Duo does),
+//! how the v2 `next_offset` was followed, and the records that landed (the
+//! provider's auth log, semantically, plus what enrichment added). The typed
+//! config block is the operator's contract; the shipped `duo` profile serves
+//! it through the framework driver on the `signature` auth mode, whose
+//! `duo_v5` preset is Duo's documented scheme and whose `duo_v2` is the legacy
+//! one an older tenant selects.
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
-use dfe_fetcher::config::{Config, DuoConnection, DuoService, DuoSourceConfig};
+use base64::Engine as _;
+
+use dfe_fetcher::config::{
+    Config, DuoConnection, DuoService, DuoSignatureVersion, DuoSourceConfig,
+};
 use dfe_fetcher_core::FetchWindow;
 
 use crate::builtin_run::{Landed, enriched};
@@ -114,12 +119,29 @@ fn query_of(seen: &Seen) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// Every request carried a Basic credential of `ikey:signature` that the
-/// provider accepted, a `Date` in RFC 2822 with a `-0000` zone, and the
-/// JSON accept header.
-fn assert_signed(seen: &Seen) {
+/// The signature of a request's Basic credential, whose user name is the
+/// integration key. The provider verified it before recording the request, so
+/// what this reads back is a signature Duo would have accepted.
+fn signature_of(seen: &Seen) -> String {
     let auth = seen.header("authorization").expect("authorization");
-    assert!(auth.starts_with("Basic "), "{auth}");
+    let encoded = auth
+        .strip_prefix("Basic ")
+        .unwrap_or_else(|| panic!("{auth}"));
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("base64");
+    let credential = String::from_utf8(decoded).expect("utf8");
+    let (ikey, signature) = credential.split_once(':').expect("ikey:signature");
+    assert_eq!(ikey, DUO_IKEY);
+    signature.to_owned()
+}
+
+/// Every request carried a Basic credential of `ikey:signature` that the
+/// provider accepted, a `Date` in RFC 2822 with a `-0000` zone, and the JSON
+/// accept header. The signature's length is the digest's: 128 hex characters
+/// for the SHA-512 Duo documents, 40 for the SHA-1 of its legacy scheme.
+fn assert_signed(seen: &Seen, digest_hex_len: usize) {
+    assert_eq!(signature_of(seen).len(), digest_hex_len);
     let date = seen.header("date").expect("date");
     assert!(date.ends_with(" -0000"), "RFC 2822 with -0000: {date}");
     assert!(
@@ -128,6 +150,12 @@ fn assert_signed(seen: &Seen) {
     );
     assert_eq!(seen.header("accept"), Some("application/json"));
 }
+
+/// The signature length of Duo's documented scheme, HMAC-SHA512 as hex.
+const SHA512_HEX: usize = 128;
+
+/// The signature length of Duo's legacy scheme, HMAC-SHA1 as hex.
+const SHA1_HEX: usize = 40;
 
 #[tokio::test]
 async fn authentication_logs_are_signed_and_land_enriched() {
@@ -152,7 +180,7 @@ async fn authentication_logs_are_signed_and_land_enriched() {
         ],
         "mintime/maxtime in epoch milliseconds to the millisecond, limit defaults to 100"
     );
-    assert_signed(&seen[0]);
+    assert_signed(&seen[0], SHA512_HEX);
 
     assert_eq!(rows.len(), 2);
     for (row, expected) in rows
@@ -164,6 +192,36 @@ async fn authentication_logs_are_signed_and_land_enriched() {
         assert_eq!(e.row, expected, "the provider's auth log, semantically");
         assert_eq!(e.source, "duo");
         assert_eq!(e.source_fetcher, "duo.authentication_logs");
+    }
+}
+
+/// A tenant whose endpoints verify Duo's legacy scheme selects it on its own
+/// connection, and every request of that connection signs SHA-1 while the
+/// default connection signs SHA-512. The provider verifies whichever arrived,
+/// so a request that reached it was one Duo would have accepted.
+#[tokio::test]
+async fn the_signature_version_a_connection_names_is_the_one_it_signs() {
+    let provider = crate::saas_provider::start().await;
+    provider.serve(vec![vec![authlog("t1", "success")]]);
+    let mut cfg = tenant_config(&provider);
+    cfg.connections = vec![
+        DuoConnection {
+            id: "duo-current".into(),
+            ..DuoConnection::default()
+        },
+        DuoConnection {
+            id: "duo-legacy".into(),
+            signature_version: Some(DuoSignatureVersion::V2),
+            ..DuoConnection::default()
+        },
+    ];
+    let config = config(cfg);
+    for (id, digest_hex_len) in [("duo-current", SHA512_HEX), ("duo-legacy", SHA1_HEX)] {
+        let (outcome, rows) = Box::pin(crate::builtin_run::run(config.clone(), id, None)).await;
+        outcome.expect("tick");
+        assert_eq!(rows.len(), 1);
+        let seen = provider.requests_to(LOGS);
+        assert_signed(seen.last().expect("a request"), digest_hex_len);
     }
 }
 
@@ -195,7 +253,7 @@ async fn paging_follows_the_array_next_offset_comma_joined() {
         Some("1532951895000,cursor-2")
     );
     for request in &seen {
-        assert_signed(request);
+        assert_signed(request, SHA512_HEX);
     }
     let ids: Vec<&str> = rows
         .iter()
@@ -460,7 +518,7 @@ async fn the_health_check_signs_the_check_endpoint() {
     assert!(healthy);
     let seen = provider.requests_to("/admin/v1/check");
     assert_eq!(seen.len(), 1);
-    assert_signed(&seen[0]);
+    assert_signed(&seen[0], SHA512_HEX);
     assert!(seen[0].query.is_empty());
 
     let mut cfg = tenant_config(&provider);

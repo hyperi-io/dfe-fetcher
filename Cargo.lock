@@ -1832,7 +1832,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha1 0.10.7",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "smallvec",
  "tempfile",
  "testcontainers",
@@ -1959,12 +1959,14 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sha1 0.10.7",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

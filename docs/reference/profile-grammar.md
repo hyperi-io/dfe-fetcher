@@ -52,7 +52,7 @@ entry.
 | | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates) | azure, m365, bitwarden, crowdstrike, salesforce, runzero |
 | | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM; claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
-| | `duo_hmac` (Duo's HMAC-SHA1 request signing) | duo |
+| | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical shape and placement the profile names; Duo's versions are presets of it) | duo |
 | | `sigv4` (AWS Signature v4, service and region rendered per request) | aws, object_store |
 | | `credentials` (more than one credential on the one request, each where the profile places it; a placement may compose several into one value) | datadog |
 | Pager (`paginate.strategy`) | `none` | runzero, azure `log_analytics` |
@@ -115,8 +115,9 @@ instance, never here.
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
+| `signature` | `preset` (a shipped scheme by name), or the scheme spelled out: `digest`, `keying`, `canonical`, `encoding`, `headers`, `signed_header_prefix`, `place`, `header`, `prefix`. See [Signing a request](#signing-a-request). |
 | `credentials` | A list of placements: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
-| `bearer`, `basic`, `duo_hmac`, `none` | No profile-side shape. |
+| `bearer`, `basic`, `none` | No profile-side shape. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
 `jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
@@ -225,6 +226,146 @@ Refused at load, each naming the field it sits on -- a placement by its index:
   the instance supplies that no placement reads -- so a misspelling is refused
   from both ends rather than authenticating as half a credential
 
+### Signing a request
+
+Some providers authenticate a call with a digest of the call itself rather than
+with a credential the request carries. The digest algorithm, the canonical
+string it is taken over and where the digest goes are per-vendor details, so
+they are the `signature` mode's config rather than a mode of their own.
+
+| Field | Meaning |
+|-------|---------|
+| `preset` | A shipped scheme by name: `duo_v5` or `duo_v2`. A preset is the WHOLE scheme, so a block that names one and also sets another key is refused. |
+| `digest` | `sha1`, `sha256` or `sha512`. The same digest takes the body hash and the header hash. `sha1` is there for Duo's legacy scheme and is never a default. |
+| `keying` | `hmac` (the secret keys an HMAC over the canonical string, RFC 2104) or `prefix` (the secret is hashed in front of the canonical string, with no HMAC). |
+| `canonical` | The canonical string, ONE LINE per entry, joined by newlines. Each is a template over `signature.*` and nothing else. |
+| `encoding` | `hex` (lowercase) or `base64`, for the digest that goes on the request. A body or header hash is always lowercase hex. |
+| `headers` | Headers set on the request BEFORE it is signed, each a template over the same facts less `signature.headers_hash`, which is computed after them. A scheme that signs a timestamp or a nonce carries it this way. |
+| `signed_header_prefix` | The lowercase name prefix of the headers `signature.headers_hash` covers. Unset covers none, so the hash is of the empty string. |
+| `place` | `basic` (`Basic base64(<key_id>:<digest>)`) or `digest` (the encoded digest on its own, after `prefix`). |
+| `header` | The header the digest goes in; `authorization` unless named. |
+| `prefix` | Text in front of the digest, under `place: digest` only. |
+
+The facts a `canonical` or `headers` template may read, all of them the built
+request's own:
+
+| Fact | Value |
+|------|-------|
+| `signature.date` | The request's instant in RFC 2822, with a `-0000` zone. |
+| `signature.timestamp`, `signature.timestamp_ms` | The same instant in Unix seconds and milliseconds. |
+| `signature.nonce` | A fresh nonce per request, a UUIDv4 in hex. |
+| `signature.method` | The method, uppercase. |
+| `signature.host` | The host, lowercase, with the port when the URL states one. |
+| `signature.path` | The path. |
+| `signature.query` | The query pairs percent-encoded to the RFC 3986 unreserved set, then sorted and `&`-joined. |
+| `signature.body_hash` | The body's digest as lowercase hex; the empty string's when there is no body. |
+| `signature.headers_hash` | The digest of the signed headers -- each name lowercase, then its trimmed value, in name order, NUL-separated -- as lowercase hex. |
+| `signature.key_id` | The instance's `key_id`, the public half naming the key. |
+
+Duo's Admin API on the scheme Duo documents, which is what the shipped `duo`
+profile carries:
+
+```yaml
+# profile
+auth:
+  accepts: [signature]
+  signature:
+    preset: duo_v5
+```
+
+Duo's legacy scheme, for a tenant whose endpoints still verify it. The
+selection is on the INSTANCE, because a shipped profile is shared by every
+instance of it and the version a tenant verifies is the tenant's:
+
+```yaml
+# instance
+auth:
+  mode: signature
+  key_id: DIXXXXXXXXXXXXXXXXXX
+  secret_key: "vault:<mount>/data/<path>:<key>"
+  signature_preset: duo_v2
+```
+
+The typed `sources.duo` block spells the same choice `signature_version: v2`,
+per connection, so one deployment can poll a tenant on each scheme. `duo_hmac` is still read as the mode's name, and
+`integration_key` as `key_id`, so an instance written against the earlier
+spelling binds unchanged; a PROFILE on the old spelling needs the block, since
+the shape is no longer built in.
+
+Written out rather than named, `duo_v5` is:
+
+```yaml
+auth:
+  accepts: [signature]
+  signature:
+    digest: sha512
+    keying: hmac
+    canonical:
+      - "{{ signature.date }}"
+      - "{{ signature.method }}"
+      - "{{ signature.host }}"
+      - "{{ signature.path }}"
+      - "{{ signature.query }}"
+      - "{{ signature.body_hash }}"
+      - "{{ signature.headers_hash }}"
+    headers:
+      date: "{{ signature.date }}"
+    signed_header_prefix: "x-duo-"
+    place: basic
+```
+
+A scheme that hashes its key rather than keying an HMAC with it, signs a nonce
+and a millisecond timestamp, and carries the digest bare -- Palo Alto Cortex
+XDR's advanced key. One canonical line, because a template concatenates:
+
+```yaml
+auth:
+  accepts: [signature]
+  signature:
+    digest: sha256
+    keying: prefix
+    canonical:
+      - "{{ signature.nonce }}{{ signature.timestamp_ms }}"
+    headers:
+      x-xdr-nonce: "{{ signature.nonce }}"
+      x-xdr-timestamp: "{{ signature.timestamp_ms }}"
+      x-xdr-auth-id: "{{ signature.key_id }}"
+    place: digest
+```
+
+Refused at load, each naming the field it sits on:
+
+- a `preset` beside any other key of the block, because which half won would
+  decide what goes on the wire
+- no `canonical` and no `preset`
+- a `canonical` or `headers` template that does not compile, or that reads any
+  name but `signature` -- `vars`, `unit`, `window`, `page`, `key`, `item`,
+  `auth`, `base_url`, `body`, `headers`, `ids`
+- a `headers` key or a `header` that is not a header name
+- a `prefix` under `place: basic`, whose value carries its own prefix, or one
+  carrying what no header value may carry
+- a `signed_header_prefix` that is not lowercase, because it is matched against
+  lowercased names
+- an instance with no `secret_key`, or with no `key_id` under `place: basic`,
+  where the key id is the credential's user name
+- a `signature_preset` on an instance whose mode is not `signature`
+
+### What a signature may be about
+
+A canonical string is COMPUTED per request, which is what makes signing its own
+mode: a value composed once per instance cannot carry the request's own date,
+method, path and body. What varies per request is therefore held to the
+request: the `canonical` and `headers` templates read `signature.*` and the
+grammar refuses them every other name, so no unit's `vars` or narrowing can
+decide what another unit's request signs.
+
+Nothing else about the mode varies at all. The digest, the keying, the
+encoding, the placement, the header and the prefix are the profile's and are
+not templates; the key id and the secret are the instance's and are read as
+they were configured. So a per-unit value can reach neither the key nor where
+the digest is written -- the two decisions that would otherwise let one unit
+authenticate as another.
+
 ### What the token endpoint and the claims may read
 
 A credential is minted once per instance, and once per scope a unit names, so
@@ -235,7 +376,9 @@ INSTANCE's context -- not per unit and not per request. They may read `vars`,
 own `vars` or `base_url`, is refused when the instance binds: a claim deciding
 the identity the token acts as (a domain-wide-delegation `sub`) must not be able
 to vary by unit. `sigv4`'s `service` and `region` are the exception, and render
-per request by design.
+per request by design; `signature`'s templates render per request too, and are
+held to the request's own facts instead ([What a signature may be
+about](#what-a-signature-may-be-about)).
 
 ### Endpoint rules the modes are held to
 
@@ -412,7 +555,7 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `api_key` | `key` |
 | `basic` | `username`, `password` |
 | `oauth2_client_credentials` | `client_id` (the literal id), `client_secret`, optional `scope` overriding the profile's |
-| `duo_hmac` | `integration_key`, `secret_key` |
+| `signature` | `key_id` (the public half naming the key -- Duo's integration key; also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |
 | `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling) |

@@ -1946,11 +1946,18 @@ mod tests {
     #[test]
     fn duo_ships_as_the_signed_authentication_log_event_window() {
         use dfe_fetcher_core::UnitShape;
-        use dfe_fetcher_rest::profile::{AuthKind, DecoderKind, PagerStrategy, WindowFormat};
+        use dfe_fetcher_rest::profile::{
+            AuthKind, DecoderKind, PagerStrategy, SignaturePreset, WindowFormat,
+        };
 
         let profile = shipped().get("duo").expect("duo is shipped");
         assert_eq!(profile.shape, UnitShape::Incremental);
-        assert_eq!(profile.auth.accepts, [AuthKind::DuoHmac]);
+        assert_eq!(profile.auth.accepts, [AuthKind::Signature]);
+        assert_eq!(
+            profile.auth.signature.preset,
+            Some(SignaturePreset::DuoV5),
+            "the scheme Duo documents, not the legacy one"
+        );
         assert_eq!(profile.window.format, WindowFormat::EpochMillis);
         assert_eq!(profile.window.lookback.0.as_secs(), 3600);
         assert_eq!(profile.error.at.as_deref(), Some("/message"));

@@ -477,12 +477,14 @@ pub(crate) fn bitwarden() -> Capability {
 
 pub(crate) fn duo() -> Capability {
     Capability::source("duo")
-        .description("Duo Admin API authentication events (HMAC-SHA1 signed).")
+        .description("Duo Admin API authentication events (request-signed).")
         .fields(vec![
             conn_id(),
             FieldSpec::string("api_host").description("api-XXXXXXXX.duosecurity.com."),
             FieldSpec::string("integration_key").description("Admin API integration key (ikey)."),
             FieldSpec::secret("secret_key").description("Admin API secret key (skey)."),
+            FieldSpec::string("signature_version")
+                .description("Signing version the tenant verifies: v5, or v2 for an older one."),
             credential_secret(),
         ])
         .child(

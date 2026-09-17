@@ -249,11 +249,12 @@ sources:
 
   duo:
     enabled: false
-    # Duo Admin API. HMAC-SHA1 request signing (Duo's proprietary scheme).
+    # Duo Admin API. Duo's own request signing, version 5 by default.
     # api_host: "api-XXXXXXXX.duosecurity.com"   # from Admin > Applications
     # integration_key: ""                        # ikey
     # secret_key: ""                             # skey
     # credential_secret: "vault:kv/data/duo:skey"
+    # signature_version: v2                      # an older tenant's scheme
     services:
       - name: authentication_logs
         # config:

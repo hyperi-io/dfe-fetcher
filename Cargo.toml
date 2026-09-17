@@ -82,11 +82,13 @@ thiserror = "2.0.20"
 itoa = "1.0.18"
 memchr = "2.8.3"
 base64 = "0.23.1"
-# Duo's Admin API signature: HMAC-SHA1 over a canonical string, hex-encoded.
-# sha1 stays on the 0.10 line (digest 0.10) to pair with hmac 0.12; hmac 0.13
-# / sha1 0.11 moved `KeyInit` and need a call-site migration, not a bump.
+# The `signature` auth mode: a keyed digest over a canonical string of the
+# request, in the digest the profile names. sha1 and sha2 stay on the 0.10 line
+# (digest 0.10) to pair with hmac 0.12; hmac 0.13 / sha1 0.11 / sha2 0.11 moved
+# `KeyInit` and need a call-site migration, not a bump.
 hmac = "0.12"
 sha1 = "0.10"
+sha2 = "0.10"
 hex = "0.4"
 # The RFC 3986 encoding a canonical query string is signed with; url's own
 # dependency, so no new crate in the graph.
