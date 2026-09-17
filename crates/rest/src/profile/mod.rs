@@ -96,6 +96,12 @@ pub enum AuthKind {
     /// `DD-APPLICATION-KEY`), or one header whose value is composed from
     /// several (Tenable's `accessKey=...;secretKey=...`).
     Credentials,
+    /// A login call that mints a session token, which is what an appliance
+    /// offers instead of an OAuth2 endpoint: the login posts the instance's
+    /// user name and password, the token comes back in a field of the response
+    /// or in a response header, and every later request carries it in the
+    /// header the profile names.
+    SessionLogin,
 }
 
 impl AuthKind {
@@ -113,6 +119,7 @@ impl AuthKind {
             AuthKind::GceMetadata => "gce_metadata",
             AuthKind::SigV4 => "sigv4",
             AuthKind::Credentials => "credentials",
+            AuthKind::SessionLogin => "session_login",
         }
     }
 
@@ -355,6 +362,76 @@ impl Default for ClientAssertionSpec {
         Self {
             claims: BTreeMap::new(),
             ttl_secs: 300,
+        }
+    }
+}
+
+/// Where the login call carries the instance's user name and password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionCredentials {
+    /// As two members of the JSON body the login posts, under the names
+    /// `username_field` and `password_field`.
+    Body,
+    /// As the `Authorization: Basic` header of the login request, which is
+    /// what vCenter and Wazuh want.
+    Basic,
+}
+
+/// A login call that mints a session token.
+///
+/// The appliances this exists for -- vCenter, F5 BIG-IP, Check Point, Wazuh,
+/// Redfish -- answer a login with a vendor-named token rather than an OAuth2
+/// token response, put it in a field or a header of their own choosing, and say
+/// nothing about how long it lives. So the token is read from where the profile
+/// points, its lifetime is what the profile declares, and it is carried in the
+/// header the profile names rather than as a bearer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionLoginSpec {
+    /// The login endpoint, a template (may use `base_url`).
+    pub url: String,
+    /// Where the credentials go on the login request.
+    pub send: SessionCredentials,
+    /// The body member carrying the user name under `send: body`.
+    pub username_field: String,
+    /// The body member carrying the password under `send: body`.
+    pub password_field: String,
+    /// Further members of the login body, each a template over the instance's
+    /// context (F5's `loginProviderName`). A credential never travels here:
+    /// these are the profile's own text and carry no secret.
+    pub body: BTreeMap<String, String>,
+    /// JSON pointer to the token in the login response; the empty pointer is
+    /// the whole body, which is what vCenter answers with.
+    pub token_at: Option<String>,
+    /// The response header carrying the token, for an appliance that answers
+    /// with one instead.
+    pub token_header: Option<String>,
+    /// How long the token is held. The appliance does not say, so this is the
+    /// session lifetime it documents.
+    pub ttl_secs: u64,
+    /// How long before that lifetime is up the token is minted again.
+    pub early_refresh_secs: u64,
+    /// The request header every later request carries the token in.
+    pub header: String,
+    /// Text put in front of the token in that header.
+    pub prefix: String,
+}
+
+impl Default for SessionLoginSpec {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            send: SessionCredentials::Body,
+            username_field: "username".to_owned(),
+            password_field: "password".to_owned(),
+            body: BTreeMap::new(),
+            token_at: None,
+            token_header: None,
+            ttl_secs: 1800,
+            early_refresh_secs: 60,
+            header: String::new(),
+            prefix: String::new(),
         }
     }
 }
@@ -683,6 +760,9 @@ pub struct AuthSpec {
     pub signature: SignatureSpec,
     /// Shape of the `credentials` mode: every place a credential goes.
     pub credentials: Vec<CredentialPlacementSpec>,
+    /// Shape of the `session_login` mode: the login call and where its token
+    /// is read and carried.
+    pub session_login: SessionLoginSpec,
 }
 
 impl AuthSpec {
@@ -710,6 +790,14 @@ impl AuthSpec {
                         )
                     }));
                 }
+                templates
+            }
+            AuthKind::SessionLogin => {
+                let login = &self.session_login;
+                let mut templates = vec![("auth.session_login.url".to_owned(), login.url.as_str())];
+                templates.extend(login.body.iter().map(|(name, value)| {
+                    (format!("auth.session_login.body.{name}"), value.as_str())
+                }));
                 templates
             }
             AuthKind::JwtBearer => {
@@ -802,6 +890,7 @@ impl Default for AuthSpec {
             sigv4: SigV4Spec::default(),
             signature: SignatureSpec::default(),
             credentials: Vec::new(),
+            session_login: SessionLoginSpec::default(),
         }
     }
 }
@@ -2105,6 +2194,86 @@ pub(crate) fn signature_spec_issues(spec: &SignatureSpec) -> Vec<Issue> {
     issues
 }
 
+/// Every problem with a session login's shape.
+///
+/// The login posts the instance's password and reads a token back, so the two
+/// ends that decide where the password goes and where the token comes from are
+/// refused here rather than on the first tick: a login that names neither place
+/// to read the token from would authenticate and then send nothing.
+pub(crate) fn session_login_issues(spec: &SessionLoginSpec) -> Vec<Issue> {
+    let at = |field: &str| format!("auth.session_login.{field}");
+    let mut issues = Vec::new();
+    if spec.url.trim().is_empty() {
+        issues.push(Issue::new(at("url"), "is required"));
+    } else {
+        issues.extend(template_issue(&at("url"), &spec.url));
+    }
+    match (&spec.token_at, &spec.token_header) {
+        (Some(pointer), None) => {
+            // The empty pointer is the whole body, which is the answer vCenter
+            // gives: a JSON string that IS the token.
+            if !pointer.is_empty() {
+                issues.extend(pointer_issue(&at("token_at"), pointer));
+            }
+        }
+        (None, Some(name)) => {
+            if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                issues.push(Issue::new(
+                    at("token_header"),
+                    format!("`{name}` is not a header name"),
+                ));
+            }
+        }
+        _ => issues.push(Issue::new(
+            at("token_at"),
+            "needs exactly one of `token_at` or `token_header`; the token is read from the \
+             response body or from a header of it",
+        )),
+    }
+    if spec.header.trim().is_empty() {
+        issues.push(Issue::new(
+            at("header"),
+            "is required: a session token is not a bearer, so the profile names the header it \
+             goes in",
+        ));
+    } else if reqwest::header::HeaderName::from_bytes(spec.header.as_bytes()).is_err() {
+        issues.push(Issue::new(
+            at("header"),
+            format!("`{}` is not a header name", spec.header),
+        ));
+    }
+    if let Some(reason) = header_text_issue(&spec.prefix) {
+        issues.push(Issue::new(at("prefix"), reason));
+    }
+    if spec.ttl_secs == 0 {
+        issues.push(Issue::new(at("ttl_secs"), "must be at least 1"));
+    }
+    if spec.send == SessionCredentials::Body {
+        for (field, name) in [
+            ("username_field", &spec.username_field),
+            ("password_field", &spec.password_field),
+        ] {
+            if name.trim().is_empty() {
+                issues.push(Issue::new(at(field), "is required under `send: body`"));
+            }
+        }
+        // The credentials are written last, so a body member of the same name
+        // would be replaced by one of them rather than sent.
+        for name in spec.body.keys() {
+            if name == &spec.username_field || name == &spec.password_field {
+                issues.push(Issue::new(
+                    at(&format!("body.{name}")),
+                    "is the member the login writes the credential into",
+                ));
+            }
+        }
+    }
+    for (name, value) in &spec.body {
+        issues.extend(template_issue(&at(&format!("body.{name}")), value));
+    }
+    issues
+}
+
 /// The query parameters a pager writes: the token's own when it goes into one,
 /// and the page or offset parameter.
 fn paginate_query_writers(at: &str, paginate: &PaginateSpec) -> Vec<(String, String)> {
@@ -2486,6 +2655,9 @@ impl RestProfile {
                     issues.push(Issue::new(at("ttl_secs"), "must be at least 1"));
                 }
             }
+        }
+        if self.auth.accepts.contains(&AuthKind::SessionLogin) {
+            issues.extend(session_login_issues(&self.auth.session_login));
         }
         if self.retry.max_backoff_ms < self.retry.min_backoff_ms {
             issues.push(Issue::new(
@@ -3465,6 +3637,10 @@ impl RestInstance {
                          `private_key`",
                     )),
                 }
+            }
+            AuthKind::SessionLogin => {
+                needs("username", self.auth.username.is_some(), &mut issues);
+                needs("password", self.auth.password.is_some(), &mut issues);
             }
             AuthKind::Signature => {
                 needs("secret_key", self.auth.secret_key.is_some(), &mut issues);

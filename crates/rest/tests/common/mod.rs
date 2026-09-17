@@ -81,6 +81,8 @@ pub struct Recorded {
     /// Every `jti` an assertion has already been accepted with; a repeat is
     /// refused, as Okta refuses a replayed assertion.
     pub assertion_ids: std::collections::HashSet<String>,
+    /// Session tokens minted by the appliance login routes, in order.
+    pub sessions: Vec<String>,
     pub metadata_hits: u32,
     /// The content types `/prelude/start` has enabled, in order.
     pub started: Vec<String>,
@@ -146,6 +148,11 @@ impl Fixture {
     /// with.
     pub fn accept_assertions_from(&self, public_key_pem: &str) {
         self.recorded.lock().unwrap().jwt_public_key = Some(public_key_pem.to_owned());
+    }
+
+    /// The session tokens the appliance login routes have minted, in order.
+    pub fn sessions(&self) -> Vec<String> {
+        self.recorded.lock().unwrap().sessions.clone()
     }
 
     pub fn metadata_hits(&self) -> u32 {
@@ -350,6 +357,96 @@ fn verified_claims(recorded: &mut Recorded, assertion: Option<&String>) -> Optio
     jsonwebtoken::decode::<Value>(assertion?, &key, &validation)
         .ok()
         .map(|data| data.claims)
+}
+
+/// An appliance login: credentials in the JSON body (F5's shape, with its own
+/// `loginProviderName` member) with the token answered in a header, or as HTTP
+/// basic (vCenter's shape) with the token answered as the whole body.
+async fn appliance_login(
+    State(state): State<Shared>,
+    Path(shape): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let document: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    record(
+        &state,
+        &format!("/appliance/login/{shape}"),
+        &query,
+        &headers,
+        Some(document.clone()),
+    );
+    let field = |name: &str| document[name].as_str().unwrap_or_default().to_owned();
+    let ok = match shape.as_str() {
+        "body" => {
+            field("username") == "admin"
+                && field("password") == "appliance-pw"
+                && field("loginProviderName") == "tmos"
+        }
+        "basic" => {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Basic "))
+                .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+                .and_then(|v| String::from_utf8(v).ok())
+                .as_deref()
+                == Some("admin:appliance-pw")
+        }
+        _ => false,
+    };
+    if !ok {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"message": "Cannot authenticate user"})),
+        )
+            .into_response();
+    }
+    let mut recorded = state.lock().unwrap();
+    let token = format!("session-{}", recorded.sessions.len() + 1);
+    recorded.sessions.push(token.clone());
+    match shape.as_str() {
+        // F5 answers the token in a header of its own naming, with a body the
+        // reader never has to understand.
+        "body" => (
+            [("x-auth-token", token)],
+            axum::Json(json!({"username": "admin"})),
+        )
+            .into_response(),
+        // vCenter answers the session id as the whole document.
+        _ => axum::Json(Value::String(token)).into_response(),
+    }
+}
+
+/// The appliance's data behind its session header: the token goes in
+/// `x-session-id` after the prefix the profile writes, never as a bearer.
+async fn appliance_data(
+    State(state): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    record(&state, "/appliance/data", &query, &headers, None);
+    let carried = headers
+        .get("x-session-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let known = state
+        .lock()
+        .unwrap()
+        .sessions
+        .iter()
+        .any(|token| carried == format!("SESSION {token}"));
+    if known {
+        axum::Json(json!([{"session": carried}])).into_response()
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"message": "no valid session"})),
+        )
+            .into_response()
+    }
 }
 
 /// The Salesforce SOQL shape behind an instance URL the token named: a
@@ -1385,6 +1482,8 @@ pub async fn start() -> Fixture {
         .route("/s3/{bucket}/{*key}", get(s3_object))
         .route("/queue/pull", post(queue_pull))
         .route("/queue/ack", post(queue_ack))
+        .route("/appliance/login/{shape}", post(appliance_login))
+        .route("/appliance/data", get(appliance_data))
         .with_state(Arc::clone(&recorded));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -1631,6 +1631,109 @@ async fn gce_metadata_fetches_the_workload_token_from_the_metadata_server() {
     s.probe().await.unwrap();
 }
 
+/// An appliance that mints a token from a login call: the login posts the
+/// instance's credentials in the JSON body with the member the appliance wants
+/// beside them, the token comes back in a header of the appliance's own naming,
+/// and every later request carries it in the header the profile names after the
+/// prefix it writes. The token is held for the lifetime the profile declares,
+/// because the appliance says nothing about one.
+#[tokio::test]
+async fn a_session_login_mints_a_token_the_later_requests_carry() {
+    let fx = common::start().await;
+    let p = "profile: appliance\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [session_login]\n  session_login:\n    url: \"{{ base_url }}/appliance/login/body\"\n    send: body\n    body: { loginProviderName: \"{{ vars.provider }}\" }\n    token_header: x-auth-token\n    ttl_secs: 1200\n    header: x-session-id\n    prefix: \"SESSION \"\nvars: { provider: tmos }\nendpoints:\n  - { unit: data, path: /appliance/data, rows: { decoder: json_array } }\n";
+    let inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: session_login, username: admin, password: appliance-pw }\n",
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+
+    assert_eq!(fetch(&s, "data", None).await.unwrap().len(), 1);
+    assert_eq!(fetch(&s, "data", None).await.unwrap().len(), 1);
+
+    assert_eq!(
+        fx.sessions(),
+        ["session-1"],
+        "one login, the token held for the declared lifetime"
+    );
+    let login = fx.requests_to("/appliance/login/body");
+    assert_eq!(login.len(), 1);
+    assert_eq!(
+        login[0].body,
+        Some(serde_json::json!({
+            "username": "admin",
+            "password": "appliance-pw",
+            "loginProviderName": "tmos"
+        })),
+        "the credentials and the member the appliance wants beside them"
+    );
+    assert!(
+        login[0].authorization.is_none(),
+        "`send: body` puts nothing in the Authorization header"
+    );
+    for seen in fx.requests_to("/appliance/data") {
+        assert_eq!(seen.header("x-session-id"), Some("SESSION session-1"));
+        assert!(
+            seen.authorization.is_none(),
+            "a session token is not a bearer"
+        );
+    }
+
+    // The vCenter shape: the credentials are the login's own basic credential
+    // and the token is the whole response document.
+    let vcenter = "profile: vcenter\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [session_login]\n  session_login:\n    url: \"{{ base_url }}/appliance/login/basic\"\n    send: basic\n    token_at: \"\"\n    ttl_secs: 1800\n    header: x-session-id\n    prefix: \"SESSION \"\nendpoints:\n  - { unit: data, path: /appliance/data, rows: { decoder: json_array } }\n";
+    let s = RestShape::from_instance(
+        &profile(vcenter),
+        &instance(
+            &fx,
+            "profile: x\ntopic: t\nauth: { mode: session_login, username: admin, password: appliance-pw }\n",
+        ),
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    assert_eq!(fetch(&s, "data", None).await.unwrap().len(), 1);
+    assert_eq!(fx.sessions(), ["session-1", "session-2"]);
+    let login = fx.requests_to("/appliance/login/basic");
+    assert!(
+        login[0]
+            .authorization
+            .as_deref()
+            .is_some_and(|a| a.starts_with("Basic ")),
+        "{:?}",
+        login[0].authorization
+    );
+    s.probe().await.unwrap();
+
+    // A password the appliance refuses is a terminal refusal carrying the
+    // status, and the appliance's own message is not quoted back.
+    let wrong = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: session_login, username: admin, password: wrong }\n",
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &wrong,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let err = fetch(&s, "data", None).await.unwrap_err();
+    assert!(matches!(err, Error::Api { status: 401, .. }), "{err:?}");
+    assert!(
+        !err.to_string().contains("Cannot authenticate user"),
+        "a login body carries the password, so its error text is not kept: {err}"
+    );
+}
+
 /// One `defaults.path` with `{{ unit.name }}` serves every unit that sets no
 /// path of its own.
 #[tokio::test]
