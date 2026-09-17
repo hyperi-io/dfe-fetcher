@@ -15,15 +15,33 @@ authentication logs from a Duo tenant via the Admin API.
 
 dfe-fetcher reads Duo authentication events from the **Duo Admin API**
 endpoint `/admin/v2/logs/authentication`. Duo does NOT use a bearer token:
-every request is signed with Duo's proprietary HMAC-SHA1 scheme. The fetcher
-computes a signature over a canonical request string and sends it in a Basic
-auth header, with a fresh `Date` header per request (no token is cached):
+every request is signed with Duo's own scheme. The fetcher computes a signature
+over a canonical request string and sends it in a Basic auth header, with a
+fresh `Date` header per request (no token is cached).
+
+The default is **signature version 5**, the scheme Duo documents and the only
+one some newer Admin API endpoints accept:
 
 ```text
 canonical = HTTP_DATE \n METHOD \n LOWER(HOST) \n PATH \n SORTED_QUERY
-sig       = hex(HMAC-SHA1(skey, canonical))
+            \n hex(SHA-512(body)) \n hex(SHA-512(signed x-duo- headers))
+sig       = hex(HMAC-SHA512(skey, canonical))
 Auth      = Basic base64(ikey:sig)
 ```
+
+A GET carries no body and the fetcher sends no `x-duo-` headers, so both hash
+lines are the SHA-512 of the empty string.
+
+**Signature version 2** is Duo's legacy scheme: the first five lines alone,
+HMAC-SHA1. A tenant whose endpoints still verify it selects it with
+`signature_version: v2`, on the type or on one connection, as below. Leave it
+unset otherwise.
+
+SHA-1 is kept out of a security purpose everywhere else in the platform, so
+version 2 is a deliberate exemption rather than a setting like any other. A
+connection that binds on it logs a warning at startup naming the connection;
+that warning is the signal to move the tenant to version 5 once its endpoints
+verify it, and it is expected to stay until then.
 
 The admin provisions an **Admin API application** in the Duo Admin Panel,
 grants it log-read permission, and hands dfe-fetcher three values: the
@@ -36,7 +54,7 @@ comma-joined until it is null. Note Duo enforces a deliberate **two-minute
 delay**: authentications less than two minutes old are not yet returned.
 
 The source is the shipped `duo` profile (`crates/fetcher/profiles/duo.yaml`)
-on the `duo_hmac` auth mode; the `sources.duo` block below maps onto an
+on the `signature` auth mode; the `sources.duo` block below maps onto an
 instance of it at load. A 429 or 5xx is retried with backoff (honouring
 `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying `stat: FAIL` fails
 the tick with Duo's `message`, and a tick that fails does not advance the
@@ -88,8 +106,9 @@ unchecked (least privilege).
 ## dfe-fetcher Configuration
 
 The Duo source config fields are: `enabled`, `api_host`, `integration_key`
-(ikey), `secret_key` (skey), `credential_secret`, `api_url_override` (test
-mock only), `services`, `topic`. The only service is `authentication_logs`.
+(ikey), `secret_key` (skey), `credential_secret`, `signature_version`,
+`api_url_override` (test mock only), `services`, `topic`. The only service is
+`authentication_logs`.
 
 ### Config File
 
@@ -137,6 +156,30 @@ sources:
 precedence over an inline `secret_key`. The ikey and api_host are not secret
 and can stay inline.
 
+### An Older Tenant
+
+Leave `signature_version` unset and the fetcher signs the version Duo
+documents. A tenant whose endpoints refuse it verifies the legacy scheme
+instead, which is selected per type or per connection:
+
+```yaml
+sources:
+  duo:
+    enabled: true
+    api_host: "api-XXXXXXXX.duosecurity.com"
+    integration_key: "your-ikey"
+    credential_secret: "vault:kv/data/dfe/duo:skey"
+    signature_version: v2
+    services:
+      - name: authentication_logs
+    topic: "duo"
+```
+
+A signature the tenant does not verify comes back as a 401 whose `message`
+names the credential, and the tick fails without advancing the fetch window.
+A connection on `v2` warns at startup, because SHA-1 signing is an exemption
+from the platform's crypto baseline taken for this tenant alone.
+
 ## Verification
 
 **Health check.** The profile's probe signs and calls `GET /admin/v1/check`,
@@ -164,9 +207,10 @@ delay window.
 
 **Common failures.**
 
-- `40103 Invalid signature` / `stat != OK` - the skey is wrong, or clock skew
-  between the host and Duo broke the signed `Date` header. Verify the skey and
-  ensure NTP is in sync.
+- `40103 Invalid signature` / `stat != OK` - the skey is wrong, clock skew
+  between the host and Duo broke the signed `Date` header, or the tenant
+  verifies the other signature version. Verify the skey, check NTP is in sync,
+  and try `signature_version: v2` on an older tenant.
 - `40101 Missing request credentials` - the ikey or api_host is wrong.
 - `40301 Access denied` - the Admin API application lacks **Grant read log**;
   re-check the Permissions section and save.

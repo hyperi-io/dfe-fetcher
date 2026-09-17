@@ -1096,6 +1096,10 @@ const DUO_MAX_LIMIT: u64 = 1000;
 impl DuoSourceConfig {
     /// One instance of the shipped `duo` profile per resolved connection.
     ///
+    /// The connection carries its own signing version, so one deployment can
+    /// poll a tenant on Duo's current scheme beside one still verifying the
+    /// legacy scheme.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] when a connection has no API host (and no
@@ -1117,8 +1121,8 @@ impl DuoSourceConfig {
                         ),
                     };
                     let auth = InstanceAuth {
-                        mode: AuthKind::DuoHmac,
-                        integration_key: Some(
+                        mode: AuthKind::Signature,
+                        key_id: Some(
                             required("duo", "integration_key", config.integration_key.as_deref())?
                                 .to_owned(),
                         ),
@@ -1128,6 +1132,7 @@ impl DuoSourceConfig {
                             config.credential_secret.as_deref(),
                             config.secret_key.as_ref(),
                         )?),
+                        signature_preset: Some(config.signature_version.preset()),
                         ..InstanceAuth::default()
                     };
                     let knobs = Knobs::of(
@@ -1972,16 +1977,16 @@ mod tests {
     use crate::config::{
         AwsConnection, AwsService, AwsSourceConfig, AzureService, AzureSourceConfig,
         BitwardenService, BitwardenSourceConfig, CloudflareService, CloudflareSourceConfig,
-        CratesIoSourceConfig, CrowdstrikeService, CrowdstrikeSourceConfig, DuoService,
-        DuoSourceConfig, GcpPubsubSourceConfig, GcpPubsubSubscription, GcpService, GcpSourceConfig,
-        GithubConnection, GithubService, GithubSourceConfig, GoModulesSourceConfig,
-        GoogleWorkspaceService, GoogleWorkspaceSourceConfig, M365Service, M365SourceConfig,
-        ObjectStoreBucket, ObjectStorePrefix, OktaConnection, OktaService, OktaSourceConfig,
-        OnePasswordService, OnePasswordSourceConfig, PypiSourceConfig, S3BackendConfig,
-        SalesforceConnection, SalesforceService, SalesforceSourceConfig, SlackService,
-        SlackSourceConfig, SourcesConfig,
+        CratesIoSourceConfig, CrowdstrikeService, CrowdstrikeSourceConfig, DuoConnection,
+        DuoService, DuoSignatureVersion, DuoSourceConfig, GcpPubsubSourceConfig,
+        GcpPubsubSubscription, GcpService, GcpSourceConfig, GithubConnection, GithubService,
+        GithubSourceConfig, GoModulesSourceConfig, GoogleWorkspaceService,
+        GoogleWorkspaceSourceConfig, M365Service, M365SourceConfig, ObjectStoreBucket,
+        ObjectStorePrefix, OktaConnection, OktaService, OktaSourceConfig, OnePasswordService,
+        OnePasswordSourceConfig, PypiSourceConfig, S3BackendConfig, SalesforceConnection,
+        SalesforceService, SalesforceSourceConfig, SlackService, SlackSourceConfig, SourcesConfig,
     };
-    use dfe_fetcher_rest::profile::{AuthKind, ProfileRef};
+    use dfe_fetcher_rest::profile::{AuthKind, ProfileRef, SignaturePreset};
     use serde_json::{Value, json};
     use std::collections::HashMap;
 
@@ -2994,12 +2999,14 @@ mod tests {
         assert_eq!(b.connection_id, "duo");
         let i = &b.instance;
         assert_eq!(i.profile, ProfileRef::Named("duo".into()));
-        assert_eq!(i.auth.mode, AuthKind::DuoHmac);
-        assert_eq!(
-            i.auth.integration_key.as_deref(),
-            Some("DIWJ8X6AEYOR5OMC6TQ1")
-        );
+        assert_eq!(i.auth.mode, AuthKind::Signature);
+        assert_eq!(i.auth.key_id.as_deref(), Some("DIWJ8X6AEYOR5OMC6TQ1"));
         assert_eq!(i.auth.secret_key.as_ref().unwrap().expose(), "skey");
+        assert_eq!(
+            i.auth.signature_preset,
+            Some(SignaturePreset::DuoV5),
+            "the current scheme unless a tenant says otherwise"
+        );
         assert_eq!(
             i.vars["base_url"], "https://API-DEADBEEF.duosecurity.com",
             "the host as given; the signer lowercases it"
@@ -3018,6 +3025,21 @@ mod tests {
         );
         assert_eq!(i.auth.secret_key.as_ref().unwrap().expose(), "env:DUO");
         assert_eq!(i.vars["limit"], json!(1000), "capped at Duo's page size");
+
+        // An older tenant selects Duo's legacy scheme per connection, which is
+        // the only way back to it: the shipped profile carries the current one.
+        let mut cfg = base.clone();
+        cfg.connections = vec![DuoConnection {
+            id: "legacy".into(),
+            signature_version: Some(DuoSignatureVersion::V2),
+            ..DuoConnection::default()
+        }];
+        let legacy = only(cfg.instances().unwrap()).instance;
+        assert_eq!(
+            legacy.auth.signature_preset,
+            Some(SignaturePreset::DuoV2),
+            "the connection's version overlays the type's"
+        );
 
         let mut cfg = base.clone();
         cfg.api_host = Some(String::new());

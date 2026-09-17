@@ -7,10 +7,13 @@
 
 # The SHAPE of the Duo Admin API v2 authentication log: no keys, no tenant.
 # An instance supplies its API hostname as `base_url` and the Admin API
-# integration key and secret key for Duo's request signing (`duo_hmac`: an
-# HMAC-SHA1 over the date, method, host, path and sorted query, carried as
-# a Basic credential). The typed `sources.duo` block maps onto an instance
-# of this profile at load, so its config surface is unchanged.
+# integration key and secret key for Duo's request signing. The scheme is the
+# `duo_v5` preset of the `signature` mode: HMAC-SHA512 over the date, method,
+# host, path, sorted query, the body's hash and the signed headers' hash,
+# carried as a Basic credential. A tenant whose endpoints still verify Duo's
+# legacy v2 scheme selects `duo_v2` on its own connection. The typed
+# `sources.duo` block maps onto an instance of this profile at load, so its
+# config surface is unchanged.
 #
 # One incremental unit: the scheduler's window becomes `mintime`/`maxtime`
 # in epoch milliseconds, `limit` events per page (Duo caps it at 1000).
@@ -24,7 +27,9 @@ maturity: alpha
 base_url: "{{ vars.base_url }}"
 shape: incremental
 auth:
-  accepts: [duo_hmac]
+  accepts: [signature]
+  signature:
+    preset: duo_v5
 headers:
   Accept: application/json
 window:

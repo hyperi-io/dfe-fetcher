@@ -850,7 +850,7 @@
   {
     "kind": "source",
     "name": "duo",
-    "description": "Duo Admin API authentication events (HMAC-SHA1 signed). Accepted auth modes: duo_hmac.",
+    "description": "Duo Admin API authentication events (request-signed). Accepted auth modes: signature.",
     "maturity": "alpha",
     "fields": [
       {
@@ -877,6 +877,17 @@
         "required": false,
         "description": "Admin API secret key (skey).",
         "secret": true
+      },
+      {
+        "name": "signature_version",
+        "type": "enum",
+        "required": false,
+        "default": "v5",
+        "description": "Signing version the tenant verifies; v2 is the legacy scheme.",
+        "enum_values": [
+          "v5",
+          "v2"
+        ]
       },
       {
         "name": "credential_secret",

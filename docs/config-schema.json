@@ -107,6 +107,7 @@
         },
         "duo": {
           "enabled": false,
+          "signature_version": "v5",
           "services": [],
           "topic": "duo",
           "filter": null
@@ -495,6 +496,7 @@
           "$ref": "#/$defs/DuoSourceConfig",
           "default": {
             "enabled": false,
+            "signature_version": "v5",
             "services": [],
             "topic": "duo",
             "filter": null
@@ -2409,7 +2411,7 @@
       ]
     },
     "DuoSourceConfig": {
-      "description": "Duo Admin API source configuration.\n\nPulls authentication events from a Duo tenant's\n`api-XXXXXXXX.duosecurity.com/admin/v2/logs/authentication` endpoint.\nAuth uses Duo's proprietary scheme: HMAC-SHA1 over a canonical request\nsignature, transported in a Basic auth header.",
+      "description": "Duo Admin API source configuration.\n\nPulls authentication events from a Duo tenant's\n`api-XXXXXXXX.duosecurity.com/admin/v2/logs/authentication` endpoint.\nAuth uses Duo's own scheme: a keyed digest over a canonical request string,\ntransported in a Basic auth header. `signature_version` picks which version\nof it the tenant verifies.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -2432,7 +2434,7 @@
           ]
         },
         "secret_key": {
-          "description": "Secret key (`skey`). Used to compute the HMAC-SHA1 request signature.\nAlways redacted on serialisation.",
+          "description": "Secret key (`skey`). Keys the request signature.\nAlways redacted on serialisation.",
           "type": [
             "string",
             "null"
@@ -2446,6 +2448,11 @@
             "string",
             "null"
           ]
+        },
+        "signature_version": {
+          "description": "Which version of Duo's request signing the tenant verifies; `v5`\nunless an older tenant needs `v2`, which signs SHA-1 and warns.",
+          "$ref": "#/$defs/DuoSignatureVersion",
+          "default": "v5"
         },
         "api_url_override": {
           "description": "API base override for testing (full URL incl. scheme). Production\nshould use `api_host` only; this is for mock servers.",
@@ -2492,6 +2499,21 @@
           }
         }
       }
+    },
+    "DuoSignatureVersion": {
+      "description": "Which version of Duo's request signing a tenant's endpoints verify.\n\nDuo documents version 5 and some of its newer Admin API endpoints accept\nnothing else, so it is the default. Version 2 is Duo's legacy scheme and is\nhere for a tenant whose endpoints still verify it; it keys its HMAC with\nSHA-1, so a connection on it warns at startup.",
+      "oneOf": [
+        {
+          "description": "HMAC-SHA512 over seven canonical lines.",
+          "type": "string",
+          "const": "v5"
+        },
+        {
+          "description": "HMAC-SHA1 over five of them.",
+          "type": "string",
+          "const": "v2"
+        }
+      ]
     },
     "DuoService": {
       "description": "Duo service to fetch data from.",
@@ -2555,6 +2577,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "signature_version": {
+          "description": "Which version of Duo's request signing this tenant verifies, in place\nof the type-wide one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DuoSignatureVersion"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "interval_secs": {
@@ -3574,8 +3607,9 @@
             "client_id": null,
             "client_secret": null,
             "scope": null,
-            "integration_key": null,
+            "key_id": null,
             "secret_key": null,
+            "signature_preset": null,
             "service_account_key": null,
             "service_account_key_file": null,
             "private_key": null,
@@ -3687,6 +3721,18 @@
             "sigv4": {
               "service": "",
               "region": ""
+            },
+            "signature": {
+              "preset": null,
+              "digest": "sha256",
+              "keying": "hmac",
+              "canonical": [],
+              "encoding": "hex",
+              "headers": {},
+              "signed_header_prefix": "",
+              "place": "digest",
+              "header": "authorization",
+              "prefix": ""
             },
             "credentials": []
           }
@@ -3888,6 +3934,22 @@
             "region": ""
           }
         },
+        "signature": {
+          "description": "Shape of the `signature` mode: the digest, the canonical string and\nwhere the digest goes.",
+          "$ref": "#/$defs/SignatureSpec",
+          "default": {
+            "preset": null,
+            "digest": "sha256",
+            "keying": "hmac",
+            "canonical": [],
+            "encoding": "hex",
+            "headers": {},
+            "signed_header_prefix": "",
+            "place": "digest",
+            "header": "authorization",
+            "prefix": ""
+          }
+        },
         "credentials": {
           "description": "Shape of the `credentials` mode: every place a credential goes.",
           "type": "array",
@@ -3928,9 +3990,9 @@
           "const": "oauth2_client_credentials"
         },
         {
-          "description": "Duo Admin API signing: HMAC-SHA1 over the request's date, method,\nhost, path and sorted query, sent as a Basic credential of\n`integration_key:signature` with the same `Date` header.",
+          "description": "A keyed digest over a canonical string of the built request, in the\ndigest, the canonical shape and the placement the profile's\n[`SignatureSpec`] names. Duo's Admin API signing is the `duo_v5` and\n`duo_v2` presets of it; `duo_hmac` is the old spelling of the mode, and\na profile on that spelling with no `signature` block signs the `duo_v2`\nthe name used to mean.",
           "type": "string",
-          "const": "duo_hmac"
+          "const": "signature"
         },
         {
           "description": "OAuth2 JWT-bearer grant (RFC 7523): an RS256 assertion signed with the\ninstance's private key, exchanged for a cached access token.",
@@ -4112,6 +4174,156 @@
         }
       },
       "additionalProperties": false
+    },
+    "SignatureSpec": {
+      "description": "A keyed digest over a canonical string of the built request.\n\nThe canonical string is what makes this its own mode rather than a\nplacement: it is COMPUTED per request, out of the method, host, path,\nquery, date, nonce and body the driver just built, so it cannot be a value\nresolved once per instance. Each `canonical` entry is one LINE, joined by\nnewlines, and each is a template over `signature.*` and nothing else --\n`signature.date`, `.timestamp`, `.timestamp_ms`, `.nonce`, `.method`,\n`.host`, `.path`, `.query`, `.body_hash`, `.headers_hash` and `.key_id`.\nA template that reads `vars`, `unit`, `window` or any other context name is\nrefused at load, so nothing a unit supplies can reach a signature.\n\n`headers` are set on the request before it is signed, each a template over\nthe same facts less `headers_hash`, which is computed after them.",
+      "type": "object",
+      "properties": {
+        "preset": {
+          "description": "A shipped scheme by name, in place of the fields below.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SignaturePreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "digest": {
+          "description": "The digest of the signature, the body hash and the header hash.",
+          "$ref": "#/$defs/SignatureDigest",
+          "default": "sha256"
+        },
+        "keying": {
+          "description": "Where the secret goes.",
+          "$ref": "#/$defs/SignatureKeying",
+          "default": "hmac"
+        },
+        "canonical": {
+          "description": "The canonical string, one line per entry.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "encoding": {
+          "description": "How the digest is written.",
+          "$ref": "#/$defs/SignatureEncoding",
+          "default": "hex"
+        },
+        "headers": {
+          "description": "Headers set before the request is signed.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "signed_header_prefix": {
+          "description": "The lowercase name prefix of the headers `signature.headers_hash`\ncovers; unset means it covers none, so the hash is of the empty string.",
+          "type": "string",
+          "default": ""
+        },
+        "place": {
+          "description": "What the header carries.",
+          "$ref": "#/$defs/SignatureTarget",
+          "default": "digest"
+        },
+        "header": {
+          "description": "The header the digest goes in.",
+          "type": "string",
+          "default": "authorization"
+        },
+        "prefix": {
+          "description": "Text in front of the digest, under `place: digest` only.",
+          "type": "string",
+          "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "SignaturePreset": {
+      "description": "A shipped signing scheme, named rather than spelled out.",
+      "oneOf": [
+        {
+          "description": "Duo's signature version 5: SHA-512 over seven lines, the last two the\nhash of the body and the hash of the canonicalised `x-duo-` headers.",
+          "type": "string",
+          "const": "duo_v5"
+        },
+        {
+          "description": "Duo's signature version 2: SHA-1 over the first five of those lines.\nDuo's legacy scheme, for a tenant whose endpoints still verify it.",
+          "type": "string",
+          "const": "duo_v2"
+        }
+      ]
+    },
+    "SignatureDigest": {
+      "description": "The digest a signature is made with.\n\nThe same digest hashes the body and the signed headers where the canonical\nstring carries those, because every scheme in the survey uses one hash\nthroughout. `sha1` is here for Duo's legacy v2 scheme alone and is never a\ndefault.",
+      "oneOf": [
+        {
+          "description": "SHA-1; Duo v2 only.",
+          "type": "string",
+          "const": "sha1"
+        },
+        {
+          "description": "SHA-256.",
+          "type": "string",
+          "const": "sha256"
+        },
+        {
+          "description": "SHA-512.",
+          "type": "string",
+          "const": "sha512"
+        }
+      ]
+    },
+    "SignatureKeying": {
+      "description": "How the secret enters the digest.",
+      "oneOf": [
+        {
+          "description": "The secret is the HMAC key over the canonical string (RFC 2104).",
+          "type": "string",
+          "const": "hmac"
+        },
+        {
+          "description": "The secret is hashed in front of the canonical string with no HMAC\nconstruction, which is what Cortex XDR's advanced key specifies.",
+          "type": "string",
+          "const": "prefix"
+        }
+      ]
+    },
+    "SignatureEncoding": {
+      "description": "How the digest is written.",
+      "oneOf": [
+        {
+          "description": "Lowercase hexadecimal.",
+          "type": "string",
+          "const": "hex"
+        },
+        {
+          "description": "Standard base64 with padding.",
+          "type": "string",
+          "const": "base64"
+        }
+      ]
+    },
+    "SignatureTarget": {
+      "description": "What the header the digest goes in carries.",
+      "oneOf": [
+        {
+          "description": "`Basic base64(<key_id>:<digest>)` -- HTTP basic with the key id as the\nuser name, which is Duo's placement.",
+          "type": "string",
+          "const": "basic"
+        },
+        {
+          "description": "The encoded digest on its own, after the spec's `prefix`.",
+          "type": "string",
+          "const": "digest"
+        }
+      ]
     },
     "CredentialPlacementSpec": {
       "description": "One place a credential goes under the `credentials` mode, and which of the\ninstance's named credentials it carries.\n\n`from` puts one credential where the API wants it, as it resolved. `value`\ncomposes several into one value, for an API that wants both halves of a key\npair inside one header. A value is NOT a template: its only substitution is\n`{{ credentials.<name> }}`, so nothing but a named credential can reach a\ncredential value and the value cannot vary by unit, request or var.\n\nOne credential is written as `from` with a `prefix` when the API wants text\nin front of it; a `value` naming one credential says the same thing the long\nway round.",
@@ -5455,8 +5667,8 @@
           ],
           "default": null
         },
-        "integration_key": {
-          "description": "`duo_hmac`: the integration key (`ikey`), the Basic user name.",
+        "key_id": {
+          "description": "`signature`: the public half naming the key -- Duo's integration key\n(`ikey`), Cortex XDR's key id -- which a `basic` placement carries as\nthe user name and a header template reads as `signature.key_id`.",
           "type": [
             "string",
             "null"
@@ -5464,13 +5676,25 @@
           "default": null
         },
         "secret_key": {
-          "description": "`duo_hmac`: the secret key (`skey`) the signature is made with.",
+          "description": "`signature`: the secret the digest is keyed with (Duo's `skey`).",
           "type": [
             "string",
             "null"
           ],
           "x-dfe-secret": true,
           "writeOnly": true,
+          "default": null
+        },
+        "signature_preset": {
+          "description": "`signature`: a shipped scheme in place of the profile's, for a tenant\nwhose endpoints verify another version of it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SignaturePreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null
         },
         "service_account_key": {

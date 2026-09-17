@@ -40,6 +40,7 @@ use dfe_fetcher_core::secret::spec_issue;
 use dfe_fetcher_db::DbInstance;
 use dfe_fetcher_file::FileInstance;
 use dfe_fetcher_rest::RestInstance;
+use dfe_fetcher_rest::profile::SignaturePreset;
 use scalo::config::flat_env::{self, ApplyFlatEnv};
 use scalo::config::sensitive::SensitiveString;
 use scalo::config::{self, ConfigOptions};
@@ -2957,12 +2958,42 @@ pub struct BitwardenService {
     pub config: HashMap<String, serde_json::Value>,
 }
 
+/// Which version of Duo's request signing a tenant's endpoints verify.
+///
+/// Duo documents version 5 and some of its newer Admin API endpoints accept
+/// nothing else, so it is the default. Version 2 is Duo's legacy scheme and is
+/// here for a tenant whose endpoints still verify it; it keys its HMAC with
+/// SHA-1, so a connection on it warns at startup.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum DuoSignatureVersion {
+    /// HMAC-SHA512 over seven canonical lines.
+    #[default]
+    V5,
+    /// HMAC-SHA1 over five of them.
+    V2,
+}
+
+impl DuoSignatureVersion {
+    /// The signing scheme this version selects.
+    #[must_use]
+    pub const fn preset(self) -> SignaturePreset {
+        match self {
+            DuoSignatureVersion::V5 => SignaturePreset::DuoV5,
+            DuoSignatureVersion::V2 => SignaturePreset::DuoV2,
+        }
+    }
+}
+
 /// Duo Admin API source configuration.
 ///
 /// Pulls authentication events from a Duo tenant's
 /// `api-XXXXXXXX.duosecurity.com/admin/v2/logs/authentication` endpoint.
-/// Auth uses Duo's proprietary scheme: HMAC-SHA1 over a canonical request
-/// signature, transported in a Basic auth header.
+/// Auth uses Duo's own scheme: a keyed digest over a canonical request string,
+/// transported in a Basic auth header. `signature_version` picks which version
+/// of it the tenant verifies.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct DuoSourceConfig {
@@ -2978,7 +3009,7 @@ pub struct DuoSourceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_key: Option<String>,
 
-    /// Secret key (`skey`). Used to compute the HMAC-SHA1 request signature.
+    /// Secret key (`skey`). Keys the request signature.
     /// Always redacted on serialisation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<SensitiveString>,
@@ -2987,6 +3018,10 @@ pub struct DuoSourceConfig {
     /// (e.g. `vault:kv/data/duo:skey`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_secret: Option<String>,
+
+    /// Which version of Duo's request signing the tenant verifies; `v5`
+    /// unless an older tenant needs `v2`, which signs SHA-1 and warns.
+    pub signature_version: DuoSignatureVersion,
 
     /// API base override for testing (full URL incl. scheme). Production
     /// should use `api_host` only; this is for mock servers.
@@ -3041,6 +3076,11 @@ pub struct DuoConnection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_url_override: Option<String>,
 
+    /// Which version of Duo's request signing this tenant verifies, in place
+    /// of the type-wide one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_version: Option<DuoSignatureVersion>,
+
     /// Per-connection fetch-interval override in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval_secs: Option<u64>,
@@ -3054,6 +3094,7 @@ impl Default for DuoSourceConfig {
             integration_key: None,
             secret_key: None,
             credential_secret: None,
+            signature_version: DuoSignatureVersion::default(),
             api_url_override: None,
             interval_secs: None,
             services: vec![],
@@ -3093,6 +3134,9 @@ impl ConnectionOverlay for DuoSourceConfig {
         overlay_opt(&mut self.secret_key, &connection.secret_key);
         overlay_opt(&mut self.credential_secret, &connection.credential_secret);
         overlay_opt(&mut self.api_url_override, &connection.api_url_override);
+        if let Some(version) = connection.signature_version {
+            self.signature_version = version;
+        }
     }
 }
 

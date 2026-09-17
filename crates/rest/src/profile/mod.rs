@@ -72,10 +72,14 @@ pub enum AuthKind {
     Basic,
     /// OAuth2 client-credentials exchange, cached until shortly before expiry.
     Oauth2ClientCredentials,
-    /// Duo Admin API signing: HMAC-SHA1 over the request's date, method,
-    /// host, path and sorted query, sent as a Basic credential of
-    /// `integration_key:signature` with the same `Date` header.
-    DuoHmac,
+    /// A keyed digest over a canonical string of the built request, in the
+    /// digest, the canonical shape and the placement the profile's
+    /// [`SignatureSpec`] names. Duo's Admin API signing is the `duo_v5` and
+    /// `duo_v2` presets of it; `duo_hmac` is the old spelling of the mode, and
+    /// a profile on that spelling with no `signature` block signs the `duo_v2`
+    /// the name used to mean.
+    #[serde(alias = "duo_hmac")]
+    Signature,
     /// OAuth2 JWT-bearer grant (RFC 7523): an RS256 assertion signed with the
     /// instance's private key, exchanged for a cached access token.
     JwtBearer,
@@ -104,7 +108,7 @@ impl AuthKind {
             AuthKind::ApiKey => "api_key",
             AuthKind::Basic => "basic",
             AuthKind::Oauth2ClientCredentials => "oauth2_client_credentials",
-            AuthKind::DuoHmac => "duo_hmac",
+            AuthKind::Signature => "signature",
             AuthKind::JwtBearer => "jwt_bearer",
             AuthKind::GceMetadata => "gce_metadata",
             AuthKind::SigV4 => "sigv4",
@@ -391,6 +395,234 @@ pub struct SigV4Spec {
     pub region: String,
 }
 
+/// The digest a signature is made with.
+///
+/// The same digest hashes the body and the signed headers where the canonical
+/// string carries those, because every scheme in the survey uses one hash
+/// throughout. `sha1` is here for Duo's legacy v2 scheme alone and is never a
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureDigest {
+    /// SHA-1; Duo v2 only.
+    Sha1,
+    /// SHA-256.
+    Sha256,
+    /// SHA-512.
+    Sha512,
+}
+
+/// How the secret enters the digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureKeying {
+    /// The secret is the HMAC key over the canonical string (RFC 2104).
+    Hmac,
+    /// The secret is hashed in front of the canonical string with no HMAC
+    /// construction, which is what Cortex XDR's advanced key specifies.
+    Prefix,
+}
+
+/// How the digest is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureEncoding {
+    /// Lowercase hexadecimal.
+    Hex,
+    /// Standard base64 with padding.
+    Base64,
+}
+
+/// What the header the digest goes in carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignatureTarget {
+    /// `Basic base64(<key_id>:<digest>)` -- HTTP basic with the key id as the
+    /// user name, which is Duo's placement.
+    Basic,
+    /// The encoded digest on its own, after the spec's `prefix`.
+    Digest,
+}
+
+/// A shipped signing scheme, named rather than spelled out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignaturePreset {
+    /// Duo's signature version 5: SHA-512 over seven lines, the last two the
+    /// hash of the body and the hash of the canonicalised `x-duo-` headers.
+    DuoV5,
+    /// Duo's signature version 2: SHA-1 over the first five of those lines.
+    /// Duo's legacy scheme, for a tenant whose endpoints still verify it.
+    DuoV2,
+}
+
+/// The header a digest goes in unless the profile names another.
+const DEFAULT_SIGNATURE_HEADER: &str = "authorization";
+
+/// The name a signature template reads its request's facts under.
+pub const SIGNATURE_FACTS: &str = "signature";
+
+impl SignaturePreset {
+    /// The spec this preset stands for.
+    #[must_use]
+    pub fn spec(self) -> SignatureSpec {
+        let (digest, lines, signed_header_prefix) = match self {
+            SignaturePreset::DuoV5 => (
+                SignatureDigest::Sha512,
+                &[
+                    "{{ signature.date }}",
+                    "{{ signature.method }}",
+                    "{{ signature.host }}",
+                    "{{ signature.path }}",
+                    "{{ signature.query }}",
+                    "{{ signature.body_hash }}",
+                    "{{ signature.headers_hash }}",
+                ][..],
+                "x-duo-",
+            ),
+            SignaturePreset::DuoV2 => (
+                SignatureDigest::Sha1,
+                &[
+                    "{{ signature.date }}",
+                    "{{ signature.method }}",
+                    "{{ signature.host }}",
+                    "{{ signature.path }}",
+                    "{{ signature.query }}",
+                ][..],
+                "",
+            ),
+        };
+        SignatureSpec {
+            preset: None,
+            digest,
+            keying: SignatureKeying::Hmac,
+            canonical: lines.iter().map(|line| (*line).to_owned()).collect(),
+            encoding: SignatureEncoding::Hex,
+            // Duo verifies the date line against the `Date` header it arrived
+            // with, so the signer writes the one it signed.
+            headers: [("date".to_owned(), "{{ signature.date }}".to_owned())]
+                .into_iter()
+                .collect(),
+            signed_header_prefix: signed_header_prefix.to_owned(),
+            place: SignatureTarget::Basic,
+            header: DEFAULT_SIGNATURE_HEADER.to_owned(),
+            prefix: String::new(),
+        }
+    }
+}
+
+/// A keyed digest over a canonical string of the built request.
+///
+/// The canonical string is what makes this its own mode rather than a
+/// placement: it is COMPUTED per request, out of the method, host, path,
+/// query, date, nonce and body the driver just built, so it cannot be a value
+/// resolved once per instance. Each `canonical` entry is one LINE, joined by
+/// newlines, and each is a template over `signature.*` and nothing else --
+/// `signature.date`, `.timestamp`, `.timestamp_ms`, `.nonce`, `.method`,
+/// `.host`, `.path`, `.query`, `.body_hash`, `.headers_hash` and `.key_id`.
+/// A template that reads `vars`, `unit`, `window` or any other context name is
+/// refused at load, so nothing a unit supplies can reach a signature.
+///
+/// `headers` are set on the request before it is signed, each a template over
+/// the same facts less `headers_hash`, which is computed after them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SignatureSpec {
+    /// A shipped scheme by name, in place of the fields below.
+    pub preset: Option<SignaturePreset>,
+    /// The digest of the signature, the body hash and the header hash.
+    pub digest: SignatureDigest,
+    /// Where the secret goes.
+    pub keying: SignatureKeying,
+    /// The canonical string, one line per entry.
+    pub canonical: Vec<String>,
+    /// How the digest is written.
+    pub encoding: SignatureEncoding,
+    /// Headers set before the request is signed.
+    pub headers: BTreeMap<String, String>,
+    /// The lowercase name prefix of the headers `signature.headers_hash`
+    /// covers; unset means it covers none, so the hash is of the empty string.
+    pub signed_header_prefix: String,
+    /// What the header carries.
+    pub place: SignatureTarget,
+    /// The header the digest goes in.
+    pub header: String,
+    /// Text in front of the digest, under `place: digest` only.
+    pub prefix: String,
+}
+
+impl Default for SignatureSpec {
+    fn default() -> Self {
+        Self {
+            preset: None,
+            digest: SignatureDigest::Sha256,
+            keying: SignatureKeying::Hmac,
+            canonical: Vec::new(),
+            encoding: SignatureEncoding::Hex,
+            headers: BTreeMap::new(),
+            signed_header_prefix: String::new(),
+            place: SignatureTarget::Digest,
+            header: DEFAULT_SIGNATURE_HEADER.to_owned(),
+            prefix: String::new(),
+        }
+    }
+}
+
+impl SignatureSpec {
+    /// Whether the block says nothing but its `preset`, so the preset is the
+    /// whole scheme and not half of one.
+    #[must_use]
+    fn preset_alone(&self) -> bool {
+        let bare = Self {
+            preset: self.preset,
+            ..Self::default()
+        };
+        *self == bare
+    }
+
+    /// Whether the block says nothing at all, so the profile names the mode
+    /// and spells no scheme.
+    #[must_use]
+    fn unspelled(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The scheme in force: the preset's spec when one is named, this block
+    /// when it spells a scheme out, and Duo's version 2 when it says nothing.
+    ///
+    /// The mode was spelled `duo_hmac` before the scheme became config, and
+    /// what it signed was Duo's version 2. A profile written against that name
+    /// has no block to read -- there was none to write -- so an unspelled
+    /// scheme means what the name used to mean, and such a profile binds and
+    /// signs as it did. Anything that names a preset or spells a scheme out,
+    /// the shipped `duo` profile included, is unaffected.
+    #[must_use]
+    pub fn effective(&self) -> Cow<'_, Self> {
+        match self.preset {
+            Some(preset) => Cow::Owned(preset.spec()),
+            None if self.unspelled() => Cow::Owned(SignaturePreset::DuoV2.spec()),
+            None => Cow::Borrowed(self),
+        }
+    }
+
+    /// Why this scheme is an exemption from the crypto standard, or `None`
+    /// when it takes none.
+    ///
+    /// SHA-1 is not used for a security purpose in this house and signing a
+    /// request is one. Duo's version 2 is the exemption, taken because an
+    /// older tenant's endpoints verify nothing else, and every bind that takes
+    /// it says so rather than passing in silence. Read the EFFECTIVE scheme,
+    /// so the answer is the same whichever route selected it.
+    #[must_use]
+    pub fn crypto_exemption(&self) -> Option<&'static str> {
+        (self.digest == SignatureDigest::Sha1).then_some(
+            "signs requests with SHA-1, which is kept out of a security purpose everywhere \
+             else; Duo's signature version 2 is the exemption, so move the tenant to version \
+             5 wherever its endpoints verify it",
+        )
+    }
+}
+
 /// What the API accepts and the shape of each mode; identity lives on the instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -407,6 +639,9 @@ pub struct AuthSpec {
     pub gce_metadata: GceMetadataSpec,
     /// Shape of the `sigv4` mode.
     pub sigv4: SigV4Spec,
+    /// Shape of the `signature` mode: the digest, the canonical string and
+    /// where the digest goes.
+    pub signature: SignatureSpec,
     /// Shape of the `credentials` mode: every place a credential goes.
     pub credentials: Vec<CredentialPlacementSpec>,
 }
@@ -443,11 +678,14 @@ impl AuthSpec {
             }
             // `credentials` renders nothing against a context: a composed value
             // substitutes named credentials alone, so it cannot vary by unit.
+            // `signature` renders per request against the request's own facts,
+            // and the grammar refuses it any other name, so there is no context
+            // for binding to hold it to.
             AuthKind::None
             | AuthKind::Bearer
             | AuthKind::ApiKey
             | AuthKind::Basic
-            | AuthKind::DuoHmac
+            | AuthKind::Signature
             | AuthKind::SigV4
             | AuthKind::Credentials => Vec::new(),
         }
@@ -496,6 +734,7 @@ impl Default for AuthSpec {
             jwt_bearer: JwtBearerSpec::default(),
             gce_metadata: GceMetadataSpec::default(),
             sigv4: SigV4Spec::default(),
+            signature: SignatureSpec::default(),
             credentials: Vec::new(),
         }
     }
@@ -1656,6 +1895,150 @@ pub(crate) fn credential_placement_issues(placements: &[CredentialPlacementSpec]
     issues
 }
 
+/// Every top-level name a template of the grammar reads besides
+/// [`SIGNATURE_FACTS`].
+///
+/// A signature template is held to the request's own facts, so this is the
+/// list it is refused. Spelled out rather than derived: the names are set by
+/// this crate, and one added without a thought for signing would otherwise
+/// widen what can reach a signature.
+///
+/// A denylist is the weaker of the two shapes -- a twelfth name added here
+/// would pass load validation until someone remembered this list -- and an
+/// allowlist over [`SIGNATURE_FACTS`] alone would be safer. It is not one
+/// because CEL reads a name the grammar never set as an error rather than a
+/// blank, so the render is fail-closed and the twelfth name would refuse the
+/// request instead of signing over it.
+pub(crate) const CONTEXT_NAMES: [&str; 11] = [
+    "vars", "base_url", "unit", "window", "page", "key", "item", "ids", "auth", "body", "headers",
+];
+
+/// The fact a `headers` template may not read: the hash covering the headers
+/// the scheme sets, which is computed once they are all on the request.
+const HEADERS_HASH_FACT: &str = "headers_hash";
+
+/// Why `template` may not compute a signature, or `None` when it may.
+///
+/// The canonical string is computed per REQUEST, and the request is the only
+/// thing a signature may be about: a canonical string that could read a unit's
+/// `vars` would let one unit's narrowing decide what another unit's request
+/// signs. The key and the placement are not templates at all, so what varies
+/// per request is the request's own facts and nothing else.
+pub(crate) fn signature_template_issue(template: &Template) -> Option<String> {
+    CONTEXT_NAMES
+        .into_iter()
+        .find(|name| template.references(name))
+        .map(|name| {
+            format!(
+                "reads `{name}`; a signature is computed per request, so its canonical string and \
+                 its headers read `{SIGNATURE_FACTS}.*` and nothing else"
+            )
+        })
+}
+
+/// Why `source` may not stand as a signature `headers` template, or `None`
+/// when it may.
+///
+/// `signature.headers_hash` covers the headers the scheme sets, so it is
+/// computed once they are on the request -- after every one of these templates
+/// has rendered. One that reads it is asking for the hash of itself, which the
+/// facts do not carry, and CEL would refuse it on the first tick: under a hot
+/// reload that takes a running source down rather than refusing the config.
+/// The check is over the template TEXT because `references` answers for a
+/// top-level name and this is a member of one.
+pub(crate) fn signature_header_template_issue(source: &str) -> Option<String> {
+    source.contains(HEADERS_HASH_FACT).then(|| {
+        format!(
+            "reads `{SIGNATURE_FACTS}.{HEADERS_HASH_FACT}`, which covers the headers this \
+             template is one of and so is computed after it; a signed header carries a fact, \
+             never the hash of itself"
+        )
+    })
+}
+
+/// Every problem with a signing scheme's shape.
+///
+/// A named `preset` is the whole scheme, so a block that names one and also
+/// sets a field is refused rather than half-applied: which half won would
+/// otherwise decide what goes on the wire.
+pub(crate) fn signature_spec_issues(spec: &SignatureSpec) -> Vec<Issue> {
+    let at = |field: &str| format!("auth.signature.{field}");
+    let mut issues = Vec::new();
+    if spec.preset.is_some() {
+        if !spec.preset_alone() {
+            issues.push(Issue::new(
+                at("preset"),
+                "names a shipped scheme, which is the whole of it; drop the other keys of the \
+                 block, or drop the preset and spell the scheme out",
+            ));
+        }
+        return issues;
+    }
+    // A block that says nothing is the scheme the mode's old name carried; see
+    // `SignatureSpec::effective`.
+    if spec.unspelled() {
+        return issues;
+    }
+    if spec.canonical.is_empty() {
+        issues.push(Issue::new(
+            at("canonical"),
+            "must carry at least one line, or the block must name a `preset`",
+        ));
+    }
+    let check =
+        |field: String, source: &str, issues: &mut Vec<Issue>| match Template::compile(source) {
+            Err(e) => issues.push(Issue::new(field, e.to_string())),
+            Ok(template) => {
+                if let Some(reason) = signature_template_issue(&template) {
+                    issues.push(Issue::new(field, reason));
+                }
+            }
+        };
+    for (i, line) in spec.canonical.iter().enumerate() {
+        check(at(&format!("canonical[{i}]")), line, &mut issues);
+    }
+    for (name, value) in &spec.headers {
+        let field = at(&format!("headers.{name}"));
+        if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+            issues.push(Issue::new(
+                field.clone(),
+                format!("`{name}` is not a header name"),
+            ));
+        }
+        if let Some(reason) = signature_header_template_issue(value) {
+            issues.push(Issue::new(field.clone(), reason));
+        }
+        check(field, value, &mut issues);
+    }
+    if reqwest::header::HeaderName::from_bytes(spec.header.as_bytes()).is_err() {
+        issues.push(Issue::new(
+            at("header"),
+            format!("`{}` is not a header name", spec.header),
+        ));
+    }
+    if !spec.prefix.is_empty() {
+        if spec.place == SignatureTarget::Basic {
+            issues.push(Issue::new(
+                at("prefix"),
+                "is set under `place: basic`, whose value is `Basic base64(<key_id>:<digest>)` and \
+                 carries its own prefix",
+            ));
+        }
+        if let Some(reason) = header_text_issue(&spec.prefix) {
+            issues.push(Issue::new(at("prefix"), reason));
+        }
+    }
+    if !spec.signed_header_prefix.is_empty()
+        && spec.signed_header_prefix != spec.signed_header_prefix.to_ascii_lowercase()
+    {
+        issues.push(Issue::new(
+            at("signed_header_prefix"),
+            "is matched against lowercased header names, so write it in lowercase",
+        ));
+    }
+    issues
+}
+
 /// The query parameters a pager writes: the token's own when it goes into one,
 /// and the page or offset parameter.
 fn paginate_query_writers(at: &str, paginate: &PaginateSpec) -> Vec<(String, String)> {
@@ -1979,6 +2362,9 @@ impl RestProfile {
         if self.auth.accepts.contains(&AuthKind::Credentials) {
             issues.extend(credential_placement_issues(&self.auth.credentials));
             issues.extend(self.credential_query_collisions());
+        }
+        if self.auth.accepts.contains(&AuthKind::Signature) {
+            issues.extend(signature_spec_issues(&self.auth.signature));
         }
         if self.auth.accepts.contains(&AuthKind::SigV4) {
             for (field, value) in [
@@ -2704,10 +3090,16 @@ pub struct InstanceAuth {
     pub client_secret: Option<SensitiveString>,
     /// `oauth2_client_credentials`: overrides the profile's scope.
     pub scope: Option<String>,
-    /// `duo_hmac`: the integration key (`ikey`), the Basic user name.
-    pub integration_key: Option<String>,
-    /// `duo_hmac`: the secret key (`skey`) the signature is made with.
+    /// `signature`: the public half naming the key -- Duo's integration key
+    /// (`ikey`), Cortex XDR's key id -- which a `basic` placement carries as
+    /// the user name and a header template reads as `signature.key_id`.
+    #[serde(alias = "integration_key")]
+    pub key_id: Option<String>,
+    /// `signature`: the secret the digest is keyed with (Duo's `skey`).
     pub secret_key: Option<SensitiveString>,
+    /// `signature`: a shipped scheme in place of the profile's, for a tenant
+    /// whose endpoints verify another version of it.
+    pub signature_preset: Option<SignaturePreset>,
     /// `jwt_bearer`: a Google-style service-account key JSON (`client_email`,
     /// `private_key`, `token_uri`) as a credential spec.
     pub service_account_key: Option<SensitiveString>,
@@ -2762,7 +3154,8 @@ impl InstanceAuth {
             username: _,
             client_id: _,
             scope: _,
-            integration_key: _,
+            key_id: _,
+            signature_preset: _,
             assume_role_arn: _,
             token,
             key,
@@ -2822,8 +3215,9 @@ impl Default for InstanceAuth {
             client_id: None,
             client_secret: None,
             scope: None,
-            integration_key: None,
+            key_id: None,
             secret_key: None,
+            signature_preset: None,
             service_account_key: None,
             service_account_key_file: None,
             private_key: None,
@@ -2912,6 +3306,20 @@ impl Default for RestInstance {
 }
 
 impl RestInstance {
+    /// The signing scheme in force: the instance's own preset when it names
+    /// one, else what the profile's block says.
+    ///
+    /// A tenant whose endpoints verify an older version of a scheme selects it
+    /// here rather than by editing a shipped profile, which is shared by every
+    /// instance of it.
+    #[must_use]
+    pub fn signature<'a>(&self, profile: &'a RestProfile) -> Cow<'a, SignatureSpec> {
+        match self.auth.signature_preset {
+            Some(preset) => Cow::Owned(preset.spec()),
+            None => profile.auth.signature.effective(),
+        }
+    }
+
     /// Every problem binding this instance to `profile`.
     #[must_use]
     pub fn validate(&self, profile: &RestProfile) -> Vec<Issue> {
@@ -2959,13 +3367,35 @@ impl RestInstance {
                     &mut issues,
                 );
             }
-            AuthKind::DuoHmac => {
-                needs(
-                    "integration_key",
-                    self.auth.integration_key.is_some(),
-                    &mut issues,
-                );
+            AuthKind::Signature => {
                 needs("secret_key", self.auth.secret_key.is_some(), &mut issues);
+                let scheme = self.signature(profile);
+                // A basic placement carries the key id as the user name, so a
+                // request without one authenticates as no integration at all.
+                if scheme.place == SignatureTarget::Basic {
+                    needs("key_id", self.auth.key_id.is_some(), &mut issues);
+                }
+                // Duo's version 2 puts a POST's BODY parameters on the line
+                // this scheme builds from the query, and nothing in the grammar
+                // says so. A POST would be signed over a query it does not
+                // carry and Duo would refuse every request, so the pairing is
+                // refused here instead. Version 5 hashes the body on a line of
+                // its own and has no such trap.
+                if *scheme == SignaturePreset::DuoV2.spec() {
+                    for endpoint in &profile.endpoints {
+                        if profile.method_of(endpoint) == Method::Post {
+                            issues.push(Issue::new(
+                                "auth.signature_preset",
+                                format!(
+                                    "`duo_v2` signs a POST's body parameters where this grammar \
+                                     signs the query, so unit `{}` would be signed over the \
+                                     wrong string; that unit needs `duo_v5`",
+                                    endpoint.unit
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
             AuthKind::JwtBearer => {
                 if self.auth.jwt_key_sources() != 1 {
@@ -3031,6 +3461,12 @@ impl RestInstance {
             issues.push(Issue::new(
                 "auth.assume_role_arn",
                 "only the `sigv4` mode assumes a role",
+            ));
+        }
+        if self.auth.signature_preset.is_some() && self.auth.mode != AuthKind::Signature {
+            issues.push(Issue::new(
+                "auth.signature_preset",
+                "only the `signature` mode signs, so nothing else reads a scheme",
             ));
         }
         // Named credentials are a shared field on the instance and only one mode
@@ -3218,8 +3654,76 @@ endpoints:
     paginate: { strategy: none }
 "#;
 
+    /// An inline profile as it was written before the signing scheme became
+    /// config: the mode under its old name and no block, because there was
+    /// none to write.
+    const LEGACY_DUO: &str = r#"
+base_url: "{{ vars.base_url }}"
+shape: incremental
+auth: { accepts: [duo_hmac] }
+window: { format: epoch_millis, lookback: 1h }
+endpoints:
+  - unit: authentication_logs
+    path: /admin/v2/logs/authentication
+    rows: { decoder: json_at, at: "/response/authlogs" }
+    paginate: { strategy: none }
+"#;
+
     fn parse(yaml: &str) -> RestProfile {
         serde_yaml_ng::from_str(yaml).unwrap()
+    }
+
+    /// The mode's old name still binds, and with no block to read it carries
+    /// the scheme that name used to mean rather than being refused for a
+    /// canonical string it was never able to write.
+    #[test]
+    fn the_old_mode_name_with_no_block_is_the_scheme_it_used_to_carry() {
+        let profile = parse(LEGACY_DUO);
+        assert_eq!(profile.auth.accepts, [AuthKind::Signature]);
+        assert!(profile.validate().is_empty(), "{:?}", profile.validate());
+
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: duo_hmac, integration_key: DI, secret_key: env:SKEY }\n",
+        )
+        .unwrap();
+        assert_eq!(instance.auth.mode, AuthKind::Signature);
+        assert_eq!(instance.auth.key_id.as_deref(), Some("DI"));
+        let issues = instance.validate(&profile);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(*instance.signature(&profile), SignaturePreset::DuoV2.spec());
+        assert!(instance.signature(&profile).crypto_exemption().is_some());
+    }
+
+    /// Duo's version 2 puts a POST's body parameters on the line this grammar
+    /// builds from the query, so the pairing is refused rather than signing
+    /// every POST over a string Duo will not recompute.
+    #[test]
+    fn duo_v2_is_refused_on_a_unit_that_posts() {
+        let mut profile = parse(LEGACY_DUO);
+        profile.endpoints[0].method = Some(Method::Post);
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v2 }\n",
+        )
+        .unwrap();
+        let issues = instance.validate(&profile);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.message.contains("duo_v2") && i.message.contains("authentication_logs")),
+            "{issues:?}"
+        );
+
+        // Version 5 hashes the body on a line of its own, so the same unit is
+        // fine under it.
+        let v5: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v5 }\n",
+        )
+        .unwrap();
+        assert!(
+            v5.validate(&profile).is_empty(),
+            "{:?}",
+            v5.validate(&profile)
+        );
     }
 
     /// Every credential field is checked, not the mode's own alone, and the

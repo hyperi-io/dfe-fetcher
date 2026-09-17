@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use dfe_fetcher::config::{
     AwsService, AwsSourceConfig, AzureService, AzureSourceConfig, BitwardenService,
     BitwardenSourceConfig, CloudflareService, CloudflareSourceConfig, CratesIoSourceConfig,
-    CrowdstrikeService, CrowdstrikeSourceConfig, DuoService, DuoSourceConfig,
+    CrowdstrikeService, CrowdstrikeSourceConfig, DuoService, DuoSignatureVersion, DuoSourceConfig,
     GcpPubsubSourceConfig, GcpPubsubSubscription, GcpService, GcpSourceConfig, GithubService,
     GithubSourceConfig, GoModulesSourceConfig, GoogleWorkspaceService, GoogleWorkspaceSourceConfig,
     M365Service, M365SourceConfig, ObjectStoreBackendConfig, ObjectStoreBucket, ObjectStoreFormat,
@@ -1102,9 +1102,9 @@ async fn bitwarden_fetch_events() {
 }
 
 // =============================================================================
-// Duo -- HMAC-SHA1 signed requests to api-XXXXXXXX.duosecurity.com, through
-// the shipped `duo` profile the typed `sources.duo` block maps onto (the
-// signing is the REST crate's `duo_hmac` auth mode).
+// Duo -- signed requests to api-XXXXXXXX.duosecurity.com, through the shipped
+// `duo` profile the typed `sources.duo` block maps onto (the signing is the
+// REST crate's `signature` auth mode on its `duo_v5` preset).
 // =============================================================================
 
 fn duo_base() -> DuoSourceConfig {
@@ -1114,6 +1114,7 @@ fn duo_base() -> DuoSourceConfig {
         integration_key: Some(require("DUO_INTEGRATION_KEY")),
         secret_key: Some(require("DUO_SECRET_KEY").into()),
         credential_secret: None,
+        signature_version: DuoSignatureVersion::default(),
         api_url_override: None,
         interval_secs: None,
         services: vec![],

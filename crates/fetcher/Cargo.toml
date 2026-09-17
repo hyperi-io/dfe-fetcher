@@ -143,8 +143,10 @@ uuid = { workspace = true, features = ["v4"] }
 async-trait = { workspace = true }
 url = { workspace = true }
 
-# The instance id derivation hashes the config path.
-sha2 = "0.11"
+# The instance id derivation hashes the config path; the in-test Duo provider
+# verifies an HMAC-SHA512 signature, so this is the line the workspace `hmac`
+# pairs with.
+sha2 = { workspace = true }
 hex = { workspace = true }
 
 # Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
@@ -174,7 +176,8 @@ testcontainers-modules = { version = "0.15", features = ["localstack", "kafka", 
 # A snapshotting recorder so a test can read the framework's `metrics` series.
 metrics-util = { workspace = true }
 smallvec = { workspace = true }
-# The in-test Duo provider verifies each request's HMAC-SHA1 signature.
+# The in-test Duo provider verifies each request's signature, under either
+# version of Duo's scheme.
 hmac = { workspace = true }
 sha1 = { workspace = true }
 # A throwaway RSA key per JWT-bearer test, so no private key is committed.
