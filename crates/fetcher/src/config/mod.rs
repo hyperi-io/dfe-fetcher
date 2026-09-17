@@ -279,14 +279,20 @@ impl Config {
     }
 
     /// Whether anything in this config can produce a record: an enabled source,
-    /// a container extractor, or the ingest listener.
+    /// a container extractor, the Vector extractor's gRPC receiver, or the
+    /// ingest listener.
     ///
     /// The idle gate's `work_state` and the transport checks in
     /// [`validate`](Self::validate) read the same predicate, so an empty config
-    /// cannot idle by one definition and be refused by another.
+    /// cannot idle by one definition and be refused by another. Every listener
+    /// that can receive a record belongs here, or a deployment configured with
+    /// only that listener reports itself idle while records arrive.
     #[must_use]
     pub fn has_work(&self) -> bool {
-        self.sources.any_enabled() || !self.extractors.containers.is_empty() || self.ingest.enabled
+        self.sources.any_enabled()
+            || !self.extractors.containers.is_empty()
+            || self.extractors.vector.enabled
+            || self.ingest.enabled
     }
 
     /// Load configuration with cascade: CLI -> ENV -> .env -> file -> defaults
@@ -4951,6 +4957,27 @@ mod tests {
             !SourcesConfig::default().any_enabled(),
             "a fetcher with a default config has no work, and must idle rather than run"
         );
+    }
+
+    /// Every listener that can receive a record counts as work on its own.
+    ///
+    /// A deployment may run one of these and no sources at all; if the gate
+    /// misses it, the fetcher reports itself idle while records arrive on a
+    /// port it opened.
+    #[test]
+    fn each_receiving_listener_is_work_without_a_source() {
+        assert!(!Config::default().has_work(), "an empty config idles");
+
+        let mut vector = Config::default();
+        vector.extractors.vector.enabled = true;
+        assert!(
+            vector.has_work(),
+            "the vector gRPC receiver is work on its own"
+        );
+
+        let mut ingest = Config::default();
+        ingest.ingest.enabled = true;
+        assert!(ingest.has_work(), "the ingest listener is work on its own");
     }
 
     /// A connection id resolves to its block's filter through the registry:
