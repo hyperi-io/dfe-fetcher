@@ -568,6 +568,26 @@ mod tests {
         }
     }
 
+    /// Block until the wall clock's second advances.
+    ///
+    /// The listing skips files whose change time is at or before the committed
+    /// marker, and change time has one-second granularity. A file created in
+    /// the same second as the marker is excluded for ever, not merely late, so
+    /// a test that needs one ordered after a marker crosses the boundary rather
+    /// than sleeping a fixed span and hoping it straddled one.
+    async fn wait_for_the_next_second() {
+        let second = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock is after the epoch")
+                .as_secs()
+        };
+        let start = second();
+        while second() == start {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     #[tokio::test]
     async fn a_committed_marker_skips_files_changed_at_or_before_it_and_reads_the_rest() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -593,7 +613,7 @@ mod tests {
 
         // A file published after the commit, even with an older mtime
         // (write-to-temp then rename keeps the temp file's mtime).
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        wait_for_the_next_second().await;
         let tmp = dir.path().join("new.tmp");
         std::fs::write(&tmp, "{\"id\":2}\n").unwrap();
         let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
@@ -613,6 +633,9 @@ mod tests {
         std::fs::write(dir.path().join("b.jsonl"), "{\"id\":\"b\"}\n").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         std::fs::write(dir.path().join("a.jsonl"), "{\"id\":\"a\"}\n").unwrap();
+        // The seed files belong in an earlier second than the one written
+        // mid-tick, so the checkpoint folded from them cannot tie with it.
+        wait_for_the_next_second().await;
         let spec = DumpSpec {
             paths: vec![format!("{}/*.jsonl", dir.path().display())],
             ..DumpSpec::default()
@@ -630,17 +653,9 @@ mod tests {
         cp.fold(first.mark.unwrap());
         cp.fold(second.mark.unwrap());
         let committed = cp.value().cloned().unwrap();
-        // A file written during the tick can share the second the committed
-        // change time falls in, so the listing that picks it up is bounded
-        // rather than guaranteed to be the very next one.
-        let mut next = Vec::new();
-        for _ in 0..100 {
-            next = collect(&dump, Some(&committed)).await.unwrap();
-            if !next.is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        // c.jsonl was written a second after the seeds, so the very next
+        // listing sees it.
+        let next = collect(&dump, Some(&committed)).await.unwrap();
         assert_eq!(next.len(), 1, "c.jsonl is picked up once, after the tick");
         assert_eq!(&next[0].payload[..], b"{\"id\":\"c\"}");
     }
