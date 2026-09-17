@@ -264,7 +264,7 @@ async fn run_fetcher_service(
     let mut config = config;
 
     // Resolve env:/vault: spec strings on opt-in config fields before
-    // anyone reads them. See src/config/resolve.rs for the spec syntax.
+    // anyone reads them. See `config::resolve` for the spec syntax.
     dfe_fetcher::config::resolve::resolve_config_specs(&mut config).await?;
 
     // Warn if deprecated plugin config is present

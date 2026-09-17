@@ -21,7 +21,6 @@ every gate holds, 1 when one does not, 2 when a tool the gates need is missing.
 
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 import sys
@@ -68,8 +67,11 @@ GATES = (
     ),
     Gate("jwt signing", r"jsonwebtoken::|EncodingKey", allowed=("crates/rest/src/auth.rs",)),
     Gate(
+        # `reqsign::` rather than `reqsign`, so naming the crate in a comment is
+        # not a second signer. The jwt gate reads `jsonwebtoken::` for the same
+        # reason.
         "sigv4 signing",
-        r"reqsign|sign_static",
+        r"reqsign::|sign_static",
         allowed=("crates/rest/src/auth.rs",),
         glob="*.rs",
     ),
