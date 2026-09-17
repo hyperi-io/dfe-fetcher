@@ -881,6 +881,28 @@ mod tailer_tests {
         (rows, folded.value().cloned())
     }
 
+    /// Tick until the read from `cp` yields `want` rows.
+    ///
+    /// The tailer does not re-glob inside `glob_minimum_cooldown_ms`, so the
+    /// tick straight after an append can legitimately see nothing. Each tick
+    /// is a complete read from `cp` rather than a continuation, so the tick
+    /// that sees the appended lines sees all of them and nothing is counted
+    /// twice.
+    async fn tick_until(
+        tail: &FileTail,
+        cp: Option<&CheckpointValue>,
+        want: usize,
+    ) -> (Vec<Row>, Option<CheckpointValue>) {
+        for _ in 0..100 {
+            let got = tick(tail, cp).await;
+            if got.0.len() >= want {
+                return got;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the tailer never yielded {want} row(s) from this checkpoint");
+    }
+
     fn texts(rows: &[Row]) -> Vec<String> {
         rows.iter()
             .map(|r| String::from_utf8(r.payload.to_vec()).unwrap())
@@ -1023,11 +1045,11 @@ mod tailer_tests {
         assert_eq!(rows.len(), 2);
 
         append(&log, &["{\"n\":3}"]);
-        let (rows, _lost) = tick(&tail, committed.as_ref()).await;
+        let (rows, _lost) = tick_until(&tail, committed.as_ref(), 1).await;
         assert_eq!(texts(&rows), ["{\"n\":3}"], "handed out, never committed");
 
         append(&log, &["{\"n\":4}"]);
-        let (rows, cp) = tick(&tail, committed.as_ref()).await;
+        let (rows, cp) = tick_until(&tail, committed.as_ref(), 2).await;
         assert_eq!(
             texts(&rows),
             ["{\"n\":3}", "{\"n\":4}"],
