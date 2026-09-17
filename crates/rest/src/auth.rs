@@ -785,6 +785,11 @@ fn hmac_bytes(algorithm: SignatureDigest, secret: &[u8], message: &[u8]) -> Resu
 ///
 /// An empty prefix covers no header, so the string is empty and its hash is the
 /// hash of the empty string -- which is what a request carrying none signs.
+///
+/// The order is the NAME's alone, as Duo's is: two headers of the same name
+/// keep the order the request holds them in rather than being re-ordered by
+/// their values. Duo's own client refuses a duplicated `x-duo-` header outright,
+/// so the two orders agree on everything that reaches a live tenant.
 fn canonical_headers(request: &reqwest::Request, prefix: &str) -> String {
     if prefix.is_empty() {
         return String::new();
@@ -802,7 +807,7 @@ fn canonical_headers(request: &reqwest::Request, prefix: &str) -> String {
         })
         .filter(|(name, _)| name.starts_with(prefix))
         .collect();
-    fields.sort();
+    fields.sort_by_key(|(name, _)| *name);
     fields
         .iter()
         .flat_map(|(name, value)| [*name, value.as_str()])
@@ -866,6 +871,9 @@ impl Signature {
         let mut headers = Vec::with_capacity(scheme.headers.len());
         for (name, value) in &scheme.headers {
             let field = format!("auth.signature.headers.{name}");
+            if let Some(reason) = crate::profile::signature_header_template_issue(value) {
+                return Err(Error::Config(format!("{field}: {reason}")));
+            }
             headers.push((
                 HeaderName::from_bytes(name.as_bytes())
                     .map_err(|e| Error::Config(format!("{field}: {e}")))?,
@@ -904,12 +912,18 @@ impl Signature {
 
     /// The request's own facts as a signature template reads them, less
     /// `headers_hash`, which is computed once the mode's own headers are on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Credential`] for a body the signer cannot read, which
+    /// is what a streaming body is: the digest covers the bytes and a stream
+    /// yields them once, to the socket.
     fn facts(
         &self,
         request: &reqwest::Request,
         at: chrono::DateTime<chrono::Utc>,
         nonce: &str,
-    ) -> serde_json::Map<String, Value> {
+    ) -> Result<serde_json::Map<String, Value>> {
         let url = request.url();
         // The port is part of the host when it is explicit, as the `Host`
         // header carries it.
@@ -917,7 +931,14 @@ impl Signature {
         if let Some(port) = url.port() {
             host = format!("{host}:{port}");
         }
-        // Encoded before sorting, because the order is the encoded pairs'.
+        // The pairs are encoded BEFORE they are sorted, and Duo's own artefacts
+        // disagree about which order it is: `duo_hmac_python` and
+        // `duo_client_python` sort the encoded pairs and cite RFC 5849
+        // 3.4.1.3.2, while the `sign_v5` sample inside Duo's documentation and
+        // `duo_api_golang` sort the decoded ones. This follows the clients Duo
+        // names as its reference. The two differ wherever encoding moves a
+        // name: `a/b` encodes to `a%2Fb`, and `%` sorts ahead of the `.` of
+        // `a.b` where a bare `/` sorts behind it.
         let encode =
             |text: &str| percent_encoding::utf8_percent_encode(text, CANONICAL_ENCODE).to_string();
         let mut pairs: Vec<(String, String)> = url
@@ -930,11 +951,20 @@ impl Signature {
             .map(|(name, value)| format!("{name}={value}"))
             .collect::<Vec<_>>()
             .join("&");
-        let body = request
-            .body()
-            .and_then(reqwest::Body::as_bytes)
-            .unwrap_or_default();
-        [
+        // A request with no body hashes the empty string, which is what a GET
+        // signs. A body the signer cannot read is refused instead, so a
+        // streaming body can never be signed over an empty one.
+        let body: &[u8] = match request.body() {
+            None => b"",
+            Some(body) => body.as_bytes().ok_or_else(|| {
+                Error::Credential(
+                    "a streaming body cannot be signed: the digest covers the bytes and a \
+                     stream yields them once, to the socket"
+                        .to_owned(),
+                )
+            })?,
+        };
+        Ok([
             ("date", Value::String(at.format(RFC_2822_UTC).to_string())),
             ("timestamp", Value::from(at.timestamp())),
             ("timestamp_ms", Value::from(at.timestamp_millis())),
@@ -951,7 +981,7 @@ impl Signature {
         ]
         .into_iter()
         .map(|(name, value)| (name.to_owned(), value))
-        .collect()
+        .collect())
     }
 
     /// The canonical string over `facts`: one line per template, joined by
@@ -990,7 +1020,7 @@ impl Signature {
             request,
             chrono::Utc::now(),
             &uuid::Uuid::new_v4().simple().to_string(),
-        );
+        )?;
         // The headers go on before the hash that covers them, so a scheme can
         // both carry a value and sign it.
         self.set_signed_headers(request, &facts)?;
@@ -1007,9 +1037,10 @@ impl Signature {
             SignatureKeying::Hmac => {
                 hmac_bytes(self.digest, secret.as_bytes(), canonical.as_bytes())?
             }
-            // The secret is hashed in front of the canonical string, so the
-            // string holding both is allocated at its final length: one that
-            // grew would leave the secret in freed heap.
+            // The secret is hashed in front of the canonical string. The buffer
+            // is allocated at its final length so the secret is copied once
+            // rather than again on a grow; the message is dropped without being
+            // zeroized either way.
             SignatureKeying::Prefix => {
                 let mut message = String::with_capacity(secret.len() + canonical.len());
                 message.push_str(secret);
@@ -2278,7 +2309,9 @@ mod tests {
         let at = chrono::DateTime::parse_from_rfc2822(VECTOR_DATE)
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let mut facts = signer.facts(request, at, "nonce-no-duo-scheme-reads-one");
+        let mut facts = signer
+            .facts(request, at, "nonce-no-duo-scheme-reads-one")
+            .unwrap();
         facts.insert(
             "headers_hash".to_owned(),
             Value::String(hex_digest(
@@ -2392,6 +2425,102 @@ mod tests {
         };
         assert_eq!(signed(SignaturePreset::DuoV5).await.len(), 128);
         assert_eq!(signed(SignaturePreset::DuoV2).await.len(), 40);
+    }
+
+    /// The canonical query is ordered by the ENCODED pairs, which is the one
+    /// thing the two orderings disagree about: `a/b` encodes to `a%2Fb`, and
+    /// the `%` sorts ahead of the `.` of `a.b` where the bare `/` sorts behind
+    /// it. Every other query in these tests survives encoding unchanged, so
+    /// this is the vector that tells the orders apart.
+    #[tokio::test]
+    async fn the_canonical_query_is_ordered_by_the_encoded_pairs() {
+        let mode = duo(SignaturePreset::DuoV5).unwrap();
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api-deadbeef.duosecurity.com/admin/v2/logs/authentication?a.b=1&a/b=2"
+                .parse()
+                .unwrap(),
+        );
+        let canonical = canonical_at_vector_date(signer(&mode), &request);
+        assert_eq!(
+            canonical,
+            format!(
+                "{VECTOR_DATE}\n\
+                 GET\n\
+                 api-deadbeef.duosecurity.com\n\
+                 /admin/v2/logs/authentication\n\
+                 a%2Fb=2&a.b=1\n\
+                 {EMPTY_SHA512}\n\
+                 {EMPTY_SHA512}"
+            ),
+            "sorting the decoded pairs would put `a.b=1` first"
+        );
+        // hmac.new(skey, canonical, hashlib.sha512).hexdigest()
+        assert_eq!(
+            hex::encode(
+                hmac_bytes(
+                    SignatureDigest::Sha512,
+                    DUO_SKEY.as_bytes(),
+                    canonical.as_bytes()
+                )
+                .unwrap()
+            ),
+            "24fc299035b893668ef12938bf93262e3ca1cfac721773ec1044523fa101981a\
+             95348717dbcbd947d4dc5f7239c6966f509fd0971b73883df7e9dc4d9319c9b9"
+        );
+    }
+
+    /// The two arms of the axis the Duo and Cortex vectors leave unexercised:
+    /// an HMAC-SHA256, pinned by RFC 4231's second test case, and the base64
+    /// encoding, which is that same digest written the other way.
+    #[tokio::test]
+    async fn an_hmac_sha256_signature_is_written_hex_or_base64() {
+        // RFC 4231 test case 2.
+        const KEY: &str = "Jefe";
+        const MESSAGE: &str = "what do ya want for nothing?";
+
+        assert_eq!(
+            hex::encode(
+                hmac_bytes(SignatureDigest::Sha256, KEY.as_bytes(), MESSAGE.as_bytes()).unwrap()
+            ),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+
+        let mut encoded = spec(&[AuthKind::Signature]);
+        encoded.signature = SignatureSpec {
+            digest: SignatureDigest::Sha256,
+            keying: SignatureKeying::Hmac,
+            canonical: vec![MESSAGE.to_owned()],
+            encoding: SignatureEncoding::Base64,
+            place: SignatureTarget::Digest,
+            ..SignatureSpec::default()
+        };
+        let mode = build(
+            &encoded,
+            &InstanceAuth {
+                mode: AuthKind::Signature,
+                secret_key: Some(KEY.into()),
+                ..InstanceAuth::default()
+            },
+        )
+        .unwrap();
+        let mut request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api.example/v1/events".parse().unwrap(),
+        );
+        authorize(&mode, &mut request, &TemplateCtx::new())
+            .await
+            .unwrap();
+        // base64.b64encode(hmac.new(key, message, hashlib.sha256).digest())
+        assert_eq!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM="
+        );
     }
 
     /// The whole signature of a live request, end to end: the built request is
@@ -2603,6 +2732,163 @@ mod tests {
             issues.iter().any(|i| i.field == "auth.signature.preset"),
             "{issues:?}"
         );
+    }
+
+    /// A profile that names the mode and spells no scheme signs what the mode's
+    /// old name signed: Duo's version 2, byte for byte the vector the preset
+    /// produces. An instance written against `duo_hmac` has no block to carry,
+    /// so this is the whole of its compatibility.
+    #[tokio::test]
+    async fn an_unspelled_scheme_signs_what_the_old_mode_name_signed() {
+        let mode = build(
+            &spec(&[AuthKind::Signature]),
+            &InstanceAuth {
+                mode: AuthKind::Signature,
+                key_id: Some(DUO_IKEY.to_owned()),
+                secret_key: Some(DUO_SKEY.into()),
+                ..InstanceAuth::default()
+            },
+        )
+        .unwrap();
+        let canonical = canonical_at_vector_date(signer(&mode), &duo_log_request());
+        assert_eq!(
+            canonical,
+            canonical_at_vector_date(
+                signer(&duo(SignaturePreset::DuoV2).unwrap()),
+                &duo_log_request()
+            )
+        );
+        assert_eq!(
+            hex::encode(
+                hmac_bytes(
+                    SignatureDigest::Sha1,
+                    DUO_SKEY.as_bytes(),
+                    canonical.as_bytes()
+                )
+                .unwrap()
+            ),
+            "4f57a877fdd9f8f60dc14e08802a887098e381b0"
+        );
+    }
+
+    /// SHA-1 is the one exemption the crypto standard takes here, so the scheme
+    /// says so and a bind logs it -- whichever route selected version 2.
+    #[test]
+    fn a_sha1_scheme_names_itself_a_crypto_exemption() {
+        for scheme in [
+            SignaturePreset::DuoV2.spec(),
+            SignatureSpec::default().effective().into_owned(),
+        ] {
+            assert_eq!(scheme.digest, SignatureDigest::Sha1);
+            assert!(scheme.crypto_exemption().is_some(), "{scheme:?}");
+        }
+        assert!(
+            SignaturePreset::DuoV5.spec().crypto_exemption().is_none(),
+            "version 5 takes no exemption"
+        );
+    }
+
+    /// A `headers` template is rendered BEFORE the hash that covers it, so one
+    /// reading that hash is refused at load rather than failing in CEL on the
+    /// first tick -- which under a hot reload takes a running source down.
+    #[test]
+    fn a_header_that_reads_the_header_hash_is_refused_at_load() {
+        let mut scheme = SignaturePreset::DuoV5.spec();
+        scheme.headers.insert(
+            "x-duo-seal".to_owned(),
+            "{{ signature.headers_hash }}".to_owned(),
+        );
+        let issues = crate::profile::signature_spec_issues(&scheme);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.field == "auth.signature.headers.x-duo-seal"
+                    && i.message.contains("headers_hash")),
+            "{issues:?}"
+        );
+
+        let mut refusing = spec(&[AuthKind::Signature]);
+        refusing.signature = scheme;
+        let err = build(
+            &refusing,
+            &InstanceAuth {
+                mode: AuthKind::Signature,
+                key_id: Some(DUO_IKEY.to_owned()),
+                secret_key: Some(DUO_SKEY.into()),
+                ..InstanceAuth::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("headers_hash"), "{err}");
+    }
+
+    /// A body the signer cannot read is refused rather than hashed as the
+    /// empty string, so a streaming body can never be signed over a body the
+    /// provider never sees.
+    #[tokio::test]
+    async fn a_streaming_body_is_refused_rather_than_signed_as_empty() {
+        let mode = duo(SignaturePreset::DuoV5).unwrap();
+        let mut request = reqwest::Request::new(
+            reqwest::Method::POST,
+            "https://api-deadbeef.duosecurity.com/admin/v1/users"
+                .parse()
+                .unwrap(),
+        );
+        *request.body_mut() = Some(reqwest::Body::wrap_stream(futures::stream::once(async {
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"{}"))
+        })));
+        let err = authorize(&mode, &mut request, &TemplateCtx::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("streaming body"), "{err}");
+    }
+
+    /// The header hash orders by NAME alone, as Duo's does: two headers of one
+    /// name keep the order the request holds them in rather than being
+    /// reordered by their values.
+    #[test]
+    fn a_header_hash_orders_its_headers_by_name_alone() {
+        let mut request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api.example/v1/events".parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .append("x-duo-a", HeaderValue::from_static("z"));
+        request
+            .headers_mut()
+            .append("x-duo-a", HeaderValue::from_static("a"));
+        request
+            .headers_mut()
+            .insert("x-duo-b", HeaderValue::from_static("m"));
+        assert_eq!(
+            canonical_headers(&request, "x-duo-"),
+            "x-duo-a\0z\0x-duo-a\0a\0x-duo-b\0m"
+        );
+    }
+
+    /// Every context name the grammar sets is refused in a canonical line, not
+    /// just the `vars` one a profile would most likely reach for.
+    #[test]
+    fn no_context_name_reaches_a_canonical_line() {
+        for name in crate::profile::CONTEXT_NAMES {
+            let mut scheme = spec(&[AuthKind::Signature]);
+            scheme.signature.canonical = vec![format!("{{{{ {name}.whatever }}}}")];
+            let err = build(
+                &scheme,
+                &InstanceAuth {
+                    mode: AuthKind::Signature,
+                    key_id: Some(DUO_IKEY.to_owned()),
+                    secret_key: Some(DUO_SKEY.into()),
+                    ..InstanceAuth::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("reads `{name}`")),
+                "{err}"
+            );
+        }
     }
 
     /// SigV4, checked against a signature computed by hand from the spec:

@@ -37,6 +37,12 @@ HMAC-SHA1. A tenant whose endpoints still verify it selects it with
 `signature_version: v2`, on the type or on one connection, as below. Leave it
 unset otherwise.
 
+SHA-1 is kept out of a security purpose everywhere else in the platform, so
+version 2 is a deliberate exemption rather than a setting like any other. A
+connection that binds on it logs a warning at startup naming the connection;
+that warning is the signal to move the tenant to version 5 once its endpoints
+verify it, and it is expected to stay until then.
+
 The admin provisions an **Admin API application** in the Duo Admin Panel,
 grants it log-read permission, and hands dfe-fetcher three values: the
 **integration key** (ikey), **secret key** (skey), and **API hostname**.
@@ -171,6 +177,8 @@ sources:
 
 A signature the tenant does not verify comes back as a 401 whose `message`
 names the credential, and the tick fails without advancing the fetch window.
+A connection on `v2` warns at startup, because SHA-1 signing is an exemption
+from the platform's crypto baseline taken for this tenant alone.
 
 ## Verification
 

@@ -483,8 +483,9 @@ pub(crate) fn duo() -> Capability {
             FieldSpec::string("api_host").description("api-XXXXXXXX.duosecurity.com."),
             FieldSpec::string("integration_key").description("Admin API integration key (ikey)."),
             FieldSpec::secret("secret_key").description("Admin API secret key (skey)."),
-            FieldSpec::string("signature_version")
-                .description("Signing version the tenant verifies: v5, or v2 for an older one."),
+            FieldSpec::enumeration("signature_version", ["v5", "v2"])
+                .default_value("v5")
+                .description("Signing version the tenant verifies; v2 is the legacy scheme."),
             credential_secret(),
         ])
         .child(
@@ -863,6 +864,40 @@ mod tests {
             accepted_auth_modes("gcp"),
             "jwt_bearer, gce_metadata, bearer",
             "the catalog names every accepted mode, in the profile's order, in its config spelling"
+        );
+    }
+
+    /// A field whose config type is a closed set is typed as one in the
+    /// catalog, so a form built from the contract offers the values the
+    /// deserialiser accepts instead of a free string the operator has to guess.
+    /// Duo's signing version is the one such field today; the check is against
+    /// the config enum's own serialisation, so the two cannot drift.
+    #[test]
+    fn catalog_types_a_closed_config_set_as_an_enumeration() {
+        use crate::config::DuoSignatureVersion;
+
+        let caps = capabilities();
+        let field = catalog_entry(&caps, "duo")
+            .fields
+            .iter()
+            .find(|f| f.name == "signature_version")
+            .expect("duo describes its signing version");
+        let spelling = |version: DuoSignatureVersion| {
+            serde_json::to_value(version)
+                .expect("the version serialises")
+                .as_str()
+                .expect("as a string")
+                .to_owned()
+        };
+        assert_eq!(
+            field.enum_values,
+            [DuoSignatureVersion::V5, DuoSignatureVersion::V2]
+                .map(spelling)
+                .to_vec()
+        );
+        assert_eq!(
+            field.default.as_ref().and_then(serde_json::Value::as_str),
+            Some(spelling(DuoSignatureVersion::default()).as_str())
         );
     }
 

@@ -240,7 +240,7 @@ they are the `signature` mode's config rather than a mode of their own.
 | `keying` | `hmac` (the secret keys an HMAC over the canonical string, RFC 2104) or `prefix` (the secret is hashed in front of the canonical string, with no HMAC). |
 | `canonical` | The canonical string, ONE LINE per entry, joined by newlines. Each is a template over `signature.*` and nothing else. |
 | `encoding` | `hex` (lowercase) or `base64`, for the digest that goes on the request. A body or header hash is always lowercase hex. |
-| `headers` | Headers set on the request BEFORE it is signed, each a template over the same facts less `signature.headers_hash`, which is computed after them. A scheme that signs a timestamp or a nonce carries it this way. |
+| `headers` | Headers set on the request BEFORE it is signed, each a template over the same facts less `signature.headers_hash`, which is computed after them and so is refused here. A scheme that signs a timestamp or a nonce carries it this way. |
 | `signed_header_prefix` | The lowercase name prefix of the headers `signature.headers_hash` covers. Unset covers none, so the hash is of the empty string. |
 | `place` | `basic` (`Basic base64(<key_id>:<digest>)`) or `digest` (the encoded digest on its own, after `prefix`). |
 | `header` | The header the digest goes in; `authorization` unless named. |
@@ -287,10 +287,22 @@ auth:
 ```
 
 The typed `sources.duo` block spells the same choice `signature_version: v2`,
-per connection, so one deployment can poll a tenant on each scheme. `duo_hmac` is still read as the mode's name, and
-`integration_key` as `key_id`, so an instance written against the earlier
-spelling binds unchanged; a PROFILE on the old spelling needs the block, since
-the shape is no longer built in.
+per connection, so one deployment can poll a tenant on each scheme.
+
+Version 2 keys its HMAC with SHA-1, which is kept out of a security purpose
+everywhere else in the platform, so selecting it is a deliberate exemption:
+every connection that binds on it logs a warning at startup naming itself,
+however the version was chosen. Duo's version 2 also signs a POST's BODY
+parameters where this grammar signs the query, which nothing in the grammar can
+say, so `duo_v2` paired with a unit that POSTs is refused at load rather than
+signing every request over a string the provider will not recompute.
+
+`duo_hmac` is still read as the mode's name and `integration_key` as `key_id`,
+so an instance written against the earlier spelling binds unchanged. A PROFILE
+on the old spelling had no `signature` block to write, so one that names the
+mode and spells no scheme signs the `duo_v2` the name used to mean. Anything
+that names a preset or spells a scheme out -- the shipped `duo` profile
+included -- is unaffected.
 
 Written out rather than named, `duo_v5` is:
 

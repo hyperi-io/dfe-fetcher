@@ -48,7 +48,7 @@ use crate::profile::bound::{
     BoundEndpoint, BoundLookup, BoundProfile, BoundRequest, KeySource, bind, render_body,
 };
 use crate::profile::template::TemplateCtx;
-use crate::profile::{Method, RestInstance, RestProfile};
+use crate::profile::{AuthKind, Method, RestInstance, RestProfile};
 use crate::request::{ExchangeClient, RequestExecutor};
 use window::Step;
 
@@ -80,6 +80,15 @@ impl RestShape {
         exchange: &Arc<ExchangeClient>,
     ) -> Result<Self> {
         let bound = bind(profile, instance, connection_id)?;
+        // A signing scheme that is a crypto exemption says so per connection,
+        // however it was selected -- the profile's preset, the instance's
+        // `signature_preset`, a typed block's own spelling of it, or a profile
+        // that names the mode and spells no scheme.
+        if instance.auth.mode == AuthKind::Signature
+            && let Some(exemption) = instance.signature(profile).crypto_exemption()
+        {
+            tracing::warn!(source = connection_id, "connection {exemption}");
+        }
         // The INSTANCE's context, never a unit's: a credential mode is built
         // once and its endpoint and claims are rendered here, so no unit can
         // change what the mode mints (see `AuthMode`).

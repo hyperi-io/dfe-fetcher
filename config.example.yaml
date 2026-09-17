@@ -254,7 +254,7 @@ sources:
     # integration_key: ""                        # ikey
     # secret_key: ""                             # skey
     # credential_secret: "vault:kv/data/duo:skey"
-    # signature_version: v2                      # an older tenant's scheme
+    # signature_version: v2                      # older tenant; SHA-1, warns at startup
     services:
       - name: authentication_logs
         # config:

@@ -2962,7 +2962,8 @@ pub struct BitwardenService {
 ///
 /// Duo documents version 5 and some of its newer Admin API endpoints accept
 /// nothing else, so it is the default. Version 2 is Duo's legacy scheme and is
-/// here for a tenant whose endpoints still verify it.
+/// here for a tenant whose endpoints still verify it; it keys its HMAC with
+/// SHA-1, so a connection on it warns at startup.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -3019,7 +3020,7 @@ pub struct DuoSourceConfig {
     pub credential_secret: Option<String>,
 
     /// Which version of Duo's request signing the tenant verifies; `v5`
-    /// unless an older tenant needs `v2`.
+    /// unless an older tenant needs `v2`, which signs SHA-1 and warns.
     pub signature_version: DuoSignatureVersion,
 
     /// API base override for testing (full URL incl. scheme). Production

@@ -2450,7 +2450,7 @@
           ]
         },
         "signature_version": {
-          "description": "Which version of Duo's request signing the tenant verifies; `v5`\nunless an older tenant needs `v2`.",
+          "description": "Which version of Duo's request signing the tenant verifies; `v5`\nunless an older tenant needs `v2`, which signs SHA-1 and warns.",
           "$ref": "#/$defs/DuoSignatureVersion",
           "default": "v5"
         },
@@ -2501,7 +2501,7 @@
       }
     },
     "DuoSignatureVersion": {
-      "description": "Which version of Duo's request signing a tenant's endpoints verify.\n\nDuo documents version 5 and some of its newer Admin API endpoints accept\nnothing else, so it is the default. Version 2 is Duo's legacy scheme and is\nhere for a tenant whose endpoints still verify it.",
+      "description": "Which version of Duo's request signing a tenant's endpoints verify.\n\nDuo documents version 5 and some of its newer Admin API endpoints accept\nnothing else, so it is the default. Version 2 is Duo's legacy scheme and is\nhere for a tenant whose endpoints still verify it; it keys its HMAC with\nSHA-1, so a connection on it warns at startup.",
       "oneOf": [
         {
           "description": "HMAC-SHA512 over seven canonical lines.",
@@ -3990,7 +3990,7 @@
           "const": "oauth2_client_credentials"
         },
         {
-          "description": "A keyed digest over a canonical string of the built request, in the\ndigest, the canonical shape and the placement the profile's\n[`SignatureSpec`] names. Duo's Admin API signing is the `duo_v5` and\n`duo_v2` presets of it; `duo_hmac` is the old spelling of the mode.",
+          "description": "A keyed digest over a canonical string of the built request, in the\ndigest, the canonical shape and the placement the profile's\n[`SignatureSpec`] names. Duo's Admin API signing is the `duo_v5` and\n`duo_v2` presets of it; `duo_hmac` is the old spelling of the mode, and\na profile on that spelling with no `signature` block signs the `duo_v2`\nthe name used to mean.",
           "type": "string",
           "const": "signature"
         },

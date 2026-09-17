@@ -746,9 +746,15 @@ fn duo_encode(input: &str) -> String {
 
 /// The canonical string Duo signs, from what the request carried: the Date
 /// header, the method, the lowercase Host header, the path, and the query
-/// pairs sorted by name and re-encoded. Version 5 adds the hash of the body --
+/// pairs encoded and then sorted. Version 5 adds the hash of the body --
 /// empty on every route here, all of them GET -- and the hash of the signed
 /// `x-duo-` headers, of which the fetcher sends none.
+///
+/// The encode comes BEFORE the sort, which is the order Duo's canonicalising
+/// specifies: a name whose encoding moves it is ordered by what goes on the
+/// wire. Sorting the decoded pairs agrees on every name that survives encoding
+/// unchanged and disagrees on the rest, so a provider that sorted them first
+/// would accept a signature over the wrong string.
 fn duo_canonical(
     version: DuoSigning,
     method: &str,
@@ -765,12 +771,12 @@ fn duo_canonical(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let mut pairs: Vec<(&String, &String)> = query.iter().collect();
-    pairs.sort();
-    let query: Vec<String> = pairs
+    let mut pairs: Vec<(String, String)> = query
         .iter()
-        .map(|(k, v)| format!("{}={}", duo_encode(k), duo_encode(v)))
+        .map(|(k, v)| (duo_encode(k), duo_encode(v)))
         .collect();
+    pairs.sort();
+    let query: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
     let five = format!("{date}\n{method}\n{host}\n{path}\n{}", query.join("&"));
     match version {
         DuoSigning::V2 => five,
@@ -779,6 +785,31 @@ fn duo_canonical(
             format!("{five}\n{empty}\n{empty}")
         }
     }
+}
+
+/// The provider's own canonicalising, over the one query shape that tells the
+/// two orders apart: `a/b` encodes to `a%2Fb` and leads, where sorting the
+/// decoded names would put `a.b` first.
+#[test]
+fn the_providers_canonical_query_is_ordered_by_the_encoded_pairs() {
+    let mut headers = HeaderMap::new();
+    headers.insert("date", "Tue, 21 Aug 2012 17:29:18 -0000".parse().unwrap());
+    headers.insert(
+        header::HOST,
+        "api-deadbeef.duosecurity.com".parse().unwrap(),
+    );
+    let query = [("a.b", "1"), ("a/b", "2")]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    assert_eq!(
+        duo_canonical(DuoSigning::V2, "GET", &headers, "/admin/v1/check", &query),
+        "Tue, 21 Aug 2012 17:29:18 -0000\n\
+         GET\n\
+         api-deadbeef.duosecurity.com\n\
+         /admin/v1/check\n\
+         a%2Fb=2&a.b=1"
+    );
 }
 
 /// The `hex(hmac(skey, canonical))` a correctly signed request carries in its

@@ -566,9 +566,13 @@
     description: Admin API secret key (skey).
     secret: true
   - name: signature_version
-    type: string
+    type: enum
     required: false
-    description: 'Signing version the tenant verifies: v5, or v2 for an older one.'
+    default: v5
+    description: Signing version the tenant verifies; v2 is the legacy scheme.
+    enum_values:
+    - v5
+    - v2
   - name: credential_secret
     type: string
     required: false

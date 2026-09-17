@@ -2139,7 +2139,7 @@ $defs:
       signature_version:
         description: |-
           Which version of Duo's request signing the tenant verifies; `v5`
-          unless an older tenant needs `v2`.
+          unless an older tenant needs `v2`, which signs SHA-1 and warns.
         $ref: '#/$defs/DuoSignatureVersion'
         default: v5
       api_url_override:
@@ -2185,7 +2185,8 @@ $defs:
 
       Duo documents version 5 and some of its newer Admin API endpoints accept
       nothing else, so it is the default. Version 2 is Duo's legacy scheme and is
-      here for a tenant whose endpoints still verify it.
+      here for a tenant whose endpoints still verify it; it keys its HMAC with
+      SHA-1, so a connection on it warns at startup.
     oneOf:
     - description: HMAC-SHA512 over seven canonical lines.
       type: string
@@ -3488,7 +3489,9 @@ $defs:
         A keyed digest over a canonical string of the built request, in the
         digest, the canonical shape and the placement the profile's
         [`SignatureSpec`] names. Duo's Admin API signing is the `duo_v5` and
-        `duo_v2` presets of it; `duo_hmac` is the old spelling of the mode.
+        `duo_v2` presets of it; `duo_hmac` is the old spelling of the mode, and
+        a profile on that spelling with no `signature` block signs the `duo_v2`
+        the name used to mean.
       type: string
       const: signature
     - description: |-

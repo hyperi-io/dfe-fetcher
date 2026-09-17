@@ -75,7 +75,9 @@ pub enum AuthKind {
     /// A keyed digest over a canonical string of the built request, in the
     /// digest, the canonical shape and the placement the profile's
     /// [`SignatureSpec`] names. Duo's Admin API signing is the `duo_v5` and
-    /// `duo_v2` presets of it; `duo_hmac` is the old spelling of the mode.
+    /// `duo_v2` presets of it; `duo_hmac` is the old spelling of the mode, and
+    /// a profile on that spelling with no `signature` block signs the `duo_v2`
+    /// the name used to mean.
     #[serde(alias = "duo_hmac")]
     Signature,
     /// OAuth2 JWT-bearer grant (RFC 7523): an RS256 assertion signed with the
@@ -578,13 +580,46 @@ impl SignatureSpec {
         *self == bare
     }
 
-    /// The scheme in force: the preset's spec when one is named, else this one.
+    /// Whether the block says nothing at all, so the profile names the mode
+    /// and spells no scheme.
+    #[must_use]
+    fn unspelled(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The scheme in force: the preset's spec when one is named, this block
+    /// when it spells a scheme out, and Duo's version 2 when it says nothing.
+    ///
+    /// The mode was spelled `duo_hmac` before the scheme became config, and
+    /// what it signed was Duo's version 2. A profile written against that name
+    /// has no block to read -- there was none to write -- so an unspelled
+    /// scheme means what the name used to mean, and such a profile binds and
+    /// signs as it did. Anything that names a preset or spells a scheme out,
+    /// the shipped `duo` profile included, is unaffected.
     #[must_use]
     pub fn effective(&self) -> Cow<'_, Self> {
         match self.preset {
             Some(preset) => Cow::Owned(preset.spec()),
+            None if self.unspelled() => Cow::Owned(SignaturePreset::DuoV2.spec()),
             None => Cow::Borrowed(self),
         }
+    }
+
+    /// Why this scheme is an exemption from the crypto standard, or `None`
+    /// when it takes none.
+    ///
+    /// SHA-1 is not used for a security purpose in this house and signing a
+    /// request is one. Duo's version 2 is the exemption, taken because an
+    /// older tenant's endpoints verify nothing else, and every bind that takes
+    /// it says so rather than passing in silence. Read the EFFECTIVE scheme,
+    /// so the answer is the same whichever route selected it.
+    #[must_use]
+    pub fn crypto_exemption(&self) -> Option<&'static str> {
+        (self.digest == SignatureDigest::Sha1).then_some(
+            "signs requests with SHA-1, which is kept out of a security purpose everywhere \
+             else; Duo's signature version 2 is the exemption, so move the tenant to version \
+             5 wherever its endpoints verify it",
+        )
     }
 }
 
@@ -1867,9 +1902,20 @@ pub(crate) fn credential_placement_issues(placements: &[CredentialPlacementSpec]
 /// list it is refused. Spelled out rather than derived: the names are set by
 /// this crate, and one added without a thought for signing would otherwise
 /// widen what can reach a signature.
-const CONTEXT_NAMES: [&str; 11] = [
+///
+/// A denylist is the weaker of the two shapes -- a twelfth name added here
+/// would pass load validation until someone remembered this list -- and an
+/// allowlist over [`SIGNATURE_FACTS`] alone would be safer. It is not one
+/// because CEL reads a name the grammar never set as an error rather than a
+/// blank, so the render is fail-closed and the twelfth name would refuse the
+/// request instead of signing over it.
+pub(crate) const CONTEXT_NAMES: [&str; 11] = [
     "vars", "base_url", "unit", "window", "page", "key", "item", "ids", "auth", "body", "headers",
 ];
+
+/// The fact a `headers` template may not read: the hash covering the headers
+/// the scheme sets, which is computed once they are all on the request.
+const HEADERS_HASH_FACT: &str = "headers_hash";
 
 /// Why `template` may not compute a signature, or `None` when it may.
 ///
@@ -1890,6 +1936,26 @@ pub(crate) fn signature_template_issue(template: &Template) -> Option<String> {
         })
 }
 
+/// Why `source` may not stand as a signature `headers` template, or `None`
+/// when it may.
+///
+/// `signature.headers_hash` covers the headers the scheme sets, so it is
+/// computed once they are on the request -- after every one of these templates
+/// has rendered. One that reads it is asking for the hash of itself, which the
+/// facts do not carry, and CEL would refuse it on the first tick: under a hot
+/// reload that takes a running source down rather than refusing the config.
+/// The check is over the template TEXT because `references` answers for a
+/// top-level name and this is a member of one.
+pub(crate) fn signature_header_template_issue(source: &str) -> Option<String> {
+    source.contains(HEADERS_HASH_FACT).then(|| {
+        format!(
+            "reads `{SIGNATURE_FACTS}.{HEADERS_HASH_FACT}`, which covers the headers this \
+             template is one of and so is computed after it; a signed header carries a fact, \
+             never the hash of itself"
+        )
+    })
+}
+
 /// Every problem with a signing scheme's shape.
 ///
 /// A named `preset` is the whole scheme, so a block that names one and also
@@ -1906,6 +1972,11 @@ pub(crate) fn signature_spec_issues(spec: &SignatureSpec) -> Vec<Issue> {
                  block, or drop the preset and spell the scheme out",
             ));
         }
+        return issues;
+    }
+    // A block that says nothing is the scheme the mode's old name carried; see
+    // `SignatureSpec::effective`.
+    if spec.unspelled() {
         return issues;
     }
     if spec.canonical.is_empty() {
@@ -1933,6 +2004,9 @@ pub(crate) fn signature_spec_issues(spec: &SignatureSpec) -> Vec<Issue> {
                 field.clone(),
                 format!("`{name}` is not a header name"),
             ));
+        }
+        if let Some(reason) = signature_header_template_issue(value) {
+            issues.push(Issue::new(field.clone(), reason));
         }
         check(field, value, &mut issues);
     }
@@ -3295,10 +3369,32 @@ impl RestInstance {
             }
             AuthKind::Signature => {
                 needs("secret_key", self.auth.secret_key.is_some(), &mut issues);
+                let scheme = self.signature(profile);
                 // A basic placement carries the key id as the user name, so a
                 // request without one authenticates as no integration at all.
-                if self.signature(profile).place == SignatureTarget::Basic {
+                if scheme.place == SignatureTarget::Basic {
                     needs("key_id", self.auth.key_id.is_some(), &mut issues);
+                }
+                // Duo's version 2 puts a POST's BODY parameters on the line
+                // this scheme builds from the query, and nothing in the grammar
+                // says so. A POST would be signed over a query it does not
+                // carry and Duo would refuse every request, so the pairing is
+                // refused here instead. Version 5 hashes the body on a line of
+                // its own and has no such trap.
+                if *scheme == SignaturePreset::DuoV2.spec() {
+                    for endpoint in &profile.endpoints {
+                        if profile.method_of(endpoint) == Method::Post {
+                            issues.push(Issue::new(
+                                "auth.signature_preset",
+                                format!(
+                                    "`duo_v2` signs a POST's body parameters where this grammar \
+                                     signs the query, so unit `{}` would be signed over the \
+                                     wrong string; that unit needs `duo_v5`",
+                                    endpoint.unit
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
             AuthKind::JwtBearer => {
@@ -3558,8 +3654,76 @@ endpoints:
     paginate: { strategy: none }
 "#;
 
+    /// An inline profile as it was written before the signing scheme became
+    /// config: the mode under its old name and no block, because there was
+    /// none to write.
+    const LEGACY_DUO: &str = r#"
+base_url: "{{ vars.base_url }}"
+shape: incremental
+auth: { accepts: [duo_hmac] }
+window: { format: epoch_millis, lookback: 1h }
+endpoints:
+  - unit: authentication_logs
+    path: /admin/v2/logs/authentication
+    rows: { decoder: json_at, at: "/response/authlogs" }
+    paginate: { strategy: none }
+"#;
+
     fn parse(yaml: &str) -> RestProfile {
         serde_yaml_ng::from_str(yaml).unwrap()
+    }
+
+    /// The mode's old name still binds, and with no block to read it carries
+    /// the scheme that name used to mean rather than being refused for a
+    /// canonical string it was never able to write.
+    #[test]
+    fn the_old_mode_name_with_no_block_is_the_scheme_it_used_to_carry() {
+        let profile = parse(LEGACY_DUO);
+        assert_eq!(profile.auth.accepts, [AuthKind::Signature]);
+        assert!(profile.validate().is_empty(), "{:?}", profile.validate());
+
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: duo_hmac, integration_key: DI, secret_key: env:SKEY }\n",
+        )
+        .unwrap();
+        assert_eq!(instance.auth.mode, AuthKind::Signature);
+        assert_eq!(instance.auth.key_id.as_deref(), Some("DI"));
+        let issues = instance.validate(&profile);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(*instance.signature(&profile), SignaturePreset::DuoV2.spec());
+        assert!(instance.signature(&profile).crypto_exemption().is_some());
+    }
+
+    /// Duo's version 2 puts a POST's body parameters on the line this grammar
+    /// builds from the query, so the pairing is refused rather than signing
+    /// every POST over a string Duo will not recompute.
+    #[test]
+    fn duo_v2_is_refused_on_a_unit_that_posts() {
+        let mut profile = parse(LEGACY_DUO);
+        profile.endpoints[0].method = Some(Method::Post);
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v2 }\n",
+        )
+        .unwrap();
+        let issues = instance.validate(&profile);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.message.contains("duo_v2") && i.message.contains("authentication_logs")),
+            "{issues:?}"
+        );
+
+        // Version 5 hashes the body on a line of its own, so the same unit is
+        // fine under it.
+        let v5: RestInstance = serde_yaml_ng::from_str(
+            "profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v5 }\n",
+        )
+        .unwrap();
+        assert!(
+            v5.validate(&profile).is_empty(),
+            "{:?}",
+            v5.validate(&profile)
+        );
     }
 
     /// Every credential field is checked, not the mode's own alone, and the
