@@ -89,9 +89,7 @@ scalo = { workspace = true, features = [
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["rt"] }
-tokio-stream = { workspace = true }
 futures = { workspace = true }
-futures-core = { workspace = true }
 
 # JSON
 serde = { workspace = true }
@@ -109,14 +107,12 @@ schemars = { workspace = true }
 
 # Performance
 fastrand = "2"
-rustc-hash = "2"
 # SIMD substring search for the enrich pre-filter; already in the graph
 # transitively, declared here because src/pipeline calls it directly.
 memchr = { workspace = true }
 # Allocation-free integer formatting for the enrich append path; already in the
 # graph transitively, declared here because src/pipeline calls it directly.
 itoa = { workspace = true }
-compact_str = "0.10"
 parking_lot = { workspace = true }
 
 # Error handling
@@ -126,9 +122,8 @@ anyhow = "1"
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
-# Logging
+# Logging. scalo initialises the subscriber, so nothing here declares one.
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # Metrics (global recorder integration via scalo MetricsManager)
 metrics = { workspace = true }
@@ -139,7 +134,6 @@ bytes = { workspace = true }
 
 # Utilities
 chrono = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
 async-trait = { workspace = true }
 url = { workspace = true }
 
@@ -155,6 +149,10 @@ tikv-jemallocator = { version = "0.7", optional = true }
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = { workspace = true }
+# Test-only: the framework suite wraps a channel as a stream, and three suites
+# name their fixtures by uuid. Neither reaches the binary.
+tokio-stream = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 tokio-test = "0.4"
 dotenvy = "0.15"
 wiremock = "0.6"
