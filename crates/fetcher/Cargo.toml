@@ -101,15 +101,15 @@ serde_yaml_ng = { workspace = true }
 # Env-var layering over an explicit --config file (scalo's cascade only merges
 # env for files it discovers itself). Same range scalo pins, so cargo unifies to
 # one figment in the graph.
-figment = { version = ">=0.10, <0.11", features = ["env"] }
+figment = { version = ">=0.10.19, <0.11", features = ["env"] }
 
 # JSON Schema derivation for the reflectable config-schema capability
 # (scalo-rs#6).
 schemars = { workspace = true }
 
 # Performance
-fastrand = "2"
-rustc-hash = "2"
+fastrand = "2.5.0"
+rustc-hash = "2.1.3"
 # SIMD substring search for the enrich pre-filter; already in the graph
 # transitively, declared here because src/pipeline calls it directly.
 memchr = { workspace = true }
@@ -121,14 +121,14 @@ parking_lot = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
-anyhow = "1"
+anyhow = "1.0.104"
 
 # CLI
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4.6.6", features = ["derive", "env"] }
 
 # Logging
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 
 # Metrics (global recorder integration via scalo MetricsManager)
 metrics = { workspace = true }
@@ -153,17 +153,17 @@ hex = { workspace = true }
 tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 tempfile = { workspace = true }
-tokio-test = "0.4"
-dotenvy = "0.15"
-wiremock = "0.6"
+tokio-test = "0.4.5"
+dotenvy = "0.15.7"
+wiremock = "0.6.5"
 # The suites talk to wiremock and the live providers directly; the app itself
 # reaches HTTP only through the REST crate.
 reqwest = { workspace = true, features = ["json", "rustls"] }
 # `util` brings ServiceExt::oneshot for the axum ingest handler tests. tower 0.5
 # ships ZERO default features, so this must be explicit (not transitive on axum).
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5.3", features = ["util"] }
 # The CloudWatch metrics test decodes the OTLP record the profile lands.
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
