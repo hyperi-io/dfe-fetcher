@@ -624,6 +624,34 @@ sources:
     #         query: { page_size: 500 }
     #         rows: { decoder: json_at, at: "/assets" }
     #         paginate: { strategy: cursor, from: "body:/next_key", into: "query:start_key", stop_when: "body.next_key == ''" }
+    # An appliance that mints a session token from a login call instead of
+    # serving OAuth2 -- vCenter, F5, Check Point. The login posts the
+    # administrator's credentials, the token comes back in a response field or
+    # header, and every later request carries it in the header the profile
+    # names. No shipped profile, because each appliance's endpoint differs;
+    # the full grammar is in docs/reference/profile-grammar.md.
+    # appliance:
+    #   enabled: true
+    #   topic: appliance
+    #   auth:
+    #     mode: session_login
+    #     username: "svc-dfe"
+    #     password: "vault:kv/data/appliance:password"
+    #   vars: { base_url: "https://appliance.example.internal/api" }
+    #   profile:
+    #     base_url: "{{ vars.base_url }}"
+    #     shape: incremental
+    #     auth:
+    #       accepts: [session_login]
+    #       session_login:
+    #         url: "{{ vars.base_url }}/session"   # https or loopback, refused when the source binds
+    #         send: body                           # body | basic
+    #         token_at: "/session_token"           # or token_header: X-Subject-Token
+    #         ttl_secs: 1800                       # the appliance states no expiry, so declare one
+    #         header: X-Session-Token              # where every later request carries it
+    #     endpoints:
+    #       - unit: events
+    #         path: /events
 
 # =============================================================================
 # Source framework: accumulate, oversize, self-regulation -- hot-reloaded per tick

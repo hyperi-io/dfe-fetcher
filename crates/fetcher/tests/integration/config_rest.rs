@@ -290,3 +290,47 @@ fn two_instances_of_one_inline_profile_carry_their_own_identity() {
         "secret specs are redacted on serialise: {json}"
     );
 }
+
+/// The example carries a session-login appliance stanza, which is the one
+/// auth mode with no shipped profile and no typed block to catch a mistake in
+/// it. Uncommented it has to load and bind, so an operator pasting it starts
+/// from something that works.
+#[test]
+fn the_example_appliance_stanza_binds_a_session_login() {
+    use dfe_fetcher_rest::profile::AuthKind;
+
+    let yaml =
+        std::fs::read_to_string(dfe_fetcher::deployment::repo_root().join("config.example.yaml"))
+            .expect("config.example.yaml exists");
+    let start = yaml
+        .find("    # appliance:")
+        .expect("the commented appliance stanza is present");
+    let stanza: String = yaml[start..]
+        .lines()
+        .take_while(|l| l.trim_start().starts_with('#'))
+        .map(|l| {
+            let body = l.trim_start().trim_start_matches('#');
+            format!("    {}", body.strip_prefix(' ').unwrap_or(body))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(stanza.is_ascii(), "the example is ASCII only");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let body = format!(
+        "instance_id: appliance-pod\nkafka:\n  brokers: [broker:9092]\nsources:\n  rest:\n{stanza}\n"
+    );
+    let config = Config::load_from_file(&write(&dir, &body)).expect("the stanza parses as config");
+    config.validate().expect("the stanza binds");
+
+    let appliance = &config.sources.rest["appliance"];
+    assert_eq!(appliance.auth.mode, AuthKind::SessionLogin);
+    assert!(
+        appliance
+            .auth
+            .password
+            .as_ref()
+            .is_some_and(|p| p.expose().starts_with("vault:kv/data/")),
+        "the password is a secret ref, never a literal"
+    );
+}

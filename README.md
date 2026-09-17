@@ -197,7 +197,7 @@ The setup guides are indexed in
 | Cisco Duo | `sources.duo` | Admin API authentication logs | alpha | [duo.md](docs/cloud-setup/duo.md) |
 | CrowdStrike | `sources.crowdstrike` | Falcon alerts | alpha | [crowdstrike.md](docs/cloud-setup/crowdstrike.md) |
 | Cloudflare | `sources.cloudflare` | Account audit logs | alpha | [cloudflare.md](docs/cloud-setup/cloudflare.md) |
-| Datadog | `sources.rest` (profile `datadog`) | Audit trail events, security signals | alpha | [config.example.yaml](config.example.yaml) |
+| Datadog | `sources.rest` (profile `datadog`) | Audit trail events, security signals | alpha | [datadog.md](docs/cloud-setup/datadog.md) |
 | Bitwarden | `sources.bitwarden` | Organisation event logs | alpha | [bitwarden.md](docs/cloud-setup/bitwarden.md) |
 | 1Password | `sources.onepassword` | Sign-in attempts, item usages, audit events | alpha | [onepassword.md](docs/cloud-setup/onepassword.md) |
 | Slack | `sources.slack` | Enterprise Grid audit logs | alpha | [slack.md](docs/cloud-setup/slack.md) |
