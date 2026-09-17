@@ -313,8 +313,13 @@ impl VaultTestConfig {
 // sees the image. Hoisting the tags out is what puts them back under review,
 // hence the annotations.
 
-/// renovate: datasource=docker depName=apache/kafka-native
-const KAFKA_TAG: &str = "4.3.1";
+/// The version the fleet deploys, not the newest published. Strimzi 0.51 is
+/// held back deliberately (1.0 drops the CRD versions the charts use) and its
+/// ceiling is Kafka 4.2.0, so a test proving broker behaviour above that proves
+/// it against something nobody runs. Raise this only with the operator.
+///
+/// renovate: datasource=docker depName=apache/kafka-native allowedVersions=<=4.2.0
+const KAFKA_TAG: &str = "4.2.0";
 
 /// SEMVER line only -- do NOT move this to the CalVer tags (`2026.07.0` etc).
 /// The CalVer images on `localstack/localstack` require a licence: they exit 55
