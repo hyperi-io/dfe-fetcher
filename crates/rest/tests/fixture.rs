@@ -504,8 +504,15 @@ async fn a_json_array_root_streams_and_a_dump_unit_lands_on_its_own_topic() {
     assert_eq!(&*unit.topic, "fixture-items");
 }
 
+/// The three placed-or-minted modes end to end, and the renewal point: a token
+/// still inside its hold is reused, one past it is exchanged again, and a
+/// refusal is not held so the next tick reads the endpoint's current answer.
+///
+/// The lifetime the endpoint advertises is the knob, so no leg of this waits on
+/// a clock.
 #[tokio::test]
-async fn bearer_api_key_and_oauth2_modes_authenticate_and_oauth2_refreshes_on_expiry() {
+async fn bearer_api_key_and_oauth2_modes_authenticate_and_a_token_is_reused_until_its_renewal_point()
+ {
     let fx = common::start().await;
     let p = "profile: auth\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [bearer, api_key, oauth2_client_credentials]\n  api_key: { header: Authorization, prefix: \"SSWS \" }\n  oauth2_client_credentials: { token_url: \"{{ base_url }}/token\", early_refresh_secs: 1 }\nendpoints:\n  - { unit: bearer, path: /auth/bearer, rows: { decoder: json_array } }\n  - { unit: apikey, path: /auth/apikey, rows: { decoder: json_array } }\n  - { unit: oauth, path: /auth/oauth, rows: { decoder: json_array } }\n".to_string();
     let bearer = shape(
@@ -537,21 +544,29 @@ async fn bearer_api_key_and_oauth2_modes_authenticate_and_oauth2_refreshes_on_ex
         1,
         "a token still inside its hold is reused"
     );
-    // The token lives a second and the profile asks to refresh a second early,
-    // a margin not shorter than the lifetime, so half the lifetime is held.
-    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-    assert_eq!(fetch(&oauth, "oauth", None).await.unwrap().len(), 1);
+
+    // A token that advertises no lifetime at all is past its renewal point the
+    // moment it is read, so every request of a mode holding one exchanges again.
+    fx.set_token_ttl(0);
+    let expiring = shape(
+        &fx,
+        &p,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: client-a, client_secret: secret-a }\n",
+    );
+    assert_eq!(fetch(&expiring, "oauth", None).await.unwrap().len(), 1);
+    assert_eq!(fetch(&expiring, "oauth", None).await.unwrap().len(), 1);
     assert_eq!(
         fx.token_exchanges(),
-        2,
-        "the token was past its renewal point"
+        3,
+        "each request found the held token past its renewal point"
     );
     let seen = fx.requests_to("/auth/oauth");
     assert_eq!(
         seen.last().unwrap().authorization.as_deref(),
-        Some("Bearer tok-2"),
+        Some("Bearer tok-3"),
         "the request after the renewal carried the fresh token, not the stale one"
     );
+    fx.set_token_ttl(3600);
 
     let wrong = shape(
         &fx,
@@ -569,8 +584,140 @@ async fn bearer_api_key_and_oauth2_modes_authenticate_and_oauth2_refreshes_on_ex
     assert_eq!(
         fx.token_exchanges() - before,
         2,
-        "a refusal is not held, so a rotated secret is picked up on the next tick"
+        "a refusal is not held, so the next tick reads the endpoint's current answer"
     );
+}
+
+/// A provider that revokes a token before its advertised expiry answers 401,
+/// and the mode has to drop what it holds: the cache would otherwise present the
+/// revoked token until its renewal point -- at least half its lifetime -- so
+/// every tick until then would fail.
+#[tokio::test]
+async fn a_refused_request_drops_the_token_so_the_next_tick_mints_again() {
+    let fx = common::start().await;
+    let p = "profile: revoked\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials: { token_url: \"{{ base_url }}/token\" }\nendpoints:\n  - { unit: data, path: /revoked/data, rows: { decoder: json_array } }\n";
+    let s = shape(
+        &fx,
+        p,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: client-a, client_secret: secret-a }\n",
+    );
+
+    // The token lives an hour, so nothing here turns on expiry.
+    let err = fetch(&s, "data", None).await.unwrap_err();
+    assert!(
+        matches!(err, Error::Api { status: 401, .. }),
+        "the provider refused the token it had just been given: {err:?}"
+    );
+    assert_eq!(fx.token_exchanges(), 1);
+
+    let rows = fetch(&s, "data", None)
+        .await
+        .expect("the second tick mints");
+    assert_eq!(rows[0]["token"], "tok-2");
+    assert_eq!(
+        fx.token_exchanges(),
+        2,
+        "the refusal dropped the held token rather than holding it to its renewal point"
+    );
+    let seen = fx.requests_to("/revoked/data");
+    assert_eq!(seen[0].authorization.as_deref(), Some("Bearer tok-1"));
+    assert_eq!(seen[1].authorization.as_deref(), Some("Bearer tok-2"));
+}
+
+/// A credential is minted once per instance and per scope, so a template that
+/// decides what it mints may not depend on which unit asks. Binding refuses the
+/// profile rather than freezing whichever unit's answer reached the mode first,
+/// which for a domain-wide-delegation `sub` would run every unit as another
+/// unit's principal.
+#[tokio::test]
+async fn a_credential_template_that_would_differ_by_unit_is_refused_when_the_instance_binds() {
+    let fx = common::start().await;
+
+    // The token endpoint reads `base_url`, and one unit names its own.
+    let p = "profile: hosts\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials: { token_url: \"{{ base_url }}/token\" }\nendpoints:\n  - { unit: here, path: /auth/oauth, rows: { decoder: json_array } }\n  - { unit: elsewhere, base_url: \"{{ vars.other_url }}\", path: /auth/oauth, rows: { decoder: json_array } }\n";
+    let mut inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: client-a, client_secret: secret-a }\n",
+    );
+    inst.vars.insert(
+        "other_url".into(),
+        Value::String("http://other.example".into()),
+    );
+    let err = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .expect_err("one mode, one token endpoint");
+    assert!(
+        err.to_string()
+            .contains("auth.oauth2_client_credentials.token_url"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("elsewhere"), "{err}");
+    assert_eq!(fx.token_exchanges(), 0, "nothing was minted at all");
+
+    // The impersonation subject of a JWT-bearer assertion off a per-unit var:
+    // the claim that decides WHO the token acts as.
+    let (private_pem, public_pem) = common::rsa_key_pair();
+    fx.accept_assertions_from(&public_pem);
+    let key_json = common::service_account_key(&private_pem, &format!("{}/token", fx.base_url()));
+    let dwd = "profile: dwd\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [jwt_bearer]\n  jwt_bearer:\n    token_url: \"{{ auth.token_uri }}\"\n    claims: { iss: \"{{ auth.client_email }}\", scope: \"{{ vars.scope }}\", sub: \"{{ vars.admin_email }}\" }\nvars: { scope: cloud-platform, admin_email: \"admin@example.com\" }\nendpoints:\n  - { unit: one, path: /auth/oauth, rows: { decoder: json_array } }\n  - { unit: two, path: /auth/oauth, vars: { admin_email: \"other@example.com\" }, rows: { decoder: json_array } }\n";
+    let mut inst = instance(&fx, "profile: x\ntopic: t\nauth: { mode: jwt_bearer }\n");
+    inst.auth.service_account_key = Some(key_json.clone().into());
+    let err = RestShape::from_instance(
+        &profile(dwd),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .expect_err("the subject decides who the token acts as");
+    assert!(
+        err.to_string().contains("auth.jwt_bearer.claims.sub"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("two"), "{err}");
+    assert_eq!(fx.token_exchanges(), 0, "nothing was minted at all");
+
+    // A unit may still name its own host, and its own vars, as long as no
+    // credential template reads them.
+    let fine = dwd.replace(
+        "token_url: \"{{ auth.token_uri }}\"",
+        "token_url: \"{{ vars.token_url }}\"",
+    );
+    let fine = fine.replace(
+        "vars: { scope: cloud-platform, admin_email: \"admin@example.com\" }",
+        "vars: { scope: cloud-platform, admin_email: \"admin@example.com\", token_url: \"\" }",
+    );
+    let fine = fine.replace(
+        "vars: { admin_email: \"other@example.com\" }",
+        "vars: { page_size: 10 }",
+    );
+    let mut inst = instance(&fx, "profile: x\ntopic: t\nauth: { mode: jwt_bearer }\n");
+    inst.auth.service_account_key = Some(key_json.into());
+    inst.vars.insert(
+        "token_url".into(),
+        Value::String(format!("{}/token", fx.base_url())),
+    );
+    let s = RestShape::from_instance(
+        &profile(&fine),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .expect("per-unit vars a credential template does not read are fine");
+    assert_eq!(fetch(&s, "one", None).await.unwrap().len(), 1);
+    assert_eq!(fetch(&s, "two", None).await.unwrap().len(), 1);
+    assert_eq!(
+        fx.token_exchanges(),
+        1,
+        "one mode, one token, whichever unit asks"
+    );
+    assert_eq!(fx.assertions()[0]["sub"], "admin@example.com");
 }
 
 #[tokio::test]

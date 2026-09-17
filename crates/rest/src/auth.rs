@@ -15,12 +15,21 @@
 //! to the BUILT request, which is what lets a signing mode see the final
 //! method, host, path and body.
 //!
+//! **A credential mode never sees a unit's context.** The token endpoint and
+//! the JWT claims are rendered when the mode is built, against the instance's
+//! own context, and held as owned values; the templates a profile writes there
+//! may read `vars`, `base_url` and the authenticator's `auth.*`, and binding
+//! refuses one that reads anything only a unit or a request supplies. A claim
+//! set that cannot vary by unit cannot be minted for the wrong identity, which
+//! matters because the claim naming a domain-wide-delegation subject decides
+//! WHO the token acts as.
+//!
 //! The modes divide three ways, and each keeps only what scalo cannot own:
 //!
 //! - **A resolved credential in a place the profile names.** `bearer`,
-//!   `api_key` and `basic` are one of scalo's placements over a [`Resolving`]
-//!   exchange, so the credential spec resolves on first use and the writing of
-//!   the header, the query pair or the basic credential is scalo's.
+//!   `api_key` and `basic` are one of scalo's placements over the resolved
+//!   credential spec, so the spec resolves on first use and the writing of the
+//!   header, the query pair or the basic credential is scalo's.
 //! - **A minted token.** `oauth2_client_credentials`, `jwt_bearer` and
 //!   `gce_metadata` are scalo exchanges behind [`Cached`], which owns the
 //!   caching, the renewal point and the single-flight gate: a cold mode hit by
@@ -32,7 +41,8 @@
 //!
 //! [`AuthMode::signer`] is how the executor reaches a mode: a [`ModeSigner`]
 //! is scalo's [`RequestSigner`] over one request's context, and its `sign` is
-//! the dispatcher that picks the arm.
+//! the dispatcher that picks the arm. The context is there for the signing
+//! scope of `sigv4`, which is per unit by design.
 
 use std::fmt;
 use std::sync::Arc;
@@ -62,14 +72,6 @@ use crate::request::ExchangeClient;
 
 /// The form field of the JWT-bearer grant (RFC 7523).
 const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
-
-/// How long a resolved credential spec is held before the cache reads it
-/// again, longer than a process runs. The spec resolves once inside its
-/// [`Secret`] and stays resolved there, so a renewal reads that value and
-/// reaches no vault.
-// `Duration::from_days` is not a const fn on stable, so the seconds are spelled.
-#[allow(clippy::duration_suboptimal_units)]
-const RESOLVED_HOLD: Duration = Duration::from_secs(29 * 24 * 60 * 60);
 
 /// A credential acquisition's own result: scalo's error rather than the
 /// framework's, so a refusal keeps its status all the way to the executor.
@@ -111,27 +113,51 @@ fn acquisition_error(error: AuthError) -> Error {
     credential_error(SignError::from(error))
 }
 
-/// A credential spec as the exchange a cache holds.
+/// A resolved credential spec as the source a placement reads per request.
 ///
-/// The spec resolves once inside its [`Secret`] and is held there for the life
-/// of the process, so this is I/O the first time and a read after that.
+/// [`Secret`] is already a resolve-once cell with its own single-flight, so
+/// nothing is cached twice: this holds only the [`Credential`] that wraps the
+/// resolved value, built the first time a placement asks for it. A hit is one
+/// pointer clone. A spec that does not resolve is tried again by the next
+/// request rather than answered from the last refusal, because the cell holds
+/// values and not failures and the resolver is local.
 #[derive(Debug)]
-struct Resolving(Secret);
+struct Resolved {
+    spec: Secret,
+    credential: OnceCell<Arc<Credential>>,
+}
 
-impl Exchange for Resolving {
-    async fn acquire(&self) -> Acquired<Credential> {
-        let secret = self.0.value().await.map_err(unavailable)?;
-        let now = Instant::now();
-        Ok(Credential::new(
-            SensitiveString::from(secret),
-            now.checked_add(RESOLVED_HOLD).unwrap_or(now),
-        ))
+impl Resolved {
+    fn new(spec: Secret) -> Arc<Self> {
+        Arc::new(Self {
+            spec,
+            credential: OnceCell::new(),
+        })
     }
 }
 
-/// A resolved credential spec as the source a placement reads per request: a
-/// hit is one atomic load and a pointer clone.
-type StaticSource = Arc<Cached<Resolving>>;
+impl CredentialSource for Resolved {
+    async fn credential(&self) -> Acquired<Arc<Credential>> {
+        self.credential
+            .get_or_try_init(|| async {
+                let value = self.spec.value().await.map_err(unavailable)?;
+                Ok(Arc::new(Credential::new(
+                    SensitiveString::from(value),
+                    never_renewed(),
+                )))
+            })
+            .await
+            .map(Arc::clone)
+    }
+}
+
+/// A renewal point no request reaches: a resolved spec has nothing to renew
+/// from, because the value lives in its [`Secret`] for the life of the process.
+fn never_renewed() -> Instant {
+    let now = Instant::now();
+    now.checked_add(Duration::from_hours(24 * 365))
+        .unwrap_or(now)
+}
 
 /// A resolved credential and where the profile puts it.
 ///
@@ -139,15 +165,15 @@ type StaticSource = Arc<Cached<Resolving>>;
 /// resolve the spec without sending a request.
 #[derive(Debug)]
 pub struct Placed {
-    source: StaticSource,
-    placement: Placement<StaticSource>,
+    source: Arc<Resolved>,
+    placement: Placement<Arc<Resolved>>,
 }
 
 impl Placed {
     /// `Authorization: Bearer <token>`.
     #[must_use]
-    pub fn bearer(token: Secret) -> Self {
-        let source = held(token);
+    pub(crate) fn bearer(token: Secret) -> Self {
+        let source = Resolved::new(token);
         Self {
             placement: Placement::Header(HeaderPlacement::bearer(Arc::clone(&source))),
             source,
@@ -156,7 +182,7 @@ impl Placed {
 
     /// The key in `name`, after `prefix`.
     fn header(key: Secret, name: HeaderName, prefix: &str) -> Self {
-        let source = held(key);
+        let source = Resolved::new(key);
         Self {
             placement: Placement::Header(HeaderPlacement::new(name, prefix, Arc::clone(&source))),
             source,
@@ -165,7 +191,7 @@ impl Placed {
 
     /// The key as the query parameter `name`.
     fn query(key: Secret, name: &str) -> Self {
-        let source = held(key);
+        let source = Resolved::new(key);
         Self {
             placement: Placement::Query(QueryPlacement::new(name, Arc::clone(&source))),
             source,
@@ -173,12 +199,27 @@ impl Placed {
     }
 
     /// The password of HTTP basic auth under `username`.
-    fn basic(password: Secret, username: &str) -> Self {
-        let source = held(password);
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when the username carries a colon: the colon
+    /// separates the two halves of a basic credential and RFC 7617 gives the
+    /// username no way to escape one, so the request would authenticate as
+    /// something other than what was configured. The username is as static as
+    /// the `api_key` header name, so it is refused here rather than on the
+    /// first request it would have gone out on.
+    fn basic(password: Secret, username: &str) -> Result<Self> {
+        if username.contains(':') {
+            return Err(Error::Config(format!(
+                "auth mode `basic` username `{username}` carries a colon, which separates the \
+                 username from the password and cannot be escaped"
+            )));
+        }
+        let source = Resolved::new(password);
+        Ok(Self {
             placement: Placement::Basic(BasicPlacement::new(username, Arc::clone(&source))),
             source,
-        }
+        })
     }
 
     /// Resolve the spec without sending a request.
@@ -189,13 +230,6 @@ impl Placed {
             .map(|_| ())
             .map_err(acquisition_error)
     }
-}
-
-/// A spec behind a cache that holds no failure: a spec that does not resolve is
-/// tried again by the next request rather than answered from the last refusal,
-/// because the resolver is local and its answer costs nothing.
-fn held(secret: Secret) -> StaticSource {
-    Arc::new(Cached::new(Resolving(secret)).with_failure_backoff(Duration::ZERO))
 }
 
 /// How a token response is read: the profile's assumed lifetime, its refresh
@@ -210,18 +244,26 @@ fn token_reading(fallback_secs: u64, early_refresh_secs: u64, expose: &[String])
 }
 
 /// The bound on one acquisition: the exchange client's own per-request timeout
-/// over every attempt it may make, so the cache's renewal gate is not released
-/// while an attempt the client itself scheduled is still in flight. scalo's own
+/// over every attempt it may make, plus the intervals between them. scalo's own
 /// exchanges bound themselves the same way.
+///
+/// The bound covers everything the acquisition does, not the POST alone: a
+/// JWT-bearer exchange reads its key, renders its claims and signs RS256 inside
+/// this budget before the first byte goes out. One 30-second request's worth is
+/// ample for a key read and an RS256 signature, so the mint is not given an
+/// allowance of its own.
 fn exchange_deadline(http: &ExchangeClient) -> Duration {
     let config = http.config();
-    Duration::from_secs(config.timeout_secs).saturating_mul(config.max_retries.saturating_add(1))
-        + Duration::from_millis(config.max_retry_interval_ms).saturating_mul(config.max_retries)
+    Duration::from_secs(config.timeout_secs)
+        .saturating_mul(config.max_retries.saturating_add(1))
+        .saturating_add(
+            Duration::from_millis(config.max_retry_interval_ms).saturating_mul(config.max_retries),
+        )
 }
 
 /// A minting mode's cache, holding no failure: a refused or unreachable
-/// endpoint is posted to again by the next request, so a rotated secret is
-/// picked up on the next tick rather than after a backoff. The callers that
+/// endpoint is posted to again by the next request, so the next tick reads the
+/// endpoint's current answer rather than a held refusal. The callers that
 /// waited on one in-flight exchange still share its failure.
 fn cached<E: Exchange>(exchange: E) -> Cached<E> {
     Cached::new(exchange).with_failure_backoff(Duration::ZERO)
@@ -229,11 +271,11 @@ fn cached<E: Exchange>(exchange: E) -> Cached<E> {
 
 /// An OAuth2 client-credentials exchange behind scalo's cache.
 ///
-/// The exchange is built on first use, because the token endpoint is a template
-/// and renders against a unit's context. One mode holds one cache, so the
-/// endpoint the first unit renders is the one this mode exchanges at.
+/// The token endpoint is rendered when the mode is built and held as text, so
+/// one mode has one endpoint however many units carry its token. The exchange
+/// itself is built on first use, because the client secret resolves then.
 pub struct OAuth2Client {
-    token_url: Template,
+    token_url: String,
     client_id: String,
     client_secret: Secret,
     /// Unset rather than empty: `scope=` is a request for no scopes, which some
@@ -245,35 +287,51 @@ pub struct OAuth2Client {
     source: OnceCell<Cached<ClientCredentials>>,
 }
 
-/// Hand-written because the exchange client has no `Debug`.
+/// Hand-written because the exchange client has no `Debug`, and because the
+/// rendered endpoint is named without its query.
 impl fmt::Debug for OAuth2Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OAuth2Client")
-            .field("token_url", &self.token_url)
+            .field("token_url", &endpoint_name(&self.token_url))
             .field("client_id", &self.client_id)
             .field("scope", &self.scope)
             .finish_non_exhaustive()
     }
 }
 
+/// A token endpoint as a render may name it: scheme, host, port and path. The
+/// query and any userinfo are dropped, because a provider that wants its
+/// credential in the URL puts it in one of them.
+fn endpoint_name(url: &str) -> String {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return "an unparseable endpoint".to_owned();
+    };
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    format!(
+        "{}://{}{port}{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or_default(),
+        parsed.path()
+    )
+}
+
 impl OAuth2Client {
     /// The cached credential, exchanged now when none is held or the held one
     /// has reached its renewal point.
-    async fn credential(&self, ctx: &TemplateCtx) -> Acquired<Arc<Credential>> {
+    async fn credential(&self) -> Acquired<Arc<Credential>> {
         self.source
-            .get_or_try_init(|| self.exchange(ctx))
+            .get_or_try_init(|| self.exchange())
             .await?
             .credential()
             .await
     }
 
-    /// The exchange, once the context has rendered the token endpoint and the
-    /// client secret has resolved.
-    async fn exchange(&self, ctx: &TemplateCtx) -> Acquired<Cached<ClientCredentials>> {
-        let url = self.token_url.render(ctx).map_err(unavailable)?;
+    /// The exchange, once the client secret has resolved.
+    async fn exchange(&self) -> Acquired<Cached<ClientCredentials>> {
         let secret = SensitiveString::from(self.client_secret.value().await.map_err(unavailable)?);
-        let mut exchange = ClientCredentials::new(&self.http, url, &self.client_id, secret)?
-            .with_reading(self.reading.clone());
+        let mut exchange =
+            ClientCredentials::new(&self.http, self.token_url.as_str(), &self.client_id, secret)?
+                .with_reading(self.reading.clone());
         if let Some(scope) = &self.scope {
             exchange = exchange.with_scope(scope.as_str());
         }
@@ -301,6 +359,12 @@ struct JwtKey {
 
 /// Everything a JWT-bearer assertion is minted from, shared between the mode
 /// and the exchange its cache holds.
+///
+/// `ctx` is the INSTANCE's context, taken when the mode was built, not a
+/// unit's: the endpoint and the claims are the same for every unit that carries
+/// this mode's token, and binding refuses a template that would make them
+/// differ. It is kept rather than rendered outright because the claims also
+/// read `auth.*` off the signing key, which is read on the first mint.
 struct JwtAssertion {
     token_url: Template,
     claims: Vec<(String, Template)>,
@@ -308,10 +372,12 @@ struct JwtAssertion {
     source: JwtKeySource,
     key: OnceCell<JwtKey>,
     http: Arc<ExchangeClient>,
+    ctx: TemplateCtx,
 }
 
-/// Hand-written: the signing key has no `Debug`, and neither has the exchange
-/// client.
+/// Hand-written: the signing key has no `Debug`, neither has the exchange
+/// client, and the context carries whatever the profile exposed to its
+/// templates.
 impl fmt::Debug for JwtAssertion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JwtAssertion")
@@ -360,9 +426,9 @@ impl JwtAssertion {
     /// The signed assertion and the URL it is sent to; the templates see the
     /// key's `client_email` and `token_uri` as `auth.*`, and the rendered
     /// `token_url` as `auth.token_url`.
-    async fn mint(&self, ctx: &TemplateCtx) -> Result<(String, String)> {
+    async fn mint(&self) -> Result<(String, String)> {
         let key = self.key().await?;
-        let mut ctx = ctx.clone();
+        let mut ctx = self.ctx.clone();
         let mut auth = serde_json::Map::new();
         auth.insert(
             "client_email".into(),
@@ -403,28 +469,15 @@ impl JwtAssertion {
 ///
 /// The assertion is minted per acquisition rather than held, so a renewal signs
 /// again instead of replaying an expired one.
+#[derive(Debug)]
 struct JwtExchange {
     assertion: Arc<JwtAssertion>,
     reading: TokenReading,
-    /// The context the claims and the endpoint render against, taken at the
-    /// first exchange. One mode holds one cache, so this is the context of
-    /// whichever of its units asked first.
-    ctx: TemplateCtx,
-}
-
-/// Hand-written: the context carries whatever a profile exposed to its
-/// templates, and a render of the exchange has no business printing it.
-impl fmt::Debug for JwtExchange {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JwtExchange")
-            .field("assertion", &self.assertion)
-            .finish_non_exhaustive()
-    }
 }
 
 impl Exchange for JwtExchange {
     async fn acquire(&self) -> Acquired<Credential> {
-        let (url, assertion) = self.assertion.mint(&self.ctx).await.map_err(unavailable)?;
+        let (url, assertion) = self.assertion.mint().await.map_err(unavailable)?;
         TokenPost::new(&self.assertion.http, url)?
             .with_form_field("grant_type", JWT_BEARER_GRANT)
             .with_form_field("assertion", assertion)
@@ -443,27 +496,15 @@ impl Exchange for JwtExchange {
 /// token.
 #[derive(Debug)]
 pub struct JwtBearer {
-    assertion: Arc<JwtAssertion>,
-    reading: TokenReading,
     exposes: bool,
-    source: OnceCell<Cached<JwtExchange>>,
+    source: Cached<JwtExchange>,
 }
 
 impl JwtBearer {
     /// The cached token, exchanged now when none is held or the held one has
     /// reached its renewal point.
-    async fn credential(&self, ctx: &TemplateCtx) -> Acquired<Arc<Credential>> {
-        self.source
-            .get_or_init(|| async {
-                cached(JwtExchange {
-                    assertion: Arc::clone(&self.assertion),
-                    reading: self.reading.clone(),
-                    ctx: ctx.clone(),
-                })
-            })
-            .await
-            .credential()
-            .await
+    async fn credential(&self) -> Acquired<Arc<Credential>> {
+        self.source.credential().await
     }
 }
 
@@ -492,42 +533,59 @@ fn parse_service_account_key(json: &str) -> Result<(String, String, String)> {
 const METADATA_FLAVOR: HeaderName = HeaderName::from_static("metadata-flavor");
 
 /// The GCE metadata server's token for the workload's service account.
+///
+/// The URL is rendered and checked when the mode is built, so a profile that
+/// pointed the metadata read at an arbitrary host is refused at load rather
+/// than on the first tick.
+#[derive(Debug)]
 pub struct GceMetadata {
-    url: Template,
-    reading: TokenReading,
-    http: Arc<ExchangeClient>,
-    source: OnceCell<Cached<MetadataServer>>,
-}
-
-/// Hand-written because the exchange client has no `Debug`.
-impl fmt::Debug for GceMetadata {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GceMetadata")
-            .field("url", &self.url)
-            .finish_non_exhaustive()
-    }
+    source: Cached<MetadataServer>,
 }
 
 impl GceMetadata {
     /// The cached token, fetched now when none is held or the held one has
     /// reached its renewal point.
-    async fn credential(&self, ctx: &TemplateCtx) -> Acquired<Arc<Credential>> {
-        self.source
-            .get_or_try_init(|| std::future::ready(self.exchange(ctx)))
-            .await?
-            .credential()
-            .await
+    async fn credential(&self) -> Acquired<Arc<Credential>> {
+        self.source.credential().await
     }
+}
 
-    /// The exchange, once the context has rendered the metadata URL.
-    fn exchange(&self, ctx: &TemplateCtx) -> Acquired<Cached<MetadataServer>> {
-        let url = self.url.render(ctx).map_err(unavailable)?;
-        Ok(cached(
-            MetadataServer::new(&self.http, url)?
-                .with_header(METADATA_FLAVOR, "Google")
-                .with_reading(self.reading.clone()),
-        ))
+/// The host names a metadata read may go to besides a link-local or loopback
+/// address: Google documents its metadata server by name, and its instances
+/// resolve these to the link-local address.
+const METADATA_HOSTS: [&str; 2] = ["metadata.google.internal", "metadata.goog"];
+
+/// Why a rendered metadata URL is not usable, or `None` when it is.
+///
+/// A metadata read is exempt from the https rule the token exchanges are held
+/// to -- every cloud serves its metadata over plaintext -- so the host is what
+/// keeps the request on the instance. An inline profile could otherwise point
+/// the read at any host over plaintext and be handed whatever it answers with.
+fn metadata_url_issue(url: &str) -> Option<String> {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return Some("is not a URL".to_owned());
+    };
+    let Some(host) = parsed.host_str() else {
+        return Some("names no host".to_owned());
+    };
+    if METADATA_HOSTS.contains(&host) {
+        return None;
     }
+    let address = host.trim_start_matches('[').trim_end_matches(']');
+    let on_this_instance = match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback() || v4.is_link_local(),
+        // fe80::/10, spelled out because the standard predicate for it is
+        // still unstable.
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback() || (v6.segments()[0] & 0xffc0) == 0xfe80,
+        Err(_) => host == "localhost",
+    };
+    (!on_this_instance).then(|| {
+        format!(
+            "host `{host}` is not this instance's metadata server; a metadata read goes to a \
+             loopback or link-local address, or to {}",
+            METADATA_HOSTS.join(" or ")
+        )
+    })
 }
 
 /// Duo Admin API request signing.
@@ -785,10 +843,20 @@ impl SigV4 {
 /// The signing scope is a template, so it renders per request; the context is
 /// per request and the keys are per instance, which is why the pair is made
 /// here rather than held on the mode.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct ScopedSigV4<'a> {
     keys: &'a SigV4,
     ctx: &'a TemplateCtx,
+}
+
+/// Hand-written: the context carries whatever the profile exposed to its
+/// templates, so the mode's kind is all a render says.
+impl fmt::Debug for ScopedSigV4<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScopedSigV4")
+            .field("mode", &AuthKind::SigV4.as_str())
+            .finish_non_exhaustive()
+    }
 }
 
 impl RequestSigner for ScopedSigV4<'_> {
@@ -819,6 +887,64 @@ fn parse_aws_credentials(json: &str) -> Result<(String, SensitiveString)> {
     ))
 }
 
+/// The top-level template names only a unit or a request supplies, and so the
+/// names a credential template may not read.
+///
+/// A credential mode is built once per instance and per scope; a template of
+/// one that read any of these would render against whichever unit's request
+/// reached the mode first and hold that answer for every other unit. Where the
+/// value decides the identity the token acts as -- a domain-wide-delegation
+/// `sub` -- that is one unit's data fetched as another unit's principal, so the
+/// template is refused rather than documented.
+const PER_UNIT_NAMES: [&str; 5] = ["unit", "window", "page", "key", "item"];
+
+/// Render a credential template against the instance's context, at bind.
+///
+/// # Errors
+///
+/// Returns [`Error::Config`] naming the field when the template does not
+/// compile, reads a name only a unit supplies, or does not render.
+fn render_at_bind(field: &str, template: &str, ctx: &TemplateCtx) -> Result<String> {
+    let compiled =
+        Template::compile(template).map_err(|e| Error::Config(format!("{field}: {e}")))?;
+    if let Some(name) = per_unit_name(&compiled) {
+        return Err(Error::Config(format!(
+            "{field}: reads `{name}`, which only a unit supplies; a credential is minted once per \
+             instance and per scope, so its endpoint and claims cannot vary by unit"
+        )));
+    }
+    compiled
+        .render(ctx)
+        .map_err(|e| Error::Config(format!("{field}: {e}")))
+}
+
+/// The first per-unit name `template` reads, when it reads one.
+#[must_use]
+pub(crate) fn per_unit_name(template: &Template) -> Option<&'static str> {
+    PER_UNIT_NAMES
+        .into_iter()
+        .find(|name| template.references(name))
+}
+
+/// Compile a credential template that is rendered per mint rather than at bind
+/// -- a JWT claim, whose `auth.*` comes off the signing key -- and refuse one
+/// that reads a name only a unit supplies.
+///
+/// # Errors
+///
+/// Returns [`Error::Config`] naming the field.
+fn compile_at_bind(field: &str, template: &str) -> Result<Template> {
+    let compiled =
+        Template::compile(template).map_err(|e| Error::Config(format!("{field}: {e}")))?;
+    match per_unit_name(&compiled) {
+        Some(name) => Err(Error::Config(format!(
+            "{field}: reads `{name}`, which only a unit supplies; a credential is minted once per \
+             instance and per scope, so its endpoint and claims cannot vary by unit"
+        ))),
+        None => Ok(compiled),
+    }
+}
+
 /// The credential mode of one instance.
 #[derive(Debug)]
 pub enum AuthMode {
@@ -845,18 +971,21 @@ pub enum AuthMode {
 impl AuthMode {
     /// Build the instance's mode from the profile's shape and its identity.
     /// `http` is the client a credential exchange posts through, shared by
-    /// every instance.
+    /// every instance. `ctx` is the INSTANCE's template context, which the
+    /// token endpoint and the JWT claims render against, once, here.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] when the instance's mode is not accepted by the
-    /// profile or an identity field for it is missing.
+    /// profile, an identity field for it is missing, or a template of the mode
+    /// does not render against the instance's context.
     pub fn build(
         spec: &AuthSpec,
         identity: &InstanceAuth,
         http: Arc<ExchangeClient>,
+        ctx: &TemplateCtx,
     ) -> Result<Self> {
-        Self::build_scoped(spec, identity, http, None)
+        Self::build_scoped(spec, identity, http, ctx, None)
     }
 
     /// The same identity minting its token for `scope` instead of the
@@ -871,6 +1000,7 @@ impl AuthMode {
         spec: &AuthSpec,
         identity: &InstanceAuth,
         http: Arc<ExchangeClient>,
+        ctx: &TemplateCtx,
         scope: Option<&str>,
     ) -> Result<Self> {
         if !spec.accepts.contains(&identity.mode) {
@@ -915,7 +1045,7 @@ impl AuthMode {
                     .username
                     .as_deref()
                     .ok_or_else(|| Error::Config("auth mode `basic` needs `username`".into()))?,
-            )),
+            )?),
             AuthKind::Oauth2ClientCredentials => {
                 let oauth = &spec.oauth2_client_credentials;
                 let scope = scope
@@ -923,7 +1053,11 @@ impl AuthMode {
                     .or_else(|| identity.scope.clone())
                     .unwrap_or_else(|| oauth.scope.clone());
                 AuthMode::OAuth2ClientCredentials(OAuth2Client {
-                    token_url: Template::compile(&oauth.token_url)?,
+                    token_url: render_at_bind(
+                        "auth.oauth2_client_credentials.token_url",
+                        &oauth.token_url,
+                        ctx,
+                    )?,
                     client_id: identity.client_id.clone().ok_or_else(|| {
                         Error::Config(
                             "auth mode `oauth2_client_credentials` needs `client_id`".into(),
@@ -971,46 +1105,61 @@ impl AuthMode {
                 };
                 let mut claims = Vec::with_capacity(jwt.claims.len());
                 for (name, value) in &jwt.claims {
+                    let field = format!("auth.jwt_bearer.claims.{name}");
                     let template = match (name.as_str(), scope) {
-                        ("scope", Some(scope)) => Template::compile(scope)?,
-                        _ => Template::compile(value)?,
+                        ("scope", Some(scope)) => compile_at_bind(&field, scope)?,
+                        _ => compile_at_bind(&field, value)?,
                     };
                     claims.push((name.clone(), template));
                 }
                 if let Some(scope) = scope
                     && !jwt.claims.contains_key("scope")
                 {
-                    claims.push(("scope".to_owned(), Template::compile(scope)?));
+                    claims.push((
+                        "scope".to_owned(),
+                        compile_at_bind("auth.jwt_bearer.claims.scope", scope)?,
+                    ));
                 }
                 AuthMode::JwtBearer(JwtBearer {
-                    assertion: Arc::new(JwtAssertion {
-                        token_url: Template::compile(&jwt.token_url)?,
-                        claims,
-                        ttl: Duration::from_secs(jwt.ttl_secs),
-                        source,
-                        key: OnceCell::new(),
-                        http,
-                    }),
-                    reading: token_reading(
-                        jwt.expires_in_fallback_secs,
-                        jwt.early_refresh_secs,
-                        &jwt.expose,
-                    ),
                     exposes: !jwt.expose.is_empty(),
-                    source: OnceCell::new(),
+                    source: cached(JwtExchange {
+                        assertion: Arc::new(JwtAssertion {
+                            token_url: compile_at_bind(
+                                "auth.jwt_bearer.token_url",
+                                &jwt.token_url,
+                            )?,
+                            claims,
+                            ttl: Duration::from_secs(jwt.ttl_secs),
+                            source,
+                            key: OnceCell::new(),
+                            http,
+                            ctx: ctx.clone(),
+                        }),
+                        reading: token_reading(
+                            jwt.expires_in_fallback_secs,
+                            jwt.early_refresh_secs,
+                            &jwt.expose,
+                        ),
+                    }),
                 })
             }
             AuthKind::GceMetadata => {
                 let gce = &spec.gce_metadata;
+                let url = render_at_bind("auth.gce_metadata.url", &gce.url, ctx)?;
+                if let Some(issue) = metadata_url_issue(&url) {
+                    return Err(Error::Config(format!("auth.gce_metadata.url: {issue}")));
+                }
                 AuthMode::GceMetadata(GceMetadata {
-                    url: Template::compile(&gce.url)?,
-                    reading: token_reading(
-                        gce.expires_in_fallback_secs,
-                        gce.early_refresh_secs,
-                        &[],
+                    source: cached(
+                        MetadataServer::new(&http, url)
+                            .map_err(acquisition_error)?
+                            .with_header(METADATA_FLAVOR, "Google")
+                            .with_reading(token_reading(
+                                gce.expires_in_fallback_secs,
+                                gce.early_refresh_secs,
+                                &[],
+                            )),
                     ),
-                    http,
-                    source: OnceCell::new(),
                 })
             }
             AuthKind::SigV4 => {
@@ -1065,34 +1214,20 @@ impl AuthMode {
 
     /// The mode as a signer over one request's context.
     ///
-    /// The context is per request and scalo's hook takes the request alone, so
-    /// it is carried here rather than held on the mode, which is per instance.
+    /// The context is the SIGNING scope's, which `sigv4` renders per request;
+    /// the credential modes render nothing here, because their templates were
+    /// rendered when the mode was built.
     #[must_use]
     pub fn signer<'a>(&'a self, ctx: &'a TemplateCtx) -> ModeSigner<'a> {
         ModeSigner { mode: self, ctx }
     }
 
-    /// Put the credential on a built request. `ctx` renders the token URL and
-    /// the signing scope.
-    ///
-    /// The framework-typed front door to [`ModeSigner`], which is the
-    /// dispatcher.
-    ///
-    /// # Errors
-    ///
-    /// Returns the credential or token-exchange error.
-    pub async fn authorize(&self, request: &mut reqwest::Request, ctx: &TemplateCtx) -> Result<()> {
-        RequestSigner::sign(&self.signer(ctx), request)
-            .await
-            .map_err(credential_error)
-    }
-
     /// The cached-or-fresh credential of a token-minting mode.
-    async fn minted(&self, ctx: &TemplateCtx) -> Acquired<Arc<Credential>> {
+    async fn minted(&self) -> Acquired<Arc<Credential>> {
         match self {
-            AuthMode::OAuth2ClientCredentials(client) => client.credential(ctx).await,
-            AuthMode::JwtBearer(client) => client.credential(ctx).await,
-            AuthMode::GceMetadata(client) => client.credential(ctx).await,
+            AuthMode::OAuth2ClientCredentials(client) => client.credential().await,
+            AuthMode::JwtBearer(client) => client.credential().await,
+            AuthMode::GceMetadata(client) => client.credential().await,
             AuthMode::None
             | AuthMode::Bearer(_)
             | AuthMode::ApiKey(_)
@@ -1104,6 +1239,32 @@ impl AuthMode {
         }
     }
 
+    /// Drop the token a minting mode holds, so the next request mints again.
+    ///
+    /// A provider that revokes a token before its advertised expiry answers 401
+    /// or 403, and the cache would otherwise re-present the same token until its
+    /// renewal point -- at least half its lifetime, so half an hour of certain
+    /// refusals on an hour-long token. A mode that mints nothing has nothing to
+    /// drop: a resolved spec is the operator's own value, and a signing scheme
+    /// signs afresh each time.
+    pub fn invalidate(&self) {
+        match self {
+            AuthMode::OAuth2ClientCredentials(client) => {
+                if let Some(source) = client.source.get() {
+                    source.invalidate();
+                }
+            }
+            AuthMode::JwtBearer(client) => client.source.invalidate(),
+            AuthMode::GceMetadata(client) => client.source.invalidate(),
+            AuthMode::None
+            | AuthMode::Bearer(_)
+            | AuthMode::ApiKey(_)
+            | AuthMode::Basic(_)
+            | AuthMode::DuoHmac(_)
+            | AuthMode::SigV4(_) => {}
+        }
+    }
+
     /// The token-response fields the mode exposes to templates as `auth.*`,
     /// minting the token first when none is cached; `None` for a mode that
     /// exposes nothing, so a request render never mints for nothing.
@@ -1111,18 +1272,18 @@ impl AuthMode {
     /// # Errors
     ///
     /// Returns the token-exchange error.
-    pub async fn exposed(&self, ctx: &TemplateCtx) -> Result<Option<Value>> {
+    pub async fn exposed(&self) -> Result<Option<Value>> {
         match self {
-            AuthMode::OAuth2ClientCredentials(client) if client.exposes => self.extra(ctx).await,
-            AuthMode::JwtBearer(client) if client.exposes => self.extra(ctx).await,
+            AuthMode::OAuth2ClientCredentials(client) if client.exposes => self.extra().await,
+            AuthMode::JwtBearer(client) if client.exposes => self.extra().await,
             _ => Ok(None),
         }
     }
 
     /// What the exchange returned beside the token, `None` when the response
     /// carried none of the fields the profile named.
-    async fn extra(&self, ctx: &TemplateCtx) -> Result<Option<Value>> {
-        let credential = self.minted(ctx).await.map_err(acquisition_error)?;
+    async fn extra(&self) -> Result<Option<Value>> {
+        let credential = self.minted().await.map_err(acquisition_error)?;
         Ok(credential.extra.as_deref().cloned())
     }
 
@@ -1131,7 +1292,7 @@ impl AuthMode {
     /// # Errors
     ///
     /// Returns the credential or token-exchange error.
-    pub async fn probe(&self, ctx: &TemplateCtx) -> Result<()> {
+    pub async fn probe(&self) -> Result<()> {
         match self {
             AuthMode::None => Ok(()),
             AuthMode::Bearer(placed) | AuthMode::ApiKey(placed) | AuthMode::Basic(placed) => {
@@ -1139,11 +1300,9 @@ impl AuthMode {
             }
             AuthMode::OAuth2ClientCredentials(_)
             | AuthMode::JwtBearer(_)
-            | AuthMode::GceMetadata(_) => self
-                .minted(ctx)
-                .await
-                .map(|_| ())
-                .map_err(acquisition_error),
+            | AuthMode::GceMetadata(_) => {
+                self.minted().await.map(|_| ()).map_err(acquisition_error)
+            }
             AuthMode::DuoHmac(signer) => signer.secret_key.value().await.map(|_| ()),
             AuthMode::SigV4(signer) => signer.keys().await.map(|_| ()),
         }
@@ -1155,10 +1314,20 @@ impl AuthMode {
 /// Borrowed rather than owned: the mode lives on the shape for the life of the
 /// instance and the context for the life of the tick, so a signer is made per
 /// request and costs two pointers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ModeSigner<'a> {
     mode: &'a AuthMode,
     ctx: &'a TemplateCtx,
+}
+
+/// Hand-written: the context carries whatever the profile exposed to its
+/// templates, up to a response body, so the mode's kind is all a render says.
+impl fmt::Debug for ModeSigner<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModeSigner")
+            .field("mode", &self.mode.kind().as_str())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The dispatcher: each arm is itself a [`RequestSigner`], so the placement of
@@ -1174,12 +1343,9 @@ impl RequestSigner for ModeSigner<'_> {
             AuthMode::OAuth2ClientCredentials(_)
             | AuthMode::JwtBearer(_)
             | AuthMode::GceMetadata(_) => {
-                HeaderPlacement::bearer(Minting {
-                    mode: self.mode,
-                    ctx: self.ctx,
-                })
-                .sign(request)
-                .await
+                HeaderPlacement::bearer(Minting { mode: self.mode })
+                    .sign(request)
+                    .await
             }
             AuthMode::DuoHmac(signer) => signer.sign(request).await,
             AuthMode::SigV4(signer) => signer.scoped(self.ctx).sign(request).await,
@@ -1188,18 +1354,24 @@ impl RequestSigner for ModeSigner<'_> {
 }
 
 /// A token-minting mode as the source its placement reads.
-///
-/// The context renders the token endpoint and the assertion's claims and is per
-/// request, so it is carried here rather than on the mode.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct Minting<'a> {
     mode: &'a AuthMode,
-    ctx: &'a TemplateCtx,
+}
+
+/// Hand-written for the same reason as [`ModeSigner`]'s: the mode's kind and
+/// nothing of what it holds.
+impl fmt::Debug for Minting<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Minting")
+            .field("mode", &self.mode.kind().as_str())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CredentialSource for Minting<'_> {
     async fn credential(&self) -> Acquired<Arc<Credential>> {
-        self.mode.minted(self.ctx).await
+        self.mode.minted().await
     }
 }
 
@@ -1207,17 +1379,12 @@ impl CredentialSource for Minting<'_> {
 ///
 /// The error travels whole as the cause so [`credential_error`] hands back the
 /// same one the scheme raised, rather than a status flattened into a string.
-/// Only a failure to reach the credential endpoint is worth signing again; a
-/// refusal, a spec that does not resolve and a key that will not parse are the
-/// same answer next attempt.
+/// Nothing here marks a failure worth signing again: the TICK is the retry unit,
+/// because the scheduler runs a failed tick over the same window, and a second
+/// backoff inside one request would only lengthen how long one mint holds a
+/// mode's renewal gate.
 fn signing_failure(error: Error) -> SignError {
-    let transient = matches!(error, Error::Source(_));
-    let failure = SignError::with_cause(error.to_string(), error);
-    if transient {
-        failure.retryable()
-    } else {
-        failure
-    }
+    SignError::with_cause(error.to_string(), error)
 }
 
 /// The framework error behind a signing failure.
@@ -1225,8 +1392,9 @@ fn signing_failure(error: Error) -> SignError {
 /// A signing scheme handed its error through as the cause, so that error comes
 /// back unchanged and keeps the status the executor counts and the fixture
 /// asserts. A credential source reports [`AuthError`] instead: a refusal keeps
-/// its status as an API error, an endpoint that could not be reached is a
-/// source failure, and a response that is not a credential -- or one the
+/// its status as an API error; an endpoint that could not be reached, one that
+/// ran out of time, and a waiter handed either of those are source failures, so
+/// the metric says which; a response that is not a credential -- or one the
 /// consumer could not supply at all -- is a credential failure.
 #[must_use]
 pub fn credential_error(error: SignError) -> Error {
@@ -1248,6 +1416,23 @@ pub fn credential_error(error: SignError) -> Error {
         SignError::Auth(unreachable @ AuthError::Unreachable { .. }) => {
             Error::Source(unreachable.to_string())
         }
+        // The message is written here rather than taken from the variant's
+        // Display so the metric reads `timeout`: the category of a failure that
+        // is not an HTTP answer comes off its text.
+        SignError::Auth(AuthError::TimedOut { secs }) => {
+            Error::Source(format!("credential exchange timed out after {secs}s"))
+        }
+        // A waiter on an exchange that could not be reached or ran out of time
+        // reports what that one exchange reported, under the same category the
+        // caller that ran it got.
+        SignError::Auth(AuthError::Shared {
+            message,
+            transient: true,
+        }) => Error::Source(message),
+        // A failure the fetcher raised on its way in already says why in its own
+        // words; re-rendering it through the variant's Display would stack a
+        // third prefix on it.
+        SignError::Auth(AuthError::Unavailable { reason }) => Error::Credential(reason),
         SignError::Auth(other) => Error::Credential(other.to_string()),
         other => Error::Credential(other.to_string()),
     }
@@ -1273,6 +1458,24 @@ mod tests {
 
     fn exchange() -> Arc<ExchangeClient> {
         crate::request::exchange_client().unwrap()
+    }
+
+    /// The mode over an instance context with nothing in it, which is what a
+    /// profile whose credential templates are literals binds against.
+    fn build(spec: &AuthSpec, identity: &InstanceAuth) -> Result<AuthMode> {
+        AuthMode::build(spec, identity, exchange(), &TemplateCtx::new())
+    }
+
+    /// Sign through the hook the executor reaches a mode by, with the framework
+    /// error the executor counts.
+    async fn authorize(
+        mode: &AuthMode,
+        request: &mut reqwest::Request,
+        ctx: &TemplateCtx,
+    ) -> Result<()> {
+        RequestSigner::sign(&mode.signer(ctx), request)
+            .await
+            .map_err(credential_error)
     }
 
     fn identity(mode: AuthKind) -> InstanceAuth {
@@ -1304,14 +1507,11 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_sets_the_authorization_header_and_marks_it_sensitive() {
-        let mode = AuthMode::build(
-            &spec(&[AuthKind::Bearer]),
-            &identity(AuthKind::Bearer),
-            exchange(),
-        )
-        .unwrap();
+        let mode = build(&spec(&[AuthKind::Bearer]), &identity(AuthKind::Bearer)).unwrap();
         let mut req = request();
-        mode.authorize(&mut req, &TemplateCtx::new()).await.unwrap();
+        authorize(&mode, &mut req, &TemplateCtx::new())
+            .await
+            .unwrap();
         let value = req.headers().get(AUTHORIZATION).unwrap();
         assert_eq!(value.to_str().unwrap(), "Bearer tok");
         assert!(value.is_sensitive());
@@ -1322,9 +1522,11 @@ mod tests {
         let mut header_spec = spec(&[AuthKind::ApiKey]);
         header_spec.api_key.header = Some("Authorization".into());
         header_spec.api_key.prefix = "SSWS ".into();
-        let mode = AuthMode::build(&header_spec, &identity(AuthKind::ApiKey), exchange()).unwrap();
+        let mode = build(&header_spec, &identity(AuthKind::ApiKey)).unwrap();
         let mut req = request();
-        mode.authorize(&mut req, &TemplateCtx::new()).await.unwrap();
+        authorize(&mode, &mut req, &TemplateCtx::new())
+            .await
+            .unwrap();
         assert_eq!(
             req.headers().get(AUTHORIZATION).unwrap().to_str().unwrap(),
             "SSWS k"
@@ -1332,16 +1534,18 @@ mod tests {
 
         let mut query_spec = spec(&[AuthKind::ApiKey]);
         query_spec.api_key.query = Some("api_key".into());
-        let mode = AuthMode::build(&query_spec, &identity(AuthKind::ApiKey), exchange()).unwrap();
+        let mode = build(&query_spec, &identity(AuthKind::ApiKey)).unwrap();
         let mut req = request();
-        mode.authorize(&mut req, &TemplateCtx::new()).await.unwrap();
+        authorize(&mode, &mut req, &TemplateCtx::new())
+            .await
+            .unwrap();
         assert_eq!(req.url().query(), Some("api_key=k"));
 
         // A header name the profile got wrong is refused when the instance is
         // bound, not on the first request it would have gone out on.
         let mut bad = spec(&[AuthKind::ApiKey]);
         bad.api_key.header = Some("X Api Key".into());
-        let err = AuthMode::build(&bad, &identity(AuthKind::ApiKey), exchange()).unwrap_err();
+        let err = build(&bad, &identity(AuthKind::ApiKey)).unwrap_err();
         assert!(err.to_string().contains("auth.api_key header"), "{err}");
     }
 
@@ -1353,26 +1557,25 @@ mod tests {
         query_spec.api_key.query = Some("api_key".into());
         let mut id = identity(AuthKind::ApiKey);
         id.key = Some("a&b=c".into());
-        let mode = AuthMode::build(&query_spec, &id, exchange()).unwrap();
+        let mode = build(&query_spec, &id).unwrap();
         let mut req = reqwest::Request::new(
             reqwest::Method::GET,
             "https://api.example/x?page=2".parse().unwrap(),
         );
-        mode.authorize(&mut req, &TemplateCtx::new()).await.unwrap();
+        authorize(&mode, &mut req, &TemplateCtx::new())
+            .await
+            .unwrap();
         assert_eq!(req.url().query(), Some("page=2&api_key=a%26b%3Dc"));
         assert_eq!(req.url().query_pairs().count(), 2);
     }
 
     #[tokio::test]
     async fn basic_encodes_user_and_password_and_marks_it_sensitive() {
-        let mode = AuthMode::build(
-            &spec(&[AuthKind::Basic]),
-            &identity(AuthKind::Basic),
-            exchange(),
-        )
-        .unwrap();
+        let mode = build(&spec(&[AuthKind::Basic]), &identity(AuthKind::Basic)).unwrap();
         let mut req = request();
-        mode.authorize(&mut req, &TemplateCtx::new()).await.unwrap();
+        authorize(&mode, &mut req, &TemplateCtx::new())
+            .await
+            .unwrap();
         let value = req.headers().get(AUTHORIZATION).unwrap();
         assert_eq!(value.to_str().unwrap(), "Basic dTpw");
         assert!(value.is_sensitive());
@@ -1380,35 +1583,28 @@ mod tests {
 
     /// The colon separates the two halves of a basic credential and RFC 7617
     /// gives the username no way to escape one, so a username carrying one
-    /// would authenticate as something other than what was configured.
-    #[tokio::test]
-    async fn a_colon_in_the_basic_username_is_refused_rather_than_moving_the_separator() {
+    /// would authenticate as something other than what was configured. The
+    /// username is as static as the `api_key` header name, so the instance is
+    /// refused when it is bound rather than on the first request.
+    #[test]
+    fn a_colon_in_the_basic_username_is_refused_when_the_instance_is_bound() {
         let mut id = identity(AuthKind::Basic);
         id.username = Some("account:1234".to_owned());
         id.password = Some("s3cr3t-do-not-print".into());
-        let mode = AuthMode::build(&spec(&[AuthKind::Basic]), &id, exchange()).unwrap();
-        let mut req = request();
-        let err = mode
-            .authorize(&mut req, &TemplateCtx::new())
-            .await
+        let err = build(&spec(&[AuthKind::Basic]), &id)
             .expect_err("the colon would move the field separator");
+        assert!(matches!(err, Error::Config(_)), "{err:?}");
         assert!(err.to_string().contains("colon"), "{err}");
         assert!(!err.to_string().contains("s3cr3t-do-not-print"), "{err}");
-        assert!(req.headers().get(AUTHORIZATION).is_none());
     }
 
     #[test]
     fn a_mode_the_profile_does_not_accept_or_a_missing_field_is_a_config_error() {
-        let err = AuthMode::build(
-            &spec(&[AuthKind::Bearer]),
-            &identity(AuthKind::Basic),
-            exchange(),
-        )
-        .unwrap_err();
+        let err = build(&spec(&[AuthKind::Bearer]), &identity(AuthKind::Basic)).unwrap_err();
         assert!(matches!(err, Error::Config(_)));
         let mut missing = identity(AuthKind::Bearer);
         missing.token = None;
-        let err = AuthMode::build(&spec(&[AuthKind::Bearer]), &missing, exchange()).unwrap_err();
+        let err = build(&spec(&[AuthKind::Bearer]), &missing).unwrap_err();
         assert!(err.to_string().contains("token"), "{err}");
     }
 
@@ -1419,14 +1615,9 @@ mod tests {
     async fn a_plaintext_token_endpoint_is_refused_and_a_loopback_one_is_not() {
         let mut oauth_spec = spec(&[AuthKind::Oauth2ClientCredentials]);
         oauth_spec.oauth2_client_credentials.token_url = "http://idp.example/token".into();
-        let mode = AuthMode::build(
-            &oauth_spec,
-            &identity(AuthKind::Oauth2ClientCredentials),
-            exchange(),
-        )
-        .unwrap();
+        let mode = build(&oauth_spec, &identity(AuthKind::Oauth2ClientCredentials)).unwrap();
         let err = mode
-            .probe(&TemplateCtx::new())
+            .probe()
             .await
             .expect_err("the client secret would go out in the clear");
         assert!(err.to_string().contains("https"), "{err}");
@@ -1435,14 +1626,9 @@ mod tests {
         // A loopback endpoint gets as far as trying to reach it.
         oauth_spec.oauth2_client_credentials.token_url =
             "http://127.0.0.1:1/token".parse().unwrap();
-        let mode = AuthMode::build(
-            &oauth_spec,
-            &identity(AuthKind::Oauth2ClientCredentials),
-            exchange(),
-        )
-        .unwrap();
+        let mode = build(&oauth_spec, &identity(AuthKind::Oauth2ClientCredentials)).unwrap();
         let err = mode
-            .probe(&TemplateCtx::new())
+            .probe()
             .await
             .expect_err("nothing is listening on port 1");
         assert!(matches!(err, Error::Source(_)), "{err:?}");
@@ -1465,7 +1651,7 @@ mod tests {
         ]);
         every.api_key.header = Some("X-Api-Key".into());
         every.oauth2_client_credentials.token_url = "https://idp.example/token".into();
-        every.gce_metadata.url = "http://metadata.example/token".into();
+        every.gce_metadata.url = "http://169.254.169.254/token".into();
         for kind in every.accepts.clone() {
             let mut id = InstanceAuth {
                 mode: kind,
@@ -1482,8 +1668,7 @@ mod tests {
             id.private_key = Some("s3cr3t-do-not-print".into());
             id.access_key_id = Some("AKIA".into());
             id.secret_access_key = Some("s3cr3t-do-not-print".into());
-            let mode = AuthMode::build(&every, &id, exchange())
-                .unwrap_or_else(|e| panic!("{}: {e}", kind.as_str()));
+            let mode = build(&every, &id).unwrap_or_else(|e| panic!("{}: {e}", kind.as_str()));
             let rendered = format!("{mode:?}");
             assert!(
                 !rendered.contains("s3cr3t-do-not-print"),
@@ -1501,7 +1686,7 @@ mod tests {
     async fn duo_hmac_signs_the_built_request_the_way_the_admin_api_verifies_it() {
         use hmac::{Hmac, Mac};
 
-        let mode = AuthMode::build(
+        let mode = build(
             &spec(&[AuthKind::DuoHmac]),
             &InstanceAuth {
                 mode: AuthKind::DuoHmac,
@@ -1509,7 +1694,6 @@ mod tests {
                 secret_key: Some("Zh5eGmUq9zpfQnyUIu5OL9iWoMMv5ZNmk3zLJ4Ep".into()),
                 ..InstanceAuth::default()
             },
-            exchange(),
         )
         .unwrap();
         assert_eq!(mode.kind(), AuthKind::DuoHmac);
@@ -1519,7 +1703,9 @@ mod tests {
                 .parse()
                 .unwrap(),
         );
-        mode.authorize(&mut req, &TemplateCtx::new()).await.unwrap();
+        authorize(&mode, &mut req, &TemplateCtx::new())
+            .await
+            .unwrap();
 
         let date = req
             .headers()
@@ -1553,7 +1739,7 @@ mod tests {
             reqwest::Method::GET,
             "http://127.0.0.1:8081/admin/v1/check".parse().unwrap(),
         );
-        mode.authorize(&mut local, &TemplateCtx::new())
+        authorize(&mode, &mut local, &TemplateCtx::new())
             .await
             .unwrap();
         let date = local.headers().get("date").unwrap().to_str().unwrap();
@@ -1575,14 +1761,13 @@ mod tests {
                 )))
         );
 
-        let missing = AuthMode::build(
+        let missing = build(
             &spec(&[AuthKind::DuoHmac]),
             &InstanceAuth {
                 mode: AuthKind::DuoHmac,
                 integration_key: Some("DI".into()),
                 ..InstanceAuth::default()
             },
-            exchange(),
         )
         .unwrap_err();
         assert!(missing.to_string().contains("secret_key"), "{missing}");
@@ -1600,7 +1785,7 @@ mod tests {
         let mut sigv4_spec = spec(&[AuthKind::SigV4]);
         sigv4_spec.sigv4.service = "{{ vars.service }}".into();
         sigv4_spec.sigv4.region = "{{ vars.region }}".into();
-        let mode = AuthMode::build(
+        let mode = build(
             &sigv4_spec,
             &InstanceAuth {
                 mode: AuthKind::SigV4,
@@ -1608,7 +1793,6 @@ mod tests {
                 secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into()),
                 ..InstanceAuth::default()
             },
-            exchange(),
         )
         .unwrap();
         assert_eq!(mode.kind(), AuthKind::SigV4);
@@ -1625,7 +1809,7 @@ mod tests {
             .body(body.to_vec())
             .build()
             .unwrap();
-        mode.authorize(&mut req, &ctx).await.unwrap();
+        authorize(&mode, &mut req, &ctx).await.unwrap();
 
         let header = |name: &str| {
             req.headers()
@@ -1683,7 +1867,7 @@ mod tests {
             reqwest::Method::GET,
             "https://health.us-east-1.amazonaws.com/".parse().unwrap(),
         );
-        mode.authorize(&mut probe, &ctx).await.unwrap();
+        authorize(&mode, &mut probe, &ctx).await.unwrap();
         assert!(
             probe
                 .headers()
@@ -1706,7 +1890,7 @@ mod tests {
         );
 
         // One JSON document may carry both halves, in either spelling.
-        let document = AuthMode::build(
+        let document = build(
             &sigv4_spec,
             &InstanceAuth {
                 mode: AuthKind::SigV4,
@@ -1715,14 +1899,13 @@ mod tests {
                 ),
                 ..InstanceAuth::default()
             },
-            exchange(),
         )
         .unwrap();
         let mut req = reqwest::Request::new(
             reqwest::Method::GET,
             "https://sts.us-east-1.amazonaws.com/".parse().unwrap(),
         );
-        document.authorize(&mut req, &ctx).await.unwrap();
+        authorize(&document, &mut req, &ctx).await.unwrap();
         assert!(
             req.headers()
                 .get("authorization")
@@ -1731,14 +1914,13 @@ mod tests {
                 .unwrap()
                 .starts_with("AWS4-HMAC-SHA256 Credential=AKIAFROMJSONEXAMPLE0/")
         );
-        let half = AuthMode::build(
+        let half = build(
             &sigv4_spec,
             &InstanceAuth {
                 mode: AuthKind::SigV4,
                 access_key_id: Some("AKIA".into()),
                 ..InstanceAuth::default()
             },
-            exchange(),
         )
         .unwrap_err();
         assert!(half.to_string().contains("secret_access_key"), "{half}");
@@ -1781,7 +1963,7 @@ mod tests {
         let mut sigv4_spec = spec(&[AuthKind::SigV4]);
         sigv4_spec.sigv4.service = "{{ vars.service }}".into();
         sigv4_spec.sigv4.region = "ap-southeast-2".into();
-        let mode = AuthMode::build(
+        let mode = build(
             &sigv4_spec,
             &InstanceAuth {
                 mode: AuthKind::SigV4,
@@ -1790,7 +1972,6 @@ mod tests {
                 assume_role_arn: Some("arn:aws:iam::123456789012:role/dfe-reader".into()),
                 ..InstanceAuth::default()
             },
-            exchange(),
         )
         .unwrap();
         let AuthMode::SigV4(signer) = &mode else {
@@ -1822,7 +2003,7 @@ mod tests {
                     .parse()
                     .unwrap(),
             );
-            mode.authorize(&mut req, &ctx).await.unwrap();
+            authorize(&mode, &mut req, &ctx).await.unwrap();
             let header = |name: &str| {
                 req.headers()
                     .get(name)
@@ -1885,14 +2066,15 @@ mod tests {
             "env:DFE_FETCHER_TEST_MISSING_SECRET_VAR".into(),
         )));
         for _ in 0..2 {
-            let err = mode
-                .probe(&TemplateCtx::new())
-                .await
-                .expect_err("the variable is not set");
+            let err = mode.probe().await.expect_err("the variable is not set");
             assert!(
                 err.to_string()
                     .contains("DFE_FETCHER_TEST_MISSING_SECRET_VAR"),
                 "the resolver's own answer, not a held one: {err}"
+            );
+            assert!(
+                !err.to_string().contains("not supplied by the consumer"),
+                "the fetcher's own words, one prefix: {err}"
             );
         }
     }
@@ -1921,28 +2103,9 @@ mod tests {
         assert!(back.to_string().contains("`TOKEN` is not set"), "{back}");
     }
 
-    /// Only a credential endpoint that could not be reached is worth signing
-    /// again; every other failure answers the same way next attempt.
-    #[test]
-    fn only_an_unreachable_endpoint_is_marked_worth_signing_again() {
-        assert!(
-            signing_failure(Error::Source("token exchange at ...: connect".to_owned()))
-                .is_retryable()
-        );
-        for error in [
-            Error::Credential("spec did not resolve".to_owned()),
-            Error::Api {
-                status: 401,
-                text: String::new(),
-                throttled: false,
-            },
-        ] {
-            assert!(!signing_failure(error).is_retryable());
-        }
-    }
-
     /// A credential source of scalo's own reports `AuthError`, which maps onto
-    /// the framework error by what it says rather than by its text.
+    /// the framework error by what it says rather than by its text -- and so
+    /// onto the metrics label the driver counts under.
     #[test]
     fn a_scalo_acquisition_failure_maps_by_what_it_says() {
         let refused = credential_error(SignError::from(AuthError::Refused {
@@ -1969,6 +2132,32 @@ mod tests {
             reason: "no access_token".to_owned(),
         }));
         assert!(matches!(malformed, Error::Credential(_)), "{malformed:?}");
+
+        // A token endpoint that accepts the connection and then says nothing is
+        // the USUAL hang, because the acquisition's deadline is the exchange
+        // client's own timeout and fires first.
+        let timed_out = credential_error(SignError::from(AuthError::TimedOut { secs: 30 }));
+        assert!(matches!(timed_out, Error::Source(_)), "{timed_out:?}");
+        assert_eq!(timed_out.api_error_code(), "timeout");
+
+        // A caller that waited on one in-flight exchange is counted under the
+        // same category as the caller that ran it.
+        let waited = credential_error(SignError::from(AuthError::Shared {
+            message: "credential exchange at https://idp.example/token failed: connect".to_owned(),
+            transient: true,
+        }));
+        assert!(matches!(waited, Error::Source(_)), "{waited:?}");
+        assert_eq!(waited.api_error_code(), "network");
+
+        let waited_on_a_refusal = credential_error(SignError::from(AuthError::Shared {
+            message: "credential exchange refused with status 401".to_owned(),
+            transient: false,
+        }));
+        assert!(
+            matches!(waited_on_a_refusal, Error::Credential(_)),
+            "a refusal a waiter was handed carries no status to classify by: \
+             {waited_on_a_refusal:?}"
+        );
     }
 
     /// A template or a key the fetcher could not turn into a credential is the
@@ -1978,17 +2167,22 @@ mod tests {
         let reason = "jwt_bearer token_url rendered empty";
         let error = acquisition_error(unavailable(Error::Config(reason.to_owned())));
         assert!(matches!(error, Error::Credential(_)), "{error:?}");
-        assert!(error.to_string().contains(reason), "{error}");
+        assert_eq!(error.to_string(), format!("credential error: {reason}"));
         assert!(
             !error.to_string().contains("configuration error"),
+            "one prefix, not three: {error}"
+        );
+        assert!(
+            !error.to_string().contains("not supplied by the consumer"),
             "one prefix, not three: {error}"
         );
     }
 
     /// One acquisition is bounded by the exchange client's own attempts, so the
     /// cache's renewal gate is never released while an attempt the client
-    /// scheduled is still in flight. The client grants no retries, so the bound
-    /// is one request's timeout.
+    /// scheduled is still in flight. The shipped client grants no retries, so
+    /// its bound is one request's timeout; a client that granted them would
+    /// count every attempt and the intervals between them.
     #[test]
     fn an_acquisition_is_bounded_by_the_exchange_clients_attempts() {
         let http = exchange();
@@ -1997,18 +2191,163 @@ mod tests {
             exchange_deadline(&http),
             Duration::from_secs(http.config().timeout_secs)
         );
+
+        let retrying = ExchangeClient::new(scalo::http_client::HttpClientConfig {
+            timeout_secs: 5,
+            max_retries: 2,
+            max_retry_interval_ms: 1_000,
+            ..scalo::http_client::HttpClientConfig::default()
+        })
+        .unwrap();
+        assert_eq!(
+            exchange_deadline(&retrying),
+            Duration::from_secs(5 * 3) + Duration::from_secs(2),
+            "three attempts and the two intervals between them"
+        );
+
+        // An absurd timeout saturates rather than overflowing the sum: a bad
+        // reload must not take the process down.
+        let absurd = ExchangeClient::new(scalo::http_client::HttpClientConfig {
+            timeout_secs: u64::MAX,
+            max_retries: 1,
+            max_retry_interval_ms: 1_000,
+            ..scalo::http_client::HttpClientConfig::default()
+        })
+        .unwrap();
+        assert_eq!(exchange_deadline(&absurd), Duration::MAX);
+    }
+
+    /// A metadata read is exempt from the https rule, so the host is what keeps
+    /// it on the instance: the link-local address every cloud serves it on, a
+    /// loopback fixture, or the name Google documents.
+    #[test]
+    fn a_metadata_url_off_this_instance_is_refused() {
+        for url in [
+            "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://127.0.0.1:8080/metadata/token",
+            "http://localhost:8080/metadata/token",
+            "http://[::1]:8080/metadata/token",
+            "http://[fe80::1]/metadata/token",
+        ] {
+            assert!(metadata_url_issue(url).is_none(), "{url}");
+        }
+        for url in [
+            "http://metadata.example/token",
+            "http://10.0.0.1/token",
+            "https://attacker.example/computeMetadata/v1/instance/service-accounts/default/token",
+            "not a url",
+        ] {
+            let issue = metadata_url_issue(url).unwrap_or_else(|| panic!("{url} is refused"));
+            assert!(!issue.is_empty(), "{url}");
+        }
+
+        // The URL is rendered and checked when the instance is bound, not on the
+        // first tick it would have been read on.
+        let mut gce = spec(&[AuthKind::GceMetadata]);
+        gce.gce_metadata.url = "http://metadata.example/token".into();
+        let err = build(&gce, &identity(AuthKind::GceMetadata))
+            .expect_err("a metadata read off this instance");
+        assert!(matches!(err, Error::Config(_)), "{err:?}");
+        assert!(err.to_string().contains("auth.gce_metadata.url"), "{err}");
+
+        let mut fine = spec(&[AuthKind::GceMetadata]);
+        fine.gce_metadata.url = "http://{{ vars.metadata_host }}/token".into();
+        let mut ctx = TemplateCtx::new();
+        ctx.set(
+            "vars",
+            serde_json::json!({"metadata_host": "169.254.169.254"}),
+        );
+        AuthMode::build(&fine, &identity(AuthKind::GceMetadata), exchange(), &ctx)
+            .expect("the instance's own var renders the metadata host");
+    }
+
+    /// A signer and its credential source are handed the unit's context, which
+    /// can hold a response body and whatever the profile exposed as `auth.*`, so
+    /// neither may print more than the mode's kind.
+    #[test]
+    fn a_signer_renders_the_mode_kind_and_nothing_of_the_context() {
+        let mode = build(&spec(&[AuthKind::Bearer]), &identity(AuthKind::Bearer)).unwrap();
+        let mut ctx = TemplateCtx::new();
+        ctx.set(
+            "auth",
+            serde_json::json!({"instance_url": "s3cr3t-do-not-print"}),
+        );
+        ctx.set("vars", serde_json::json!({"token": "s3cr3t-do-not-print"}));
+        for rendered in [
+            format!("{:?}", mode.signer(&ctx)),
+            format!("{:?}", Minting { mode: &mode }),
+            format!(
+                "{:?}",
+                ScopedSigV4 {
+                    keys: &SigV4 {
+                        service: Template::compile("s3").unwrap(),
+                        region: Template::compile("ap-southeast-2").unwrap(),
+                        keys: SigV4Keys::Json(Secret::new("s3cr3t-do-not-print".into())),
+                        resolved: OnceCell::new(),
+                        assume_role: None,
+                    },
+                    ctx: &ctx,
+                }
+            ),
+        ] {
+            assert!(!rendered.contains("s3cr3t-do-not-print"), "{rendered}");
+            assert!(!rendered.contains("instance_url"), "{rendered}");
+        }
+    }
+
+    /// A credential is minted once per instance and per scope, so a template
+    /// deciding what it mints cannot read a name only a unit supplies: a
+    /// domain-wide-delegation `sub` off a per-unit var would run every unit as
+    /// whichever unit minted first.
+    #[test]
+    fn a_credential_template_reading_a_per_unit_name_is_refused_when_the_instance_is_bound() {
+        let mut jwt = spec(&[AuthKind::JwtBearer]);
+        jwt.jwt_bearer.token_url = "https://idp.example/token".into();
+        jwt.jwt_bearer
+            .claims
+            .insert("sub".into(), "{{ unit.name }}@example.com".into());
+        let mut id = identity(AuthKind::JwtBearer);
+        id.private_key = Some("not-a-key".into());
+        let err = build(&jwt, &id).expect_err("the subject decides who the token acts as");
+        assert!(matches!(err, Error::Config(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("auth.jwt_bearer.claims.sub"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("only a unit supplies"), "{err}");
+
+        // The endpoint of a minting mode is refused the same way.
+        let mut oauth = spec(&[AuthKind::Oauth2ClientCredentials]);
+        oauth.oauth2_client_credentials.token_url =
+            "https://{{ unit.name }}.idp.example/token".into();
+        let err = build(&oauth, &identity(AuthKind::Oauth2ClientCredentials))
+            .expect_err("one mode, one endpoint");
+        assert!(
+            err.to_string()
+                .contains("auth.oauth2_client_credentials.token_url"),
+            "{err}"
+        );
+
+        // A claim over the instance's own vars is what the grammar is for.
+        let mut fine = spec(&[AuthKind::JwtBearer]);
+        fine.jwt_bearer.token_url = "https://idp.example/token".into();
+        fine.jwt_bearer
+            .claims
+            .insert("sub".into(), "{{ vars.admin_email }}".into());
+        let mut ctx = TemplateCtx::new();
+        ctx.set(
+            "vars",
+            serde_json::json!({"admin_email": "admin@example.com"}),
+        );
+        AuthMode::build(&fine, &id, exchange(), &ctx).expect("an instance-level var binds");
     }
 
     /// The executor reaches a mode through the hook, so the header a mode puts
     /// on the request has to arrive that way too.
     #[tokio::test]
     async fn signing_through_the_hook_places_the_credential() {
-        let mode = AuthMode::build(
-            &spec(&[AuthKind::Bearer]),
-            &identity(AuthKind::Bearer),
-            exchange(),
-        )
-        .unwrap();
+        let mode = build(&spec(&[AuthKind::Bearer]), &identity(AuthKind::Bearer)).unwrap();
         let ctx = TemplateCtx::new();
         let mut req = request();
         RequestSigner::sign(&mode.signer(&ctx), &mut req)

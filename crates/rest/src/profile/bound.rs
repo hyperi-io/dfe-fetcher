@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use super::template::{Predicate, Template, TemplateCtx, TemplateMap};
 use super::{
-    AuthSpec, EndpointSpec, LookupRequest, Method, ProfileRef, QuotaSpec, RestInstance,
+    AuthKind, AuthSpec, EndpointSpec, LookupRequest, Method, ProfileRef, QuotaSpec, RestInstance,
     RestProfile, RetrySpec, WindowSpec,
 };
 use crate::decode::Decoder;
@@ -580,6 +580,68 @@ fn bind_endpoint(
     })
 }
 
+/// Refuse a credential template whose render depends on which unit asks.
+///
+/// A credential mode is built once per instance -- and once per scope a unit
+/// names -- so its token endpoint and its claims are rendered once, against the
+/// instance's context. A template that rendered differently under a unit's
+/// context would hold whichever answer reached the mode first and present it as
+/// every other unit's credential. Where the claim decides WHO the token acts as
+/// (a domain-wide-delegation `sub`), that is one unit's data fetched as another
+/// unit's principal, so the profile is refused at load rather than documented.
+///
+/// `auth.*` is stood in for rather than resolved: what the authenticator puts
+/// there comes off the signing key and the token response, which are the
+/// instance's whatever unit asks. A template reading a name no mode exposes
+/// fails both renders alike and is left to the mint to report.
+fn refuse_per_unit_credentials(
+    auth: &AuthSpec,
+    mode: AuthKind,
+    instance_ctx: &TemplateCtx,
+    endpoints: &[BoundEndpoint],
+) -> Result<()> {
+    let templates = auth.credential_templates(mode);
+    if templates.is_empty() {
+        return Ok(());
+    }
+    let stand_in = Value::Object(
+        auth.exposed_names(mode)
+            .into_iter()
+            .map(|name| (name.to_owned(), Value::String(format!("auth.{name}"))))
+            .collect(),
+    );
+    for (field, source) in templates {
+        let template =
+            Template::compile(source).map_err(|e| Error::Config(format!("{field}: {e}")))?;
+        let instance = render_with_auth(&template, instance_ctx, &stand_in);
+        for endpoint in endpoints {
+            let unit = render_with_auth(&template, &endpoint.ctx, &stand_in);
+            let same = match (&instance, &unit) {
+                (Ok(instance), Ok(unit)) => instance == unit,
+                (Err(_), Err(_)) => true,
+                _ => false,
+            };
+            if !same {
+                return Err(Error::Config(format!(
+                    "{field}: renders differently for unit `{}` than for the instance; a \
+                     credential is minted once per instance and per scope, so a value only a \
+                     unit supplies cannot decide what it mints",
+                    endpoint.unit.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Render `template` against `ctx` with `auth` standing in for what a mode
+/// exposes.
+fn render_with_auth(template: &Template, ctx: &TemplateCtx, auth: &Value) -> Result<String> {
+    let mut ctx = ctx.clone();
+    ctx.set("auth", auth.clone());
+    template.render(&ctx)
+}
+
 /// Compile a secondary request's templates; `field` names it in errors and
 /// `default` is the method it sends unless it names one.
 fn bind_request(field: &str, request: &LookupRequest, default: Method) -> Result<BoundRequest> {
@@ -728,6 +790,7 @@ pub fn bind(
             })?;
         endpoints.push(bind_endpoint(profile, instance, endpoint, name, &ctx)?);
     }
+    refuse_per_unit_credentials(&profile.auth, instance.auth.mode, &ctx, &endpoints)?;
     let units = endpoints.iter().map(|e| e.unit.clone()).collect();
 
     Ok(BoundProfile {

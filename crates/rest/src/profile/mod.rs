@@ -251,6 +251,64 @@ pub struct AuthSpec {
     pub sigv4: SigV4Spec,
 }
 
+impl AuthSpec {
+    /// The templates `mode` renders to decide what it mints and where: the
+    /// token endpoint, and every claim of a JWT-bearer assertion. Named by
+    /// their field, so a refusal points at the profile line.
+    ///
+    /// These are the only templates that can make a minted credential depend on
+    /// a context, so these are the ones binding holds to the instance's.
+    #[must_use]
+    pub fn credential_templates(&self, mode: AuthKind) -> Vec<(String, &str)> {
+        match mode {
+            AuthKind::Oauth2ClientCredentials => vec![(
+                "auth.oauth2_client_credentials.token_url".to_owned(),
+                self.oauth2_client_credentials.token_url.as_str(),
+            )],
+            AuthKind::JwtBearer => {
+                let mut templates = vec![(
+                    "auth.jwt_bearer.token_url".to_owned(),
+                    self.jwt_bearer.token_url.as_str(),
+                )];
+                templates.extend(self.jwt_bearer.claims.iter().map(|(name, value)| {
+                    (format!("auth.jwt_bearer.claims.{name}"), value.as_str())
+                }));
+                templates
+            }
+            AuthKind::GceMetadata => {
+                vec![(
+                    "auth.gce_metadata.url".to_owned(),
+                    self.gce_metadata.url.as_str(),
+                )]
+            }
+            AuthKind::None
+            | AuthKind::Bearer
+            | AuthKind::ApiKey
+            | AuthKind::Basic
+            | AuthKind::DuoHmac
+            | AuthKind::SigV4 => Vec::new(),
+        }
+    }
+
+    /// The `auth.*` names a credential template of `mode` may read: what the
+    /// authenticator itself puts there, plus the token-response fields the
+    /// profile allow-lists.
+    #[must_use]
+    pub fn exposed_names(&self, mode: AuthKind) -> Vec<&str> {
+        let mut names = Vec::new();
+        if mode == AuthKind::JwtBearer {
+            names.extend(["client_email", "token_uri", "token_url"]);
+        }
+        let expose = match mode {
+            AuthKind::JwtBearer => &self.jwt_bearer.expose,
+            AuthKind::Oauth2ClientCredentials => &self.oauth2_client_credentials.expose,
+            _ => return names,
+        };
+        names.extend(expose.iter().map(String::as_str));
+        names
+    }
+}
+
 impl Default for AuthSpec {
     fn default() -> Self {
         Self {
@@ -1277,8 +1335,10 @@ fn predicate_issue(field: &str, text: &str) -> Option<Issue> {
 }
 
 /// The token-response fields a mode may not expose: the credentials
-/// themselves, which a template would put in a URL or a log line.
-const NEVER_EXPOSED: &[&str] = &["access_token", "refresh_token", "id_token"];
+/// themselves, which a template would put in a URL or a log line. The same four
+/// scalo drops from a token reading, so a profile is refused here rather than
+/// passing validation and failing at render with no hint.
+const NEVER_EXPOSED: &[&str] = &["access_token", "refresh_token", "id_token", "client_secret"];
 
 /// Problems with a mode's `expose` list.
 fn expose_issues(field: &str, expose: &[String]) -> Vec<Issue> {
@@ -1475,6 +1535,25 @@ impl RestProfile {
             issues.push(Issue::new("auth.accepts", "must list at least one mode"));
         }
         let scoped_mode = self.auth.accepts.iter().any(|k| k.is_scoped());
+        // A credential mode is built once per instance and per scope, so a
+        // template of one that read a name only a unit or a request supplies
+        // would be frozen to whichever unit asked first.
+        for mode in &self.auth.accepts {
+            for (field, source) in self.auth.credential_templates(*mode) {
+                if let Ok(template) = Template::compile(source)
+                    && let Some(name) = crate::auth::per_unit_name(&template)
+                {
+                    issues.push(Issue::new(
+                        field,
+                        format!(
+                            "reads `{name}`, which only a unit supplies; a credential is minted \
+                             once per instance and per scope, so its endpoint and claims cannot \
+                             vary by unit"
+                        ),
+                    ));
+                }
+            }
+        }
         if self.auth.accepts.contains(&AuthKind::JwtBearer) {
             let jwt = &self.auth.jwt_bearer;
             if jwt.token_url.trim().is_empty() {
@@ -4012,15 +4091,72 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "{:?}",
             no_manifest.validate()
         );
-        let leak = parse(&yaml.replace("expose: [instance_url]", "expose: [refresh_token]"));
+        // The same four scalo drops from a token reading, so none of them
+        // passes validation and then fails at render with no hint.
+        for credential in NEVER_EXPOSED {
+            let leak =
+                parse(&yaml.replace("expose: [instance_url]", &format!("expose: [{credential}]")));
+            assert!(
+                leak.validate()
+                    .iter()
+                    .any(|i| i.field == "auth.oauth2_client_credentials.expose"
+                        && i.message.contains("credential")),
+                "{credential}: {:?}",
+                leak.validate()
+            );
+        }
         assert!(
-            leak.validate()
-                .iter()
-                .any(|i| i.field == "auth.oauth2_client_credentials.expose"
-                    && i.message.contains("credential")),
-            "{:?}",
-            leak.validate()
+            NEVER_EXPOSED.contains(&"client_secret"),
+            "the field a token endpoint echoes back is a credential too"
         );
+    }
+
+    /// A credential is minted once per instance and per scope, so a template
+    /// deciding what it mints may not read a name only a unit or a request
+    /// supplies: a shipped profile is refused at validation rather than binding
+    /// one unit's answer and presenting it as every other unit's credential.
+    #[test]
+    fn a_credential_template_may_not_read_what_only_a_unit_supplies() {
+        let yaml = "profile: dwd\nbase_url: \"{{ vars.api_url }}\"\nauth:\n  accepts: [jwt_bearer]\n  jwt_bearer:\n    token_url: \"{{ auth.token_uri }}\"\n    claims: { iss: \"{{ auth.client_email }}\", sub: \"{{ vars.admin_email }}\" }\nvars: { api_url: \"https://api.example\", admin_email: \"\" }\nendpoints:\n  - { unit: users, path: /users, rows: { decoder: json_array } }\n";
+        assert!(
+            parse(yaml).validate().is_empty(),
+            "{:?}",
+            parse(yaml).validate()
+        );
+
+        let per_unit = parse(&yaml.replace(
+            "sub: \"{{ vars.admin_email }}\"",
+            "sub: \"{{ unit.name }}@example.com\"",
+        ));
+        assert!(
+            per_unit
+                .validate()
+                .iter()
+                .any(|i| i.field == "auth.jwt_bearer.claims.sub"
+                    && i.message.contains("only a unit supplies")),
+            "{:?}",
+            per_unit.validate()
+        );
+
+        let windowed = parse(&yaml.replace(
+            "token_url: \"{{ auth.token_uri }}\"",
+            "token_url: \"https://idp.example/token?at={{ window.start }}\"",
+        ));
+        assert!(
+            windowed
+                .validate()
+                .iter()
+                .any(|i| i.field == "auth.jwt_bearer.token_url"),
+            "{:?}",
+            windowed.validate()
+        );
+
+        // The signing scope of `sigv4` is per request BY DESIGN, so it is not
+        // held to the rule.
+        let scoped = parse(
+            "profile: aws\nbase_url: \"{{ vars.endpoint }}\"\nauth:\n  accepts: [sigv4]\n  sigv4: { service: \"{{ vars.service }}\", region: \"{{ vars.region }}\" }\nendpoints:\n  - { unit: trail, path: /, vars: { service: cloudtrail }, rows: { decoder: json_array } }\n",
+        );
+        assert!(scoped.validate().is_empty(), "{:?}", scoped.validate());
     }
 
     /// A queue unit: its rows carry an ack id at a pointer and the ack

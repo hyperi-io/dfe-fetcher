@@ -50,9 +50,14 @@ const ERROR_BODY_BYTES: usize = 4096;
 /// never spells the HTTP crate.
 pub type HttpClient = reqwest::Client;
 
-/// The client a credential exchange posts through: scalo's, which owns the
-/// retry schedule and the request metrics for a token endpoint. Named apart
-/// from [`HttpClient`] because that name is already the data path's.
+/// The settings a credential exchange posts under: scalo's client, read for its
+/// config. Named apart from [`HttpClient`] because that name is already the data
+/// path's.
+///
+/// A scalo exchange builds its OWN client from these settings, so this one sends
+/// nothing itself and its connection pool is never used. What travels is the
+/// config: the timeouts, the retry schedule the acquisition deadline is computed
+/// from, and the `User-Agent` a token endpoint sees.
 pub type ExchangeClient = scalo::http_client::HttpClient;
 
 /// How long a connection may take to open.
@@ -108,14 +113,17 @@ pub fn http_client_with(connect: Duration, read: Duration) -> Result<HttpClient>
 /// total bound rather than an idle read one.
 pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Build the one client every credential exchange posts through.
+/// Build the settings every credential exchange posts under.
 ///
 /// The config is spelled out here rather than read from the cascade: the
 /// cascade's `http_client` section is scalo's own key and the fetcher declares
 /// no such block, so reading it would take its timeouts from a section no
-/// operator is told about. Redirects are refused outright -- reqwest carries
-/// the body across a cross-origin hop, and a token exchange's body is the
-/// client secret.
+/// operator is told about.
+///
+/// Every exchange builds its own client from this config, and scalo refuses
+/// redirects on the one it builds, because reqwest carries the body across a
+/// cross-origin hop and a token exchange's body is the client secret. The policy
+/// set here covers only the client this function returns, which sends nothing.
 ///
 /// It grants no retries. A credential exchange runs on scalo's own request
 /// loop, which takes its schedule from here, and the scheduler already retries
@@ -281,6 +289,13 @@ impl RequestExecutor {
                 }
                 Ok(response) => {
                     let status = response.status().as_u16();
+                    // A refusal says the credential is no longer accepted
+                    // whatever expiry it advertised, so a minting mode drops
+                    // the token it holds instead of re-presenting it until its
+                    // renewal point.
+                    if status == 401 || status == 403 {
+                        auth.invalidate();
+                    }
                     let retry_after = self.retry_after(&response);
                     let text = self.error_text(response).await;
                     let throttled = self.retry.throttled(status, &text);
@@ -389,8 +404,9 @@ mod tests {
         assert!(exchange_client().is_ok());
     }
 
-    /// A refused redirect is what keeps a token exchange's form body -- the
-    /// client secret -- from being replayed to a host the profile never named.
+    /// The settings an exchange builds its own client from: the timeouts the
+    /// acquisition deadline is computed from, no retries, and the identity a
+    /// token endpoint sees.
     #[test]
     fn the_exchange_client_carries_the_fetchers_identity_and_no_redirects() {
         let client = exchange_client().unwrap();
