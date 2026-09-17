@@ -68,7 +68,5 @@ build:
       bolt:
         enabled: true  # Linux only; skipped on non-Linux targets
 
-publish:
+release:
   enabled: true
-  target: both
-  binaries: both

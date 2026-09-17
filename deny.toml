@@ -11,6 +11,15 @@ targets = []
 all-features = true
 
 [advisories]
+# GHSA-w9wp-h8wv-79jx / CVE-2026-48504 is not listed here because cargo-deny
+# never sees it: it is a GitHub advisory with no RustSec entry, so an `ignore`
+# would be inert. opentelemetry_sdk 0.31.0 is in the lock through scalo and is
+# in the affected range (<= 0.32.0, fixed in 0.32.1). The flaw is in
+# `BaggagePropagator::extract_with_context`, which parses an inbound W3C
+# Baggage header before enforcing its size limits. Nothing here reaches it:
+# neither this workspace nor scalo names `baggage`, and neither installs a text
+# map propagator, so the function is never called. Raising the floor needs
+# scalo to move first.
 ignore = []
 
 [licenses]
