@@ -56,11 +56,10 @@ build:
       - aarch64-unknown-linux-gnu
     # Release-track build optimisation (hyperi-ci Tier 1/2).
     # Channel-gated defaults apply automatically:
-    #   spike/alpha -> jemalloc + thin LTO
+    #   alpha       -> jemalloc + thin LTO
     #   beta        -> jemalloc + fat LTO
     #   release     -> jemalloc + fat LTO + PGO/BOLT (opt-in below)
-    # See hyperi-ci's docs/RUST-RELEASE-TRACK-OPTIMISATION.md for the full
-    # contract.
+    # See hyperi-ci's docs/languages/rust.md for the full contract.
     optimize:
       pgo:
         enabled: true
