@@ -50,6 +50,15 @@ pub struct Recorded {
     pub token_exchanges: u32,
     pub flaky_hits: u32,
     pub forbidden_hits: u32,
+    /// The `Host` header of each token exchange, in order: which host the
+    /// exchange was actually posted to.
+    pub token_hosts: Vec<String>,
+    /// The lifetime minted tokens advertise; the endpoint's own default when
+    /// unset. Zero makes every request its own exchange, which is how a test
+    /// drives a renewal without waiting for one.
+    pub token_ttl_secs: Option<u64>,
+    /// The first token `/auth/revoked` saw, which it refuses from then on.
+    pub revoked_token: Option<String>,
     /// The scope each minted token was exchanged for, by token.
     pub token_scopes: HashMap<String, String>,
     /// The claims of every JWT-bearer assertion the exchange verified.
@@ -89,6 +98,17 @@ impl Fixture {
 
     pub fn token_exchanges(&self) -> u32 {
         self.recorded.lock().unwrap().token_exchanges
+    }
+
+    /// The hosts the token exchanges were posted to, in order.
+    pub fn token_hosts(&self) -> Vec<String> {
+        self.recorded.lock().unwrap().token_hosts.clone()
+    }
+
+    /// How long a minted token advertises it lives. Zero leaves every token
+    /// past its renewal point the moment it is read.
+    pub fn set_token_ttl(&self, secs: u64) {
+        self.recorded.lock().unwrap().token_ttl_secs = Some(secs);
     }
 
     /// The scope a minted token carries.
@@ -225,6 +245,7 @@ async fn token(
         .to_owned();
     let mut recorded = state.lock().unwrap();
     recorded.token_exchanges += 1;
+    recorded.token_hosts.push(host.clone());
     let n = recorded.token_exchanges;
     let refused = || {
         (
@@ -233,8 +254,9 @@ async fn token(
         )
             .into_response()
     };
-    // A client-credentials token lives one second so the refresh test sees a
-    // re-exchange; a JWT-bearer token lives an hour so the cache test sees reuse.
+    // A token lives an hour unless a test sets its own lifetime, so a test that
+    // is not about expiry is never racing one.
+    let ttl = recorded.token_ttl_secs.unwrap_or(3600);
     let (scope, expires_in) = match form.get("grant_type").map(String::as_str) {
         Some("client_credentials") => {
             if form.get("client_id").map(String::as_str) != Some("client-a")
@@ -242,7 +264,7 @@ async fn token(
             {
                 return refused();
             }
-            (form.get("scope").cloned().unwrap_or_default(), 1)
+            (form.get("scope").cloned().unwrap_or_default(), ttl)
         }
         Some("urn:ietf:params:oauth:grant-type:jwt-bearer") => {
             let Some(public) = recorded.jwt_public_key.clone() else {
@@ -260,7 +282,7 @@ async fn token(
             };
             let scope = data.claims["scope"].as_str().unwrap_or_default().to_owned();
             recorded.assertions.push(data.claims);
-            (scope, 3599)
+            (scope, ttl)
         }
         _ => return refused(),
     };
@@ -767,6 +789,33 @@ async fn auth_gate(
     }
 }
 
+/// A provider that revokes the first token it is shown and accepts the next:
+/// what a rotated client, a revoked grant or a signing-key roll looks like from
+/// the fetcher's side, well inside the token's advertised lifetime.
+async fn revoked(
+    State(state): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    record(&state, "/revoked/data", &query, &headers, None);
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .trim_start_matches("Bearer ")
+        .to_owned();
+    let mut recorded = state.lock().unwrap();
+    let revoked = recorded.revoked_token.get_or_insert(token.clone());
+    if *revoked == token {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"error": "the token has been revoked"})),
+        )
+            .into_response();
+    }
+    axum::Json(json!([{"token": token}])).into_response()
+}
+
 async fn flaky(
     State(state): State<Shared>,
     Query(query): Query<HashMap<String, String>>,
@@ -1237,6 +1286,7 @@ pub async fn start() -> Fixture {
         .route("/stall", get(stall))
         .route("/redirect/{kind}", get(redirect))
         .route("/auth/{mode}", get(auth_gate))
+        .route("/revoked/data", get(revoked))
         .route("/retry/flaky", get(flaky))
         .route("/retry/forbidden", get(forbidden))
         .route("/error/bad", get(bad_request))

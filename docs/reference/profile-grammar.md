@@ -110,7 +110,7 @@ instance, never here.
 | Mode shape | Fields |
 |------------|--------|
 | `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `SSWS `). |
-| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token` and `id_token` are refused). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
+| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
@@ -119,6 +119,29 @@ instance, never here.
 A mode that mints a token for a scope (`oauth2_client_credentials`,
 `jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
 with the same scope share one token.
+
+### What the token endpoint and the claims may read
+
+A credential is minted once per instance, and once per scope a unit names, so
+`token_url`, `gce_metadata.url` and every `jwt_bearer` claim render against the
+INSTANCE's context -- not per unit and not per request. They may read `vars`,
+`base_url` and the `auth.*` the authenticator exposes. One that reads `unit`,
+`window`, `page`, `key` or `item`, or that renders differently under a unit's
+own `vars` or `base_url`, is refused when the instance binds: a claim deciding
+the identity the token acts as (a domain-wide-delegation `sub`) must not be able
+to vary by unit. `sigv4`'s `service` and `region` are the exception, and render
+per request by design.
+
+### Endpoint rules the modes are held to
+
+- `early_refresh_secs` is capped at half the token's lifetime. A margin at or
+  over the lifetime is logged; one between half and full is capped silently.
+- `token_url` must be an https URL or a loopback address, because the client
+  secret is a field of the form that is posted. A self-hosted deployment reached
+  over plain http stops fetching, which is deliberate.
+- `gce_metadata.url` is exempt from that rule -- every cloud serves its metadata
+  over plaintext -- and is held to its host instead: a loopback or link-local
+  address, or a documented metadata host name.
 
 ## Retry, errors and quota
 
@@ -248,7 +271,7 @@ Templates are `{{ cel }}` expressions over:
 | Name | Available |
 |------|-----------|
 | `vars.*` | The profile's defaults, overlaid by the instance's `vars`, the endpoint's `vars`, then the instance's `units.<name>.vars`. |
-| `base_url` | The rendered base URL (in `token_url` templates). |
+| `base_url` | The rendered base URL; the instance's in a `token_url` template, the unit's everywhere else. |
 | `window.start`, `window.end` | The step's bounds, rendered per `window.format`; `int(...)` gives a number. |
 | `unit.name` | The unit's name. |
 | `key` | The current keyset key. |

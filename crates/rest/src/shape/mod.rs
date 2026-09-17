@@ -80,7 +80,15 @@ impl RestShape {
         exchange: &Arc<ExchangeClient>,
     ) -> Result<Self> {
         let bound = bind(profile, instance, connection_id)?;
-        let auth = AuthMode::build(&bound.auth, &instance.auth, Arc::clone(exchange))?;
+        // The INSTANCE's context, never a unit's: a credential mode is built
+        // once and its endpoint and claims are rendered here, so no unit can
+        // change what the mode mints (see `AuthMode`).
+        let auth = AuthMode::build(
+            &bound.auth,
+            &instance.auth,
+            Arc::clone(exchange),
+            &bound.ctx,
+        )?;
         let mut scoped_auth = BTreeMap::new();
         for scope in bound.endpoints.iter().filter_map(|e| e.auth_scope.clone()) {
             if scoped_auth.contains_key(&scope) {
@@ -90,6 +98,7 @@ impl RestShape {
                 &bound.auth,
                 &instance.auth,
                 Arc::clone(exchange),
+                &bound.ctx,
                 Some(&scope),
             )?;
             scoped_auth.insert(scope, mode);
@@ -360,7 +369,7 @@ impl RestShape {
     /// exposes any).
     async fn tick_ctx(&self, endpoint: &BoundEndpoint) -> Result<TemplateCtx> {
         let mut ctx = endpoint.ctx.clone();
-        if let Some(exposed) = self.auth_for(endpoint).exposed(&ctx).await? {
+        if let Some(exposed) = self.auth_for(endpoint).exposed().await? {
             ctx.set("auth", exposed);
         }
         Ok(ctx)
@@ -1338,7 +1347,7 @@ impl RowSource for RestShape {
     fn probe(&self) -> BoxFuture<'_, Result<()>> {
         match &self.bound.probe {
             Some(probe) => self.send_probe(probe).boxed(),
-            None => self.auth.probe(&self.bound.ctx).boxed(),
+            None => self.auth.probe().boxed(),
         }
     }
 }
