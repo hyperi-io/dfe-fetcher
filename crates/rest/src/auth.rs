@@ -67,7 +67,7 @@ use serde_json::Value;
 use tokio::sync::OnceCell;
 
 use dfe_fetcher_core::error::{Error, Result};
-use dfe_fetcher_core::secret::ResolveSecret;
+use dfe_fetcher_core::secret::{ResolveSecret, Secret as SecretCell};
 
 use crate::profile::template::{Template, TemplateCtx};
 use crate::profile::{AuthKind, AuthSpec, InstanceAuth, ValuePart, credential_value_parts};
@@ -95,7 +95,7 @@ impl ResolveSecret for ScaloSecrets {
 }
 
 /// A credential spec resolved on first use.
-pub type Secret = dfe_fetcher_core::secret::Secret<ScaloSecrets>;
+pub type Secret = SecretCell<ScaloSecrets>;
 
 /// A failure the fetcher raised on its way into a credential acquisition.
 ///
@@ -124,14 +124,17 @@ fn acquisition_error(error: AuthError) -> Error {
 /// pointer clone. A spec that does not resolve is tried again by the next
 /// request rather than answered from the last refusal, because the cell holds
 /// values and not failures and the resolver is local.
+///
+/// The resolver stays core's type parameter, defaulted to this crate's, so a
+/// test can count how often a spec is read from its store.
 #[derive(Debug)]
-struct Resolved {
-    spec: Secret,
+struct Resolved<R = ScaloSecrets> {
+    spec: SecretCell<R>,
     credential: OnceCell<Arc<Credential>>,
 }
 
-impl Resolved {
-    fn new(spec: Secret) -> Arc<Self> {
+impl<R: ResolveSecret> Resolved<R> {
+    fn new(spec: SecretCell<R>) -> Arc<Self> {
         Arc::new(Self {
             spec,
             credential: OnceCell::new(),
@@ -139,7 +142,7 @@ impl Resolved {
     }
 }
 
-impl CredentialSource for Resolved {
+impl<R: ResolveSecret> CredentialSource for Resolved<R> {
     async fn credential(&self) -> Acquired<Arc<Credential>> {
         self.credential
             .get_or_try_init(|| async {
@@ -238,11 +241,30 @@ impl Placed {
 /// One piece of a composed credential value: text the profile wrote, or a
 /// resolved credential substituted for its name.
 #[derive(Debug)]
-enum ComposedPart {
+enum ComposedPart<R = ScaloSecrets> {
     /// Literal text the profile wrote.
     Text(Box<str>),
     /// The credential substituted here.
-    Credential(Arc<Resolved>),
+    Credential(Arc<Resolved<R>>),
+}
+
+/// One piece of a composed value with its credential in hand, so the value can
+/// be measured before a byte of it is written.
+enum Piece<'a> {
+    /// The profile's text.
+    Text(&'a str),
+    /// The resolved credential.
+    Secret(Arc<Credential>),
+}
+
+impl Piece<'_> {
+    /// The text this piece contributes to the value.
+    fn text(&self) -> &str {
+        match self {
+            Piece::Text(text) => text,
+            Piece::Secret(credential) => credential.secret.expose(),
+        }
+    }
 }
 
 /// Several resolved credentials as one value, for an API that wants both halves
@@ -254,23 +276,31 @@ enum ComposedPart {
 /// credential, so no context reaches the value and no expression runs over a
 /// secret.
 #[derive(Debug)]
-struct Composed {
-    parts: Vec<ComposedPart>,
+struct Composed<R = ScaloSecrets> {
+    parts: Vec<ComposedPart<R>>,
     value: OnceCell<Arc<Credential>>,
 }
 
-impl CredentialSource for Composed {
+impl<R: ResolveSecret> CredentialSource for Composed<R> {
     async fn credential(&self) -> Acquired<Arc<Credential>> {
         self.value
             .get_or_try_init(|| async {
-                let mut value = String::new();
+                // The pieces are acquired before the string is allocated so it is
+                // allocated at its final length: a String that grew would leave
+                // the secrets it held so far in freed heap.
+                let mut pieces = Vec::with_capacity(self.parts.len());
                 for part in &self.parts {
-                    match part {
-                        ComposedPart::Text(text) => value.push_str(text),
+                    pieces.push(match part {
+                        ComposedPart::Text(text) => Piece::Text(text),
                         ComposedPart::Credential(source) => {
-                            value.push_str(source.credential().await?.secret.expose());
+                            Piece::Secret(source.credential().await?)
                         }
-                    }
+                    });
+                }
+                let mut value =
+                    String::with_capacity(pieces.iter().map(|piece| piece.text().len()).sum());
+                for piece in &pieces {
+                    value.push_str(piece.text());
                 }
                 Ok(Arc::new(Credential::new(
                     SensitiveString::from(value),
@@ -285,14 +315,14 @@ impl CredentialSource for Composed {
 /// What one placement of the `credentials` mode puts on the request: a resolved
 /// spec, or several composed into one value.
 #[derive(Debug)]
-enum Sourced {
+enum Sourced<R = ScaloSecrets> {
     /// One named credential, as it resolved.
-    One(Arc<Resolved>),
+    One(Arc<Resolved<R>>),
     /// Several, composed into one value by the profile's placement.
-    Composed(Arc<Composed>),
+    Composed(Arc<Composed<R>>),
 }
 
-impl CredentialSource for Sourced {
+impl<R: ResolveSecret> CredentialSource for Sourced<R> {
     async fn credential(&self) -> Acquired<Arc<Credential>> {
         match self {
             Sourced::One(source) => source.credential().await,
@@ -309,14 +339,16 @@ impl CredentialSource for Sourced {
 /// placement that reads it, so a credential carried in two places -- or composed
 /// into a value and also placed on its own -- resolves once.
 #[derive(Debug)]
-pub struct Credentials {
-    placements: Vec<Placement<Sourced>>,
-    named: Vec<Arc<Resolved>>,
+pub struct Credentials<R = ScaloSecrets> {
+    placements: Vec<Placement<Sourced<R>>>,
+    named: Vec<Arc<Resolved<R>>>,
 }
 
-impl Credentials {
+impl<R: ResolveSecret> Credentials<R> {
     /// Resolve every named spec without sending a request; a composed value is
-    /// composed from these, so nothing else is left to fail.
+    /// composed from these, so the composing itself cannot fail. What no probe
+    /// reaches is scalo's own header-value check, which a resolved credential
+    /// carrying a control character fails when the placement writes it.
     async fn resolve(&self) -> Result<()> {
         for source in &self.named {
             source
@@ -1049,19 +1081,19 @@ fn compile_at_bind(field: &str, template: &str) -> Result<Template> {
 ///
 /// Returns [`Error::Config`] naming the field when the instance supplies no
 /// credential of that name.
-fn named_credential<'a>(
-    named: &mut std::collections::BTreeMap<&'a str, Arc<Resolved>>,
+fn named_credential<'a, R: ResolveSecret>(
+    named: &mut std::collections::BTreeMap<&'a str, Arc<Resolved<R>>>,
     identity: &'a InstanceAuth,
     name: &str,
     field: &str,
-) -> Result<Arc<Resolved>> {
+) -> Result<Arc<Resolved<R>>> {
     let (key, spec) = identity.credentials.get_key_value(name).ok_or_else(|| {
         Error::Config(format!(
             "{field}: the instance supplies no credential `{name}`"
         ))
     })?;
     Ok(Arc::clone(named.entry(key.as_str()).or_insert_with(|| {
-        Resolved::new(Secret::new(spec.clone()))
+        Resolved::new(SecretCell::new(spec.clone()))
     })))
 }
 
@@ -1070,15 +1102,20 @@ fn named_credential<'a>(
 ///
 /// # Errors
 ///
-/// Returns [`Error::Config`] naming the field when a placement is malformed, its
-/// header name is not one, or it reads a credential the instance does not
-/// supply. Binding validates the profile first, so these are the backstop for a
-/// mode built without it.
-fn build_credentials(spec: &AuthSpec, identity: &InstanceAuth) -> Result<Credentials> {
-    if spec.credentials.is_empty() {
-        return Err(Error::Config(
-            "auth.credentials must declare at least one placement".into(),
-        ));
+/// Returns [`Error::Config`] naming the field for every way a placement list can
+/// be malformed, through the profile's own validation, and for a placement
+/// reading a credential the instance does not supply. A typed block binds a
+/// shipped profile without validating it, so this is where that profile's
+/// placements are refused.
+fn build_credentials<R: ResolveSecret>(
+    spec: &AuthSpec,
+    identity: &InstanceAuth,
+) -> Result<Credentials<R>> {
+    if let Some(issue) = crate::profile::credential_placement_issues(&spec.credentials)
+        .into_iter()
+        .next()
+    {
+        return Err(Error::Config(issue.to_string()));
     }
     let mut named = std::collections::BTreeMap::new();
     let mut placements = Vec::with_capacity(spec.credentials.len());
@@ -1221,7 +1258,15 @@ impl AuthMode {
                         })?;
                         Placed::header(key, header, &spec.api_key.prefix)
                     }
-                    (None, Some(name)) => Placed::query(key, name),
+                    (None, Some(name)) => {
+                        if !spec.api_key.prefix.is_empty() {
+                            return Err(Error::Config(format!(
+                                "auth.api_key.prefix: {}",
+                                crate::profile::QUERY_PREFIX_ISSUE
+                            )));
+                        }
+                        Placed::query(key, name)
+                    }
                     (None, None) => {
                         return Err(Error::Config(
                             "auth.api_key needs `header` or `query`".into(),
@@ -1704,6 +1749,20 @@ mod tests {
                 .map(|(name, spec)| ((*name).to_owned(), SensitiveString::from(*spec)))
                 .collect(),
             ..InstanceAuth::default()
+        }
+    }
+
+    /// Every spec the counting resolver has been asked for.
+    static READS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Resolves a spec to its own text and records the read, so a test can count
+    /// what a store is asked for rather than inspect how a source is held.
+    struct Counting;
+
+    impl ResolveSecret for Counting {
+        fn resolve(spec: &str) -> impl Future<Output = Result<SensitiveString>> + Send {
+            READS.lock().expect("the read log").push(spec.to_owned());
+            std::future::ready(Ok(SensitiveString::from(spec)))
         }
     }
 
@@ -2700,39 +2759,107 @@ mod tests {
     }
 
     /// One name read by two placements is one resolved spec, so a credential
-    /// carried in two places -- or composed into a value and also placed on its
-    /// own -- is read from its store once.
+    /// placed on its own and also composed into a value with another is read
+    /// from its store once.
     #[tokio::test]
     async fn a_credential_two_placements_read_is_resolved_once() {
         let mut both = spec(&[AuthKind::Credentials]);
         both.credentials = vec![
             placed_in("X-Api-Key", "api_key"),
-            composed_in("Authorization", "Token {{ credentials.api_key }}"),
+            composed_in(
+                "Authorization",
+                "accessKey={{ credentials.api_key }};secretKey={{ credentials.secret_key }}",
+            ),
         ];
-        let mode = build(&both, &credentials(&[("api_key", "one-s3cr3t")])).unwrap();
-        let AuthMode::Credentials(built) = &mode else {
-            panic!("the credentials mode")
-        };
-        assert_eq!(built.named.len(), 1, "one resolved spec per name");
-        assert_eq!(built.placements.len(), 2);
-        assert_eq!(
-            Arc::strong_count(&built.named[0]),
-            3,
-            "the one source is held by the probe list and by each placement"
-        );
+        let built: Credentials<Counting> = build_credentials(
+            &both,
+            &credentials(&[("api_key", "api-s3cr3t"), ("secret_key", "secret-s3cr3t")]),
+        )
+        .unwrap();
 
         let mut req = request();
-        authorize(&mode, &mut req, &TemplateCtx::new())
-            .await
-            .unwrap();
+        built.placements.sign(&mut req).await.unwrap();
 
         assert_eq!(
             req.headers().get("x-api-key").unwrap().to_str().unwrap(),
-            "one-s3cr3t"
+            "api-s3cr3t"
         );
         assert_eq!(
             req.headers().get(AUTHORIZATION).unwrap().to_str().unwrap(),
-            "Token one-s3cr3t"
+            "accessKey=api-s3cr3t;secretKey=secret-s3cr3t"
+        );
+        let reads = READS.lock().expect("the read log");
+        for spec in ["api-s3cr3t", "secret-s3cr3t"] {
+            assert_eq!(
+                reads.iter().filter(|read| read.as_str() == spec).count(),
+                1,
+                "read from its store once, however many placements carry it"
+            );
+        }
+    }
+
+    /// A typed block binds a shipped profile without validating it, so the mode
+    /// is built straight from the profile's placements: what the profile's own
+    /// validation refuses is refused here too.
+    #[test]
+    fn building_the_mode_refuses_a_placement_the_profile_was_never_validated_for() {
+        let id = credentials(&[("api_key", "api-s3cr3t"), ("secret_key", "secret-s3cr3t")]);
+        for (placements, wanted) in [
+            (
+                vec![CredentialPlacementSpec {
+                    query: Some("auth".into()),
+                    value: Some("k={{ credentials.api_key }}".into()),
+                    ..CredentialPlacementSpec::default()
+                }],
+                "place it in a header",
+            ),
+            (
+                vec![CredentialPlacementSpec {
+                    prefix: "Bearer ".into(),
+                    ..composed_in("Authorization", "k={{ credentials.api_key }}")
+                }],
+                "write the prefix into it",
+            ),
+            (
+                vec![
+                    placed_in("X-Api-Key", "api_key"),
+                    placed_in("x-api-key", "secret_key"),
+                ],
+                "already carries",
+            ),
+            (
+                vec![CredentialPlacementSpec {
+                    prefix: "Token ".into(),
+                    query: Some("api_key".into()),
+                    from: Some("api_key".into()),
+                    ..CredentialPlacementSpec::default()
+                }],
+                "nothing writes a prefix into a query parameter",
+            ),
+        ] {
+            let mut profile = spec(&[AuthKind::Credentials]);
+            profile.credentials = placements;
+            let err = build(&profile, &id).expect_err(wanted);
+            assert!(err.to_string().contains(wanted), "{err}");
+            assert!(!err.to_string().contains("s3cr3t"), "{err}");
+        }
+    }
+
+    /// Nothing writes a prefix into a query parameter, so a profile that asks
+    /// for one is refused rather than sending the bare key under a name the
+    /// operator believes carries a prefixed one.
+    #[test]
+    fn a_query_api_key_with_a_prefix_is_refused_rather_than_dropped() {
+        let mut query_spec = spec(&[AuthKind::ApiKey]);
+        query_spec.api_key.query = Some("api_key".into());
+        query_spec.api_key.prefix = "Token ".into();
+        let err = build(&query_spec, &identity(AuthKind::ApiKey))
+            .expect_err("the prefix has nowhere to be written");
+        assert!(err.to_string().contains("auth.api_key.prefix"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("nothing writes a prefix into a query parameter"),
+            "{err}"
         );
     }
 

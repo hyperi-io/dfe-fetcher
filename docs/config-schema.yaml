@@ -3400,9 +3400,7 @@ $defs:
           service: ''
           region: ''
       credentials:
-        description: |-
-          Shape of the `credentials` mode: every place a credential goes, in the
-          order the request is signed.
+        description: 'Shape of the `credentials` mode: every place a credential goes.'
         type: array
         items:
           $ref: '#/$defs/CredentialPlacementSpec'
@@ -3611,6 +3609,10 @@ $defs:
       pair inside one header. A value is NOT a template: its only substitution is
       `{{ credentials.<name> }}`, so nothing but a named credential can reach a
       credential value and the value cannot vary by unit, request or var.
+
+      One credential is written as `from` with a `prefix` when the API wants text
+      in front of it; a `value` naming one credential says the same thing the long
+      way round.
     type: object
     properties:
       header:

@@ -110,12 +110,12 @@ instance, never here.
 
 | Mode shape | Fields |
 |------------|--------|
-| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `SSWS `). |
+| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `SSWS `; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
 | `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
-| `credentials` | A list of placements, applied in order: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
+| `credentials` | A list of placements: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
 | `bearer`, `basic`, `duo_hmac`, `none` | No profile-side shape. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
@@ -129,8 +129,15 @@ config workaround: a static added header is not a secret reference, and a key
 does not go in plain config. The `credentials` mode is the shape for them. The
 PROFILE declares where each credential goes and the name it is read under; the
 INSTANCE supplies a spec per name, because a profile carries no identity. Each
-name resolves once however many placements carry it, and the placements are
-applied to the one built request in the order they are written.
+name resolves once however many placements carry it, and every placement is
+applied to the one built request.
+
+`auth.credentials` is the mode for credentials the deployment supplies as specs
+and the profile places as they resolved. A later mode that MINTS or SIGNS will
+carry a placement list of the same shape under its own key, because where a
+credential goes is an axis of a request and not a mode of its own -- a session
+login, say, wants these placements over a token it minted rather than over a
+spec.
 
 Two credentials in two headers of their own -- Datadog, where the api key names
 the organisation and the application key scopes the call to a user, so neither
@@ -150,8 +157,8 @@ auth:
 auth:
   mode: credentials
   credentials:
-    api_key: "vault:kv/data/datadog/prod:api_key"
-    application_key: "vault:kv/data/datadog/prod:application_key"
+    api_key: "vault:<mount>/data/<path>:<key>"
+    application_key: "vault:<mount>/data/<path>:<key>"
 ```
 
 Two credentials composed into ONE header value -- Tenable Vulnerability
@@ -173,9 +180,19 @@ auth:
 auth:
   mode: credentials
   credentials:
-    access_key: "vault:kv/data/tenable/vm:access_key"
-    secret_key: "vault:kv/data/tenable/vm:secret_key"
+    access_key: "vault:<mount>/data/<path>:<key>"
+    secret_key: "vault:<mount>/data/<path>:<key>"
 ```
+
+One credential goes in as `from` with a `prefix` when the API wants text in
+front of it (`{ header: Authorization, from: token, prefix: "Token " }`). A
+`value` naming one credential says the same thing the long way round, so keep
+`value` for the several a provider wants in the one place.
+
+A name is letters, digits, `_` and `-` -- in the profile's `from`, in a
+`{{ credentials.<name> }}` placeholder and as an instance key alike, because the
+two sides are matched against each other. A spec is any the resolver reads; the
+spellings are in `config.example.yaml`.
 
 A `value` is composed, not computed. Its only substitution is
 `{{ credentials.<name> }}`: anything else between the braces is refused at load,
@@ -185,17 +202,25 @@ no per-unit check of its own: there is nothing in it a unit could change. The
 composed string is built once, on first use, and the placement that writes it
 marks the header sensitive, as it does a single credential.
 
-Refused at load, each naming the placement's index:
+Refused at load, each naming the field it sits on -- a placement by its index:
 
 - a placement that names neither or both of `header` and `query`, or neither or
   both of `from` and `value`
-- a `header` that is not a header name, or an empty `query` or `from`
-- two placements writing the one header or query parameter, where the second
-  would overwrite the first
+- a `header` that is not a header name, an empty `query` or `from`, or a `from`
+  that is not a credential name
+- two placements writing the one header, where the second would replace the
+  first, or the one query parameter, where both would be sent
+- a `query` the profile writes itself -- `defaults.query`, an endpoint's `query`,
+  the pager's `into: query:<name>` or its `param` -- or that a unit's narrowing
+  writes: a query pair is appended, so the credential would be sent twice
 - a `value` in a `query`: a composed value carries more than one secret and a
   query parameter is written into every access log and proxy on the path, so it
   goes in a header. A single credential may still go in a query.
-- a `prefix` beside a `value`, which says the whole header value already
+- a `prefix` beside a `value`, which says the whole header value already, or
+  beside a `query`, which carries the credential on its own
+- a `prefix` or a `value`'s literal text carrying what no header value may carry
+  -- a newline, a tab -- checked here because the text is the profile's and
+  static, so it is named with its field rather than failing on every tick
 - a name the profile places and the instance supplies no spec for, and a name
   the instance supplies that no placement reads -- so a misspelling is refused
   from both ends rather than authenticating as half a credential

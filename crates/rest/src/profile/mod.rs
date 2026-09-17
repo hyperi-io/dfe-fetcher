@@ -143,6 +143,10 @@ pub struct ApiKeySpec {
 /// pair inside one header. A value is NOT a template: its only substitution is
 /// `{{ credentials.<name> }}`, so nothing but a named credential can reach a
 /// credential value and the value cannot vary by unit, request or var.
+///
+/// One credential is written as `from` with a `prefix` when the API wants text
+/// in front of it; a `value` naming one credential says the same thing the long
+/// way round.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CredentialPlacementSpec {
@@ -216,7 +220,7 @@ pub fn credential_value_parts(value: &str) -> std::result::Result<Vec<ValuePart>
     let mut rest = value;
     while let Some(at) = rest.find(OPEN) {
         if at > 0 {
-            parts.push(ValuePart::Text(rest[..at].to_owned()));
+            parts.push(literal_text(&rest[..at])?);
         }
         let after = &rest[at + OPEN.len()..];
         let Some(end) = after.find(CLOSE) else {
@@ -229,7 +233,7 @@ pub fn credential_value_parts(value: &str) -> std::result::Result<Vec<ValuePart>
         rest = &after[end + CLOSE.len()..];
     }
     if !rest.is_empty() {
-        parts.push(ValuePart::Text(rest.to_owned()));
+        parts.push(literal_text(rest)?);
     }
     if named == 0 {
         return Err(
@@ -237,6 +241,18 @@ pub fn credential_value_parts(value: &str) -> std::result::Result<Vec<ValuePart>
         );
     }
     Ok(parts)
+}
+
+/// One run of literal text between placeholders, or why it is not one.
+///
+/// `{{` and `}}` are the whole of the value's syntax, so a brace outside a pair
+/// is a miscount rather than text: `{{ credentials.k }}}` would otherwise compose
+/// the credential with a `}` after it and go out looking authentic.
+fn literal_text(run: &str) -> std::result::Result<ValuePart, String> {
+    if run.contains(['{', '}']) {
+        return Err("has a `{` or `}` outside a `{{ credentials.<name> }}` placeholder".to_owned());
+    }
+    Ok(ValuePart::Text(run.to_owned()))
 }
 
 /// The credential a placeholder names, or why it is not one.
@@ -247,16 +263,27 @@ fn placeholder_name(inside: &str) -> std::result::Result<String, String> {
              `{{{{ credentials.<name> }}}}` and nothing else, because it is not a template"
         ));
     };
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(format!(
-            "`{name}` is not a credential name; a name is letters, digits, `_` and `-`"
-        ));
+    match credential_name_issue(name) {
+        Some(reason) => Err(reason),
+        None => Ok(name.to_owned()),
     }
-    Ok(name.to_owned())
+}
+
+/// Why `name` is not a credential name, or `None` when it is one.
+///
+/// One grammar for the three places a credential is named -- a placement's
+/// `from`, a `{{ credentials.<name> }}` placeholder, and the instance's
+/// `auth.credentials` key -- because they are matched against each other: a name
+/// one of them accepts and another refuses is a credential that can be placed
+/// and never supplied.
+fn credential_name_issue(name: &str) -> Option<String> {
+    let usable = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    (!usable).then(|| {
+        format!("`{name}` is not a credential name; a name is letters, digits, `_` and `-`")
+    })
 }
 
 /// The OAuth2 client-credentials exchange as the API shapes it.
@@ -380,8 +407,7 @@ pub struct AuthSpec {
     pub gce_metadata: GceMetadataSpec,
     /// Shape of the `sigv4` mode.
     pub sigv4: SigV4Spec,
-    /// Shape of the `credentials` mode: every place a credential goes, in the
-    /// order the request is signed.
+    /// Shape of the `credentials` mode: every place a credential goes.
     pub credentials: Vec<CredentialPlacementSpec>,
 }
 
@@ -1512,12 +1538,21 @@ fn expose_issues(field: &str, expose: &[String]) -> Vec<Issue> {
         .collect()
 }
 
+/// Why a prefix cannot go with a query parameter, in either mode that places
+/// one: nothing writes it, so a configured prefix would be dropped and the bare
+/// credential sent in its place.
+pub(crate) const QUERY_PREFIX_ISSUE: &str =
+    "is set beside `query`; nothing writes a prefix into a query parameter";
+
 /// Problems with the `credentials` mode's placements.
 ///
 /// A malformed placement is a credential that goes nowhere, goes somewhere
-/// twice, or is composed from a name no instance can supply, so each is refused
-/// with the index the profile wrote it at.
-fn credential_placement_issues(placements: &[CredentialPlacementSpec]) -> Vec<Issue> {
+/// twice, carries text no header value may carry, or is composed from a name no
+/// instance can supply, so each is refused with the index the profile wrote it
+/// at. This is the whole of what a placement list may be: binding re-checks it
+/// through here, so a mode built without the profile's own validation is refused
+/// the same way.
+pub(crate) fn credential_placement_issues(placements: &[CredentialPlacementSpec]) -> Vec<Issue> {
     let mut issues = Vec::new();
     if placements.is_empty() {
         issues.push(Issue::new(
@@ -1541,7 +1576,11 @@ fn credential_placement_issues(placements: &[CredentialPlacementSpec]) -> Vec<Is
             (None, Some(name)) if name.trim().is_empty() => {
                 issues.push(Issue::new(at("query"), "is empty"));
             }
-            (None, Some(_)) => {}
+            (None, Some(_)) => {
+                if !placement.prefix.is_empty() {
+                    issues.push(Issue::new(at("prefix"), QUERY_PREFIX_ISSUE));
+                }
+            }
             _ => issues.push(Issue::new(
                 format!("auth.credentials[{i}]"),
                 "needs exactly one of `header` or `query`",
@@ -1556,11 +1595,22 @@ fn credential_placement_issues(placements: &[CredentialPlacementSpec]) -> Vec<Is
             }
             targets.push(target);
         }
+        // The prefix and a value's literal text are static profile content, so
+        // text no header value may carry is refused here with the field that
+        // carries it, rather than as a signing failure every tick whose words
+        // are about the credential.
+        if let Some(reason) = header_text_issue(&placement.prefix) {
+            issues.push(Issue::new(at("prefix"), reason));
+        }
         match (&placement.from, &placement.value) {
             (Some(name), None) if name.trim().is_empty() => {
                 issues.push(Issue::new(at("from"), "is empty"));
             }
-            (Some(_), None) => {}
+            (Some(name), None) => {
+                if let Some(reason) = credential_name_issue(name) {
+                    issues.push(Issue::new(at("from"), reason));
+                }
+            }
             (None, Some(value)) => {
                 // A single credential may still go in a query: what is refused
                 // here is several of them in one value that a query would write
@@ -1573,15 +1623,27 @@ fn credential_placement_issues(placements: &[CredentialPlacementSpec]) -> Vec<Is
                          header",
                     ));
                 }
-                if !placement.prefix.is_empty() {
+                if !placement.prefix.is_empty() && placement.header.is_some() {
                     issues.push(Issue::new(
                         at("prefix"),
                         "is set beside `value`; a composed value says the whole header value, so \
                          write the prefix into it",
                     ));
                 }
-                if let Err(reason) = credential_value_parts(value) {
-                    issues.push(Issue::new(at("value"), reason));
+                match credential_value_parts(value) {
+                    Err(reason) => issues.push(Issue::new(at("value"), reason)),
+                    Ok(parts) => {
+                        let text: String = parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                ValuePart::Text(text) => Some(text.as_str()),
+                                ValuePart::Credential(_) => None,
+                            })
+                            .collect();
+                        if let Some(reason) = header_text_issue(&text) {
+                            issues.push(Issue::new(at("value"), reason));
+                        }
+                    }
                 }
             }
             _ => issues.push(Issue::new(
@@ -1594,12 +1656,91 @@ fn credential_placement_issues(placements: &[CredentialPlacementSpec]) -> Vec<Is
     issues
 }
 
+/// The query parameters a pager writes: the token's own when it goes into one,
+/// and the page or offset parameter.
+fn paginate_query_writers(at: &str, paginate: &PaginateSpec) -> Vec<(String, String)> {
+    let into = paginate
+        .into
+        .as_deref()
+        .and_then(|into| into.strip_prefix("query:"))
+        .map(|name| (format!("{at}.into"), name.to_owned()));
+    let param = paginate
+        .param
+        .as_deref()
+        .map(|name| (format!("{at}.param"), name.to_owned()));
+    into.into_iter().chain(param).collect()
+}
+
+/// Why `text` cannot stand in a header value, or `None` when it can.
+///
+/// The placement writes it into a header, which refuses a control character --
+/// the newline that would otherwise read as the start of a header of its own.
+fn header_text_issue(text: &str) -> Option<String> {
+    reqwest::header::HeaderValue::from_str(text)
+        .err()
+        .map(|_| "carries text no header value may carry, such as a newline or a tab".to_owned())
+}
+
 impl RestProfile {
     /// The unit names the profile declares, in endpoint order -- what an
     /// instance's `units` keys and a typed block's `services[].name` may be.
     #[must_use]
     pub fn unit_names(&self) -> Vec<&str> {
         self.endpoints.iter().map(|e| e.unit.as_str()).collect()
+    }
+
+    /// Every query parameter the profile writes itself, each with the field that
+    /// writes it.
+    ///
+    /// A credential placed in a query parameter is APPENDED to the built URL, so
+    /// a name the profile also writes is sent twice rather than once, and the
+    /// provider reads whichever it reads first.
+    fn query_writers(&self) -> Vec<(String, String)> {
+        let mut writers: Vec<(String, String)> = self
+            .defaults
+            .query
+            .keys()
+            .map(|name| (format!("defaults.query.{name}"), name.clone()))
+            .collect();
+        if let Some(paginate) = &self.defaults.paginate {
+            writers.extend(paginate_query_writers("defaults.paginate", paginate));
+        }
+        for (i, endpoint) in self.endpoints.iter().enumerate() {
+            writers.extend(
+                endpoint
+                    .query
+                    .keys()
+                    .map(|name| (format!("endpoints[{i}].query.{name}"), name.clone())),
+            );
+            if let Some(paginate) = &endpoint.paginate {
+                writers.extend(paginate_query_writers(
+                    &format!("endpoints[{i}].paginate"),
+                    paginate,
+                ));
+            }
+        }
+        writers
+    }
+
+    /// Credential placements writing a query parameter the profile also writes.
+    fn credential_query_collisions(&self) -> Vec<Issue> {
+        let writers = self.query_writers();
+        self.auth
+            .credentials
+            .iter()
+            .enumerate()
+            .filter_map(|(i, placement)| {
+                let name = placement.query.as_deref()?;
+                let (field, _) = writers.iter().find(|(_, written)| written == name)?;
+                Some(Issue::new(
+                    format!("auth.credentials[{i}].query"),
+                    format!(
+                        "`{name}` is written by {field} as well; a query pair is appended, so the \
+                         credential would be sent twice"
+                    ),
+                ))
+            })
+            .collect()
     }
 
     /// The effective method of an endpoint (its own, else the defaults',
@@ -1831,9 +1972,13 @@ impl RestProfile {
                     "needs exactly one of `header` or `query`",
                 ));
             }
+            if key.query.is_some() && key.header.is_none() && !key.prefix.is_empty() {
+                issues.push(Issue::new("auth.api_key.prefix", QUERY_PREFIX_ISSUE));
+            }
         }
         if self.auth.accepts.contains(&AuthKind::Credentials) {
             issues.extend(credential_placement_issues(&self.auth.credentials));
+            issues.extend(self.credential_query_collisions());
         }
         if self.auth.accepts.contains(&AuthKind::SigV4) {
             for (field, value) in [
@@ -2863,6 +3008,12 @@ impl RestInstance {
                     }
                 }
                 for name in self.auth.credentials.keys() {
+                    // A key that is not a name matches no placement by
+                    // construction, so the grammar is what it is told about.
+                    if let Some(reason) = credential_name_issue(name) {
+                        issues.push(Issue::new(format!("auth.credentials.{name}"), reason));
+                        continue;
+                    }
                     if !placed.contains(name) {
                         issues.push(Issue::new(
                             format!("auth.credentials.{name}"),
@@ -2873,12 +3024,23 @@ impl RestInstance {
                         ));
                     }
                 }
+                issues.extend(self.unit_query_collisions(profile));
             }
         }
         if self.auth.assume_role_arn.is_some() && self.auth.mode != AuthKind::SigV4 {
             issues.push(Issue::new(
                 "auth.assume_role_arn",
                 "only the `sigv4` mode assumes a role",
+            ));
+        }
+        // Named credentials are a shared field on the instance and only one mode
+        // places them, so a map left behind under another mode would read as an
+        // authenticated instance while every request went out without a
+        // credential.
+        if !self.auth.credentials.is_empty() && self.auth.mode != AuthKind::Credentials {
+            issues.push(Issue::new(
+                "auth.credentials",
+                "only the `credentials` mode places named credentials",
             ));
         }
         // A spec the resolver cannot read otherwise reaches the provider as
@@ -2934,6 +3096,30 @@ impl RestInstance {
             }
             for (k, v) in &unit.headers {
                 issues.extend(template_issue(&format!("units.{name}.headers.{k}"), v));
+            }
+        }
+        issues
+    }
+
+    /// Unit narrowing writing a query parameter a credential placement also
+    /// writes, which would send the credential twice.
+    fn unit_query_collisions(&self, profile: &RestProfile) -> Vec<Issue> {
+        let placed: Vec<&str> = profile
+            .auth
+            .credentials
+            .iter()
+            .filter_map(|placement| placement.query.as_deref())
+            .collect();
+        let mut issues = Vec::new();
+        for (unit, narrowing) in &self.units {
+            for name in narrowing.query.keys() {
+                if placed.contains(&name.as_str()) {
+                    issues.push(Issue::new(
+                        format!("units.{unit}.query.{name}"),
+                        "is a query parameter a credential placement writes; a query pair is \
+                         appended, so the credential would be sent twice",
+                    ));
+                }
             }
         }
         issues
@@ -2997,6 +3183,38 @@ endpoints:
   - unit: audit_events
     path: /api/v2/audit/events
     rows: { decoder: json_at, at: "/data" }
+    paginate: { strategy: none }
+"#;
+
+    const QUERY_KEY: &str = r#"
+profile: query_key
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [credentials]
+  credentials:
+    - { query: api_key, from: api_key }
+window: { format: rfc3339_millis, lookback: 1h }
+defaults: { query: { api_key: "{{ vars.api_key }}" } }
+endpoints:
+  - unit: things
+    path: /things
+    rows: { decoder: json_array }
+    paginate: { strategy: none }
+"#;
+
+    const QUERY_PREFIX: &str = r#"
+profile: query_prefix
+base_url: "{{ vars.api_url }}"
+shape: incremental
+auth:
+  accepts: [api_key]
+  api_key: { query: token, prefix: "Token " }
+window: { format: rfc3339_millis, lookback: 1h }
+endpoints:
+  - unit: things
+    path: /things
+    rows: { decoder: json_array }
     paginate: { strategy: none }
 "#;
 
@@ -3202,6 +3420,10 @@ endpoints:
             ("{{ credentials. }}", "is not a credential name"),
             ("accessKey={{ credentials.access_key", "never closed"),
             ("accessKey=plain", "names no credential"),
+            (
+                "{{ credentials.access_key }}}",
+                "outside a `{{ credentials.<name> }}` placeholder",
+            ),
         ] {
             let reason = credential_value_parts(value).expect_err(value);
             assert!(reason.contains(wanted), "{value}: {reason}");
@@ -3305,6 +3527,159 @@ endpoints:
             "{:?}",
             issues[0]
         );
+    }
+
+    /// A query parameter carries the credential on its own -- nothing writes a
+    /// prefix into one -- so a prefix beside a query is refused rather than
+    /// dropped, in the placement list and in the `api_key` mode alike.
+    #[test]
+    fn a_prefix_beside_a_query_parameter_is_refused_in_either_mode() {
+        let issues = credential_placement_issues(&[CredentialPlacementSpec {
+            query: Some("token".into()),
+            from: Some("api_key".into()),
+            prefix: "Token ".into(),
+            ..CredentialPlacementSpec::default()
+        }]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.credentials[0].prefix");
+        assert!(
+            issues[0]
+                .message
+                .contains("nothing writes a prefix into a query parameter"),
+            "{:?}",
+            issues[0]
+        );
+
+        let issues = parse(QUERY_PREFIX).validate();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.api_key.prefix");
+    }
+
+    /// The prefix and a value's literal text are static profile content, so text
+    /// no header value may carry is refused at load with the field that carries
+    /// it, rather than on every tick in words about the credential.
+    #[test]
+    fn placement_text_no_header_value_may_carry_is_refused_at_load() {
+        let issues = credential_placement_issues(&[CredentialPlacementSpec {
+            header: Some("Authorization".into()),
+            value: Some("a\r\nX-Injected: 1{{ credentials.api_key }}".into()),
+            ..CredentialPlacementSpec::default()
+        }]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.credentials[0].value");
+        assert!(
+            issues[0].message.contains("no header value may carry"),
+            "{:?}",
+            issues[0]
+        );
+
+        let issues = credential_placement_issues(&[CredentialPlacementSpec {
+            header: Some("X-Api-Key".into()),
+            from: Some("api_key".into()),
+            prefix: "Token\n".into(),
+            ..CredentialPlacementSpec::default()
+        }]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.credentials[0].prefix");
+    }
+
+    /// The three places a credential is named are matched against each other, so
+    /// one grammar serves all three: a name one of them took and another refused
+    /// would be a credential that can be placed and never supplied.
+    #[test]
+    fn one_name_grammar_serves_a_placement_a_placeholder_and_an_instance_key() {
+        for name in ["a.b", " api_key ", "api key", "key!"] {
+            let issues = credential_placement_issues(&[CredentialPlacementSpec {
+                header: Some("X-Api-Key".into()),
+                from: Some(name.to_owned()),
+                ..CredentialPlacementSpec::default()
+            }]);
+            assert_eq!(issues.len(), 1, "{name}: {issues:?}");
+            assert_eq!(issues[0].field, "auth.credentials[0].from");
+            assert!(
+                issues[0].message.contains("is not a credential name"),
+                "{name}: {:?}",
+                issues[0]
+            );
+
+            let reason =
+                credential_value_parts(&format!("{{{{ credentials.{name} }}}}")).expect_err(name);
+            assert!(
+                reason.contains("is not a credential name"),
+                "{name}: {reason}"
+            );
+        }
+
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: datadog\ntopic: t\nauth: { mode: credentials, credentials: { api_key: \"env:A\", \"application.key\": \"env:B\" } }\n",
+        )
+        .unwrap();
+        let issues = instance.validate(&parse(DATADOG));
+        assert!(
+            issues.iter().any(|issue| {
+                issue.field == "auth.credentials.application.key"
+                    && issue.message.contains("is not a credential name")
+            }),
+            "{issues:?}"
+        );
+    }
+
+    /// Named credentials are a shared instance field and one mode places them, so
+    /// a map left behind under another mode is refused rather than reading as an
+    /// authenticated instance whose requests all go out unauthenticated.
+    #[test]
+    fn named_credentials_under_another_mode_are_refused() {
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: github\ntopic: t\nauth: { mode: bearer, token: \"env:T\", credentials: { api_key: \"env:A\" } }\n",
+        )
+        .unwrap();
+        let issues = instance.validate(&parse(GITHUB));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.credentials");
+        assert!(
+            issues[0].message.contains("only the `credentials` mode"),
+            "{:?}",
+            issues[0]
+        );
+    }
+
+    /// A credential placed in a query parameter is APPENDED to the built URL, so
+    /// a name the profile or a unit also writes sends the credential twice.
+    #[test]
+    fn a_query_placement_the_profile_or_a_unit_also_writes_is_refused() {
+        let mut profile = parse(QUERY_KEY);
+        let issues = profile.validate();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "auth.credentials[0].query");
+        assert!(
+            issues[0].message.contains("defaults.query.api_key")
+                && issues[0].message.contains("sent twice"),
+            "{:?}",
+            issues[0]
+        );
+
+        // The pager writes one of its own, which is no different.
+        profile.defaults.query.clear();
+        profile.endpoints[0].paginate = Some(PaginateSpec {
+            into: Some("query:api_key".into()),
+            ..PaginateSpec::default()
+        });
+        let issues = profile.credential_query_collisions();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].message.contains("endpoints[0].paginate.into"),
+            "{:?}",
+            issues[0]
+        );
+
+        let instance: RestInstance = serde_yaml_ng::from_str(
+            "profile: query_key\ntopic: t\nauth: { mode: credentials, credentials: { api_key: \"env:A\" } }\nunits: { things: { query: { api_key: \"x\" } } }\n",
+        )
+        .unwrap();
+        let issues = instance.validate(&profile);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].field, "units.things.query.api_key");
+        assert!(issues[0].message.contains("sent twice"), "{:?}", issues[0]);
     }
 
     #[test]

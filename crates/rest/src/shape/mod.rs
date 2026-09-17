@@ -90,18 +90,24 @@ impl RestShape {
             &bound.ctx,
         )?;
         let mut scoped_auth = BTreeMap::new();
-        for scope in bound.endpoints.iter().filter_map(|e| e.auth_scope.clone()) {
-            if scoped_auth.contains_key(&scope) {
-                continue;
+        // A profile whose `accepts` merely carries a minting mode lets a unit
+        // name a scope under whichever mode the instance picks, and a mode that
+        // mints nothing ignores the scope: a second one would read every spec
+        // from its store again and sign exactly as this one does.
+        if instance.auth.mode.is_scoped() {
+            for scope in bound.endpoints.iter().filter_map(|e| e.auth_scope.clone()) {
+                if scoped_auth.contains_key(&scope) {
+                    continue;
+                }
+                let mode = AuthMode::build_scoped(
+                    &bound.auth,
+                    &instance.auth,
+                    Arc::clone(exchange),
+                    &bound.ctx,
+                    Some(&scope),
+                )?;
+                scoped_auth.insert(scope, mode);
             }
-            let mode = AuthMode::build_scoped(
-                &bound.auth,
-                &instance.auth,
-                Arc::clone(exchange),
-                &bound.ctx,
-                Some(&scope),
-            )?;
-            scoped_auth.insert(scope, mode);
         }
         Ok(Self::with_scoped_auth(
             bound,
