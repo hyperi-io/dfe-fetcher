@@ -30,6 +30,7 @@ const SHIPPED: &[(&str, &str)] = &[
         "crowdstrike",
         include_str!("../../profiles/crowdstrike.yaml"),
     ),
+    ("datadog", include_str!("../../profiles/datadog.yaml")),
     ("duo", include_str!("../../profiles/duo.yaml")),
     ("gcp", include_str!("../../profiles/gcp.yaml")),
     ("gcp_pubsub", include_str!("../../profiles/gcp_pubsub.yaml")),
@@ -379,6 +380,87 @@ mod tests {
         assert_eq!(paginate.into.as_deref(), Some("query:cursor"));
         assert_eq!(endpoint.fail_when.as_deref(), Some("body.ok == false"));
         assert_eq!(profile.max_pages_of(endpoint), 50);
+    }
+
+    /// Datadog is the shipped profile of the `credentials` mode: two headers,
+    /// each its own named credential, because the api key identifies the
+    /// organisation and the application key scopes the call to a user and
+    /// Datadog refuses the request without both. Two cursor-paged units over
+    /// `filter[from]`/`filter[to]`, rows under `/data`, the next cursor at
+    /// `meta.page.after`, and no probe, because Datadog's cheap validation
+    /// endpoint checks the api key alone.
+    #[test]
+    fn datadog_ships_as_two_units_behind_two_credentials() {
+        use dfe_fetcher_core::UnitShape;
+        use dfe_fetcher_rest::profile::{AuthKind, DecoderKind, PagerStrategy, WindowFormat};
+
+        let profile = shipped().get("datadog").expect("datadog is shipped");
+        assert_eq!(profile.shape, UnitShape::Incremental);
+        assert_eq!(profile.auth.accepts, [AuthKind::Credentials]);
+        assert_eq!(
+            profile
+                .auth
+                .credentials
+                .iter()
+                .map(|p| (p.header.as_deref(), p.from.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (Some("DD-API-KEY"), Some("api_key")),
+                (Some("DD-APPLICATION-KEY"), Some("application_key")),
+            ]
+        );
+        assert_eq!(
+            profile.auth.credential_names(),
+            ["api_key", "application_key"],
+            "an instance supplies a spec for each"
+        );
+        assert_eq!(profile.window.format, WindowFormat::Rfc3339Millis);
+        assert_eq!(profile.error.at.as_deref(), Some("/errors"));
+        assert!(profile.probe.is_none(), "no probe checks both keys");
+        assert_eq!(
+            profile.vars.get("api_url"),
+            Some(&serde_json::Value::String(
+                "https://api.datadoghq.com".into()
+            ))
+        );
+        assert_eq!(
+            profile
+                .endpoints
+                .iter()
+                .map(|e| (e.unit.as_str(), e.path.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("audit_events", "/api/v2/audit/events"),
+                ("security_signals", "/api/v2/security_monitoring/signals"),
+            ]
+        );
+        assert_eq!(
+            profile
+                .defaults
+                .query
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("filter[from]", "{{ window.start }}"),
+                ("filter[query]", "{{ vars.filter_query }}"),
+                ("filter[to]", "{{ window.end }}"),
+                ("page[limit]", "{{ vars.page_limit }}"),
+                ("sort", "timestamp"),
+            ],
+            "both units send the one query shape"
+        );
+        for endpoint in &profile.endpoints {
+            assert!(query_of(endpoint).is_empty(), "{}", endpoint.unit);
+            let rows = profile.rows_of(endpoint);
+            assert_eq!(rows.decoder, DecoderKind::JsonAt);
+            assert_eq!(rows.at.as_deref(), Some("/data"));
+            let paginate = profile.paginate_of(endpoint);
+            assert_eq!(paginate.strategy, PagerStrategy::Cursor);
+            assert_eq!(paginate.from.as_deref(), Some("body:/meta/page/after"));
+            assert_eq!(paginate.into.as_deref(), Some("query:page[cursor]"));
+            assert_eq!(profile.max_pages_of(endpoint), 50);
+        }
     }
 
     /// The Cloudflare profile is the account audit-log contract the

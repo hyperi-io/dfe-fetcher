@@ -3582,7 +3582,8 @@
             "access_key_id": null,
             "secret_access_key": null,
             "credentials_json": null,
-            "assume_role_arn": null
+            "assume_role_arn": null,
+            "credentials": {}
           }
         },
         "vars": {
@@ -3686,7 +3687,8 @@
             "sigv4": {
               "service": "",
               "region": ""
-            }
+            },
+            "credentials": []
           }
         },
         "headers": {
@@ -3885,6 +3887,14 @@
             "service": "",
             "region": ""
           }
+        },
+        "credentials": {
+          "description": "Shape of the `credentials` mode: every place a credential goes.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CredentialPlacementSpec"
+          },
+          "default": []
         }
       },
       "additionalProperties": false
@@ -3936,6 +3946,11 @@
           "description": "AWS Signature Version 4 over static keys: every request is signed\nfor the service and region the profile's templates name, with the\nbody's SHA-256 as the payload hash.",
           "type": "string",
           "const": "sigv4"
+        },
+        {
+          "description": "More than one credential on the one request, each in the place the\nprofile names: two headers of their own (Datadog's `DD-API-KEY` and\n`DD-APPLICATION-KEY`), or one header whose value is composed from\nseveral (Tenable's `accessKey=...;secretKey=...`).",
+          "type": "string",
+          "const": "credentials"
         }
       ]
     },
@@ -4094,6 +4109,50 @@
           "description": "The region of the credential scope, a template.",
           "type": "string",
           "default": ""
+        }
+      },
+      "additionalProperties": false
+    },
+    "CredentialPlacementSpec": {
+      "description": "One place a credential goes under the `credentials` mode, and which of the\ninstance's named credentials it carries.\n\n`from` puts one credential where the API wants it, as it resolved. `value`\ncomposes several into one value, for an API that wants both halves of a key\npair inside one header. A value is NOT a template: its only substitution is\n`{{ credentials.<name> }}`, so nothing but a named credential can reach a\ncredential value and the value cannot vary by unit, request or var.\n\nOne credential is written as `from` with a `prefix` when the API wants text\nin front of it; a `value` naming one credential says the same thing the long\nway round.",
+      "type": "object",
+      "properties": {
+        "header": {
+          "description": "Header name carrying the credential.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "query": {
+          "description": "Query parameter carrying it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "prefix": {
+          "description": "Text put in front of it in a header, e.g. `Bearer `.",
+          "type": "string",
+          "default": ""
+        },
+        "from": {
+          "description": "The one named credential this placement carries, as it resolved.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "value": {
+          "description": "The value this placement carries, composed from named credentials.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
@@ -5481,6 +5540,16 @@
             "null"
           ],
           "default": null
+        },
+        "credentials": {
+          "description": "`credentials`: the credential specs the profile's placements read, by\nthe names they read them under. Each resolves once however many\nplacements carry it.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "x-dfe-secret": true,
+            "writeOnly": true
+          },
+          "default": {}
         }
       },
       "additionalProperties": false

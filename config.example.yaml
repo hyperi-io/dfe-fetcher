@@ -574,6 +574,32 @@ sources:
         users: { enabled: false }
         groups: { enabled: false }
       profile: runzero
+    # -------------------------------------------------------------------------
+    # Datadog -- two credentials on the one request
+    # -------------------------------------------------------------------------
+    # Datadog authenticates a call with an api key AND an application key: the
+    # api key names the organisation, the application key scopes the call to a
+    # user's permissions, and the call is refused without both. The profile
+    # declares WHERE each goes (a header of its own); the instance names the
+    # spec each is read from. An API that instead wants both halves inside one
+    # header value (Tenable's `accessKey=x;secretKey=y`) declares one placement
+    # with a `value` composed of the same names -- see
+    # docs/reference/profile-grammar.md.
+    datadog:
+      enabled: false
+      topic: "datadog"
+      interval_secs: 300
+      auth:
+        mode: credentials
+        credentials:
+          api_key: "vault:kv/data/datadog/prod:api_key"
+          application_key: "vault:kv/data/datadog/prod:application_key"
+      vars:
+        api_url: "https://api.datadoghq.com"   # the API host of this org's site
+      # units:                                  # optional per-unit narrowing
+      #   audit_events: { vars: { filter_query: "@evt.name:Dashboard" } }
+      #   security_signals: { enabled: false }
+      profile: datadog
     # A one-off API needs no shipped profile: write the shape inline. The same
     # grammar, with paging and a wrapped page body:
     # inventory_paged:
