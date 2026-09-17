@@ -131,13 +131,17 @@ impl ServiceApp for App {
     }
 
     /// The fetcher has work when something can produce records: an enabled
-    /// source, a container extractor, or the ingest listener. `Config::validate`
-    /// reads the same predicate, so a config that idles here is never refused
-    /// there for want of the transport it will not use.
+    /// source, a container extractor, the Vector extractor's gRPC receiver, or
+    /// the ingest listener. `Config::validate` reads the same predicate, so a
+    /// config that idles here is never refused there for want of the transport
+    /// it will not use.
+    ///
+    /// The reason names every listener the gate counts, because an operator
+    /// reads it to work out which one they forgot to enable.
     fn work_state(&self, config: &Config) -> scalo::lifecycle::WorkState {
         scalo::lifecycle::WorkState::idle_if(
             !config.has_work(),
-            "no enabled sources, container extractors or ingest listener",
+            "no enabled sources, container extractors, vector receiver or ingest listener",
         )
     }
 
@@ -806,7 +810,7 @@ mod tests {
         );
         assert_eq!(
             idle.reason(),
-            Some("no enabled sources, container extractors or ingest listener")
+            Some("no enabled sources, container extractors, vector receiver or ingest listener")
         );
 
         std::fs::write(&path, &with_source).expect("rewrite config");
@@ -836,7 +840,7 @@ mod tests {
         );
         assert_eq!(
             state.reason(),
-            Some("no enabled sources, container extractors or ingest listener")
+            Some("no enabled sources, container extractors, vector receiver or ingest listener")
         );
     }
 }
