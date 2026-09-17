@@ -64,7 +64,7 @@ use scalo::auth::{
     AuthError, BasicPlacement, Cached, ClientCredentials, Credential, CredentialSource, Exchange,
     HeaderPlacement, MetadataServer, Placement, QueryPlacement, TokenPost, TokenReading,
 };
-use scalo::http_client::{HttpError, RequestSigner, SignError, Unsigned};
+use scalo::http_client::{RequestSigner, SignError, Unsigned};
 use serde_json::Value;
 use tokio::sync::OnceCell;
 
@@ -416,6 +416,10 @@ fn exchange_deadline(http: &ExchangeClient) -> Duration {
 /// endpoint is posted to again by the next request, so the next tick reads the
 /// endpoint's current answer rather than a held refusal. The callers that
 /// waited on one in-flight exchange still share its failure.
+///
+/// A token endpoint refuses without consequence, which is why this is the right
+/// default for the OAuth2 exchanges. The session login is the one mode that
+/// does not take it -- see [`LOGIN_FAILURE_BACKOFF`].
 fn cached<E: Exchange>(exchange: E) -> Cached<E> {
     Cached::new(exchange).with_failure_backoff(Duration::ZERO)
 }
@@ -538,6 +542,11 @@ impl OAuth2Client {
 struct ClientAssertion {
     token_url: String,
     client_id: String,
+    /// The id the provider holds the public half under, written as the JOSE
+    /// header's `kid`. An app registers a second key pair to rotate the first,
+    /// and a provider holding two cannot resolve an assertion that names
+    /// neither: Okta answers `The client_assertion JWT kid is invalid.`
+    key_id: Option<String>,
     claims: Vec<(String, Template)>,
     ttl: Duration,
     private_key: Secret,
@@ -552,6 +561,7 @@ impl fmt::Debug for ClientAssertion {
         f.debug_struct("ClientAssertion")
             .field("token_url", &endpoint_name(&self.token_url))
             .field("client_id", &self.client_id)
+            .field("key_id", &self.key_id)
             .field("claims", &self.claims)
             .field("ttl", &self.ttl)
             .finish_non_exhaustive()
@@ -564,8 +574,16 @@ impl ClientAssertion {
         self.key
             .get_or_try_init(|| async {
                 let pem = self.private_key.value().await?;
-                jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes())
-                    .map_err(|e| Error::Credential(format!("client assertion private key: {e}")))
+                // The assertion is signed RS256, so an EC or Ed25519 key is
+                // refused here as an unreadable one; the message says which
+                // kind is wanted, because the library's own says only that the
+                // format is invalid.
+                jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).map_err(|e| {
+                    Error::Credential(format!(
+                        "client assertion private key: {e}; the assertion is signed RS256, so \
+                         the key is an RSA private key PEM"
+                    ))
+                })
             })
             .await
     }
@@ -598,6 +616,13 @@ impl ClientAssertion {
             claims.insert(name.clone(), value);
         }
         let now = chrono::Utc::now().timestamp();
+        // `iat` is OPTIONAL under RFC 7523 s3, and a provider that checks it
+        // against its own clock refuses an assertion minted on a host running
+        // ahead of it, with no published skew allowance to size that drift
+        // against. It is sent because it is what `exp` is measured from and a
+        // provider requiring the pair refuses an assertion carrying `exp`
+        // alone; a host whose clock has drifted is the failure to look for
+        // when a mint is refused and the key checks out.
         claims.insert("iat".into(), Value::from(now));
         claims.insert(
             "exp".into(),
@@ -609,7 +634,8 @@ impl ClientAssertion {
             "jti".into(),
             Value::String(uuid::Uuid::new_v4().simple().to_string()),
         );
-        let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid.clone_from(&self.key_id);
         jsonwebtoken::encode(&header, &Value::Object(claims), key)
             .map_err(|e| Error::Credential(format!("client assertion signing: {e}")))
     }
@@ -907,12 +933,13 @@ fn metadata_url_issue(url: &str) -> Option<String> {
 ///
 /// A login POSTs the appliance's user name and password, which is the same
 /// secret a token endpoint's form carries, so it is held to the same rule scalo
-/// holds those to: https, or a loopback address so a fixture needs no
-/// certificate. Plain http is refused however private the network is said to
-/// be. An appliance sitting on a management LAN is exactly where a captured
-/// administrator password is worth the most, and every appliance this mode
-/// exists for serves https -- with its own certificate, which is a trust-store
-/// question and not a reason to send the password in the clear.
+/// holds those to: https, or http on a loopback address so a fixture needs no
+/// certificate. Plain http anywhere else is refused however private the network
+/// is said to be, and so is any other scheme. An appliance sitting on a
+/// management LAN is exactly where a captured administrator password is worth
+/// the most, and every appliance this mode exists for serves https -- with its
+/// own certificate, which is a trust-store question and not a reason to send the
+/// password in the clear.
 ///
 /// The refusal is at BIND, because the URL is rendered there: an operator reads
 /// a config error at load rather than a credential error on the first tick.
@@ -930,9 +957,12 @@ fn login_url_issue(url: &str) -> Option<String> {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|a| a.is_loopback());
-    (!loopback).then(|| {
-        "must be https, or a loopback address: a login posts the appliance's password, which a \
-         plaintext hop hands to anyone on the path"
+    // The exemption is for plain http on this machine and nothing else: a
+    // scheme the login cannot be posted over at all -- `ftp:`, `file:` -- would
+    // otherwise pass here and fail inside the HTTP client on the first tick.
+    (!(loopback && parsed.scheme() == "http")).then(|| {
+        "must be https, or http on a loopback address: a login posts the appliance's password, \
+         which a plaintext hop hands to anyone on the path"
             .to_owned()
     })
 }
@@ -945,6 +975,21 @@ fn login_url_issue(url: &str) -> Option<String> {
 /// -- which is the one thing every consumer logs.
 const LOGIN_REFUSAL_DETAIL: &str = "the login was refused; the response text is not kept, because \
                                     a login body carries the password";
+
+/// How long a refused login is answered from rather than posted again.
+///
+/// A token endpoint refuses a stale client secret without consequence, so the
+/// minting modes hold no failure at all. An appliance is the opposite: vCenter,
+/// F5 and Check Point all lock an account after a handful of failed logins, and
+/// a wrong or rotated password otherwise posts the administrator's credentials
+/// once per unit per tick for as long as the deployment runs. Five minutes
+/// covers a whole tick of a typical schedule, so a stale password costs one
+/// login attempt per five minutes rather than one per unit per tick.
+///
+/// Only a REFUSAL is held. An appliance that could not be reached, or that ran
+/// out of time, is tried again by the next request, because that failure is not
+/// one the account is locked for.
+const LOGIN_FAILURE_BACKOFF: Duration = Duration::from_secs(300);
 
 /// Where a session login reads its token from.
 #[derive(Debug)]
@@ -1098,9 +1143,11 @@ impl Exchange for SessionExchange {
                 &Unsigned,
             )
             .await
+            // scalo's retry loop strips reqwest's copy of the request URL out
+            // of every error it hands back, so nothing more is done to it here.
             .map_err(|e| AuthError::Unreachable {
                 url: endpoint_name(&self.url),
-                source: Box::new(without_url(e)),
+                source: Box::new(e),
             })?;
         // The appliance says nothing about how long the session lives, so the
         // lifetime is the profile's declaration and the renewal margin is read
@@ -1113,15 +1160,6 @@ impl Exchange for SessionExchange {
 
     fn timeout(&self) -> Duration {
         exchange_deadline(&self.http)
-    }
-}
-
-/// The same transport failure with reqwest's copy of the request URL dropped,
-/// as scalo's own exchanges hand one on.
-fn without_url(error: HttpError) -> HttpError {
-    match error {
-        HttpError::Transport(e) => HttpError::Transport(e.without_url()),
-        other => other,
     }
 }
 
@@ -1925,7 +1963,7 @@ fn build_session_login(
         header: HeaderName::from_bytes(login.header.as_bytes())
             .map_err(|e| Error::Config(format!("auth.session_login.header: {e}")))?,
         prefix: login.prefix.as_str().into(),
-        source: cached(SessionExchange {
+        source: Cached::new(SessionExchange {
             url,
             send,
             body,
@@ -1941,7 +1979,8 @@ fn build_session_login(
                 reqwest::redirect::Policy::none(),
             )
             .map_err(|e| Error::Source(format!("session login client: {e}")))?,
-        }),
+        })
+        .with_failure_backoff(LOGIN_FAILURE_BACKOFF),
     })
 }
 
@@ -2102,6 +2141,7 @@ impl AuthMode {
                             assertion: Arc::new(ClientAssertion {
                                 token_url: token_url.clone(),
                                 client_id: client_id.clone(),
+                                key_id: identity.private_key_id.clone(),
                                 claims,
                                 ttl: Duration::from_secs(assertion.ttl_secs),
                                 private_key: Secret::new(pem.clone()),
@@ -2842,6 +2882,10 @@ mod tests {
             );
         }
 
+        // The oauth2 mode on its other credential, which the loop cannot reach:
+        // an instance holds a client secret or a private key, never both, so
+        // the key pair's render is checked over a profile that declares the
+        // assertion and an instance carrying only the key.
         let rendered = format!("{:?}", okta_assertion_mode().unwrap());
         assert!(!rendered.contains(NEVER_PRINTED), "{rendered}");
     }
@@ -4425,10 +4469,65 @@ mod tests {
         );
     }
 
+    /// An assertion lifetime over an hour binds cleanly and is then refused by
+    /// the provider as `invalid_client` on every mint, so it is refused at load
+    /// instead. An hour itself is the cap rather than past it.
+    #[test]
+    fn an_assertion_lifetime_over_an_hour_is_refused_at_load() {
+        let fields = |ttl_secs: u64| {
+            let mut okta = RestProfile {
+                profile: "okta".to_owned(),
+                base_url: "{{ vars.base_url }}".to_owned(),
+                ..RestProfile::default()
+            };
+            okta.auth.accepts = vec![AuthKind::Oauth2ClientCredentials];
+            okta.auth.oauth2_client_credentials.token_url =
+                "{{ base_url }}/oauth2/v1/token".to_owned();
+            okta.auth.oauth2_client_credentials.client_assertion = Some(ClientAssertionSpec {
+                ttl_secs,
+                ..ClientAssertionSpec::default()
+            });
+            okta.validate()
+                .into_iter()
+                .map(|i| i.field)
+                .collect::<Vec<_>>()
+        };
+        let ttl = "auth.oauth2_client_credentials.client_assertion.ttl_secs".to_owned();
+        for within in [1, 300, 3600] {
+            assert!(!fields(within).contains(&ttl), "{within}");
+        }
+        for over in [3601, 7200] {
+            assert!(fields(over).contains(&ttl), "{over}");
+        }
+    }
+
+    /// The assertion is signed RS256, so a key of another kind is refused when
+    /// it is read -- with the kind that is wanted named, because the library's
+    /// own message says only that the format is invalid.
+    #[tokio::test]
+    async fn a_client_assertion_key_that_is_not_rsa_says_so() {
+        let assertion = ClientAssertion {
+            token_url: "https://acme.okta.com/oauth2/v1/token".to_owned(),
+            client_id: "0oaserviceapp".to_owned(),
+            key_id: None,
+            claims: Vec::new(),
+            ttl: Duration::from_secs(300),
+            private_key: Secret::new(
+                "-----BEGIN PRIVATE KEY-----\nbm90IGFuIFJTQSBrZXk=\n-----END PRIVATE KEY-----\n"
+                    .into(),
+            ),
+            key: OnceCell::new(),
+            ctx: TemplateCtx::new(),
+        };
+        let err = assertion.key().await.expect_err("not an RSA key");
+        assert!(matches!(err, Error::Credential(_)), "{err:?}");
+        assert!(err.to_string().contains("RSA"), "{err}");
+    }
+
     /// A login POSTs the appliance's password, so its endpoint is held to the
-    /// same rule a token endpoint is: https, or a loopback address so a fixture
-    /// needs no certificate. A self-hosted appliance on plain http stops
-    /// fetching, which is the point.
+    /// same rule a token endpoint is: https, or http on a loopback address so a
+    /// fixture needs no certificate. A self-hosted appliance on plain http
+    /// stops fetching, which is the point.
     #[test]
     fn a_plaintext_login_endpoint_is_refused_and_a_loopback_one_is_not() {
         for url in [
@@ -4442,6 +4541,11 @@ mod tests {
         for url in [
             "http://vcenter.example/api/session",
             "http://10.0.0.1/api/session",
+            // The loopback exemption is for plain http and nothing else: a
+            // scheme the login cannot be posted over would otherwise pass here
+            // and fail inside the HTTP client on the first tick.
+            "ftp://localhost/api/session",
+            "file:///api/session",
             "not a url",
         ] {
             assert!(login_url_issue(url).is_some(), "{url}");
@@ -4462,8 +4566,9 @@ mod tests {
     }
 
     /// The login's own refusals: no place to read the token from, both places,
-    /// no header to carry it in, and a user name that would move the separator
-    /// of the basic credential it is sent as.
+    /// no header to carry it in, a body member that would be dropped or
+    /// overwritten rather than sent, and a user name that would move the
+    /// separator of the basic credential it is sent as.
     #[test]
     fn a_session_login_is_refused_where_it_could_authenticate_as_nothing() {
         let issues = |login: SessionLoginSpec| {
@@ -4509,6 +4614,19 @@ mod tests {
         assert!(
             shadowed.contains("auth.session_login.body.password"),
             "{shadowed}"
+        );
+
+        // `send: basic` posts no document at all, so a member written for one
+        // would be validated, rendered at bind and then dropped.
+        let dropped = issues(SessionLoginSpec {
+            body: [("loginProviderName".to_owned(), "tmos".to_owned())]
+                .into_iter()
+                .collect(),
+            ..vcenter_login()
+        });
+        assert!(
+            dropped.contains("auth.session_login.body.loginProviderName"),
+            "{dropped}"
         );
 
         let mut colon = identity(AuthKind::SessionLogin);

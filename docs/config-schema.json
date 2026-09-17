@@ -3613,6 +3613,7 @@
             "service_account_key": null,
             "service_account_key_file": null,
             "private_key": null,
+            "private_key_id": null,
             "access_key_id": null,
             "secret_access_key": null,
             "credentials_json": null,
@@ -4133,7 +4134,7 @@
       "additionalProperties": false
     },
     "ClientAssertionSpec": {
-      "description": "Authenticating the client-credentials exchange with a private-key JWT\n(RFC 7523 s2.2), which Okta and Microsoft Entra both call\n`private_key_jwt`.\n\nThe exchange posts `grant_type=client_credentials` with\n`client_assertion_type` and a `client_assertion` the fetcher signs, instead\nof a `client_secret`. The instance carries the key, so declaring this block\nsays the API accepts the path; an instance picks it by supplying a\n`private_key` rather than a `client_secret`.\n\nThe assertion always carries `iss` and `sub` as the client id, `aud` as the\nrendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:\nOkta refuses a replayed assertion, so no two carry the same id. `claims`\nadds to those or overrides the first three, each a template over the\ninstance's `vars`, `base_url` and the `auth.token_url` the exchange renders.",
+      "description": "Authenticating the client-credentials exchange with a private-key JWT\n(RFC 7523 s2.2), which Okta and Microsoft Entra both call\n`private_key_jwt`.\n\nThe exchange posts `grant_type=client_credentials` with\n`client_assertion_type` and a `client_assertion` the fetcher signs, instead\nof a `client_secret`. The instance carries the key, so declaring this block\nsays the API accepts the path; an instance picks it by supplying a\n`private_key` rather than a `client_secret`.\n\nThe assertion always carries `iss` and `sub` as the client id, `aud` as the\nrendered token endpoint, `iat` and `exp` from `ttl_secs`, and a fresh `jti`:\nOkta refuses a replayed assertion, so no two carry the same id. `claims`\nadds to those or overrides the first three, each a template over the\ninstance's `vars`, `base_url` and the `auth.token_url` the exchange renders.\n\nThe assertion is signed RS256, and the instance's `private_key_id` becomes\nthe `kid` of its JOSE header.",
       "type": "object",
       "properties": {
         "claims": {
@@ -4145,7 +4146,7 @@
           "default": {}
         },
         "ttl_secs": {
-          "description": "Assertion lifetime, `exp - iat`. Okta caps it at an hour.",
+          "description": "Assertion lifetime, `exp - iat`. An hour at most: Okta refuses a longer\none as `invalid_client` rather than shortening it.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
@@ -5886,6 +5887,14 @@
           ],
           "x-dfe-secret": true,
           "writeOnly": true,
+          "default": null
+        },
+        "private_key_id": {
+          "description": "`oauth2_client_credentials`: the id the provider holds the public half\nof `private_key` under, written as the `kid` of the client assertion's\nJOSE header. Not a secret -- a key id is public.\n\nRequired once the app has more than one key pair registered, which is\nwhat rotating a signing key looks like: an app with one key is resolved\nwithout it, and an app with two refuses an assertion that names none.",
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null
         },
         "access_key_id": {

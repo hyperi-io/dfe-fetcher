@@ -32,12 +32,13 @@ auth:
   api_key:
     header: Authorization
     prefix: "SSWS "
-  # The org authorisation server's token endpoint. An instance carrying a
-  # `private_key` authenticates the exchange with a signed assertion; one
-  # carrying a `client_secret` posts that instead, for a custom authorisation
-  # server that accepts one. Okta caps an assertion at an hour and refuses a
-  # `jti` it has already seen, so the assertion is short-lived and every mint
-  # carries its own id.
+  # The org authorisation server's token endpoint, which is the only one this
+  # profile reaches: an instance authenticates the exchange with a signed
+  # assertion, because the org server refuses a client secret. Okta caps an
+  # assertion at an hour and refuses a `jti` it has already seen, so the
+  # assertion is short-lived and every mint carries its own id. An app with a
+  # second key pair registered -- what rotating the first looks like -- needs
+  # the instance's `private_key_id` to say which one signed.
   oauth2_client_credentials:
     token_url: "{{ base_url }}/oauth2/v1/token"
     scope: okta.logs.read

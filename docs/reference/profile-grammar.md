@@ -158,12 +158,13 @@ auth:
   mode: oauth2_client_credentials
   client_id: "0oa1example"
   private_key: "vault:<mount>/data/<path>:<key>"
+  private_key_id: "the kid the app holds the public half under"
 ```
 
 | Field | Meaning |
 |-------|---------|
-| `ttl_secs` | Assertion lifetime, `exp - iat`. Okta caps it at an hour; short is right, because an assertion is spent the moment it is posted. |
-| `claims` | Claim templates added to the assertion, or replacing `iss`, `sub` or `aud`. Each reads `vars`, `base_url` and `auth.token_url` / `auth.client_id`, and is held to the instance's context like every other credential template. |
+| `ttl_secs` | Assertion lifetime, `exp - iat`. An hour at most -- a longer one is refused at load, because Okta answers `invalid_client` rather than shortening it. Short is right anyway: an assertion is spent the moment it is posted. |
+| `claims` | Claim templates added to the assertion, or replacing `iss`, `sub` or `aud`. Each reads `vars`, `base_url` and `auth.token_url` / `auth.client_id`, and is held to the instance's context like every other credential template. The `expose` fields of the token response are NOT among them: they arrive with the token the assertion is minting. |
 
 The assertion always carries `iss` and `sub` as the client id and `aud` as the
 rendered token endpoint, which is what RFC 7523 s2.2 requires of a client
@@ -171,6 +172,14 @@ authenticating as itself; `iat` and `exp` come from `ttl_secs`, and `jti` is
 fresh on every mint, because Okta refuses an assertion whose id it has already
 seen. A profile that writes `iat`, `exp` or `jti` in `claims` is refused at
 load rather than having them overwritten.
+
+The signature is RS256, so `private_key` is an RSA private key PEM and a key of
+another kind is refused when it is read, naming the kind that is wanted. The
+instance's `private_key_id` becomes the `kid` of the JOSE header. An app holding
+ONE registered key pair resolves an assertion without it; an app holding two --
+which is what rotating a signing key looks like, the new public key registered
+beside the old -- resolves by `kid` alone and refuses an assertion that names
+none. So an instance whose app has ever been rotated carries it.
 
 Declaring the block says the API accepts the path. Which path an instance takes
 is decided by the credential it carries -- `client_secret` posts the secret,
@@ -300,7 +309,7 @@ names. It is NOT a bearer, and the grammar does not pretend otherwise.
 | `url` | The login endpoint, a template (may read `base_url`). |
 | `send` | `body` puts the credentials in the JSON body, `basic` in the login's own `Authorization: Basic` header. |
 | `username_field`, `password_field` | The body members the credentials are written into under `send: body`; `username` and `password` unless the appliance names them otherwise. |
-| `body` | Further members of the login body, each a template (F5's `loginProviderName`). The profile's own text -- a credential never travels here. |
+| `body` | Further members of the login body, each a template (F5's `loginProviderName`). The profile's own text -- a credential never travels here. Refused under `send: basic`, which posts no body at all. |
 | `token_at` | JSON pointer to the token in the login response. The empty pointer is the whole body, which is what vCenter answers: a JSON string that IS the session id. |
 | `token_header` | The response header carrying the token instead (F5's `X-F5-Auth-Token`). Exactly one of this and `token_at`. |
 | `ttl_secs` | How long the token is held. The appliance does not say, so this is the session lifetime it documents. |
@@ -339,13 +348,21 @@ status and nothing of the response text -- a login body holds the password, and
 an appliance that answers a bad request by quoting what it was posted would put
 that password in the one line every consumer logs.
 
-`url` is held to the same rule as a token endpoint: https, or a loopback address
-so a fixture needs no certificate. Plain http is refused however private the
-network. An appliance on a management LAN is exactly where a captured
-administrator password is worth the most, and every appliance here serves https
--- with its own certificate, which is a trust-store question and not a reason to
-send the password in the clear. The refusal is at BIND rather than at the first
-login, because the URL is rendered there.
+`url` is held to the same rule as a token endpoint: https, or plain http on a
+loopback address so a fixture needs no certificate. Plain http anywhere else is
+refused however private the network, and so is any other scheme. An appliance on
+a management LAN is exactly where a captured administrator password is worth the
+most, and every appliance here serves https -- with its own certificate, which is
+a trust-store question and not a reason to send the password in the clear. The
+refusal is at BIND rather than at the first login, because the URL is rendered
+there.
+
+A login the appliance REFUSES is held for a few minutes and answered from rather
+than posted again. vCenter, F5 and Check Point all lock an account after a
+handful of failed logins, so a wrong or rotated password must not post the
+administrator's credentials once per unit per tick for as long as the deployment
+runs. An appliance that could not be reached is tried again by the next request,
+because that is not a failure the account is locked for.
 
 ### Signing a request
 
@@ -689,7 +706,7 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `bearer` | `token` |
 | `api_key` | `key` |
 | `basic` | `username`, `password` |
-| `oauth2_client_credentials` | `client_id` (the literal id), then exactly one of `client_secret` or `private_key` (a bare RSA PEM signing a client assertion, where the profile declares one), optional `scope` overriding the profile's |
+| `oauth2_client_credentials` | `client_id` (the literal id), then exactly one of `client_secret` or `private_key` (a bare RSA PEM signing a client assertion, where the profile declares one), optional `private_key_id` (the `kid` naming that key, not a secret) and optional `scope` overriding the profile's |
 | `signature` | `key_id` (the public half naming the key -- Duo's integration key; also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |

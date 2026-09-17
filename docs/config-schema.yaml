@@ -3201,6 +3201,7 @@ $defs:
           service_account_key: null
           service_account_key_file: null
           private_key: null
+          private_key_id: null
           access_key_id: null
           secret_access_key: null
           credentials_json: null
@@ -3637,6 +3638,9 @@ $defs:
       Okta refuses a replayed assertion, so no two carry the same id. `claims`
       adds to those or overrides the first three, each a template over the
       instance's `vars`, `base_url` and the `auth.token_url` the exchange renders.
+
+      The assertion is signed RS256, and the instance's `private_key_id` becomes
+      the `kid` of its JOSE header.
     type: object
     properties:
       claims:
@@ -3648,7 +3652,9 @@ $defs:
           type: string
         default: {}
       ttl_secs:
-        description: Assertion lifetime, `exp - iat`. Okta caps it at an hour.
+        description: |-
+          Assertion lifetime, `exp - iat`. An hour at most: Okta refuses a longer
+          one as `invalid_client` rather than shortening it.
         type: integer
         format: uint64
         minimum: 0
@@ -5108,6 +5114,19 @@ $defs:
         - 'null'
         x-dfe-secret: true
         writeOnly: true
+        default: null
+      private_key_id:
+        description: |-
+          `oauth2_client_credentials`: the id the provider holds the public half
+          of `private_key` under, written as the `kid` of the client assertion's
+          JOSE header. Not a secret -- a key id is public.
+
+          Required once the app has more than one key pair registered, which is
+          what rotating a signing key looks like: an app with one key is resolved
+          without it, and an app with two refuses an assertion that names none.
+        type:
+        - string
+        - 'null'
         default: null
       access_key_id:
         description: '`sigv4`: the access key id, a credential spec.'

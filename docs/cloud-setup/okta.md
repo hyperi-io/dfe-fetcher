@@ -91,8 +91,10 @@ All access is read-only.
 1. **Admin Console -> Applications -> Applications -> Create App
    Integration -> API Services**. Name it `dfe-fetcher`.
 2. On the app's **General** tab, configure the client-credentials flow with a
-   public/private key pair (JWT client assertion). Save the public key in
-   Okta and keep the private key for the fetcher.
+   public/private key pair (JWT client assertion). The assertion is signed
+   RS256, so generate an **RSA** key pair - an EC key is refused when the
+   fetcher reads it. Save the public key in Okta and keep the private key for
+   the fetcher. Note the key id (`kid`) Okta shows beside the public key.
 3. **Okta API Scopes** tab -> grant **`okta.logs.read`**.
 4. Assign the app an admin role with System Log access (Super Admin, Read-only
    Admin, or a custom role with **System Log query**).
@@ -138,13 +140,23 @@ sources:
         mode: oauth2_client_credentials
         client_id: "0oa1example"
         private_key: "vault:kv/data/okta:private_key"
+        private_key_id: "the kid Okta shows beside the public key"
       vars:
         base_url: "https://your-tenant.okta.com"
 ```
 
-The private key is the app's own PEM, the one whose public half was uploaded to
-Okta. Scope and assertion lifetime come from the profile, so nothing about the
+The private key is the app's own RSA PEM, the one whose public half was uploaded
+to Okta. Scope and assertion lifetime come from the profile, so nothing about the
 exchange has to be restated here.
+
+`private_key_id` is the `kid` the assertion names itself by, and it is not a
+secret. An app with ONE registered key pair is resolved without it. An app with
+two is not: Okta reads the `kid` and answers
+`The client_assertion JWT kid is invalid.` to an assertion that names none. Two
+key pairs is what a rotation looks like, so **set it before you upload a second
+public key**, not after - roll it forward as: add the new key pair in Okta, set
+`private_key` and `private_key_id` to the new pair, confirm a tick, then remove
+the old public key from the app.
 
 ### Environment Variables
 
@@ -196,6 +208,9 @@ sources:
   - `401` on the token exchange with `invalid_client`: the public key Okta
     holds does not pair with the configured `private_key`, or the `client_id`
     is another app's.
+  - `401` on the token exchange naming the `kid`: the app has more than one key
+    pair registered and the instance sets no `private_key_id`, or sets one the
+    app does not hold. This is what a half-finished key rotation looks like.
   - `403 Forbidden`: the token's admin role lacks System Log access, or the
     OAuth app was not granted `okta.logs.read`.
   - `404` / connection error: `tenant_url` typo, trailing slash, or wrong

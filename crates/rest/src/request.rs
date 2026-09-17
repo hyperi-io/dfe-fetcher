@@ -132,6 +132,10 @@ pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// token endpoint more often than the fetcher does today. What a failed
 /// credential means is still the executor's call.
 ///
+/// The zero is also what keeps a client assertion from being replayed, which is
+/// not visible from either end and is why raising it is not a free change: see
+/// the note on `max_retries` below.
+///
 /// # Errors
 ///
 /// Returns [`Error::Source`] when the TLS backend cannot be initialised.
@@ -139,6 +143,15 @@ pub fn exchange_client() -> Result<Arc<ExchangeClient>> {
     let config = HttpClientConfig {
         timeout_secs: EXCHANGE_TIMEOUT.as_secs(),
         connect_timeout_secs: CONNECT_TIMEOUT.as_secs(),
+        // Raising this breaks the client-assertion path against a live tenant,
+        // and nothing at either end says so. scalo builds every exchange its
+        // own client with `retry_non_idempotent: true`, deliberately, so a
+        // token POST IS retried once the count allows it -- and a retried POST
+        // carries the SAME `client_assertion`, because the assertion is minted
+        // before the loop rather than inside it. Okta refuses an assertion
+        // whose `jti` it has already seen, so the second attempt at every 429
+        // or 5xx would come back as an auth failure. Anything wanting retries
+        // here has to mint per attempt first.
         max_retries: 0,
         min_retry_interval_ms: 0,
         max_retry_interval_ms: 0,

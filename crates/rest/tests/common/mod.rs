@@ -76,8 +76,12 @@ pub struct Recorded {
     pub token_scopes: HashMap<String, String>,
     /// The claims of every JWT-bearer assertion the exchange verified.
     pub assertions: Vec<Value>,
-    /// The RSA public key (SPKI PEM) assertions are verified against.
-    pub jwt_public_key: Option<String>,
+    /// The RSA public keys (SPKI PEM) assertions are verified against, each
+    /// under the key id the app registered it as. `None` is the key of an app
+    /// that registered one and named no id for it.
+    pub jwt_public_keys: Vec<(Option<String>, String)>,
+    /// The `kid` of the JOSE header of every assertion verified, in order.
+    pub assertion_kids: Vec<Option<String>>,
     /// Every `jti` an assertion has already been accepted with; a repeat is
     /// refused, as Okta refuses a replayed assertion.
     pub assertion_ids: std::collections::HashSet<String>,
@@ -144,10 +148,26 @@ impl Fixture {
         self.recorded.lock().unwrap().assertions.clone()
     }
 
-    /// Accept JWT-bearer assertions signed by the key this public PEM pairs
-    /// with.
+    /// Accept assertions signed by the key this public PEM pairs with, as an
+    /// app that registered ONE key pair and so needs no key id to resolve it.
     pub fn accept_assertions_from(&self, public_key_pem: &str) {
-        self.recorded.lock().unwrap().jwt_public_key = Some(public_key_pem.to_owned());
+        self.recorded.lock().unwrap().jwt_public_keys = vec![(None, public_key_pem.to_owned())];
+    }
+
+    /// Register one more public key under the id the app holds it as, which is
+    /// what an administrator does to rotate a signing key. An app holding more
+    /// than one resolves an assertion by the `kid` of its JOSE header alone.
+    pub fn register_key(&self, kid: &str, public_key_pem: &str) {
+        self.recorded
+            .lock()
+            .unwrap()
+            .jwt_public_keys
+            .push((Some(kid.to_owned()), public_key_pem.to_owned()));
+    }
+
+    /// The key ids the verified assertions named, in order.
+    pub fn assertion_kids(&self) -> Vec<Option<String>> {
+        self.recorded.lock().unwrap().assertion_kids.clone()
     }
 
     /// The session tokens the appliance login routes have minted, in order.
@@ -345,18 +365,34 @@ async fn token(
     .into_response()
 }
 
-/// The claims of an RS256 assertion verified against the public key a test
-/// registered, or `None` when there is no key, no assertion, or the signature
-/// does not check out.
+/// The claims of an RS256 assertion verified against the public key the app
+/// registered, or `None` when there is no key, no assertion, the key cannot be
+/// resolved, or the signature does not check out.
+///
+/// The resolution is Okta's: an app holding ONE key verifies against it, an
+/// assertion naming a `kid` is verified against that key alone, and an app
+/// holding more than one refuses an assertion that names none -- which is
+/// exactly what registering a second key pair to rotate the first does.
 fn verified_claims(recorded: &mut Recorded, assertion: Option<&String>) -> Option<Value> {
-    let public = recorded.jwt_public_key.clone()?;
+    let assertion = assertion?;
+    let named = jsonwebtoken::decode_header(assertion).ok()?.kid;
+    let public = match (&named, recorded.jwt_public_keys.as_slice()) {
+        (Some(kid), keys) => keys
+            .iter()
+            .find(|(id, _)| id.as_deref() == Some(kid.as_str()))
+            .map(|(_, pem)| pem.clone())?,
+        (None, [(_, pem)]) => pem.clone(),
+        (None, _) => return None,
+    };
     let key = jsonwebtoken::DecodingKey::from_rsa_pem(public.as_bytes()).unwrap();
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
     validation.validate_aud = false;
     validation.set_required_spec_claims(&["exp", "iat"]);
-    jsonwebtoken::decode::<Value>(assertion?, &key, &validation)
+    let claims = jsonwebtoken::decode::<Value>(assertion, &key, &validation)
         .ok()
-        .map(|data| data.claims)
+        .map(|data| data.claims)?;
+    recorded.assertion_kids.push(named);
+    Some(claims)
 }
 
 /// An appliance login: credentials in the JSON body (F5's shape, with its own
