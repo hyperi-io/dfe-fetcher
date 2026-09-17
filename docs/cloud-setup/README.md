@@ -33,6 +33,7 @@ profile grammar are in [../DESIGN.md](../DESIGN.md).
 | Cisco Duo | Admin and authentication logs | [duo.md](duo.md) |
 | CrowdStrike | Falcon detections and events | [crowdstrike.md](crowdstrike.md) |
 | Cloudflare | Audit logs | [cloudflare.md](cloudflare.md) |
+| Datadog | Audit trail and security signals | [datadog.md](datadog.md) |
 | Bitwarden | Event logs | [bitwarden.md](bitwarden.md) |
 | 1Password | Audit and sign-in events | [onepassword.md](onepassword.md) |
 | Slack | Audit logs | [slack.md](slack.md) |
