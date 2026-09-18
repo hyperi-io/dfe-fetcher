@@ -1326,7 +1326,7 @@ $defs:
         default: false
       tenant_url:
         description: |-
-          Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+          Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
           The OAuth-style preview API uses `oktapreview.com`; either is accepted
           here verbatim. Override per environment.
         type:
@@ -1416,7 +1416,7 @@ $defs:
         description: Stable, unique connection id (cursor key + metric/log label).
         type: string
       tenant_url:
-        description: Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+        description: Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
         type:
         - string
         - 'null'

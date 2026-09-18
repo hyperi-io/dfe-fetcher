@@ -2183,7 +2183,7 @@ pub struct OktaSourceConfig {
     /// Enable Okta source.
     pub enabled: bool,
 
-    /// Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+    /// Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
     /// The OAuth-style preview API uses `oktapreview.com`; either is accepted
     /// here verbatim. Override per environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2235,7 +2235,7 @@ pub struct OktaConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
 
-    /// Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+    /// Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_url: Option<String>,
 

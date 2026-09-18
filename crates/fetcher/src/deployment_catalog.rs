@@ -367,7 +367,7 @@ pub(crate) fn okta() -> Capability {
         .fields(vec![
             conn_id(),
             FieldSpec::string("tenant_url")
-                .description("Tenant URL, e.g. https://hyperi.okta.com."),
+                .description("Tenant URL, e.g. https://your-tenant.okta.com."),
             FieldSpec::secret("token").description("SSWS API token or OAuth bearer token."),
             FieldSpec::bool("use_ssws_header")
                 .default_value(true)

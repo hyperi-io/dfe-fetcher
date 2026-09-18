@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Project:   dfe-fetcher
 # File:      scripts/pgo-workload.sh
-# Purpose:   PGO workload orchestrator — mock cloud APIs + Redpanda + fetcher
+# Purpose:   PGO workload orchestrator -- mock cloud APIs + Redpanda + fetcher
 # Language:  Bash
 #
 # License:   BUSL-1.1
@@ -10,8 +10,8 @@
 # Usage:
 #   scripts/pgo-workload.sh <path-to-dfe-fetcher-binary>
 #
-# Drives the fetcher's hot path (HTTP poll → JSON parse → enrichment → CEL
-# filter → output produce → cursor advance) under representative load so a
+# Drives the fetcher's hot path (HTTP poll -> JSON parse -> enrichment -> CEL
+# filter -> output produce -> cursor advance) under representative load so a
 # PGO-instrumented binary accumulates useful profile data.
 #
 # Environment variables (all optional):
@@ -58,7 +58,7 @@ DURATION="${PGO_WORKLOAD_DURATION_SECS:-300}"
 KAFKA_IMAGE="${PGO_WORKLOAD_KAFKA_IMAGE:-docker.redpanda.com/redpandadata/redpanda:v26.1.9}"
 KEEP="${PGO_WORKLOAD_KEEP:-0}"
 
-# Floor of 60s — shorter workloads produce bad PGO profiles
+# Floor of 60s -- shorter workloads produce bad PGO profiles
 if [[ "$DURATION" -lt 60 ]]; then
     echo "error: PGO_WORKLOAD_DURATION_SECS must be >= 60 (got $DURATION)" >&2
     echo "  short workloads produce NEGATIVE PGO gains by biasing the" >&2
@@ -106,7 +106,7 @@ CONFIG_DIR=""
 cleanup() {
     local rc=$?
     if [[ "$KEEP" == "1" ]]; then
-        echo "PGO_WORKLOAD_KEEP=1 — skipping cleanup" >&2
+        echo "PGO_WORKLOAD_KEEP=1 -- skipping cleanup" >&2
         echo "  fetcher PID: $FETCHER_PID" >&2
         echo "  driver PID:  $DRIVER_PID" >&2
         echo "  broker CID:  $KAFKA_CID" >&2
@@ -228,7 +228,7 @@ CURSOR_DIR="$CONFIG_DIR/cursors"
 mkdir -p "$CURSOR_DIR"
 
 # Aggressive 1-second intervals across all four sources push max throughput
-# through the hot path: HTTP fetch → parse → enrich → filter → produce.
+# through the hot path: HTTP fetch -> parse -> enrich -> filter -> produce.
 cat > "$CONFIG_FILE" <<YAML
 instance_id: "pgo-workload"
 
@@ -282,7 +282,7 @@ sources:
   aws:
     enabled: true
     region: "ap-southeast-2"
-    # Placeholder credentials — fetcher SigV4-signs requests but the
+    # Placeholder credentials -- fetcher SigV4-signs requests but the
     # destination is the local mock, which ignores signatures. Use a
     # non-AKIA prefix so static-analysis secret scanners don't flag it.
     access_key_id: "PGOMOCK000000000000A"
@@ -357,7 +357,7 @@ sleep 2
 
 echo "pgo-workload: driving load for ${DURATION}s (fetcher polls @ 1s on 4 sources)"
 
-# Fetcher is its own load driver — it polls the mock at the configured
+# Fetcher is its own load driver -- it polls the mock at the configured
 # intervals. We just sit here for the duration and keep an eye on liveness.
 START="$(date +%s)"
 END=$(( START + DURATION ))
