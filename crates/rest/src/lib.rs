@@ -15,8 +15,9 @@
 //! [`page::Pager`], [`decode::Decoder`], and the checkpoint kind carried by
 //! core, with [`hooks::RowBuilder`] as the last escape for a row shape no
 //! decoder expresses. Every request goes through
-//! [`request::RequestExecutor`], the one place a request is built, signed,
-//! sent, retried and measured.
+//! [`request::RequestExecutor`], the one place a request is built, checked
+//! against the unit's [`origin::OriginSet`], signed, sent, retried and
+//! measured.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -28,6 +29,7 @@
 pub mod auth;
 pub mod decode;
 pub mod hooks;
+pub mod origin;
 pub mod page;
 pub mod profile;
 pub mod request;

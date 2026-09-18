@@ -1471,7 +1471,9 @@ pub struct LookupRequest {
     /// batch, a keyset request and a prelude step, GET for a manifest item).
     pub method: Option<Method>,
     /// Path template appended to `base_url`, or a whole URL when it renders
-    /// one (a manifest item's `contentUri`).
+    /// one (a manifest item's `contentUri`); a rendered URL is refused unless
+    /// its host is the unit's own `base_url`, the instance's, one a credential
+    /// field exposes, or an `allow_hosts` entry.
     pub path: String,
     /// Query parameter templates.
     pub query: BTreeMap<String, String>,
@@ -1690,6 +1692,10 @@ pub struct EndpointSpec {
     /// Base URL template of this unit when its API host differs from the
     /// profile's; validated like the profile's.
     pub base_url: Option<String>,
+    /// Origins this unit's rendered URLs may name beyond its own `base_url`,
+    /// the instance's and the profile's `allow_hosts`, which it widens rather
+    /// than replaces; held to the same rules as the profile's.
+    pub allow_hosts: Vec<String>,
     /// The credential narrowing this unit needs.
     pub auth: Option<EndpointAuthSpec>,
     /// The window rendering this unit needs when it differs from the
@@ -1760,6 +1766,7 @@ impl Default for EndpointSpec {
             unit: String::new(),
             shape: None,
             base_url: None,
+            allow_hosts: Vec::new(),
             auth: None,
             window: None,
             vars: BTreeMap::new(),
@@ -1858,6 +1865,12 @@ pub struct RestProfile {
     pub maturity: dfe_fetcher_core::SourceMaturity,
     /// Base URL template; must reference a variable, never a literal URL.
     pub base_url: String,
+    /// Origins a rendered URL may name besides `base_url`'s, for a source whose
+    /// API answers a second host (a sovereign cloud). Each entry is a template
+    /// like `base_url`, so the host comes from the instance's config, and names
+    /// one exact origin: there are no wildcards, because a suffix match lets
+    /// `example.com.evil.net` pass for `example.com`.
+    pub allow_hosts: Vec<String>,
     /// Default shape of every endpoint.
     pub shape: UnitShape,
     /// Accepted auth modes and their shapes.
@@ -1895,6 +1908,36 @@ fn template_issue(field: &str, text: &str) -> Option<Issue> {
     Template::compile(text)
         .err()
         .map(|e| Issue::new(field, e.to_string()))
+}
+
+/// An `allow_hosts` entry is a template like a base URL, and names one exact
+/// origin.
+fn allow_host_issues(field: &str, entries: &[String]) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let at = format!("{field}[{i}]");
+        if entry.trim().is_empty() {
+            issues.push(Issue::new(&at, "is empty"));
+            continue;
+        }
+        if entry.contains('*') {
+            issues.push(Issue::new(
+                &at,
+                "is a wildcard: allow_hosts names exact hosts, because a suffix match lets \
+                 `example.com.evil.net` pass for `example.com`",
+            ));
+        }
+        match Template::compile(entry) {
+            Err(e) => issues.push(Issue::new(&at, e.to_string())),
+            Ok(t) if t.is_literal() => issues.push(Issue::new(
+                &at,
+                "a profile carries no identity: the host belongs in the instance's vars and the \
+                 profile references it, e.g. `{{ vars.management_url }}`",
+            )),
+            Ok(_) => {}
+        }
+    }
+    issues
 }
 
 /// A base URL is a required template that reads a variable, never a literal.
@@ -2548,6 +2591,7 @@ impl RestProfile {
     pub fn validate(&self) -> Vec<Issue> {
         let mut issues = Vec::new();
         issues.extend(base_url_issue("base_url", &self.base_url));
+        issues.extend(allow_host_issues("allow_hosts", &self.allow_hosts));
         if self.auth.accepts.is_empty() {
             issues.push(Issue::new("auth.accepts", "must list at least one mode"));
         }
@@ -2760,6 +2804,7 @@ impl RestProfile {
             if let Some(base_url) = &endpoint.base_url {
                 issues.extend(base_url_issue(&at("base_url"), base_url));
             }
+            issues.extend(allow_host_issues(&at("allow_hosts"), &endpoint.allow_hosts));
             if endpoint.auth_scope().is_some() && !scoped_mode {
                 issues.push(Issue::new(
                     at("auth.scope"),
@@ -4770,6 +4815,48 @@ endpoints:
                 .any(|i| i.field == "endpoints[0].auth.scope"),
             "a scope needs a token-minting mode: {:?}",
             unscoped.validate()
+        );
+    }
+
+    /// `allow_hosts` widens the origins a rendered URL may name, on the
+    /// profile and on one unit, and each entry is held to the rules a base URL
+    /// is: a template, not a literal, and never a wildcard.
+    #[test]
+    fn an_allow_hosts_entry_is_a_template_naming_one_exact_host() {
+        let head = GITHUB.split("endpoints:").next().unwrap().to_owned();
+        let yaml = format!(
+            "{head}allow_hosts: [\"{{{{ vars.management_url }}}}\"]\nendpoints:\n  - unit: audit\n    allow_hosts: [\"{{{{ vars.blob_url }}}}\"]\n    path: /audit\n    rows: {{ decoder: json_at, at: /items }}\n"
+        );
+        let profile = parse(&yaml);
+        assert!(profile.validate().is_empty(), "{:?}", profile.validate());
+        assert_eq!(profile.allow_hosts, ["{{ vars.management_url }}"]);
+        assert_eq!(profile.endpoints[0].allow_hosts, ["{{ vars.blob_url }}"]);
+
+        let literal = parse(&yaml.replace(
+            "allow_hosts: [\"{{ vars.management_url }}\"]",
+            "allow_hosts: [\"https://manage.office.com\"]",
+        ));
+        assert!(
+            literal
+                .validate()
+                .iter()
+                .any(|i| i.field == "allow_hosts[0]" && i.message.contains("no identity")),
+            "{:?}",
+            literal.validate()
+        );
+
+        let wildcard = parse(&yaml.replace(
+            "allow_hosts: [\"{{ vars.blob_url }}\"]",
+            "allow_hosts: [\"{{ vars.scheme }}://*.blob.core.windows.net\"]",
+        ));
+        assert!(
+            wildcard
+                .validate()
+                .iter()
+                .any(|i| i.field == "endpoints[0].allow_hosts[0]"
+                    && i.message.contains("exact hosts")),
+            "{:?}",
+            wildcard.validate()
         );
     }
 

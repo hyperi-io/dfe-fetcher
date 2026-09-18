@@ -467,6 +467,34 @@ async fn the_instance_url_override_wins_over_the_exchanges() {
     );
 }
 
+/// A pinned `instance_url_override` on a host the login URL does not name is
+/// still addressed: the org host is operator configuration, so the profile
+/// declares it in `allow_hosts` and the origin gate permits it.
+///
+/// `localhost` and `127.0.0.1` are the same socket and different host strings,
+/// which is what makes this a cross-host case without a second server. The
+/// sibling test above pins the same host, so it cannot see this.
+#[tokio::test]
+async fn a_pinned_instance_url_on_another_host_is_permitted() {
+    let server = MockServer::start().await;
+    let app = connected_app(&server, "https://never.example").await;
+    mount_query(
+        &server,
+        "/pinned",
+        "LoginHistory",
+        soql_page(&[login_row("0Ya1")], None),
+    )
+    .await;
+    let mut cfg = jwt_config(&server, &app, &["login_history"]);
+    cfg.instance_url_override = Some(format!(
+        "http://localhost:{}/pinned",
+        server.address().port()
+    ));
+    let (outcome, rows) = run(config(cfg), Some(&window())).await;
+    outcome.expect("a pinned org host is operator config, so it is permitted");
+    assert_eq!(ids(&rows), ["0Ya1"]);
+}
+
 /// EventLogFile: the files of the window at the configured interval are
 /// listed, each `LogFile` downloaded as CSV, and every CSV row lands as an
 /// object stamped with its file's event type and log date.

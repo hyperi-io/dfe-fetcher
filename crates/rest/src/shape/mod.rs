@@ -49,7 +49,7 @@ use crate::profile::bound::{
 };
 use crate::profile::template::TemplateCtx;
 use crate::profile::{AuthKind, Method, RestInstance, RestProfile};
-use crate::request::{ExchangeClient, RequestExecutor};
+use crate::request::{ExchangeClient, RequestExecutor, Sending};
 use window::Step;
 
 /// The REST shape of one instance.
@@ -185,7 +185,9 @@ impl RestShape {
     }
 
     /// `base_url/path` with the rendered query pairs appended; a path that
-    /// renders a whole URL (a manifest item's `contentUri`) is used as is.
+    /// renders a whole URL (a manifest item's `contentUri`) replaces the base
+    /// URL, and the executor refuses the host unless the unit's
+    /// [`crate::origin::OriginSet`] names it.
     fn request_url(
         base_url: &str,
         path: &crate::profile::Template,
@@ -249,11 +251,14 @@ impl RestShape {
         let Some(response) = self
             .executor
             .send(
-                &self.bound.connection_id,
-                &self.auth,
-                ctx,
-                probe.method == Method::Get,
-                &[],
+                Sending {
+                    source: &self.bound.connection_id,
+                    auth: &self.auth,
+                    ctx,
+                    origins: &self.bound.origins,
+                    idempotent: probe.method == Method::Get,
+                    ignore: &[],
+                },
                 make,
             )
             .await?
@@ -593,11 +598,14 @@ impl RestShape {
         };
         self.executor
             .send(
-                &self.bound.connection_id,
-                self.auth_for(endpoint),
-                ctx,
-                request.idempotent(),
-                &request.ignore_status,
+                Sending {
+                    source: &self.bound.connection_id,
+                    auth: self.auth_for(endpoint),
+                    ctx,
+                    origins: &endpoint.origins,
+                    idempotent: request.idempotent(),
+                    ignore: &request.ignore_status,
+                },
                 make,
             )
             .await
