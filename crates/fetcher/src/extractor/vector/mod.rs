@@ -170,7 +170,7 @@ impl VectorManager {
                         Ok(batch) => {
                             batch_count += 1;
                             let msg_count = batch.len() as u64;
-                            let suffix = sink.state().config().topic_suffix().to_owned();
+                            let suffix = sink.state().topic_suffix();
 
                             // `recv` yields a zero-copy `WorkBatch`; each record
                             // carries `payload: Bytes` and `key: Option<Arc<str>>`,
@@ -216,8 +216,7 @@ impl VectorManager {
     /// Build topic mapping from Vector instance configs.
     fn build_topic_map(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
-        let config = self.sink.state().config();
-        let suffix = config.topic_suffix();
+        let suffix = self.sink.state().topic_suffix();
 
         for instance in &self.config.instances {
             let topic = format!("{}{}", instance.topic, suffix);
@@ -229,8 +228,7 @@ impl VectorManager {
 
     /// Get the default topic for unmapped Vector events.
     fn default_topic(&self) -> String {
-        let config = self.sink.state().config();
-        format!("vector{}", config.topic_suffix())
+        format!("vector{}", self.sink.state().topic_suffix())
     }
 
     /// Start a managed Vector container instance.
