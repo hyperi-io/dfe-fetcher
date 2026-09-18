@@ -1,4 +1,4 @@
-# robots.txt — HyperI AI Training Crawler Blocklist
+# robots.txt -- HyperI AI Training Crawler Blocklist
 #
 # This file blocks known AI model training crawlers while permitting
 # standard search engine indexing (Googlebot, Bingbot, etc.).

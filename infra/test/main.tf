@@ -39,7 +39,7 @@ terraform {
 }
 
 # =============================================================================
-# Variables — actual values in terraform.tfvars (gitignored) or .env
+# Variables -- actual values in terraform.tfvars (gitignored) or .env
 # =============================================================================
 
 variable "aws_profile" {
@@ -84,7 +84,7 @@ provider "google" {
 }
 
 # =============================================================================
-# AWS — IAM user with read-only access to fetched services
+# AWS -- IAM user with read-only access to fetched services
 # =============================================================================
 # Cost: Free (IAM users, CloudTrail management events, CloudWatch reads are free)
 
@@ -139,7 +139,7 @@ resource "aws_iam_access_key" "fetcher_test" {
 }
 
 # =============================================================================
-# Azure — App registration with Reader role on subscription
+# Azure -- App registration with Reader role on subscription
 # =============================================================================
 # Cost: Free (app registrations and Activity Log reads are free)
 #
@@ -176,7 +176,7 @@ resource "azurerm_role_assignment" "fetcher_reader" {
 }
 
 # =============================================================================
-# M365 — App registration for Office 365 Management Activity API + Graph Security
+# M365 -- App registration for Office 365 Management Activity API + Graph Security
 # =============================================================================
 # Cost: Free (app registrations and API reads are free)
 #
@@ -195,7 +195,7 @@ resource "azuread_application" "m365_fetcher_test" {
   display_name = "dfe-fetcher-m365-test"
   owners       = [data.azuread_client_config.current.object_id]
 
-  # Office 365 Management API — ActivityFeed.Read
+  # Office 365 Management API -- ActivityFeed.Read
   required_resource_access {
     resource_app_id = "c5393580-f805-4401-95e8-94b7a6ef2fc2"
     resource_access {
@@ -204,7 +204,7 @@ resource "azuread_application" "m365_fetcher_test" {
     }
   }
 
-  # Microsoft Graph — SecurityEvents, SecurityAlert, Reports
+  # Microsoft Graph -- SecurityEvents, SecurityAlert, Reports
   required_resource_access {
     resource_app_id = "00000003-0000-0000-c000-000000000000"
     resource_access {
@@ -237,7 +237,7 @@ resource "azuread_application_password" "m365_fetcher_test" {
 }
 
 # =============================================================================
-# GCP — Service account with Logs Viewer role
+# GCP -- Service account with Logs Viewer role
 # =============================================================================
 # Cost: Free (service accounts and Cloud Logging reads are free)
 
@@ -258,7 +258,7 @@ resource "google_service_account_key" "fetcher_test" {
 }
 
 # =============================================================================
-# Outputs — used by gen-env.py to create .env
+# Outputs -- used by gen-env.py to create .env
 # =============================================================================
 
 output "aws_access_key_id" {

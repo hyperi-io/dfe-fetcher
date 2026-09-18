@@ -333,7 +333,7 @@
   - name: tenant_url
     type: string
     required: false
-    description: Tenant URL, e.g. https://hyperi.okta.com.
+    description: Tenant URL, e.g. https://your-tenant.okta.com.
   - name: token
     type: secret
     required: false
