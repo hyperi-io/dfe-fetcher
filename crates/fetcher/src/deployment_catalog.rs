@@ -836,6 +836,20 @@ mod tests {
                 source.name
             );
         }
+        // Both sides above read the same helper, so the loop cannot catch a
+        // wrong maturity -- only a missing catalog entry. The stable set is
+        // pinned because promotion is what the startup warning stops covering.
+        let mut stable: Vec<&str> = every_source(&example_config())
+            .into_iter()
+            .filter(|s| s.maturity.as_str() == "stable")
+            .map(|s| s.name)
+            .collect();
+        stable.sort_unstable();
+        assert_eq!(
+            stable,
+            ["aws", "azure", "gcp", "m365"],
+            "promoting a source past alpha silences its startup warning -- say so here first"
+        );
     }
 
     /// The shipped profile's `accepts` list is the single source of truth for
