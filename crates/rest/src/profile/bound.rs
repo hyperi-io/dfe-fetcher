@@ -336,6 +336,11 @@ fn permit_allow_hosts(
             .and_then(|t| t.render(ctx))
             .map_err(|e| Error::Config(format!("{at}: {e}")))?;
         let rendered = rendered.trim();
+        // An entry reading an unset operator var renders empty and widens
+        // nothing, which is how `TemplateMap::render` already treats its own.
+        if rendered.is_empty() {
+            continue;
+        }
         if rendered.contains('*') {
             return Err(Error::Config(format!(
                 "{at}: `{rendered}` is a wildcard; allow_hosts names exact hosts"
