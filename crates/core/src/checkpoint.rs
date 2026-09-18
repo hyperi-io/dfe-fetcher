@@ -102,9 +102,9 @@ pub fn normalize_cursor_key(key: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum CheckpointValue {
-    /// Manifest shape: the latest item fully emitted.
+    /// Manifest shape: the last item fully emitted, in `(position, key)` order.
     Item {
-        /// The item's identity.
+        /// The item's identity, which orders items sharing one position.
         key: String,
         /// Its position in the listing order.
         position: DateTime<Utc>,
@@ -162,7 +162,10 @@ impl Checkpoint {
                     position: seen,
                 }),
             ) => {
-                if position > *seen {
+                // The marker is the greatest `(position, key)` pair, the order a
+                // listing sorts by, so a run of items sharing one position is
+                // ordered by key rather than collapsing to the first seen.
+                if (position, &*key) > (*seen, seen_key.as_str()) {
                     *seen_key = key.into_string();
                     *seen = position;
                 }
@@ -298,6 +301,25 @@ mod tests {
                 key: "blob-b".to_string(),
                 position: at(200),
             })
+        );
+    }
+
+    #[test]
+    fn item_fold_breaks_a_tie_at_one_position_by_key() {
+        let mut cp = Checkpoint::new("inst.m365.audit");
+        for key in ["blob-a", "blob-c", "blob-b"] {
+            cp.fold(Mark::Item {
+                key: key.into(),
+                position: at(100),
+            });
+        }
+        assert_eq!(
+            cp.value(),
+            Some(&CheckpointValue::Item {
+                key: "blob-c".to_string(),
+                position: at(100),
+            }),
+            "the greatest key at the position, the order a listing sorts by"
         );
     }
 
