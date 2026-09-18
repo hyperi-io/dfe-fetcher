@@ -134,8 +134,8 @@ label, and the `_source_fetcher` prefix on every record.
 
 ### Idle until configured
 
-A fetcher with no enabled source, no container extractor and the ingest
-listener off has nothing that can produce a record. It starts, passes
+A fetcher with no enabled source, no container extractor, no Vector receiver
+and the ingest listener off has nothing that can produce a record. It starts, passes
 readiness, serves health and metrics, and opens no transport -- the
 `pipeline_idle` gauge sits at 1 and the `work_config` health component reports
 Degraded, so an operator can see it has nothing to do while the deploy's
