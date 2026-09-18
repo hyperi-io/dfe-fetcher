@@ -76,7 +76,7 @@ fn jwt_config(
         login_url: Some(server.uri()),
         client_id: Some(CLIENT_ID.into()),
         username: Some(USERNAME.into()),
-        private_key: Some(key.private_pem.clone()),
+        private_key: Some(key.private_pem.clone().into()),
         services: services.iter().map(|s| service(s, &[])).collect(),
         ..SalesforceSourceConfig::default()
     }
@@ -728,7 +728,7 @@ async fn a_refused_token_exchange_fails_the_tick_and_queries_nothing() {
     .await;
     let (other_private, _) = rsa_key_pair();
     let mut cfg = jwt_config(&server, &app, &["login_history"]);
-    cfg.private_key = Some(other_private);
+    cfg.private_key = Some(other_private.into());
     let (outcome, rows) = run(config(cfg), Some(&window())).await;
     let err = outcome.expect_err("the refusal is reported");
     assert!(err.contains("invalid_grant"), "{err}");

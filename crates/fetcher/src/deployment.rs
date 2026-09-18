@@ -506,16 +506,101 @@ mod tests {
         );
     }
 
-    /// The derived schema must mark the fetcher's secret fields with the
-    /// `x-dfe-secret` marker (via scalo's SensitiveString JsonSchema impl).
+    /// Property names that hold a secret value wherever the config declares them.
+    /// `service_account_key` is not one: the typed blocks hold a key file path
+    /// under that name.
+    const SECRET_FIELDS: &[&str] = &[
+        "auth_token",
+        "password",
+        "private_key",
+        "client_secret",
+        "secret_access_key",
+        "secret_key",
+        "token",
+        "account_key",
+        "sas_token",
+    ];
+
+    /// Every property declared in `schema` at any depth, as its name and whether
+    /// its own object carries `x-dfe-secret`.
+    fn declared_properties(schema: &serde_json::Value) -> Vec<(String, bool)> {
+        let mut found = Vec::new();
+        let mut stack = vec![schema];
+        while let Some(node) = stack.pop() {
+            match node {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::Object(props)) = map.get("properties") {
+                        for (name, prop) in props {
+                            let marked =
+                                prop.get("x-dfe-secret") == Some(&serde_json::Value::Bool(true));
+                            found.push((name.clone(), marked));
+                        }
+                    }
+                    stack.extend(map.values());
+                }
+                serde_json::Value::Array(items) => stack.extend(items),
+                _ => {}
+            }
+        }
+        found
+    }
+
+    /// The secret fields `schema` declares at least once without the marker.
+    fn unmarked_secret_fields(schema: &serde_json::Value) -> std::collections::BTreeSet<String> {
+        declared_properties(schema)
+            .into_iter()
+            .filter(|(name, marked)| !marked && SECRET_FIELDS.contains(&name.as_str()))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Every declaration of every secret field carries the marker, because the
+    /// engine's config composer reads this schema to decide what becomes a
+    /// Secret rather than a plaintext ConfigMap entry. Each listed field must be
+    /// declared somewhere, so the list cannot rot into names nothing uses.
     #[test]
-    fn test_config_schema_marks_secrets() {
-        let c = contract();
-        let schema = c.config_schema.expect("config_schema");
-        let json = serde_json::to_string(&schema).expect("serialise schema");
-        assert!(
-            json.contains("x-dfe-secret"),
-            "schema must carry the x-dfe-secret marker on secret fields"
+    fn every_secret_field_carries_the_marker_wherever_it_is_declared() {
+        let schema = contract().config_schema.expect("config_schema");
+        assert_eq!(
+            unmarked_secret_fields(&schema),
+            std::collections::BTreeSet::new(),
+            "type these as `SensitiveString`, not `String`"
+        );
+        let declared: std::collections::BTreeSet<String> = declared_properties(&schema)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for field in SECRET_FIELDS {
+            assert!(
+                declared.contains(*field),
+                "`{field}` is declared nowhere in the config -- drop it from SECRET_FIELDS"
+            );
+        }
+    }
+
+    /// The check fails for a secret held as a plain string and passes for the
+    /// same field held as a `SensitiveString`.
+    #[test]
+    fn a_secret_field_typed_as_a_plain_string_fails_the_check() {
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Leaky {
+            password: Option<String>,
+        }
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Guarded {
+            password: Option<scalo::config::sensitive::SensitiveString>,
+        }
+        let leaky = serde_json::to_value(schemars::schema_for!(Leaky)).expect("schema");
+        let guarded = serde_json::to_value(schemars::schema_for!(Guarded)).expect("schema");
+        assert_eq!(
+            unmarked_secret_fields(&leaky),
+            std::collections::BTreeSet::from(["password".to_owned()])
+        );
+        assert_eq!(
+            unmarked_secret_fields(&guarded),
+            std::collections::BTreeSet::new()
         );
     }
 
