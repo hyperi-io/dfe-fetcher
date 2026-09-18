@@ -314,8 +314,14 @@ impl Batcher {
     pub fn take(&mut self) -> Batch {
         let bytes = std::mem::take(&mut self.bytes);
         self.opened = None;
+        // Replaced rather than `mem::take`d: that leaves capacity 0 behind, so
+        // every batch after the first regrows from nothing.
+        let rows = std::mem::replace(
+            &mut self.rows,
+            Vec::with_capacity(self.cfg.max_rows.min(1024)),
+        );
         Batch {
-            rows: std::mem::take(&mut self.rows),
+            rows,
             marks: std::mem::take(&mut self.marks),
             bytes,
             _leased: Leased {
