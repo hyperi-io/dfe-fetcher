@@ -3008,6 +3008,8 @@ $defs:
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       private_key_secret:
         description: |-
           Secret source spec resolving to the RSA private key PEM
@@ -3122,6 +3124,8 @@ $defs:
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       private_key_secret:
         description: Secret source spec resolving to the RSA private key PEM.
         type:
@@ -5971,9 +5975,15 @@ $defs:
         description: |-
           Bearer token for authentication (credential resolver format).
           Empty or absent = no auth (backward compatible, logs warning).
+
+          Sensitive because this one is resolved at load and then held: the
+          resolved token sits in the config for the life of the process, so a
+          `Debug`, a `Serialize` or the published schema would otherwise show it.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
         default: null
   KafkaConfig:
     description: |-

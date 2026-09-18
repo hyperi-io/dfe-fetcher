@@ -3533,7 +3533,7 @@ pub struct SalesforceSourceConfig {
     /// RSA private key PEM for the JWT-bearer flow (full
     /// `-----BEGIN PRIVATE KEY-----` ... block). JWT-bearer flow only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<String>,
+    pub private_key: Option<SensitiveString>,
 
     /// Secret source spec resolving to the RSA private key PEM
     /// (e.g. `vault:kv/data/salesforce:private_key`). Takes precedence over
@@ -3602,7 +3602,7 @@ pub struct SalesforceConnection {
 
     /// RSA private key PEM for the JWT-bearer flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<String>,
+    pub private_key: Option<SensitiveString>,
 
     /// Secret source spec resolving to the RSA private key PEM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4263,8 +4263,12 @@ pub struct IngestConfig {
 
     /// Bearer token for authentication (credential resolver format).
     /// Empty or absent = no auth (backward compatible, logs warning).
+    ///
+    /// Sensitive because this one is resolved at load and then held: the
+    /// resolved token sits in the config for the life of the process, so a
+    /// `Debug`, a `Serialize` or the published schema would otherwise show it.
     #[serde(default)]
-    pub auth_token: Option<String>,
+    pub auth_token: Option<SensitiveString>,
 }
 
 impl Default for IngestConfig {

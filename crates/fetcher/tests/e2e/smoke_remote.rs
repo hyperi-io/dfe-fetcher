@@ -1584,7 +1584,7 @@ fn salesforce_base() -> SalesforceSourceConfig {
         api_version: optional("SALESFORCE_API_VERSION"),
         client_id: optional("SALESFORCE_CLIENT_ID"),
         username: optional("SALESFORCE_USERNAME"),
-        private_key: optional("SALESFORCE_PRIVATE_KEY"),
+        private_key: optional("SALESFORCE_PRIVATE_KEY").map(Into::into),
         private_key_secret: optional("SALESFORCE_PRIVATE_KEY_SECRET"),
         client_secret: optional("SALESFORCE_CLIENT_SECRET").map(Into::into),
         credential_secret: optional("SALESFORCE_CREDENTIAL_SECRET"),

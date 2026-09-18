@@ -829,7 +829,7 @@ impl SalesforceSourceConfig {
                     let private_key = config
                         .private_key_secret
                         .as_deref()
-                        .or(config.private_key.as_deref())
+                        .or_else(|| config.private_key.as_ref().map(SensitiveString::expose))
                         .filter(|k| !k.is_empty());
                     let mut vars = BTreeMap::new();
                     let auth = match private_key {

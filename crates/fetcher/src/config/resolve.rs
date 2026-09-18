@@ -25,6 +25,8 @@
 //! A block that is not enabled is skipped: it is never instantiated, so a spec
 //! left behind in one must not stop the process starting.
 
+use scalo::config::sensitive::SensitiveString;
+
 use crate::config::Config;
 use crate::credential::{CredentialError, resolve};
 
@@ -46,7 +48,7 @@ pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialE
     // Unresolved, a `vault:`/`env:` spec here becomes the literal bearer token
     // the server accepts -- an auth setting that reads as configured and is not.
     if config.ingest.enabled {
-        resolve_opt(&mut config.ingest.auth_token).await?;
+        resolve_opt_sensitive(&mut config.ingest.auth_token).await?;
     }
     // The identity fields are not secrets, but they are specs: unresolved they
     // reach the provider as literal text and come back as a bad tenant or
@@ -158,6 +160,15 @@ async fn resolve_opt(field: &mut Option<String>) -> Result<(), CredentialError> 
     Ok(())
 }
 
+/// Resolve an optional secret-bearing spec field in place; `None` stays `None`.
+async fn resolve_opt_sensitive(field: &mut Option<SensitiveString>) -> Result<(), CredentialError> {
+    if let Some(spec) = field.as_ref().map(SensitiveString::expose) {
+        let resolved = resolve(spec).await?;
+        *field = Some(SensitiveString::from(resolved));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -199,9 +210,12 @@ mod tests {
 
         let mut cfg = base_config();
         cfg.ingest.enabled = true;
-        cfg.ingest.auth_token = Some("env:DFE_FETCHER_TEST_INGEST_TOKEN".to_string());
+        cfg.ingest.auth_token = Some(SensitiveString::from("env:DFE_FETCHER_TEST_INGEST_TOKEN"));
         resolve_config_specs(&mut cfg).await.unwrap();
-        assert_eq!(cfg.ingest.auth_token.as_deref(), Some("s3cret"));
+        assert_eq!(
+            cfg.ingest.auth_token.as_ref().map(SensitiveString::expose),
+            Some("s3cret")
+        );
 
         unsafe { std::env::remove_var("DFE_FETCHER_TEST_INGEST_TOKEN") };
     }
