@@ -3252,6 +3252,17 @@ $defs:
         description: Base URL template; must reference a variable, never a literal URL.
         type: string
         default: ''
+      allow_hosts:
+        description: |-
+          Origins a rendered URL may name besides `base_url`'s, for a source whose
+          API answers a second host (a sovereign cloud). Each entry is a template
+          like `base_url`, so the host comes from the instance's config, and names
+          one exact origin: there are no wildcards, because a suffix match lets
+          `example.com.evil.net` pass for `example.com`.
+        type: array
+        items:
+          type: string
+        default: []
       shape:
         description: Default shape of every endpoint.
         $ref: '#/$defs/UnitShape'
@@ -4511,7 +4522,9 @@ $defs:
       path:
         description: |-
           Path template appended to `base_url`, or a whole URL when it renders
-          one (a manifest item's `contentUri`).
+          one (a manifest item's `contentUri`); a rendered URL is refused unless
+          its host is the unit's own `base_url`, the instance's, one a credential
+          field exposes, or an `allow_hosts` entry.
         type: string
         default: ''
       query:
@@ -4793,6 +4806,15 @@ $defs:
         - string
         - 'null'
         default: null
+      allow_hosts:
+        description: |-
+          Origins this unit's rendered URLs may name beyond its own `base_url`,
+          the instance's and the profile's `allow_hosts`, which it widens rather
+          than replaces; held to the same rules as the profile's.
+        type: array
+        items:
+          type: string
+        default: []
       auth:
         description: The credential narrowing this unit needs.
         anyOf:
