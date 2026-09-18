@@ -28,6 +28,7 @@ use super::{
 };
 use crate::decode::Decoder;
 use crate::hooks::{Lister, RowBuilder};
+use crate::origin::OriginSet;
 use crate::page::Pager;
 use crate::request::RateGate;
 
@@ -108,6 +109,9 @@ pub struct BoundEndpoint {
     /// unit's context: the unit's own template when it names one, else the
     /// profile's.
     pub base_url: String,
+    /// The origins this unit's requests may be sent to: its own base URL, the
+    /// instance's, and the `allow_hosts` the profile and the endpoint declare.
+    pub origins: OriginSet,
     /// The scope this unit's token is minted for, when it names one.
     pub auth_scope: Option<String>,
     /// Window rendering and chunking, with the unit's own format when it
@@ -240,6 +244,9 @@ pub struct BoundProfile {
     pub connection_id: String,
     /// The base URL, rendered once from the instance's vars.
     pub base_url: String,
+    /// The origins the probe may be sent to: the instance's base URL and the
+    /// profile's `allow_hosts`.
+    pub origins: OriginSet,
     /// Headers on every request.
     pub headers: TemplateMap,
     /// Window rendering and chunking.
@@ -311,6 +318,39 @@ pub fn render_body(body: &Value, ctx: &TemplateCtx) -> Result<Value> {
     })
 }
 
+/// Permit the origin of each `allow_hosts` entry at `field`.
+///
+/// An entry is a template rendered like a base URL, so the host comes from the
+/// operator's configuration rather than from a provider's answer, and it names
+/// one exact origin: a suffix match would let `example.com.evil.net` pass for
+/// `example.com`.
+fn permit_allow_hosts(
+    origins: &mut OriginSet,
+    field: &str,
+    entries: &[String],
+    ctx: &TemplateCtx,
+) -> Result<()> {
+    for (i, entry) in entries.iter().enumerate() {
+        let at = format!("{field}[{i}]");
+        let rendered = Template::compile(entry)
+            .and_then(|t| t.render(ctx))
+            .map_err(|e| Error::Config(format!("{at}: {e}")))?;
+        let rendered = rendered.trim();
+        if rendered.contains('*') {
+            return Err(Error::Config(format!(
+                "{at}: `{rendered}` is a wildcard; allow_hosts names exact hosts"
+            )));
+        }
+        if !origins.permit(rendered) {
+            return Err(Error::Config(format!(
+                "{at}: `{rendered}` is not an absolute URL naming a host, \
+                 e.g. https://manage.office.com"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Bind one endpoint as the unit `name`: the endpoint's own name, or the
 /// name of an instance unit that instantiates it, whose override applies.
 fn bind_endpoint(
@@ -321,6 +361,13 @@ fn bind_endpoint(
     ctx: &TemplateCtx,
 ) -> Result<BoundEndpoint> {
     let at = |f: &str| format!("endpoints[{name}].{f}");
+    // The context reaching here is the instance's, so its `base_url` is the
+    // instance-level render, which the probe addresses.
+    let instance_base_url = ctx
+        .get("base_url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let shape = endpoint.shape.unwrap_or(profile.shape);
     let over = instance.units.get(name);
     let topic_base = over
@@ -369,6 +416,16 @@ fn bind_endpoint(
         rendered
     };
     let ctx = ctx;
+    let mut origins = OriginSet::new();
+    origins.permit(&base_url);
+    origins.permit(&instance_base_url);
+    permit_allow_hosts(&mut origins, "allow_hosts", &profile.allow_hosts, &ctx)?;
+    permit_allow_hosts(
+        &mut origins,
+        &at("allow_hosts"),
+        &endpoint.allow_hosts,
+        &ctx,
+    )?;
     let mut unit = UnitSpec::new(name, shape, &topic);
     unit.row_key.clone_from(&endpoint.row_key);
     unit.content = {
@@ -551,6 +608,7 @@ fn bind_endpoint(
         unit,
         request,
         base_url,
+        origins,
         auth_scope: endpoint.auth_scope().map(str::to_owned),
         window: profile.window_of(endpoint),
         decoder: Decoder::build(&rows),
@@ -725,10 +783,11 @@ pub fn bind(
             "base_url rendered empty; the instance must set the var it reads".into(),
         ));
     }
-    ctx.set(
-        "base_url",
-        Value::String(base_url.trim_end_matches('/').to_owned()),
-    );
+    let base_url = base_url.trim_end_matches('/').to_owned();
+    ctx.set("base_url", Value::String(base_url.clone()));
+    let mut origins = OriginSet::new();
+    origins.permit(&base_url);
+    permit_allow_hosts(&mut origins, "allow_hosts", &profile.allow_hosts, &ctx)?;
 
     let mut headers = TemplateMap::new();
     compile_map("headers", &profile.headers, &mut headers)?;
@@ -800,7 +859,8 @@ pub fn bind(
             profile.profile.clone()
         },
         connection_id: connection_id.to_owned(),
-        base_url: base_url.trim_end_matches('/').to_owned(),
+        base_url,
+        origins,
         headers,
         window: profile.window.clone(),
         retry: profile.retry.clone(),

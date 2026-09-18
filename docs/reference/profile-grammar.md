@@ -93,6 +93,7 @@ entry.
 | `profile` | Registry key of a shipped profile; an inline profile may leave it empty. |
 | `maturity` | `alpha`, `beta` or `stable`; the fetcher warns at startup for an enabled non-stable source. |
 | `base_url` | Template; must reference a variable, never a literal URL, because a profile carries no identity. Rendered per unit, so a unit's `vars` can pick the host. |
+| `allow_hosts` | Origins a rendered URL may name besides `base_url`'s, for an API that answers on a second host (a sovereign cloud repointing `management_url`). Each entry is a template like `base_url`, so the host comes from the instance's vars, and names one exact origin: there are no wildcards, because a suffix match lets `example.com.evil.net` pass for `example.com`. Empty by default, and no shipped profile declares one. |
 | `shape` | Default shape of every endpoint (`incremental` or `dump`). |
 | `auth` | Accepted modes and the shape of each ([Auth](#auth)). |
 | `headers` | Header templates on every request. |
@@ -577,8 +578,8 @@ renders a JSON number.
 ## Endpoints
 
 Each entry of `endpoints` is one unit of the source. `defaults` carries the
-same keys (except `unit`, `shape`, `base_url`, `auth`, `window`, `vars`,
-`row_key`, `fail_when`, `add_fields`, `fold`, `lister`, `ignore_status`,
+same keys (except `unit`, `shape`, `base_url`, `allow_hosts`, `auth`, `window`,
+`vars`, `row_key`, `fail_when`, `add_fields`, `fold`, `lister`, `ignore_status`,
 `timeout_secs`) and
 every endpoint inherits them unless it sets its own; a `defaults.body` reaches
 POST endpoints only, and an endpoint's own `prelude: []` or `construct: {}`
@@ -589,6 +590,7 @@ opts out of the defaults'.
 | `unit` | Unit name: the `_source_fetcher` suffix, the dump `store` suffix, the topic suffix. |
 | `shape` | Overrides the profile's shape for this unit. |
 | `base_url` | This unit's base URL template when its host differs from the profile's. |
+| `allow_hosts` | Origins this unit's rendered URLs may name on top of the profile's `allow_hosts`, which it widens rather than replaces. Held to the same rules. |
 | `auth.scope` | The scope (OAuth2) or `scope` claim (JWT bearer) this unit's token is minted for. |
 | `window.format` | This unit's window rendering. |
 | `vars` | Values this unit's templates read as `vars.*`, over the instance's and under the instance's `units.<name>.vars`. |
@@ -647,7 +649,8 @@ beside any of them. A secondary request (a keyset request, a lookup batch, a
 manifest item, a prelude step) is a `LookupRequest`: `method` (unset takes the
 construct's default: POST for a lookup batch, a keyset request and a prelude
 step, GET for a manifest item), `path` (appended to `base_url`, or a whole URL
-when it renders one), `query`, `headers`, `body` and `ignore_status`.
+when it renders one, whose host is held to the rule under
+[Templates](#templates)), `query`, `headers`, `body` and `ignore_status`.
 
 | Construct | Fields | Context |
 |-----------|--------|---------|
@@ -680,7 +683,17 @@ Templates are `{{ cel }}` expressions over:
 | `auth.*` | What the mode exposes: `client_email`, `token_uri`, `token_url` for a JWT bearer, plus the token-response fields listed under `expose`. |
 
 A body leaf that is exactly one expression keeps its JSON type; a mixed leaf
-is a string. A rendered path that is a whole URL is used as is.
+is a string.
+
+A rendered path that is a whole URL replaces `base_url`, and its host is checked
+before the request is signed. It must be the host of the unit's own `base_url`,
+of the instance's, of an `auth.*` field the mode exposes (a token exchange
+naming the org's own host, as Salesforce does), or of an `allow_hosts` entry.
+Any other host fails the tick with a source error naming that host, so a value
+the provider chose -- a manifest item's field, a key read out of a response --
+cannot send the credential somewhere else, in the clear or at all. The same
+check covers the URL a `link_header`, a `cursor` with `into: path` or a
+`request_path` pager hands back.
 
 ## Instance
 
@@ -733,7 +746,9 @@ credential field for the mode, a `units.<name>` the profile has no unit for
 -- the refusal names the units the profile declares -- or one that
 instantiates an endpoint under a name the profile already declares,
 an empty `topic`, a filter or template that does not compile, a `base_url`
-that is a literal, a pointer that does not start with `/`, an `offset` pager
+that is a literal, an `allow_hosts` entry that is a literal, a wildcard, or
+renders something that is not an absolute URL, a pointer that does not start
+with `/`, an `offset` pager
 without `page_size` or `total_at`, a keyset with both or neither of `from` and
 `request`, `key` in `add_fields` without a keyset, a queue unit that also
 declares a lookup or manifest, a `defaults.body` on a GET, an `expose`

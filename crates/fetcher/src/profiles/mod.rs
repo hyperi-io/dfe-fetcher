@@ -90,6 +90,29 @@ mod tests {
         assert_eq!(shipped().len(), SHIPPED.len());
     }
 
+    /// `allow_hosts` widens the hosts a source may send its credential to, so
+    /// the first shipped profile to declare one is a deliberate review rather
+    /// than a quiet edit. Every API a shipped profile calls today answers on
+    /// the host its own `base_url` names, or on one a token exchange names.
+    #[test]
+    fn no_shipped_profile_declares_allow_hosts() {
+        for (name, profile) in shipped() {
+            assert!(
+                profile.allow_hosts.is_empty(),
+                "shipped profile `{name}` widens its hosts: {:?}",
+                profile.allow_hosts
+            );
+            for endpoint in &profile.endpoints {
+                assert!(
+                    endpoint.allow_hosts.is_empty(),
+                    "shipped profile `{name}` unit `{}` widens its hosts: {:?}",
+                    endpoint.unit,
+                    endpoint.allow_hosts
+                );
+            }
+        }
+    }
+
     /// The runZero profile is the contract RECON s18 measured live: NDJSON
     /// exports with no paging, a refusal terminal for the tick, the error text
     /// under `error`, the daily usage counter as a gauge, and a row key that

@@ -3689,6 +3689,14 @@
           "type": "string",
           "default": ""
         },
+        "allow_hosts": {
+          "description": "Origins a rendered URL may name besides `base_url`'s, for a source whose\nAPI answers a second host (a sovereign cloud). Each entry is a template\nlike `base_url`, so the host comes from the instance's config, and names\none exact origin: there are no wildcards, because a suffix match lets\n`example.com.evil.net` pass for `example.com`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
         "shape": {
           "description": "Default shape of every endpoint.",
           "$ref": "#/$defs/UnitShape",
@@ -5169,7 +5177,7 @@
           "default": null
         },
         "path": {
-          "description": "Path template appended to `base_url`, or a whole URL when it renders\none (a manifest item's `contentUri`).",
+          "description": "Path template appended to `base_url`, or a whole URL when it renders\none (a manifest item's `contentUri`); a rendered URL is refused unless\nits host is the unit's own `base_url`, the instance's, one a credential\nfield exposes, or an `allow_hosts` entry.",
           "type": "string",
           "default": ""
         },
@@ -5502,6 +5510,14 @@
             "null"
           ],
           "default": null
+        },
+        "allow_hosts": {
+          "description": "Origins this unit's rendered URLs may name beyond its own `base_url`,\nthe instance's and the profile's `allow_hosts`, which it widens rather\nthan replaces; held to the same rules as the profile's.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         },
         "auth": {
           "description": "The credential narrowing this unit needs.",

@@ -10,7 +10,8 @@
 //!
 //! Every provider call in the REST shapes goes through [`RequestExecutor::send`]:
 //! build the request (a `reqwest::Request` is not reusable across attempts, so
-//! the caller supplies a builder closure), apply the [`AuthMode`], send, and
+//! the caller supplies a builder closure), check its host against the unit's
+//! [`OriginSet`], apply the [`AuthMode`], send, and
 //! retry the statuses the profile's [`RetrySpec`] names with exponential
 //! backoff and jitter, honouring `Retry-After` up to the backoff ceiling.
 //! 401 and 403 are never retried: a refused call ticks the provider's own
@@ -40,6 +41,7 @@ use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::metric_names;
 
 use crate::auth::{AuthMode, credential_error};
+use crate::origin::OriginSet;
 use crate::profile::RetrySpec;
 use crate::profile::template::TemplateCtx;
 
@@ -91,8 +93,12 @@ pub fn http_client() -> Result<HttpClient> {
 /// host and port unchanged): the profile's `api_key.header` may name any
 /// header, so a cross-host or HTTPS-to-HTTP hop would carry the credential
 /// to a host the profile never named; such a 3xx surfaces as the API error
-/// it is and a profile that expects one can `ignore_status` it. The pagers
-/// follow next-page URLs themselves.
+/// it is and a profile that expects one can `ignore_status` it.
+///
+/// This policy sees hop 2 onwards. The first hop is chosen by a rendered path,
+/// which may be a whole URL the provider supplied, and is held to the same rule
+/// by [`OriginSet`] in [`RequestExecutor::send`]; the pagers, which follow
+/// next-page URLs themselves, go through that gate too.
 ///
 /// # Errors
 ///
@@ -216,6 +222,27 @@ impl RateGate {
     }
 }
 
+/// What one send needs beside the request: which source it counts against, the
+/// credential it carries and the context that credential renders from, the
+/// origins it may address, whether a non-2xx may be retried, and the statuses
+/// the caller expects instead of a page.
+#[derive(Debug, Clone, Copy)]
+pub struct Sending<'a> {
+    /// The `source` metrics label, the instance's connection id.
+    pub source: &'a str,
+    /// The credential this request carries.
+    pub auth: &'a AuthMode,
+    /// The request's own context: what a signing mode reads for its scope, and
+    /// the `auth.*` the mode exposed this tick.
+    pub ctx: &'a TemplateCtx,
+    /// The origins this unit may address.
+    pub origins: &'a OriginSet,
+    /// Whether a non-2xx may be retried.
+    pub idempotent: bool,
+    /// Statuses that are the caller's expected answer rather than a failure.
+    pub ignore: &'a [u16],
+}
+
 /// Builds, signs, sends and retries one instance's requests.
 #[derive(Debug, Clone)]
 pub struct RequestExecutor {
@@ -251,24 +278,34 @@ impl RequestExecutor {
     }
 
     /// Send a request, retrying per the policy. `make` builds a fresh request
-    /// per attempt; `idempotent` says whether a non-2xx may be retried at
-    /// all; a status in `ignore` is the caller's expected answer, handed back
-    /// as `None` without a retry and without counting as an API error.
+    /// per attempt; `sending.idempotent` says whether a non-2xx may be retried
+    /// at all; a status in `sending.ignore` is the caller's expected answer,
+    /// handed back as `None` without a retry and without counting as an API
+    /// error.
+    ///
+    /// The host is checked against `sending.origins` BEFORE the credential is
+    /// applied, so a URL the provider chose can neither take the credential to
+    /// another host nor cause a token to be minted for one.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Api`] for the final non-2xx status (never retried, or
-    /// retries exhausted), [`Error::Source`] when the provider is unreachable,
-    /// and the credential error when the auth mode cannot be applied.
+    /// retries exhausted), [`Error::Source`] when the host is not one the source
+    /// may address or the provider is unreachable, and the credential error when
+    /// the auth mode cannot be applied.
     pub async fn send(
         &self,
-        source: &str,
-        auth: &AuthMode,
-        auth_ctx: &TemplateCtx,
-        idempotent: bool,
-        ignore: &[u16],
+        sending: Sending<'_>,
         make: impl Fn() -> Result<reqwest::Request>,
     ) -> Result<Option<reqwest::Response>> {
+        let Sending {
+            source,
+            auth,
+            ctx,
+            origins,
+            idempotent,
+            ignore,
+        } = sending;
         let may_retry = idempotent || self.retry.retry_non_idempotent;
         let mut backoff = backon::ExponentialBuilder::default()
             .with_min_delay(Duration::from_millis(self.retry.min_backoff_ms))
@@ -278,7 +315,10 @@ impl RequestExecutor {
             .build();
         loop {
             let mut request = make()?;
-            if let Err(e) = RequestSigner::sign(&auth.signer(auth_ctx), &mut request).await {
+            if let Err(e) = origins.check(request.url(), ctx.get("auth")) {
+                return Err(self.fail(source, e));
+            }
+            if let Err(e) = RequestSigner::sign(&auth.signer(ctx), &mut request).await {
                 return Err(self.fail(source, credential_error(e)));
             }
             let started = Instant::now();
@@ -452,13 +492,26 @@ mod tests {
             None,
             Vec::new(),
         );
+        let mut origins = OriginSet::new();
+        assert!(origins.permit("https://api.example"));
+        let ctx = TemplateCtx::new();
         let err = executor
-            .send("counted", &auth, &TemplateCtx::new(), true, &[], || {
-                Ok(reqwest::Request::new(
-                    reqwest::Method::GET,
-                    "https://api.example/x".parse().unwrap(),
-                ))
-            })
+            .send(
+                Sending {
+                    source: "counted",
+                    auth: &auth,
+                    ctx: &ctx,
+                    origins: &origins,
+                    idempotent: true,
+                    ignore: &[],
+                },
+                || {
+                    Ok(reqwest::Request::new(
+                        reqwest::Method::GET,
+                        "https://api.example/x".parse().unwrap(),
+                    ))
+                },
+            )
             .await
             .expect_err("the spec does not resolve");
         assert!(matches!(err, Error::Credential(_)), "{err:?}");
