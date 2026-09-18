@@ -263,11 +263,7 @@ impl ContainerExtractor {
 
     /// Deliver one stdout line as a record on the extractor's topic.
     async fn deliver_line(&self, line: String) -> Result<()> {
-        let topic = format!(
-            "{}{}",
-            self.config.topic,
-            self.sink.state().config().topic_suffix()
-        );
+        let topic = format!("{}{}", self.config.topic, self.sink.state().topic_suffix());
         let fetcher_source = format!("container.{}", self.config.name);
         self.sink
             .deliver(

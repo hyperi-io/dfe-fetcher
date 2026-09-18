@@ -256,7 +256,7 @@ impl VectorReceiver {
         let ack = SourceAck::new(transport, batch.commit_tokens);
         let piece = ack.piece();
 
-        let suffix = self.sink.state().config().topic_suffix().to_owned();
+        let suffix = self.sink.state().topic_suffix();
         // A record's key names its instance (mapped to the instance's topic) or
         // the topic itself. Vector-compat events carry none.
         let records: Vec<_> = batch
@@ -439,7 +439,7 @@ impl VectorManager {
         }
         *self.config_dir.lock() = config_dir;
 
-        let suffix = self.sink.state().config().topic_suffix().to_owned();
+        let suffix = self.sink.state().topic_suffix();
         let topic_map = self.build_topic_map();
         let mut addresses = Vec::with_capacity(transports.len());
         for (listener, transport) in listeners.iter().zip(transports) {
@@ -487,8 +487,7 @@ impl VectorManager {
     /// Instance name to topic, for a native push whose key names an instance.
     fn build_topic_map(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
-        let config = self.sink.state().config();
-        let suffix = config.topic_suffix();
+        let suffix = self.sink.state().topic_suffix();
 
         for instance in &self.config.instances {
             let topic = format!("{}{}", instance.topic, suffix);

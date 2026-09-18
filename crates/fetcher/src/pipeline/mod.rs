@@ -369,6 +369,15 @@ impl PipelineState {
         self.shared_config.get()
     }
 
+    /// The configured topic suffix.
+    ///
+    /// Reads the one field under the lock: `config()` clones the whole `Config`,
+    /// including every source block and destination, and the extractors call
+    /// this per batch and per line.
+    pub fn topic_suffix(&self) -> String {
+        self.shared_config.with(|c| c.topic_suffix().to_owned())
+    }
+
     /// Get the shared config handle.
     pub fn shared_config(&self) -> SharedConfig {
         self.shared_config.clone()

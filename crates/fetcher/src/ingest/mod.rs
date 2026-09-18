@@ -301,7 +301,7 @@ async fn handle_ingest(
     Path(source): Path<String>,
     body: Bytes,
 ) -> Response {
-    let topic = format!("{}{}", source, state.sink.state().config().topic_suffix());
+    let topic = format!("{}{}", source, state.sink.state().topic_suffix());
     state.ingest(&source, &topic, body).await
 }
 
