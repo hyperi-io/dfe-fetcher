@@ -290,10 +290,9 @@ fn test_deployment_contract_structure() {
     assert!(group_names.contains(&"m365"));
     assert!(group_names.contains(&"gcp"));
 
-    // KEDA autoscaling
-    let keda = contract.keda.as_ref().expect("keda should be configured");
-    assert_eq!(keda.min_replicas, 1);
-    assert_eq!(keda.max_replicas, 5);
+    // No KEDA: its only trigger reads consumer-group lag and the fetcher
+    // never consumes, so the chart ships the HPA fallback instead.
+    assert!(contract.keda.is_none(), "keda should be opted out");
 
     // Default config should contain expected keys
     let default_cfg = contract.default_config.as_ref().expect("default config");

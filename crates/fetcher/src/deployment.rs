@@ -14,9 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use scalo::deployment::{
-    DeploymentContract, HealthContract, ImageProfile, KedaConfig, KedaContract, NativeDepsContract,
-    PortContract, SecretEnvContract, SecretGroupContract, base_image_from_cascade,
-    image_registry_from_cascade,
+    DeploymentContract, HealthContract, ImageProfile, NativeDepsContract, PortContract,
+    SecretEnvContract, SecretGroupContract, base_image_from_cascade, image_registry_from_cascade,
 };
 
 /// The repository root, where the operator-facing files live: the committed
@@ -36,7 +35,7 @@ pub fn repo_root() -> PathBuf {
 /// Build the deployment contract for dfe-fetcher.
 ///
 /// This captures all deployment-facing configuration: ports, health paths,
-/// secrets, KEDA scaling, and default config. Artifact generators
+/// secrets and default config. Artifact generators
 /// (`generate_dockerfile`, `generate_chart`, `generate_compose_fragment`)
 /// use this contract as their single source of truth.
 pub fn contract() -> DeploymentContract {
@@ -197,23 +196,11 @@ pub fn contract() -> DeploymentContract {
             }
         })),
         depends_on: vec!["kafka".into()],
-        // `KedaContract` is `#[non_exhaustive]` (scalo 2.8.13) so it can no
-        // longer be built via a struct literal. Construct a `KedaConfig` with
-        // the fetcher's real KEDA values and convert via `from_config`;
-        // `..Default::default()` fills the rest (the 2.8.12 scaling-pressure
-        // trigger stays OFF -- it needs a cluster-specific Prometheus
-        // serverAddress before enabling).
-        keda: Some(KedaContract::from_config(&KedaConfig {
-            min_replicas: 1,
-            max_replicas: 5,
-            polling_interval: 30,
-            cooldown_period: 300,
-            kafka_lag_threshold: 5000,
-            activation_lag_threshold: 0,
-            cpu_enabled: false,
-            cpu_threshold: 80,
-            ..Default::default()
-        })),
+        // The generator's only trigger scales on Kafka consumer-group lag and
+        // the fetcher never consumes, so there is no group to read. `None` is
+        // the opt-out: values.yaml gets `keda.enabled: false` and no
+        // ScaledObject is written.
+        keda: None,
         schema_version: 3,
         // dfe-fetcher is BUSL-1.1 (scalo itself is Apache-2.0). Drive the OCI
         // licenses label + the generated Dockerfile's `# License` header from the
@@ -441,21 +428,17 @@ mod tests {
         assert_eq!(cfg["scheduler"]["jitter_percent"], 10);
     }
 
+    /// A lag trigger needs a consumer group and the fetcher never consumes, so
+    /// the contract opts out and the chart carries no ScaledObject.
     #[test]
-    fn test_contract_keda_present() {
-        let c = contract();
-        assert!(c.keda.is_some());
-    }
-
-    #[test]
-    fn test_contract_keda_defaults() {
-        let c = contract();
-        let keda = c.keda.as_ref().expect("keda must exist");
-        assert_eq!(keda.min_replicas, 1);
-        assert_eq!(keda.max_replicas, 5);
-        assert_eq!(keda.polling_interval, 30);
-        assert_eq!(keda.cooldown_period, 300);
-        assert_eq!(keda.kafka_lag_threshold, 5000);
+    fn the_contract_declares_no_keda_because_the_fetcher_only_produces() {
+        assert!(
+            contract().keda.is_none(),
+            "KEDA must stay opted out: `Some(..)` makes the generator hardcode \
+             `keda.enabled: true` in values.yaml, because it never reads \
+             `KedaConfig::enabled`, so a default install renders a lag trigger \
+             with no group to measure"
+        );
     }
 
     #[test]

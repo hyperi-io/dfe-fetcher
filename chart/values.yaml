@@ -153,26 +153,9 @@ gcp:
     service-account-key: gcp-service-account-key
   service-account-key: ""
 
-# -- KEDA autoscaling (requires KEDA operator installed)
+# -- KEDA autoscaling disabled by contract; HPA fallback below.
 keda:
-  enabled: true
-  minReplicaCount: 1
-  maxReplicaCount: 5
-  pollingInterval: 30
-  cooldownPeriod: 300
-  kafka:
-    # -- Scale when consumer group lag exceeds this per partition
-    lagThreshold: "5000"
-    # -- Wake from zero replicas when lag exceeds this
-    activationLagThreshold: "0"
-    # -- Override topic (default: first topic from config)
-    topic: ""
-    # -- Override consumer group (default: from config)
-    consumerGroup: ""
-  cpu:
-    enabled: false
-    # -- CPU utilisation percentage threshold
-    threshold: "80"
+  enabled: false
 
 # -- Standard HPA fallback (when KEDA is not installed)
 # Mutually exclusive with keda.enabled
