@@ -207,8 +207,7 @@ pub fn splice_fields(payload: Bytes, fields: &[(String, Value)]) -> Bytes {
 /// never correctness.
 fn may_carry(payload: &[u8], key: &str) -> bool {
     let needle = format!("\"{key}\"");
-    let needle = needle.as_bytes();
-    payload.len() >= needle.len() && payload.windows(needle.len()).any(|w| w == needle)
+    memchr::memmem::find(payload, needle.as_bytes()).is_some()
 }
 
 /// Add `fields` to a parsed row so no key appears twice, parking each value the
