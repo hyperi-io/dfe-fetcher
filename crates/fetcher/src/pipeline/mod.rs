@@ -108,11 +108,18 @@ fn park_original(
         }
         n += 1;
     }
-    warn!(
-        reserved_key = key,
-        parked_as = parked.as_str(),
-        "Reserved key collided with an existing _original, parked under a numbered name"
-    );
+    {
+        use std::sync::atomic::AtomicU64;
+        static PARK_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
+        if scalo::logger::log_debounced(&PARK_DEBOUNCE, 5_000) {
+            warn!(
+                reserved_key = key,
+                parked_as = parked.as_str(),
+                "Reserved key collided with an existing _original, parked under a numbered name \
+                 (debounced, max 1/5s)"
+            );
+        }
+    }
     map.insert(parked, value);
 }
 
