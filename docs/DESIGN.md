@@ -15,7 +15,7 @@ databases, files and external extractors, and delivers each record to the DFE
 pipeline over Kafka and/or gRPC. Every provider is a declarative REST profile
 run by one generic driver; databases and files are two more shapes on the same
 driver. The codemap of the Cargo workspace is
-[ARCHITECTURE.md](../ARCHITECTURE.md); this document holds the diagrams and
+[architecture.md](architecture.md); this document holds the diagrams and
 the reasoning.
 
 ## High-Level Architecture

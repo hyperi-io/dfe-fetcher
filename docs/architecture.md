@@ -5,7 +5,7 @@ an I/O-free core plus one leaf crate per shape family, with the file tailer
 vendored from Vector under `third-party/`. Every crate is `publish = false` and
 inherits its version from `[workspace.package]`, so a release bump touches the
 root manifest only. Diagrams (system, the tick sequence, the profile grammar,
-the crate DAG) live in [docs/DESIGN.md](docs/DESIGN.md); this file is the
+the crate DAG) live in [DESIGN.md](DESIGN.md); this file is the
 codemap, the invariants and the build graph.
 
 ## Codemap
