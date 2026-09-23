@@ -67,7 +67,7 @@ scalo = { workspace = true, features = [
     "runtime",
     "secrets",
     # vault: credential specs (scalo::secrets::resolve "vault:path:key"); the
-    # former hyperi-rustlib `credential` feature carried vault support.
+    # scalo predecessor's `credential` feature carried vault support.
     "secrets-vault",
     "dlq",
     # dlq-kafka: the file backend is an EROFS no-op on the charts' read-only

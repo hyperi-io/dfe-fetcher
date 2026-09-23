@@ -2519,7 +2519,7 @@ mod tests {
     fn pypi_becomes_an_unauthenticated_instance_with_the_packages_as_a_var() {
         let cfg = PypiSourceConfig {
             enabled: true,
-            packages: vec!["requests".into(), "hyperi-pylib".into()],
+            packages: vec!["requests".into(), "scalo".into()],
             filter: Some("info.yanked == false".into()),
             interval_secs: Some(3600),
             ..PypiSourceConfig::default()
@@ -2532,7 +2532,7 @@ mod tests {
         assert_eq!(i.filter.as_deref(), Some("info.yanked == false"));
         assert_eq!(i.interval_secs, Some(3600));
         assert_eq!(i.auth.mode, AuthKind::None);
-        assert_eq!(i.vars["packages"], json!(["requests", "hyperi-pylib"]));
+        assert_eq!(i.vars["packages"], json!(["requests", "scalo"]));
         assert!(
             !i.vars.contains_key("api_url"),
             "the public registry applies"

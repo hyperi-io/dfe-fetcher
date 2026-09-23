@@ -78,7 +78,7 @@ purely the inventory step:
    from yours) so you are alerted if someone publishes them.
 
 3. Use the exact registry name for each entry:
-   - PyPI: the normalised project name, e.g. `hyperi-pylib`.
+   - PyPI: the normalised project name, e.g. `scalo`.
    - crates.io: the crate name, e.g. `dfe-fetcher`.
    - Go: the full module path, e.g.
      `github.com/hyperi-io/some-go-tool`.
@@ -100,7 +100,7 @@ sources:
   pypi:
     enabled: true
     packages:
-      - "hyperi-pylib"
+      - "scalo"
       - "hyperi-ci"
     # api_url_override: "https://pypi.org"   # default
     topic: "pypi"
@@ -156,7 +156,7 @@ DFE_FETCHER_SOURCES__GO_MODULES__TOPIC="go_modules"
 The name lists (`packages`, `crates`, `modules`) are sequences and are
 cleanest to define in the config file. If you must set them via the
 environment, follow the loader's indexed-sequence convention, e.g.
-`DFE_FETCHER_SOURCES__PYPI__PACKAGES__0="hyperi-pylib"`. Prefer the
+`DFE_FETCHER_SOURCES__PYPI__PACKAGES__0="scalo"`. Prefer the
 config file for anything more than a couple of names.
 
 ### Secrets Manager
@@ -172,7 +172,7 @@ registry sources.
 
    ```bash
    curl -s -H "User-Agent: dfe-fetcher (https://github.com/hyperi-io/dfe-fetcher)" \
-     https://pypi.org/pypi/hyperi-pylib/json | head -c 200
+     https://pypi.org/pypi/scalo/json | head -c 200
 
    curl -s -H "User-Agent: dfe-fetcher (https://github.com/hyperi-io/dfe-fetcher)" \
      https://crates.io/api/v1/crates/dfe-fetcher | head -c 200
