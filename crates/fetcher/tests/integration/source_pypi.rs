@@ -109,10 +109,10 @@ async fn each_package_is_one_request_and_one_stamped_document() {
     }
 
     assert_eq!(rows.len(), 2);
-    for (row, expected) in rows.iter().zip([
-        stamped("requests", "2.32.0"),
-        stamped("scalo", "0.9.1"),
-    ]) {
+    for (row, expected) in rows
+        .iter()
+        .zip([stamped("requests", "2.32.0"), stamped("scalo", "0.9.1")])
+    {
         assert_eq!(row.topic, "pypi_land");
         let e = enriched(row);
         assert_eq!(
