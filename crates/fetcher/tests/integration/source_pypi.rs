@@ -86,10 +86,10 @@ fn stamped(name: &str, version: &str) -> Value {
 async fn each_package_is_one_request_and_one_stamped_document() {
     let provider = crate::saas_provider::start().await;
     provider.document("requests", document("requests", "2.32.0"));
-    provider.document("hyperi-pylib", document("hyperi-pylib", "0.9.1"));
+    provider.document("scalo", document("scalo", "0.9.1"));
 
     let (outcome, rows) = run(
-        config(packages_config(&provider, &["requests", "hyperi-pylib"])),
+        config(packages_config(&provider, &["requests", "scalo"])),
         None,
     )
     .await;
@@ -99,7 +99,7 @@ async fn each_package_is_one_request_and_one_stamped_document() {
     let paths: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
     assert_eq!(
         paths,
-        ["/pypi/requests/json", "/pypi/hyperi-pylib/json"],
+        ["/pypi/requests/json", "/pypi/scalo/json"],
         "one request per package, in the configured order"
     );
     for request in &seen {
@@ -111,7 +111,7 @@ async fn each_package_is_one_request_and_one_stamped_document() {
     assert_eq!(rows.len(), 2);
     for (row, expected) in rows.iter().zip([
         stamped("requests", "2.32.0"),
-        stamped("hyperi-pylib", "0.9.1"),
+        stamped("scalo", "0.9.1"),
     ]) {
         assert_eq!(row.topic, "pypi_land");
         let e = enriched(row);
@@ -229,14 +229,14 @@ async fn a_429_with_retry_after_is_retried() {
 async fn the_filter_drops_records_before_they_land() {
     let provider = crate::saas_provider::start().await;
     provider.document("requests", document("requests", "2.32.0"));
-    provider.document("hyperi-pylib", document("hyperi-pylib", "0.9.1"));
-    let mut cfg = packages_config(&provider, &["requests", "hyperi-pylib"]);
-    cfg.filter = Some("info.name == \"hyperi-pylib\"".into());
+    provider.document("scalo", document("scalo", "0.9.1"));
+    let mut cfg = packages_config(&provider, &["requests", "scalo"]);
+    cfg.filter = Some("info.name == \"scalo\"".into());
 
     let (outcome, rows) = run(config(cfg), None).await;
     outcome.expect("fetch");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].record["_dfe_fetcher_package"], "hyperi-pylib");
+    assert_eq!(rows[0].record["_dfe_fetcher_package"], "scalo");
 }
 
 /// The stamped package name is visible to the filter, so a deployment can
@@ -245,8 +245,8 @@ async fn the_filter_drops_records_before_they_land() {
 async fn the_filter_sees_the_stamped_package_name() {
     let provider = crate::saas_provider::start().await;
     provider.document("requests", document("requests", "2.32.0"));
-    provider.document("hyperi-pylib", document("hyperi-pylib", "0.9.1"));
-    let mut cfg = packages_config(&provider, &["requests", "hyperi-pylib"]);
+    provider.document("scalo", document("scalo", "0.9.1"));
+    let mut cfg = packages_config(&provider, &["requests", "scalo"]);
     cfg.filter = Some("_dfe_fetcher_package == \"requests\"".into());
 
     let (outcome, rows) = run(config(cfg), None).await;

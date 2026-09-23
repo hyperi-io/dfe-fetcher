@@ -940,14 +940,14 @@ async fn a_keyset_unit_requests_each_key_and_stamps_it_on_the_document() {
     let s = shape(
         &fx,
         &p,
-        "profile: x\ntopic: t\nauth: { mode: none }\nvars: { packages: [requests, missing, hyperi-pylib] }\n",
+        "profile: x\ntopic: t\nauth: { mode: none }\nvars: { packages: [requests, missing, scalo] }\n",
     );
     let rows = fetch(&s, "metadata", None).await.unwrap();
     assert_eq!(
         rows,
         [
             serde_json::json!({"info": {"name": "requests"}, "version": "requests-1.0", "_dfe_fetcher_package": "requests"}),
-            serde_json::json!({"info": {"name": "hyperi-pylib"}, "version": "hyperi-pylib-1.0", "_dfe_fetcher_package": "hyperi-pylib"}),
+            serde_json::json!({"info": {"name": "scalo"}, "version": "scalo-1.0", "_dfe_fetcher_package": "scalo"}),
         ],
         "one document per known key, stamped with its key by the shape"
     );
@@ -962,7 +962,7 @@ async fn a_keyset_unit_requests_each_key_and_stamps_it_on_the_document() {
         .collect();
     assert_eq!(
         paths,
-        ["/keyed/requests", "/keyed/missing", "/keyed/hyperi-pylib"],
+        ["/keyed/requests", "/keyed/missing", "/keyed/scalo"],
         "every key is requested once, in order"
     );
     assert_eq!(

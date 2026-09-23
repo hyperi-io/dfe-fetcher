@@ -275,7 +275,7 @@ sources:
   pypi:
     enabled: false
     # packages:
-    #   - "hyperi-pylib"
+    #   - "scalo"
     #   - "hyperi-ci"
     # api_url_override: "https://pypi.org"  # default
     topic: "pypi"
@@ -284,7 +284,7 @@ sources:
   crates_io:
     enabled: false
     # crates:
-    #   - "hyperi-rustlib"
+    #   - "scalo"
     #   - "dfe-loader"
     #   - "dfe-fetcher"
     # api_url_override: "https://crates.io"  # default
@@ -926,10 +926,10 @@ version_check:
 #   default_window_hours: 1                     # hot-reloaded, caps one tick
 
 # =============================================================================
-# Horizontal scaling pressure (rustlib 2.8.10+ engine) -- REQUIRES RESTART
+# Horizontal scaling pressure (scalo engine) -- REQUIRES RESTART
 # =============================================================================
-# Honoured via the rustlib config cascade (run_app reads the `scaling` key).
-# The fetcher's inbound is NOT a rustlib transport -- it PULLS from cloud APIs
+# Honoured via the scalo config cascade (run_app reads the `scaling` key).
+# The fetcher's inbound is NOT a scalo transport -- it PULLS from cloud APIs
 # (aws/azure/gcp/m365/salesforce + the alpha source families) -- so
 # transport.inbound is `other` and the engine's compound inbound is 0. Left
 # alone the smart default reduces to CPU-only. We therefore push DOMAIN signals
