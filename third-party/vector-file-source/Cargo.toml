@@ -14,8 +14,8 @@ license = "MIT"
 doctest = false
 
 [target.'cfg(windows)'.dependencies]
-libc = "0.2"
-winapi = { version = "0.3", features = ["winioctl"] }
+libc = "0.2.189"
+winapi = { version = "0.3.9", features = ["winioctl"] }
 
 [dependencies]
 glob = { workspace = true }
@@ -23,14 +23,14 @@ chrono = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 # `std` added: Vector's workspace unifies it in from elsewhere, ours does not.
-indexmap = { version = "2.11.0", default-features = false, features = ["serde", "std"] }
+indexmap = { version = "2.14.2", default-features = false, features = ["serde", "std"] }
 bytes = { workspace = true }
-futures = { version = "0.3.31", default-features = false, features = ["executor"] }
-futures-util = "0.3.31"
+futures = { version = "0.3.34", default-features = false, features = ["executor"] }
+futures-util = "0.3.34"
 file-source-common = { path = "../vector-file-source-common" }
 async-compression = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-quickcheck = "1.0"
+quickcheck = "1.1.0"
 tempfile = { workspace = true }

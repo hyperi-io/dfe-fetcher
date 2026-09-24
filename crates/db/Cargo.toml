@@ -55,7 +55,7 @@ base64 = { workspace = true, optional = true }
 # server-side parameters; clickhouse-dfe adds the ping and the typed server
 # exception. rustls only, never native-tls.
 clickhouse = { version = "0.15.2", default-features = false, features = ["lz4", "rustls-tls"], optional = true }
-clickhouse-dfe = { version = "0.1.0", default-features = false, features = ["ext"], optional = true }
+clickhouse-dfe = { version = "0.1.1", default-features = false, features = ["ext"], optional = true }
 url = { workspace = true, optional = true }
 
 # mongodb: the official driver, the second approved exception to the one-wire
