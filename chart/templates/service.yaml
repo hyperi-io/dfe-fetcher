@@ -11,13 +11,17 @@ spec:
       targetPort: metrics
       protocol: TCP
       name: metrics
+    {{- if ((.Values.config).ingest).enabled }}
     - port: 8080
       targetPort: 8080
       protocol: TCP
       name: ingest
+    {{- end }}
+    {{- if (((.Values.config).extractors).vector).enabled }}
     - port: 6000
       targetPort: 6000
       protocol: TCP
       name: vector-grpc
+    {{- end }}
   selector:
     {{- include "dfe-fetcher.selectorLabels" . | nindent 4 }}

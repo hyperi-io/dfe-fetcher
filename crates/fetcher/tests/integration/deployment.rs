@@ -290,10 +290,13 @@ fn test_deployment_contract_structure() {
     assert!(group_names.contains(&"m365"));
     assert!(group_names.contains(&"gcp"));
 
-    // KEDA autoscaling
-    let keda = contract.keda.as_ref().expect("keda should be configured");
-    assert_eq!(keda.min_replicas, 1);
-    assert_eq!(keda.max_replicas, 5);
+    // The fetcher polls its upstreams rather than draining a queue, so it never
+    // scales out: no ScaledObject, and the Deployment sets its own replicas.
+    assert!(
+        contract.keda.is_none(),
+        "dfe-fetcher does not autoscale (dfe-infra apps.yaml scale_deployed: false); \
+         a KEDA contract would put a ScaledObject back into its chart"
+    );
 
     // Default config should contain expected keys
     let default_cfg = contract.default_config.as_ref().expect("default config");

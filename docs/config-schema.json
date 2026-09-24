@@ -7316,7 +7316,7 @@
       "description": "Kafka DLQ topic routing strategy.",
       "oneOf": [
         {
-          "description": "Route to topic matching destination with suffix.\ne.g. \"acme.auth\" → \"acme.auth.dlq\"",
+          "description": "Route to topic matching destination with suffix.\ne.g. \"acme.auth\" -> \"acme.auth.dlq\"",
           "type": "string",
           "const": "per_table"
         },
@@ -7406,7 +7406,7 @@
           ]
         },
         "group": {
-          "description": "Consumer group ID.",
+          "description": "Consumer group ID.\n\nEmpty marks a producer-only transport: it subscribes to nothing, even\nwhen `topics` is set. scalo's own consumer clients (the admin's\noffset-query consumer, the idle consumer of a producer-only transport)\ntake a group id derived from this field, or from `client_id` when it is\nempty, so a broker granting groups by prefix covers them too.",
           "type": "string",
           "default": "scalo-consumer"
         },
@@ -7414,6 +7414,14 @@
           "description": "Client ID for identification in broker logs.",
           "type": "string",
           "default": "scalo"
+        },
+        "client_rack": {
+          "description": "Rack (availability zone) this client runs in, for fetch-from-follower.\n\nlibrdkafka: `client.rack` (KIP-392). When it matches a replica's\n`broker.rack` the consumer fetches from that replica instead of the\npartition leader, which halves cross-AZ traffic on a three-AZ MSK or\nStrimzi cluster and removes its inter-AZ charge. `None` (the default)\nleaves the property unset and every fetch goes to the leader.\n\nWire it from the platform's own zone label -- the K8s\n`topology.kubernetes.io/zone` node label via the downward API, or the\nEC2 instance's availability zone -- into `KAFKA_CLIENT_RACK`. The\nbroker side has to be configured for it too: replicas need `broker.rack`\nset and the topic needs `min.insync.replicas` satisfied in-zone.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "group_instance_id": {
           "description": "Static group membership id (`group.instance.id`). Opt-in: `None` (the\ndefault) uses dynamic membership.\n\nSet this to a STABLE, UNIQUE-per-replica value (the K8s pod name is the\ncanonical choice -- e.g. from `$HOSTNAME` / the downward API) to take\nstatic membership (KIP-345). A static member that restarts rejoins with\nits prior partitions WITHOUT triggering a group-wide rebalance, which\nturns a rolling restart of a large consumer fleet from dozens of\nstop-the-world rebalances into zero. Two replicas sharing one value get\nfenced -- the value MUST be unique per replica.",
@@ -7423,8 +7431,20 @@
           ],
           "default": null
         },
+        "consumer_protocol": {
+          "description": "Consumer-group rebalance protocol to join with (default: `consumer`,\nKIP-848).\n\nNot every broker speaks it, so the resolved value is\n[`effective_consumer_protocol`](Self::effective_consumer_protocol) --\na provider known not to implement KIP-848 is forced to `classic`, and\na broker that refuses it at join time drops the transport back to\n`classic` once, with a warning. Set `classic` to opt out entirely.",
+          "$ref": "#/$defs/ConsumerProtocol",
+          "default": "consumer"
+        },
+        "consumer_protocol_probe_ms": {
+          "description": "How long construction waits for the broker to accept\n`group.protocol=consumer` before rebuilding the consumer as `classic`,\nin milliseconds.\n\nThe wait ends as soon as librdkafka's statistics report the group `up`,\nso on a broker that does speak KIP-848 it costs one\n`statistics.interval.ms` (1 s on the shipped profiles) rather than the\nwhole window. A broker that is simply unreachable at startup also\nexhausts the window and falls back -- classic works everywhere, so the\ncost of that misfire is a warning line.\n\n`0` disables the probe: the requested protocol is used as-is with no\nfallback. Only a subscribing consumer probes at all, since a\nproducer-only transport joins no group.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 5000
+        },
         "topics": {
-          "description": "Topics to subscribe to.",
+          "description": "Topics to subscribe to. Ignored when `group` is empty.",
           "type": "array",
           "items": {
             "type": "string"
@@ -7627,7 +7647,8 @@
               "compression_type": null,
               "buffer_memory_bytes": null,
               "max_in_flight": null,
-              "idempotence": null
+              "idempotence": null,
+              "message_max_bytes": null
             },
             "consumer_librdkafka": {},
             "producer_librdkafka": {}
@@ -7683,6 +7704,21 @@
         }
       ]
     },
+    "ConsumerProtocol": {
+      "description": "Which consumer-group rebalance protocol the consumer joins with.",
+      "oneOf": [
+        {
+          "description": "KIP-848: the broker's group coordinator computes the assignment and\npushes it on the heartbeat, so adding or removing a member costs no\nstop-the-world rebalance -- the difference a KEDA scale event feels.\nRequires a Kafka 4.0+ broker, and the transport falls back to\n[`Classic`](Self::Classic) when the broker will not speak it.",
+          "type": "string",
+          "const": "consumer"
+        },
+        {
+          "description": "The pre-4.0 protocol: the group leader computes the assignment and\nevery member stops consuming while it does.",
+          "type": "string",
+          "const": "classic"
+        }
+      ]
+    },
     "SuppressionRule": {
       "description": "Topic suppression rule for auto-discovery.\n\nWhen auto-discovering topics, if a topic with `preferred_suffix` exists\nfor a base name, the topic with `suppressed_suffix` for that same base\nis removed. Default: `_load` suppresses `_land`.",
       "type": "object",
@@ -7730,7 +7766,8 @@
             "compression_type": null,
             "buffer_memory_bytes": null,
             "max_in_flight": null,
-            "idempotence": null
+            "idempotence": null,
+            "message_max_bytes": null
           }
         },
         "consumer_librdkafka": {
@@ -7755,17 +7792,17 @@
       "description": "Opinionated sizing profile for the Kafka GET/SEND surface.\n\nThe profile sets default values for all named knobs below. An explicit\nper-knob value in [`KafkaSizingConfig`] always wins over the profile\ndefault. The raw librdkafka escape hatch in [`KafkaConfig`] wins over\neverything.\n\nProfiles target the BYTE-level throughput budget and latency envelope:\n\n| Profile | Use case |\n|---|---|\n| `throughput` (default) | PB/day batch ingest, large fanout topics |\n| `balanced` | Mixed OLTP + analytics, moderate batch size |\n| `low_latency` | Near-real-time, event-driven, small messages |",
       "oneOf": [
         {
-          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 10 MiB per-partition,\n100 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight.",
+          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,\n50 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight,\n16 MiB record ceiling.",
           "type": "string",
           "const": "throughput"
         },
         {
-          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 5 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight.",
+          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight,\n16 MiB record ceiling.",
           "type": "string",
           "const": "balanced"
         },
         {
-          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 1 MiB per-partition,\n10 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight.",
+          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,\n16 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight,\n16 MiB record ceiling.",
           "type": "string",
           "const": "low_latency"
         }
@@ -7795,7 +7832,7 @@
           "default": null
         },
         "max_partition_fetch_bytes": {
-          "description": "Maximum bytes returned per partition per Fetch request.\n\nlibrdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,\ndefault 1 MiB). Must be >= the topic's `max.message.bytes`.",
+          "description": "Maximum bytes returned per partition per Fetch request.\n\nlibrdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,\ndefault 1 MiB). Must be >= the topic's `max.message.bytes`, so every\nprofile sets it to [`MESSAGE_MAX_BYTES`]. librdkafka does grow it on\nsight of a larger record, but the explicit value keeps the consumer's\nmemory envelope predictable instead of discovered.",
           "type": [
             "integer",
             "null"
@@ -7804,7 +7841,7 @@
           "default": null
         },
         "fetch_max_bytes": {
-          "description": "Maximum total bytes returned by the broker for a single Fetch request\nacross all partitions.\n\nlibrdkafka: `fetch.max.bytes` (default 50 MiB).",
+          "description": "Maximum total bytes returned by the broker for a single Fetch request\nacross all partitions.\n\nlibrdkafka: `fetch.max.bytes` (default 50 MiB). Keep it at or under\n50 MiB: MSK Express holds the broker's own 55 MiB fetch ceiling\nread-only, so asking for more is a number that can never be honoured.",
           "type": [
             "integer",
             "null"
@@ -7881,6 +7918,15 @@
             "boolean",
             "null"
           ],
+          "default": null
+        },
+        "message_max_bytes": {
+          "description": "Largest single record the producer will put on the wire, in bytes.\n\nlibrdkafka: `message.max.bytes`, whose default of 1,000,000 rejects an\noversize record LOCALLY with `MSG_SIZE_TOO_LARGE` -- the broker never\nsees it, so raising the broker's ceiling alone changes nothing. Three\nlayers have to agree: the broker's `message.max.bytes`, the topic's\n`max.message.bytes`, and this. Default on every profile:\n[`MESSAGE_MAX_BYTES`] (16 MiB). `batch.size` is unrelated -- it is a\nsoft target and a larger record still ships as its own batch.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
           "default": null
         }
       }
