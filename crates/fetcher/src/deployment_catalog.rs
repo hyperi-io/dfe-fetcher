@@ -640,7 +640,7 @@ pub(crate) fn object_store() -> Capability {
         .child(
             Capability::service("s3")
                 .description("Amazon S3 (or S3-compatible: MinIO / R2 / B2 via endpoint_override).")
-                .maturity("beta")
+                .maturity("stable")
                 .field(FieldSpec::string("region").required().description("AWS region for SigV4 + endpoint construction."))
                 .field(FieldSpec::string("endpoint_override").description("S3 endpoint override (S3-compatible / VPC endpoints)."))
                 .field(FieldSpec::string("access_key_id").description("Access key ID (or a vault:/env: spec)."))

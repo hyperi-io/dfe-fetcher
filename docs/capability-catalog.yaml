@@ -708,7 +708,7 @@
   - kind: service
     name: s3
     description: 'Amazon S3 (or S3-compatible: MinIO / R2 / B2 via endpoint_override).'
-    maturity: beta
+    maturity: stable
     fields:
     - name: region
       type: string
