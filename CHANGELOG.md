@@ -3,6 +3,37 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.27](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.26...v1.4.27) (2026-09-24)
+
+### Bug Fixes
+
+* **auth:** authenticate with a key pair, and mint a session token ([4b480e7](https://github.com/hyperi-io/dfe-fetcher/commit/4b480e78aa0ee5a0f31e38b448eaef8de4a57694))
+* **auth:** mint and place credentials through scalo's sources ([c96aa60](https://github.com/hyperi-io/dfe-fetcher/commit/c96aa60ec76b9c8ecf0ffc19ebbaa08755419ef3)), closes [#118](https://github.com/hyperi-io/dfe-fetcher/issues/118) [#110](https://github.com/hyperi-io/dfe-fetcher/issues/110) [#112](https://github.com/hyperi-io/dfe-fetcher/issues/112) [#114](https://github.com/hyperi-io/dfe-fetcher/issues/114)
+* **auth:** sign a request with the digest the profile names ([8119301](https://github.com/hyperi-io/dfe-fetcher/commit/81193012a3716cc9df7bd8772a66a100f89bf03a)), closes [#153](https://github.com/hyperi-io/dfe-fetcher/issues/153)
+* **auth:** sign requests through scalo and resolve every prefix it serves ([61d3a3d](https://github.com/hyperi-io/dfe-fetcher/commit/61d3a3d21bf48f4820a2656cbf1115cd30b5499b)), closes [#72](https://github.com/hyperi-io/dfe-fetcher/issues/72)
+* **ci:** skip PGO and BOLT for the rc.14 workstream ([#182](https://github.com/hyperi-io/dfe-fetcher/issues/182)) ([ff253e3](https://github.com/hyperi-io/dfe-fetcher/commit/ff253e3d1bbad9b953bcd4e0cee7378ac8a93e90))
+* **config:** count the vector receiver as work, and say so when idle ([97657cc](https://github.com/hyperi-io/dfe-fetcher/commit/97657cc3ca66d2ead16875a38a07484c4f13adcb))
+* **config:** refuse a shared instance id when more than one source runs ([8a37e11](https://github.com/hyperi-io/dfe-fetcher/commit/8a37e11cb7f6152bad83313d907e6508c49eea33))
+* **config:** resolve every plain identity field at load ([abdca8b](https://github.com/hyperi-io/dfe-fetcher/commit/abdca8be302602c920da32a471cfaeb1c6d9a8a8)), closes [#21](https://github.com/hyperi-io/dfe-fetcher/issues/21)
+* **datadog:** add the setup guide, and name the permission Datadog actually has ([7f1e580](https://github.com/hyperi-io/dfe-fetcher/commit/7f1e5802c00aeacf39b1ca1a14bc9e9aaa02efd0))
+* **deps:** drop four dependencies nothing calls, and demote two to dev ([d2a8521](https://github.com/hyperi-io/dfe-fetcher/commit/d2a8521b162447039a8944e20464692051d7a4d6)), closes [#63](https://github.com/hyperi-io/dfe-fetcher/issues/63)
+* **deps:** move the REST path to reqwest 0.13 ([a3df3f9](https://github.com/hyperi-io/dfe-fetcher/commit/a3df3f995989c0b790306cfe8f5d8ada5ea187d0)), closes [#39](https://github.com/hyperi-io/dfe-fetcher/issues/39) [#39](https://github.com/hyperi-io/dfe-fetcher/issues/39)
+* **deps:** unyank chacha20, record the otel advisory's reachability, say release ([6b805fd](https://github.com/hyperi-io/dfe-fetcher/commit/6b805fd686cdf246a04b189d1dc56479ba1fad58)), closes [#64](https://github.com/hyperi-io/dfe-fetcher/issues/64)
+* **docs:** move the architecture doc under docs/ and add the README Context section ([#177](https://github.com/hyperi-io/dfe-fetcher/issues/177)) ([e7f1f44](https://github.com/hyperi-io/dfe-fetcher/commit/e7f1f447eb8258062c79de42da548a917dcd2978))
+* **docs:** name scalo, not rustlib or pylib ([#181](https://github.com/hyperi-io/dfe-fetcher/issues/181)) ([d46c840](https://github.com/hyperi-io/dfe-fetcher/commit/d46c840e99734865fd4605269f6a87e5ef51f931))
+* **gates:** match a sigv4 signer, not the word in a comment ([741e28c](https://github.com/hyperi-io/dfe-fetcher/commit/741e28c6c7d7af4299beec9103bfb71c446218c1))
+* rebuild on scalo 2.12.6 with release consent ([e14db5d](https://github.com/hyperi-io/dfe-fetcher/commit/e14db5dbda96c357f30225624956f0bcd2a18470))
+* **rest:** name the units a profile declares when refusing an unknown one ([28f59d6](https://github.com/hyperi-io/dfe-fetcher/commit/28f59d69098b48f2f02b712a4813e3d6c9ba50d4)), closes [#98](https://github.com/hyperi-io/dfe-fetcher/issues/98)
+* **rest:** pace units to a declared rate and retry declared throttles ([45b27b3](https://github.com/hyperi-io/dfe-fetcher/commit/45b27b3962f269e50c9bce2b904f077ae1dea66c)), closes [#120](https://github.com/hyperi-io/dfe-fetcher/issues/120)
+* **rest:** place more than one credential on a request ([6badc72](https://github.com/hyperi-io/dfe-fetcher/commit/6badc72f37abd9f46104fa8d609e737e945cbaed)), closes [#148](https://github.com/hyperi-io/dfe-fetcher/issues/148) [#149](https://github.com/hyperi-io/dfe-fetcher/issues/149)
+* **scheduler:** retry a failed tick over the same window and bound the catch-up span ([edfbf1e](https://github.com/hyperi-io/dfe-fetcher/commit/edfbf1eee5983b3f08ddf72478b7698c961ac10f)), closes [#133](https://github.com/hyperi-io/dfe-fetcher/issues/133)
+* **scheduler:** stop a source's fetch task when a reload removes it ([f677c33](https://github.com/hyperi-io/dfe-fetcher/commit/f677c33d5b54dec87919f2327dfe2bc93cb9ec10)), closes [#119](https://github.com/hyperi-io/dfe-fetcher/issues/119)
+* **test:** bound the file-tail and dump listing races instead of sleeping ([8e205c5](https://github.com/hyperi-io/dfe-fetcher/commit/8e205c585eb24509878a483e626fec8a0861c966)), closes [#117](https://github.com/hyperi-io/dfe-fetcher/issues/117) [#117](https://github.com/hyperi-io/dfe-fetcher/issues/117)
+* **test:** cross a second boundary instead of polling for a change time ([33b53aa](https://github.com/hyperi-io/dfe-fetcher/commit/33b53aa9cffec3eeca8739966c178ed5ea1e5f2f)), closes [#171](https://github.com/hyperi-io/dfe-fetcher/issues/171)
+* **test:** pin Kafka to the version the fleet can actually run ([62a7354](https://github.com/hyperi-io/dfe-fetcher/commit/62a7354efa0f17bba45602fbfc7f22b514fc6c4b))
+* **test:** stop the re-read test asserting which tick the line lands on ([687f569](https://github.com/hyperi-io/dfe-fetcher/commit/687f569401b41edcae8e9d415d9bbbfcbb4dbca1)), closes [#116](https://github.com/hyperi-io/dfe-fetcher/issues/116)
+* **test:** use a port nothing can bind, not one just handed back ([9dfb307](https://github.com/hyperi-io/dfe-fetcher/commit/9dfb3074c9c4cf2cf594507d4432b8cca7f7d1ba))
+
 ## [1.4.26](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.25...v1.4.26) (2026-09-15)
 
 ### Bug Fixes
