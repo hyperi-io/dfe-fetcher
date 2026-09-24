@@ -45,12 +45,12 @@ cel = { version = ">=0.13, <0.14", features = ["json"] }
 # Same range as scalo so cargo unifies to ONE schemars in the graph -- scalo's
 # `SensitiveString` x-dfe-secret impl and our derives resolve against the same
 # `JsonSchema` trait.
-schemars = { version = ">=1.2.1, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
+schemars = { version = ">=1.2.2, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
 
 # Async runtime and streams
 tokio = { version = "1.53.1", default-features = false }
 tokio-util = "0.7.19"
-tokio-stream = "0.1"
+tokio-stream = "0.1.19"
 futures = "0.3.34"
 futures-core = "0.3.34"
 async-trait = "0.1.92"
@@ -68,8 +68,8 @@ bytes = "1.12.1"
 # are opt-in regardless. TLS is rustls over aws-lc-rs verifying against the OS
 # trust store (rustls-platform-verifier), so an operator-installed CA in the
 # image is honoured.
-reqwest = { version = "0.13", default-features = false }
-async-compression = { version = "0.4.46", features = ["tokio", "gzip"] }
+reqwest = { version = "0.13.5", default-features = false }
+async-compression = { version = "0.4.48", features = ["tokio", "gzip"] }
 backon = "1.6.0"
 url = "2.5.8"
 axum = "0.8.9"
@@ -83,45 +83,46 @@ itoa = "1.0.18"
 memchr = "2.8.3"
 base64 = "0.23.1"
 # The `signature` auth mode: a keyed digest over a canonical string of the
-# request, in the digest the profile names. sha1 and sha2 stay on the 0.10 line
-# (digest 0.10) to pair with hmac 0.12; hmac 0.13 / sha1 0.11 / sha2 0.11 moved
-# `KeyInit` and need a call-site migration, not a bump.
-hmac = "0.12"
-sha1 = "0.10"
-sha2 = "0.10"
-hex = "0.4"
+# request, in the digest the profile names. hmac, sha1 and sha2 move together:
+# all three must sit on the same digest line for `SimpleHmac<Sha256>` to compile.
+hmac = "0.13.0"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+hex = "0.4.3"
 # The RFC 3986 encoding a canonical query string is signed with; url's own
 # dependency, so no new crate in the graph.
-percent-encoding = "2.3"
+percent-encoding = "2.3.2"
 # The RS256 assertion of the JWT-bearer grant; aws-lc-rs is the one crypto
 # backend already in the graph through rustls.
-jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 # Test-only RSA key generation for the JWT-bearer fixtures, jsonwebtoken's
 # own backend so no second crypto crate enters the graph.
-aws-lc-rs = "1"
+aws-lc-rs = "1.18.1"
 # AWS SigV4 signing (reqsign -- lightweight, no AWS SDK dependency). reqsign
 # signs an http::request::Parts and its default context sends STS and metadata
 # calls over the same reqwest line as the REST path.
-reqsign = { version = "0.20", default-features = false, features = ["aws", "default-context"] }
+reqsign = { version = "0.20.6", default-features = false, features = ["aws", "default-context"] }
 # reqsign signs an http::request::Parts, so the SigV4 mode projects one.
-http = "1"
-# OpenTelemetry proto types for the OTLP metric row builder.
+http = "1.5.0"
+# OpenTelemetry proto types for the OTLP metric row builder. Same minor as
+# scalo's opentelemetry line: each proto minor pulls its own opentelemetry and
+# opentelemetry_sdk, so a newer one puts a second otel stack in the graph.
 opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.14"
+prost = "0.14.4"
 # The S3 lister reads ListObjectsV2 XML, the one XML the fetcher consumes.
-quick-xml = "0.41"
+quick-xml = "0.42.0"
 csv = "1.4.0"
 csv-core = "0.1.13"
 glob = "0.3.4"
-parking_lot = "0.12"
-flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+parking_lot = "0.12.5"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
 
 # Observability
 tracing = "0.1.44"
-metrics = ">=0.24, <0.25"
+metrics = ">=0.24.6, <0.25"
 
 # Dev
-tempfile = "3"
+tempfile = "3.27.0"
 # A snapshotting recorder so a test can read the `metrics` series a crate emits.
 metrics-util = { version = "0.20.4", features = ["debugging"] }
 
