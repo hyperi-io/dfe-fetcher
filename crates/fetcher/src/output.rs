@@ -257,20 +257,45 @@ impl OutputManager {
     ///
     /// `key` is the wire key for a bus destination (the record's topic); a gRPC
     /// listener ignores it. Delivered only when every named destination has
-    /// accepted -- see [`RoutedSender::send_fanout`].
+    /// accepted. A backpressured or transport-wide failure stops the fan-out
+    /// and is returned, so the caller re-sends it whole (at-least-once). A
+    /// destination that refuses the record itself -- an outbound `dlq` filter,
+    /// an over-size or malformed record -- does not stop the others: the
+    /// fan-out finishes and ONE [`Error::TransportRecord`] naming every refusal
+    /// comes back, so the record is dead-lettered once.
     pub async fn send_to(&self, destinations: &[&str], key: &str, payload: Bytes) -> Result<()> {
         let Some(ref set) = self.destinations else {
             return Err(Error::Config(
                 "output.routes names a destination but none are declared".into(),
             ));
         };
-        match set.send_fanout(destinations, key, payload).await {
-            SendResult::Ok | SendResult::FilteredDlq => Ok(()),
-            SendResult::Backpressured => Err(Error::Backpressured(format!(
-                "destination {} backpressured",
-                destinations.join(",")
-            ))),
-            SendResult::Fatal(e) => Err(classify_fatal("destination send failed", &e)),
+        // Walked here, not through `RoutedSender::send_fanout`, which answers
+        // `Ok` for a destination's `FilteredDlq` and so loses the record.
+        let mut refused: Vec<String> = Vec::new();
+        for destination in destinations {
+            // Cheap ref-counted clone per destination (no buffer copy).
+            match set.send_to(destination, key, payload.clone()).await {
+                SendResult::Ok => {}
+                SendResult::FilteredDlq => {
+                    refused.push(format!("destination {destination}: filtered to DLQ"));
+                }
+                SendResult::Backpressured => {
+                    return Err(Error::Backpressured(format!(
+                        "destination {destination} backpressured"
+                    )));
+                }
+                SendResult::Fatal(e) => {
+                    match classify_fatal(&format!("destination {destination} send failed"), &e) {
+                        Error::TransportRecord(text) => refused.push(text),
+                        transport_wide => return Err(transport_wide),
+                    }
+                }
+            }
+        }
+        if refused.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::TransportRecord(refused.join("; ")))
         }
     }
 
@@ -901,5 +926,259 @@ mod tests {
         }
         // If construction failed (e.g. offline CI), the assertion is skipped;
         // the other tests cover the error path.
+    }
+
+    // -- named-destination fan-out and the dead-letter queue --
+
+    /// A scalo gRPC Push listener on a free loopback port, and the endpoint a
+    /// destination dials to reach it.
+    async fn grpc_listener() -> (GrpcTransport, String) {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let listen = format!("127.0.0.1:{port}");
+        let server = GrpcTransport::new(&scalo::transport::GrpcConfig::server(&listen))
+            .await
+            .unwrap();
+        (server, format!("http://{listen}"))
+    }
+
+    /// The sorted `id` of every record a listener has received.
+    async fn received_ids(server: &GrpcTransport) -> Vec<String> {
+        use scalo::transport::TransportReceiver;
+
+        let mut ids = Vec::new();
+        loop {
+            let batch = server.recv(100).await.unwrap();
+            if batch.records.is_empty() {
+                break;
+            }
+            for record in batch.records {
+                let row: serde_json::Value = serde_json::from_slice(&record.payload).unwrap();
+                ids.push(row["id"].as_str().unwrap().to_owned());
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    /// An extractor sink over `config`'s output, dead-lettering to files under
+    /// `dlq`.
+    async fn fanout_pipeline(
+        mut config: Config,
+        dlq: &std::path::Path,
+    ) -> crate::extractor::ExtractorSink {
+        config.dlq.enabled = true;
+        config.dlq.mode = scalo::dlq::DlqMode::FileOnly;
+        config.dlq.file.path = dlq.to_path_buf();
+        config.dlq.flush_interval_ms = 10;
+        let output = OutputManager::new(&config.output, &config.kafka)
+            .await
+            .unwrap();
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let state = Arc::new(
+            crate::pipeline::PipelineState::new(
+                crate::config::SharedConfig::new(config),
+                Arc::clone(&metrics),
+                Some(output),
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap(),
+        );
+        crate::extractor::ExtractorSink::new(state, metrics)
+    }
+
+    /// Every entry the file DLQ under `dir` holds once its first entry has
+    /// flushed and several more flush intervals have passed.
+    async fn dead_letters(dir: &std::path::Path) -> Vec<scalo::dlq::DlqEntry> {
+        fn read(dir: &std::path::Path, out: &mut Vec<scalo::dlq::DlqEntry>) {
+            let Ok(walk) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in walk.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    read(&path, out);
+                } else if let Ok(text) = std::fs::read_to_string(&path) {
+                    out.extend(text.lines().filter_map(|l| serde_json::from_str(l).ok()));
+                }
+            }
+        }
+        let tick = std::time::Duration::from_millis(20);
+        let mut out = Vec::new();
+        for _ in 0..100 {
+            read(dir, &mut out);
+            if !out.is_empty() {
+                break;
+            }
+            tokio::time::sleep(tick).await;
+        }
+        // A second copy, were one written, would land within these intervals.
+        tokio::time::sleep(tick * 5).await;
+        out.clear();
+        read(dir, &mut out);
+        out
+    }
+
+    /// A gRPC default output over `default_endpoint`, plus named destinations.
+    fn grpc_output(default_endpoint: &str, destinations: Vec<(&str, DestinationSpec)>) -> Config {
+        let mut config = Config::default();
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(scalo::transport::GrpcConfig::client(default_endpoint));
+        config.output.destinations = destinations
+            .into_iter()
+            .map(|(name, spec)| (name.to_owned(), spec))
+            .collect();
+        config
+    }
+
+    /// A record a fanned-out destination refuses (here scalo's outbound `dlq`
+    /// filter, which answers `FilteredDlq` as an over-size send does) still
+    /// reaches every destination that accepts it, and lands on the fetcher's
+    /// DLQ exactly once however many destinations refused it.
+    #[tokio::test]
+    async fn a_fanout_record_a_destination_filters_is_delivered_and_dead_lettered_once() {
+        use dfe_fetcher_core::batch::Outbound;
+        use scalo::transport::GrpcConfig;
+        use scalo::transport::filter::{FilterAction, FilterRule};
+
+        let (default_rx, default_ep) = grpc_listener().await;
+        let (siem_rx, siem_ep) = grpc_listener().await;
+        let (archive_rx, archive_ep) = grpc_listener().await;
+        let (loader_rx, loader_ep) = grpc_listener().await;
+        let refusing = |endpoint: &str| DestinationSpec {
+            grpc: Some(GrpcConfig {
+                filters_out: vec![FilterRule {
+                    expression: r#"id == "poison""#.into(),
+                    action: FilterAction::Dlq,
+                }],
+                ..GrpcConfig::client(endpoint)
+            }),
+            kafka: None,
+        };
+        let config = grpc_output(
+            &default_ep,
+            vec![
+                ("siem", refusing(&siem_ep)),
+                ("archive", refusing(&archive_ep)),
+                (
+                    "loader",
+                    DestinationSpec {
+                        grpc: Some(GrpcConfig::client(&loader_ep)),
+                        kafka: None,
+                    },
+                ),
+            ],
+        );
+        let dlq = tempfile::tempdir().unwrap();
+        let sink = Box::pin(fanout_pipeline(config, dlq.path())).await;
+
+        // The refusing destinations come first: a fan-out that stopped at a
+        // refusal would never reach the loader.
+        let route: Arc<[Arc<str>]> = ["siem", "archive", "loader"]
+            .into_iter()
+            .map(Arc::from)
+            .collect();
+        let report = sink
+            .emit(vec![
+                Outbound::new("fixture_land", r#"{"id":"poison"}"#).with_route(Arc::clone(&route)),
+                Outbound::new("fixture_land", r#"{"id":"clean"}"#).with_route(route),
+            ])
+            .await
+            .expect("a refused record does not fail the batch");
+
+        assert_eq!(
+            report,
+            crate::emit::EmitReport {
+                sent: 1,
+                dead_lettered: 1
+            }
+        );
+        assert_eq!(received_ids(&loader_rx).await, ["clean", "poison"]);
+        assert_eq!(received_ids(&siem_rx).await, ["clean"]);
+        assert_eq!(received_ids(&archive_rx).await, ["clean"]);
+        assert!(
+            received_ids(&default_rx).await.is_empty(),
+            "a routed record skips the default output"
+        );
+
+        let entries = dead_letters(dlq.path()).await;
+        assert_eq!(entries.len(), 1, "one copy, not one per refusal");
+        let parked: serde_json::Value = serde_json::from_slice(&entries[0].payload).unwrap();
+        assert_eq!(parked["id"], "poison");
+        assert_eq!(entries[0].destination.as_deref(), Some("fixture_land"));
+        assert!(
+            entries[0].reason.contains("siem") && entries[0].reason.contains("archive"),
+            "{}",
+            entries[0].reason
+        );
+    }
+
+    /// A record over a bus destination's `message.max.bytes` is refused by
+    /// librdkafka before any broker is asked, and scalo answers that with
+    /// `FilteredDlq`: the record goes to the DLQ and still reaches the gRPC
+    /// destination beside it.
+    #[tokio::test]
+    async fn a_fanout_record_over_a_bus_destinations_size_ceiling_is_dead_lettered() {
+        use dfe_fetcher_core::batch::Outbound;
+        use scalo::transport::GrpcConfig;
+
+        let (default_rx, default_ep) = grpc_listener().await;
+        let (loader_rx, loader_ep) = grpc_listener().await;
+        let mut bus = ScaloKafkaConfig {
+            // Nothing listens here: the size check is the producer's own.
+            brokers: vec!["127.0.0.1:1".into()],
+            group: String::new(),
+            ..ScaloKafkaConfig::default()
+        };
+        bus.sizing.producer.message_max_bytes = Some(1000);
+        let config = grpc_output(
+            &default_ep,
+            vec![
+                (
+                    "bus",
+                    DestinationSpec {
+                        grpc: None,
+                        kafka: Some(KafkaDestination {
+                            config: Some(bus),
+                            topic: None,
+                        }),
+                    },
+                ),
+                (
+                    "loader",
+                    DestinationSpec {
+                        grpc: Some(GrpcConfig::client(&loader_ep)),
+                        kafka: None,
+                    },
+                ),
+            ],
+        );
+        let dlq = tempfile::tempdir().unwrap();
+        let sink = Box::pin(fanout_pipeline(config, dlq.path())).await;
+
+        let route: Arc<[Arc<str>]> = ["bus", "loader"].into_iter().map(Arc::from).collect();
+        let big = format!(r#"{{"id":"big","blob":"{}"}}"#, "x".repeat(4096));
+        let report = sink
+            .emit(vec![Outbound::new("fixture_land", big).with_route(route)])
+            .await
+            .expect("an over-size record does not fail the batch");
+
+        assert_eq!(
+            report,
+            crate::emit::EmitReport {
+                sent: 0,
+                dead_lettered: 1
+            }
+        );
+        assert_eq!(received_ids(&loader_rx).await, ["big"]);
+        assert!(received_ids(&default_rx).await.is_empty());
+        let entries = dead_letters(dlq.path()).await;
+        assert_eq!(entries.len(), 1);
+        let parked: serde_json::Value = serde_json::from_slice(&entries[0].payload).unwrap();
+        assert_eq!(parked["id"], "big");
+        assert!(entries[0].reason.contains("bus"), "{}", entries[0].reason);
     }
 }
