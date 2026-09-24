@@ -1,4 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>hyperi-io/renovate-config"]
+  "description": "Extends the org preset like every other DFE consumer. Local-only: ignoreDeps holds two crates on scalo's line until scalo moves first - cel <0.14 because scalo's compiled cel::Program crosses the boundary, and opentelemetry-proto <0.32 because each proto minor pulls its own opentelemetry and opentelemetry_sdk, so a newer one puts a second otel stack in the graph. The third-party/ manifests are vendored Vector code whose only local edits detach it from Vector's workspace (third-party/README.md), so Renovate does not rewrite their floors; the workspace lock still moves what they resolve to.",
+  "extends": ["github>hyperi-io/renovate-config"],
+  "ignoreDeps": ["cel", "opentelemetry-proto"],
+  "packageRules": [
+    {
+      "matchFileNames": ["third-party/**"],
+      "enabled": false
+    }
+  ]
 }

@@ -1215,11 +1215,11 @@ fn hex_digest(algorithm: SignatureDigest, message: &[u8]) -> String {
 ///
 /// [`Digest`]: hmac::digest::Digest
 fn hmac_bytes(algorithm: SignatureDigest, secret: &[u8], message: &[u8]) -> Result<Vec<u8>> {
-    use hmac::Mac as _;
+    use hmac::{KeyInit as _, Mac as _};
 
     fn keyed<D>(secret: &[u8], message: &[u8]) -> Result<Vec<u8>>
     where
-        D: hmac::digest::Digest + hmac::digest::crypto_common::BlockSizeUser,
+        D: hmac::digest::Digest + hmac::digest::common::BlockSizeUser,
     {
         let mut mac = hmac::SimpleHmac::<D>::new_from_slice(secret)
             .map_err(|e| Error::Credential(format!("signature secret key: {e}")))?;
@@ -3161,7 +3161,7 @@ mod tests {
     /// mode uses.
     #[tokio::test]
     async fn a_signed_request_carries_the_credential_the_scheme_specifies() {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
 
         let mode = duo(SignaturePreset::DuoV5).unwrap();
         // A non-default port is part of the host, as it is in the Host header.

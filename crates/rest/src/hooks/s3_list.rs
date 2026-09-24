@@ -220,7 +220,7 @@ pub fn parse_list_objects_v2(xml: &[u8]) -> Result<(Vec<Listed>, Option<String>)
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                let name = e.name().into_inner().to_owned();
                 if name == "Contents" {
                     in_contents = true;
                     key = None;
@@ -231,7 +231,7 @@ pub fn parse_list_objects_v2(xml: &[u8]) -> Result<(Vec<Listed>, Option<String>)
                 value.clear();
             }
             Ok(Event::End(e)) => {
-                if e.name().as_ref() == b"Contents" {
+                if e.name().into_inner() == "Contents" {
                     if let (Some(key), Some(last_modified)) = (key.take(), modified.take()) {
                         objects.push(Listed {
                             key,
@@ -255,12 +255,7 @@ pub fn parse_list_objects_v2(xml: &[u8]) -> Result<(Vec<Listed>, Option<String>)
                 tag = None;
                 value.clear();
             }
-            Ok(Event::Text(t)) => {
-                value.push_str(
-                    &t.decode()
-                        .map_err(|e| Error::Decode(format!("ListObjectsV2 text: {e}")))?,
-                );
-            }
+            Ok(Event::Text(t)) => value.push_str(&t),
             Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
             Ok(Event::Eof) => break,
             Ok(_) => {}
@@ -285,10 +280,7 @@ fn entity_char(reference: &BytesRef<'_>) -> Result<char> {
     {
         return Ok(c);
     }
-    let name = reference
-        .decode()
-        .map_err(|e| Error::Decode(format!("ListObjectsV2 entity: {e}")))?;
-    match name.as_ref() {
+    match &**reference {
         "amp" => Ok('&'),
         "lt" => Ok('<'),
         "gt" => Ok('>'),
