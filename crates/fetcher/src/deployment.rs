@@ -14,9 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use scalo::deployment::{
-    DeploymentContract, HealthContract, ImageProfile, KedaConfig, KedaContract, NativeDepsContract,
-    PortContract, SecretEnvContract, SecretGroupContract, base_image_from_cascade,
-    image_registry_from_cascade,
+    DeploymentContract, HealthContract, ImageProfile, NativeDepsContract, PortContract,
+    SecretEnvContract, SecretGroupContract, base_image_from_cascade, image_registry_from_cascade,
 };
 
 /// The repository root, where the operator-facing files live: the committed
@@ -81,18 +80,17 @@ pub fn contract() -> DeploymentContract {
         metric_prefix: "fetcher".into(),
         config_mount_path: "/etc/dfe/fetcher.yaml".into(),
         image_registry,
+        // Each listener binds only while its switch is on, so its port is gated
+        // on the same switch and names the address it serves.
         extra_ports: vec![
-            PortContract {
-                name: "ingest".into(),
-                port: 8080,
-                protocol: "TCP".into(),
-            },
-            PortContract {
-                name: "vector-grpc".into(),
-                port: 6000,
-                protocol: "TCP".into(),
-            },
+            PortContract::tcp("ingest", 8080)
+                .when_enabled("config.ingest.enabled")
+                .bound_from("ingest.bind_address"),
+            PortContract::tcp("vector-grpc", 6000)
+                .when_enabled("config.extractors.vector.enabled")
+                .bound_from("extractors.vector.grpc_bind_address"),
         ],
+        unbound_listen_paths: vec![],
         entrypoint_args: vec!["--config".into(), "/etc/dfe/fetcher.yaml".into()],
         secrets: vec![
             SecretGroupContract {
@@ -191,29 +189,23 @@ pub fn contract() -> DeploymentContract {
                 "enabled": false,
                 "bind_address": "0.0.0.0:8080"
             },
+            // Matches `VectorExtractorConfig::default`, and carries the address
+            // and switch the vector-grpc port is bound from and gated on.
+            "extractors": {
+                "vector": {
+                    "enabled": false,
+                    "grpc_bind_address": "0.0.0.0:6000"
+                }
+            },
             "metrics": {
                 "enabled": true,
                 "address": "0.0.0.0:9090"
             }
         })),
         depends_on: vec!["kafka".into()],
-        // `KedaContract` is `#[non_exhaustive]` (scalo 2.8.13) so it can no
-        // longer be built via a struct literal. Construct a `KedaConfig` with
-        // the fetcher's real KEDA values and convert via `from_config`;
-        // `..Default::default()` fills the rest (the 2.8.12 scaling-pressure
-        // trigger stays OFF -- it needs a cluster-specific Prometheus
-        // serverAddress before enabling).
-        keda: Some(KedaContract::from_config(&KedaConfig {
-            min_replicas: 1,
-            max_replicas: 5,
-            polling_interval: 30,
-            cooldown_period: 300,
-            kafka_lag_threshold: 5000,
-            activation_lag_threshold: 0,
-            cpu_enabled: false,
-            cpu_threshold: 80,
-            ..Default::default()
-        })),
+        // The fetcher polls its upstreams rather than draining a queue, so it
+        // never scales out and the chart carries no ScaledObject.
+        keda: None,
         schema_version: 3,
         // dfe-fetcher is BUSL-1.1 (scalo itself is Apache-2.0). Drive the OCI
         // licenses label + the generated Dockerfile's `# License` header from the
@@ -327,6 +319,23 @@ mod tests {
     }
 
     #[test]
+    fn the_contract_default_agrees_with_the_code_default_on_vector() {
+        let c = contract();
+        let default_config = c
+            .default_config
+            .as_ref()
+            .expect("contract must carry a default config");
+        let vector = &default_config["extractors"]["vector"];
+        let code = crate::config::VectorExtractorConfig::default();
+
+        assert_eq!(vector["enabled"].as_bool(), Some(code.enabled));
+        assert_eq!(
+            vector["grpc_bind_address"].as_str(),
+            Some(code.grpc_bind_address.as_str())
+        );
+    }
+
+    #[test]
     fn test_contract_ingest_port() {
         let c = contract();
         let ingest = c
@@ -336,6 +345,11 @@ mod tests {
             .expect("ingest port must exist");
         assert_eq!(ingest.port, 8080);
         assert_eq!(ingest.protocol, "TCP");
+        assert_eq!(
+            ingest.when.as_ref().map(|w| w.path()),
+            Some("config.ingest.enabled")
+        );
+        assert_eq!(ingest.bound_from.as_deref(), Some("ingest.bind_address"));
     }
 
     #[test]
@@ -348,6 +362,28 @@ mod tests {
             .expect("vector-grpc port must exist");
         assert_eq!(vector.port, 6000);
         assert_eq!(vector.protocol, "TCP");
+        assert_eq!(
+            vector.when.as_ref().map(|w| w.path()),
+            Some("config.extractors.vector.enabled")
+        );
+        assert_eq!(
+            vector.bound_from.as_deref(),
+            Some("extractors.vector.grpc_bind_address")
+        );
+    }
+
+    /// generate-artefacts refuses a contract whose default config binds a
+    /// listener no port declares.
+    #[test]
+    fn every_listener_has_a_port() {
+        scalo::deployment::assert_listeners_declared(&contract());
+    }
+
+    /// A values path the chart reads but the default config never sets renders
+    /// empty, so every one must resolve.
+    #[test]
+    fn every_values_path_the_chart_reads_resolves() {
+        assert_eq!(contract().unresolved_values_paths(), Vec::<String>::new());
     }
 
     #[test]
@@ -441,21 +477,11 @@ mod tests {
         assert_eq!(cfg["scheduler"]["jitter_percent"], 10);
     }
 
+    /// No lag trigger and no CPU trigger means no ScaledObject at all, which
+    /// scalo spells `keda: None`.
     #[test]
-    fn test_contract_keda_present() {
-        let c = contract();
-        assert!(c.keda.is_some());
-    }
-
-    #[test]
-    fn test_contract_keda_defaults() {
-        let c = contract();
-        let keda = c.keda.as_ref().expect("keda must exist");
-        assert_eq!(keda.min_replicas, 1);
-        assert_eq!(keda.max_replicas, 5);
-        assert_eq!(keda.polling_interval, 30);
-        assert_eq!(keda.cooldown_period, 300);
-        assert_eq!(keda.kafka_lag_threshold, 5000);
+    fn the_chart_does_not_autoscale() {
+        assert!(contract().keda.is_none());
     }
 
     #[test]

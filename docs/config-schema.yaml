@@ -6299,7 +6299,7 @@ $defs:
     oneOf:
     - description: |-
         Route to topic matching destination with suffix.
-        e.g. "acme.auth" → "acme.auth.dlq"
+        e.g. "acme.auth" -> "acme.auth.dlq"
       type: string
       const: per_table
     - description: Route all failures to a single common topic.
@@ -6375,13 +6375,39 @@ $defs:
         default:
         - localhost:9092
       group:
-        description: Consumer group ID.
+        description: |-
+          Consumer group ID.
+
+          Empty marks a producer-only transport: it subscribes to nothing, even
+          when `topics` is set. scalo's own consumer clients (the admin's
+          offset-query consumer, the idle consumer of a producer-only transport)
+          take a group id derived from this field, or from `client_id` when it is
+          empty, so a broker granting groups by prefix covers them too.
         type: string
         default: scalo-consumer
       client_id:
         description: Client ID for identification in broker logs.
         type: string
         default: scalo
+      client_rack:
+        description: |-
+          Rack (availability zone) this client runs in, for fetch-from-follower.
+
+          librdkafka: `client.rack` (KIP-392). When it matches a replica's
+          `broker.rack` the consumer fetches from that replica instead of the
+          partition leader, which halves cross-AZ traffic on a three-AZ MSK or
+          Strimzi cluster and removes its inter-AZ charge. `None` (the default)
+          leaves the property unset and every fetch goes to the leader.
+
+          Wire it from the platform's own zone label -- the K8s
+          `topology.kubernetes.io/zone` node label via the downward API, or the
+          EC2 instance's availability zone -- into `KAFKA_CLIENT_RACK`. The
+          broker side has to be configured for it too: replicas need `broker.rack`
+          set and the topic needs `min.insync.replicas` satisfied in-zone.
+        type:
+        - string
+        - 'null'
+        default: null
       group_instance_id:
         description: |-
           Static group membership id (`group.instance.id`). Opt-in: `None` (the
@@ -6398,8 +6424,40 @@ $defs:
         - string
         - 'null'
         default: null
+      consumer_protocol:
+        description: |-
+          Consumer-group rebalance protocol to join with (default: `consumer`,
+          KIP-848).
+
+          Not every broker speaks it, so the resolved value is
+          [`effective_consumer_protocol`](Self::effective_consumer_protocol) --
+          a provider known not to implement KIP-848 is forced to `classic`, and
+          a broker that refuses it at join time drops the transport back to
+          `classic` once, with a warning. Set `classic` to opt out entirely.
+        $ref: '#/$defs/ConsumerProtocol'
+        default: consumer
+      consumer_protocol_probe_ms:
+        description: |-
+          How long construction waits for the broker to accept
+          `group.protocol=consumer` before rebuilding the consumer as `classic`,
+          in milliseconds.
+
+          The wait ends as soon as librdkafka's statistics report the group `up`,
+          so on a broker that does speak KIP-848 it costs one
+          `statistics.interval.ms` (1 s on the shipped profiles) rather than the
+          whole window. A broker that is simply unreachable at startup also
+          exhausts the window and falls back -- classic works everywhere, so the
+          cost of that misfire is a warning line.
+
+          `0` disables the probe: the requested protocol is used as-is with no
+          fallback. Only a subscribing consumer probes at all, since a
+          producer-only transport joins no group.
+        type: integer
+        format: uint64
+        minimum: 0
+        default: 5000
       topics:
-        description: Topics to subscribe to.
+        description: Topics to subscribe to. Ignored when `group` is empty.
         type: array
         items:
           type: string
@@ -6611,6 +6669,7 @@ $defs:
             buffer_memory_bytes: null
             max_in_flight: null
             idempotence: null
+            message_max_bytes: null
           consumer_librdkafka: {}
           producer_librdkafka: {}
       librdkafka_overrides:
@@ -6670,6 +6729,22 @@ $defs:
         SSL certificate verification disabled by default.
       type: string
       const: devtest
+  ConsumerProtocol:
+    description: Which consumer-group rebalance protocol the consumer joins with.
+    oneOf:
+    - description: |-
+        KIP-848: the broker's group coordinator computes the assignment and
+        pushes it on the heartbeat, so adding or removing a member costs no
+        stop-the-world rebalance -- the difference a KEDA scale event feels.
+        Requires a Kafka 4.0+ broker, and the transport falls back to
+        [`Classic`](Self::Classic) when the broker will not speak it.
+      type: string
+      const: consumer
+    - description: |-
+        The pre-4.0 protocol: the group leader computes the assignment and
+        every member stops consuming while it does.
+      type: string
+      const: classic
   SuppressionRule:
     description: |-
       Topic suppression rule for auto-discovery.
@@ -6726,6 +6801,7 @@ $defs:
           buffer_memory_bytes: null
           max_in_flight: null
           idempotence: null
+          message_max_bytes: null
       consumer_librdkafka:
         description: |-
           Raw librdkafka consumer properties applied LAST, winning over everything.
@@ -6765,25 +6841,28 @@ $defs:
     - description: |-
         Maximum throughput: generous byte budgets, tolerates batching delay.
 
-        Consumer: 1 MiB fetch.min.bytes, 50 ms wait, 10 MiB per-partition,
-        100 MiB total, 2000 poll-safety cap.
-        Producer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight.
+        Consumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,
+        50 MiB total, 2000 poll-safety cap.
+        Producer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight,
+        16 MiB record ceiling.
       type: string
       const: throughput
     - description: |-
         Balanced: moderate batching, 5 ms linger, smaller per-partition budget.
 
-        Consumer: 256 KiB fetch.min.bytes, 25 ms wait, 5 MiB per-partition,
+        Consumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,
         50 MiB total, 1000 poll-safety cap.
-        Producer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight.
+        Producer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight,
+        16 MiB record ceiling.
       type: string
       const: balanced
     - description: |-
         Low latency: minimal batching delay, smaller buffers.
 
-        Consumer: 1 byte fetch.min.bytes, 5 ms wait, 1 MiB per-partition,
-        10 MiB total, 500 poll-safety cap.
-        Producer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight.
+        Consumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,
+        16 MiB total, 500 poll-safety cap.
+        Producer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight,
+        16 MiB record ceiling.
       type: string
       const: low_latency
   ConsumerKnobs:
@@ -6824,7 +6903,10 @@ $defs:
           Maximum bytes returned per partition per Fetch request.
 
           librdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,
-          default 1 MiB). Must be >= the topic's `max.message.bytes`.
+          default 1 MiB). Must be >= the topic's `max.message.bytes`, so every
+          profile sets it to [`MESSAGE_MAX_BYTES`]. librdkafka does grow it on
+          sight of a larger record, but the explicit value keeps the consumer's
+          memory envelope predictable instead of discovered.
         type:
         - integer
         - 'null'
@@ -6835,7 +6917,9 @@ $defs:
           Maximum total bytes returned by the broker for a single Fetch request
           across all partitions.
 
-          librdkafka: `fetch.max.bytes` (default 50 MiB).
+          librdkafka: `fetch.max.bytes` (default 50 MiB). Keep it at or under
+          50 MiB: MSK Express holds the broker's own 55 MiB fetch ceiling
+          read-only, so asking for more is a number that can never be honoured.
         type:
         - integer
         - 'null'
@@ -6943,6 +7027,22 @@ $defs:
         type:
         - boolean
         - 'null'
+        default: null
+      message_max_bytes:
+        description: |-
+          Largest single record the producer will put on the wire, in bytes.
+
+          librdkafka: `message.max.bytes`, whose default of 1,000,000 rejects an
+          oversize record LOCALLY with `MSG_SIZE_TOO_LARGE` -- the broker never
+          sees it, so raising the broker's ceiling alone changes nothing. Three
+          layers have to agree: the broker's `message.max.bytes`, the topic's
+          `max.message.bytes`, and this. Default on every profile:
+          [`MESSAGE_MAX_BYTES`] (16 MiB). `batch.size` is unrelated -- it is a
+          soft target and a larger record still ships as its own batch.
+        type:
+        - integer
+        - 'null'
+        format: int32
         default: null
   FilterRule:
     description: |-

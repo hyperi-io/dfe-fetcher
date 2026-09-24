@@ -39,7 +39,10 @@ RUN chmod +x /usr/local/bin/dfe-fetcher
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi && useradd --create-home --uid 1000 appuser
 USER appuser
 
-EXPOSE 9090 8080 6000
+EXPOSE 9090
+# Conditional listeners, not EXPOSEd -- publish explicitly when enabled:
+#   8080/tcp ingest -- when config.ingest.enabled is true
+#   6000/tcp vector-grpc -- when config.extractors.vector.enabled is true
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -sf http://localhost:9090/livez > /dev/null || exit 1
