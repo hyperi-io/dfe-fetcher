@@ -21,6 +21,18 @@ language: rust
 # packages. Never ask a runner for `--all-features`.
 quality:
   enabled: true
+  # GHSA-w9wp-h8wv-79jx / CVE-2026-48504: opentelemetry_sdk 0.31.0 is in the
+  # lock through scalo, in the affected range (<= 0.32.0, fixed in 0.32.1). The
+  # flaw is in BaggagePropagator::extract_with_context, which parses an inbound
+  # W3C Baggage header before enforcing its size limits. Nothing here reaches
+  # it: neither this workspace nor scalo names `baggage` or installs a text map
+  # propagator. Recorded as not reachable in the DFE threat model (dfe-infra
+  # docs/THREAT-MODEL.md, accepted risks). deny.toml carries no ignore because
+  # it is a GitHub advisory with no RustSec entry, so only osv-scanner sees it.
+  ignore:
+    - tool: osv-scanner
+      id: GHSA-w9wp-h8wv-79jx
+      reason: "CVE-2026-48504, opentelemetry_sdk 0.31.0 via scalo: BaggagePropagator::extract_with_context is unreachable (no text map propagator, no baggage in dfe-fetcher or scalo). Not reachable per dfe-infra docs/THREAT-MODEL.md accepted risks. Drop when scalo allows opentelemetry_sdk >= 0.32.1."
   rust:
     features:
       - "default"
