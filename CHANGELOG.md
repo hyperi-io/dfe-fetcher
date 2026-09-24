@@ -3,6 +3,15 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.29](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.28...v1.4.29) (2026-09-24)
+
+### Bug Fixes
+
+* **ci:** ignore unreachable otel advisory in osv ([#187](https://github.com/hyperi-io/dfe-fetcher/issues/187)) ([10efe44](https://github.com/hyperi-io/dfe-fetcher/commit/10efe440d84e74e5730650a85862321358b626da))
+* **deps:** hmac 0.13, quick-xml 0.42, rust deps ([#186](https://github.com/hyperi-io/dfe-fetcher/issues/186)) ([9144f52](https://github.com/hyperi-io/dfe-fetcher/commit/9144f526d1ad01587140c2864b16798396e3040d))
+* **output:** dead-letter refused fan-out records ([#189](https://github.com/hyperi-io/dfe-fetcher/issues/189)) ([ff58f8f](https://github.com/hyperi-io/dfe-fetcher/commit/ff58f8f4c800e38679a72d44572dc317ca2ed664))
+* rebuild on scalo 2.12.9 ([ea91eb6](https://github.com/hyperi-io/dfe-fetcher/commit/ea91eb6b6bca05935d6bdf0ff84f55be01b8bf23))
+
 ## [1.4.28](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.27...v1.4.28) (2026-09-24)
 
 ### Bug Fixes
