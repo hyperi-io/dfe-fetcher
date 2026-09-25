@@ -780,6 +780,13 @@ extractors:
     # Vector re-sends. Off, a push is answered once queued and a crash loses it.
     acknowledgements:
       enabled: true
+    # A Vector push names no instance, so the listener it arrives on decides
+    # its topic. At most one instance shares grpc_bind_address (the one port
+    # the chart publishes) and lands on its own topic, or pushes there land on
+    # `vector` when none does. Every other instance names its own
+    # grpc_bind_address, and its Vector sink must point at that address. Two
+    # instances sharing the listener are refused at load. `topic` takes the
+    # topic suffix like every other topic.
     instances: []
     # - name: syslog-collector
     #   mode: container
@@ -791,7 +798,11 @@ extractors:
     #     [sinks.dfe]
     #     type = "vector"
     #     address = "dfe-fetcher:6000"
-    #   topic: syslog_land
+    #   topic: syslog
+    # - name: firewall
+    #   mode: sidecar
+    #   grpc_bind_address: "127.0.0.1:6001"
+    #   topic: firewall
 
 # =============================================================================
 # Ingest server -- REQUIRES RESTART

@@ -519,19 +519,21 @@ impl Config {
             validate_connection_ids(block.name, &block.connection_ids(&self.sources))?;
         }
 
-        // Validate Vector gRPC address
-        if self.extractors.vector.enabled
-            && self
-                .extractors
-                .vector
-                .grpc_bind_address
-                .parse::<std::net::SocketAddr>()
-                .is_err()
-        {
-            return Err(Error::Config(format!(
-                "invalid vector gRPC bind address: '{}'",
-                self.extractors.vector.grpc_bind_address
-            )));
+        // Validate the Vector listeners: which instance each serves, and each
+        // address.
+        if self.extractors.vector.enabled {
+            for listener in self.extractors.vector.listeners()? {
+                if listener
+                    .bind_address
+                    .parse::<std::net::SocketAddr>()
+                    .is_err()
+                {
+                    return Err(Error::Config(format!(
+                        "invalid vector gRPC bind address: '{}'",
+                        listener.bind_address
+                    )));
+                }
+            }
         }
 
         self.accumulate.validate()?;
@@ -4132,7 +4134,9 @@ pub struct ContainerExtractorConfig {
     /// Override container command.
     pub command: Option<Vec<String>>,
 
-    /// Timeout in seconds for scheduled (one-shot) containers (0 = no timeout).
+    /// Timeout in seconds for a scheduled (one-shot) container's whole run,
+    /// stdout included (0 = no timeout). At the timeout the container is
+    /// killed and the run fails.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 
@@ -4198,10 +4202,14 @@ pub struct VectorExtractorConfig {
     /// Enable Vector extractor integration.
     pub enabled: bool,
 
-    /// gRPC bind address for receiving Vector sink data.
+    /// The shared gRPC listener for Vector sink data, the one the chart
+    /// publishes. Its pushes land on the topic of the one instance with no
+    /// `grpc_bind_address` of its own, or on `vector` when there is none.
     pub grpc_bind_address: String,
 
-    /// Managed Vector instances.
+    /// Vector instances. A Vector push names no instance, so the listener a
+    /// push arrives on is what says which instance sent it: at most one
+    /// instance shares `grpc_bind_address`, and each other one gives its own.
     pub instances: Vec<VectorInstance>,
 
     /// When the receiver answers a push. Enabled (the default), a push is
@@ -4242,12 +4250,73 @@ pub struct VectorInstance {
     /// Path to Vector configuration file.
     pub vector_config_path: Option<String>,
 
-    /// Output Kafka topic.
+    /// Output topic (before the suffix) for the events this instance pushes.
     pub topic: String,
+
+    /// The instance's own gRPC listener. Its pushes land on this instance's
+    /// `topic`, and its Vector `vector` sink must point here. Unset, the
+    /// instance shares `extractors.vector.grpc_bind_address`, which only one
+    /// instance may do. The chart publishes only the shared listener, so an
+    /// own listener serves a sidecar in the pod or a container on the host.
+    #[serde(default)]
+    pub grpc_bind_address: Option<String>,
 }
 
 fn default_container_mode() -> String {
     "container".to_string()
+}
+
+/// The topic, before the suffix, that the shared Vector listener's pushes land
+/// on when no instance shares it.
+pub const DEFAULT_VECTOR_TOPIC: &str = "vector";
+
+/// One gRPC listener the Vector extractor opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorListener {
+    /// The address it binds.
+    pub bind_address: String,
+    /// The topic, before the suffix, that pushes arriving on it land on.
+    pub topic: String,
+}
+
+impl VectorExtractorConfig {
+    /// The listeners the extractor opens: the shared one first, then one per
+    /// instance that names its own address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when more than one instance shares the
+    /// shared listener: their pushes carry nothing that tells them apart.
+    pub fn listeners(&self) -> Result<Vec<VectorListener>> {
+        let shared: Vec<&VectorInstance> = self
+            .instances
+            .iter()
+            .filter(|i| i.grpc_bind_address.is_none())
+            .collect();
+        if shared.len() > 1 {
+            let names: Vec<&str> = shared.iter().map(|i| i.name.as_str()).collect();
+            return Err(Error::Config(format!(
+                "extractors.vector.instances {} all share grpc_bind_address {}: a Vector push \
+                 names no instance, so their events cannot be told apart and land on one topic. \
+                 Give every instance but one its own grpc_bind_address",
+                names.join(", "),
+                self.grpc_bind_address
+            )));
+        }
+        let mut listeners = vec![VectorListener {
+            bind_address: self.grpc_bind_address.clone(),
+            topic: shared
+                .first()
+                .map_or_else(|| DEFAULT_VECTOR_TOPIC.to_owned(), |i| i.topic.clone()),
+        }];
+        listeners.extend(self.instances.iter().filter_map(|i| {
+            i.grpc_bind_address.as_ref().map(|address| VectorListener {
+                bind_address: address.clone(),
+                topic: i.topic.clone(),
+            })
+        }));
+        Ok(listeners)
+    }
 }
 
 // =============================================================================
@@ -5439,6 +5508,61 @@ mod tests {
             err.contains("invalid vector gRPC bind address"),
             "Expected invalid vector gRPC bind address error, got: {err}"
         );
+    }
+
+    /// A sidecar Vector instance whose topic is its name, on its own listener
+    /// when it has an address.
+    fn vector_instance(name: &str, address: Option<&str>) -> VectorInstance {
+        VectorInstance {
+            name: name.into(),
+            mode: "sidecar".into(),
+            image: None,
+            vector_config: None,
+            vector_config_path: None,
+            topic: name.into(),
+            grpc_bind_address: address.map(str::to_owned),
+        }
+    }
+
+    /// Two instances on the shared listener carry nothing that tells their
+    /// pushes apart, so the config is refused at load, naming both.
+    #[test]
+    fn two_vector_instances_on_the_shared_listener_are_refused_at_load() {
+        let mut cfg = valid_config();
+        cfg.extractors.vector.enabled = true;
+        cfg.extractors.vector.instances = vec![
+            vector_instance("syslog", None),
+            vector_instance("firewall", None),
+        ];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("syslog, firewall"), "{err}");
+
+        cfg.extractors.vector.instances[1].grpc_bind_address = Some("127.0.0.1:6001".into());
+        cfg.validate()
+            .expect("one shared instance and one on its own listener load");
+        assert_eq!(
+            cfg.extractors.vector.listeners().unwrap(),
+            vec![
+                VectorListener {
+                    bind_address: "0.0.0.0:6000".into(),
+                    topic: "syslog".into(),
+                },
+                VectorListener {
+                    bind_address: "127.0.0.1:6001".into(),
+                    topic: "firewall".into(),
+                },
+            ]
+        );
+    }
+
+    /// An instance's own listener address is checked like the shared one.
+    #[test]
+    fn an_invalid_vector_instance_address_is_refused_at_load() {
+        let mut cfg = valid_config();
+        cfg.extractors.vector.enabled = true;
+        cfg.extractors.vector.instances = vec![vector_instance("syslog", Some("nowhere"))];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("'nowhere'"), "{err}");
     }
 
     // =========================================================================

@@ -707,7 +707,8 @@ async fn run_fetcher_service(
         Arc::clone(&pipeline_state),
         Arc::clone(&metrics),
         shutdown_token.clone(),
-    );
+    )
+    .with_pressure(pressure.clone());
     if vector_manager.is_enabled()
         && let Err(e) = vector_manager.start().await
     {

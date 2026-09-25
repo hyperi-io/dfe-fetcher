@@ -23,7 +23,16 @@
 //! default) a push is answered only once its events are emitted: `OK` when
 //! the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise,
 //! which Vector's sink retries. At shutdown the receiver refuses new pushes
-//! and delivers what it has queued before the outputs close.
+//! and delivers what it has queued before the outputs close. While the
+//! fetcher's memory-pressure latch holds, pushes are refused `UNAVAILABLE`.
+//!
+//! ## Topics
+//!
+//! A Vector push names no instance, so the listener it arrives on says which
+//! instance sent it. The shared `grpc_bind_address` carries at most one
+//! instance (its pushes land on that instance's topic, or on `vector` when no
+//! instance shares it), and every other instance names its own
+//! `grpc_bind_address`.
 //!
 //! ## Modes
 //!
@@ -51,13 +60,18 @@
 //!           [sinks.dfe]
 //!           type = "vector"
 //!           address = "host.docker.internal:6000"
-//!         topic: syslog_land
+//!         topic: syslog
+//!       - name: firewall
+//!         mode: sidecar
+//!         grpc_bind_address: "127.0.0.1:6001"
+//!         topic: firewall
 //! ```
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use scalo::governor::UnifiedPressure;
 use scalo::transport::ack::HOLD_RELEASE_MARGIN;
 use scalo::transport::{
     DeliveryStatus, GrpcConfig, GrpcToken, GrpcTransport, SourceAck, TransportBase, TransportError,
@@ -243,6 +257,8 @@ pub struct VectorManager {
     sink: ExtractorSink,
     metrics: Arc<Metrics>,
     shutdown: CancellationToken,
+    /// The fetcher's memory-pressure latch, shed on by every listener.
+    pressure: Option<Arc<UnifiedPressure>>,
 }
 
 impl VectorManager {
@@ -258,39 +274,46 @@ impl VectorManager {
             sink: ExtractorSink::new(pipeline, Arc::clone(&metrics)),
             metrics,
             shutdown,
+            pressure: None,
         }
     }
 
-    /// Start the Vector gRPC receiver and managed instances, returning the
-    /// address the receiver listens on (`None` when disabled).
-    pub async fn start(&self) -> Result<Option<SocketAddr>> {
+    /// Refuse pushes with `UNAVAILABLE` while `pressure` holds, as the other
+    /// push listeners do, so Vector backs off instead of filling memory.
+    #[must_use]
+    pub fn with_pressure(mut self, pressure: Option<Arc<UnifiedPressure>>) -> Self {
+        self.pressure = pressure;
+        self
+    }
+
+    /// Start the Vector gRPC listeners and managed instances, returning the
+    /// address each listener bound, the shared one first (none when
+    /// disabled).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when more than one instance shares the
+    /// shared listener, and [`Error::Source`] when a listener cannot bind.
+    pub async fn start(&self) -> Result<Vec<SocketAddr>> {
         if !self.config.enabled {
-            return Ok(None);
+            return Ok(Vec::new());
         }
+        let listeners = self.config.listeners()?;
 
         info!(
             grpc_bind = %self.config.grpc_bind_address,
+            listeners = listeners.len(),
             instances = self.config.instances.len(),
             acknowledgements = self.config.acknowledgements.enabled,
             "Starting Vector extractor manager"
         );
 
-        // Armed before it listens, so no push is answered before the receive
-        // loop below has delivered it.
-        let grpc_config = GrpcConfig::server(&self.config.grpc_bind_address).with_vector_compat();
-        let transport = GrpcTransport::builder(&grpc_config)
-            .acknowledgements(self.config.acknowledgements)
-            .armed(true)
-            .memory_guard(Arc::clone(self.sink.state().memory_guard()))
-            .start()
-            .await
-            .map_err(|e| Error::Source(format!("failed to start Vector gRPC server: {e}")))?;
-        let local_addr = transport.local_addr();
-
-        info!(
-            address = %self.config.grpc_bind_address,
-            "Vector gRPC server listening"
-        );
+        // Every listener binds before any receive loop starts, so a bind
+        // failure leaves nothing half-started.
+        let mut transports = Vec::with_capacity(listeners.len());
+        for listener in &listeners {
+            transports.push(self.listen(&listener.bind_address).await?);
+        }
 
         // Start managed container instances
         for instance in &self.config.instances {
@@ -299,24 +322,52 @@ impl VectorManager {
             }
         }
 
-        let receiver = VectorReceiver {
-            sink: self.sink.clone(),
-            metrics: Arc::clone(&self.metrics),
-            default_topic: self.default_topic(),
-            topic_map: self.build_topic_map(),
-        };
-        let shutdown = self.shutdown.clone();
-        // On the intake tracker, so shutdown keeps the outputs open while the
-        // receiver delivers what it has queued.
-        self.sink
-            .state()
-            .intake()
-            .spawn(receiver.run(transport, shutdown));
-
-        Ok(local_addr)
+        let suffix = self.sink.state().config().topic_suffix().to_owned();
+        let topic_map = self.build_topic_map();
+        let mut addresses = Vec::with_capacity(transports.len());
+        for (listener, transport) in listeners.iter().zip(transports) {
+            let default_topic = format!("{}{suffix}", listener.topic);
+            info!(
+                address = %listener.bind_address,
+                topic = %default_topic,
+                "Vector gRPC listener serving"
+            );
+            addresses.extend(transport.local_addr());
+            let receiver = VectorReceiver {
+                sink: self.sink.clone(),
+                metrics: Arc::clone(&self.metrics),
+                default_topic,
+                topic_map: topic_map.clone(),
+            };
+            // On the intake tracker, so shutdown keeps the outputs open while
+            // the receiver delivers what it has queued.
+            self.sink
+                .state()
+                .intake()
+                .spawn(receiver.run(transport, self.shutdown.clone()));
+        }
+        Ok(addresses)
     }
 
-    /// Build topic mapping from Vector instance configs.
+    /// Bind one Vector listener, armed before it listens so no push is
+    /// answered before its receive loop has delivered it.
+    async fn listen(&self, bind_address: &str) -> Result<GrpcTransport> {
+        let grpc_config = GrpcConfig::server(bind_address).with_vector_compat();
+        let mut builder = GrpcTransport::builder(&grpc_config)
+            .acknowledgements(self.config.acknowledgements)
+            .armed(true)
+            .memory_guard(Arc::clone(self.sink.state().memory_guard()));
+        if let Some(pressure) = &self.pressure {
+            builder = builder.pressure(Arc::clone(pressure));
+        }
+        builder.start().await.map_err(|e| {
+            Error::Source(format!(
+                "failed to start Vector gRPC server on {bind_address}: {e}"
+            ))
+        })
+    }
+
+    /// Instance name to topic, for a native push whose key names an instance.
     fn build_topic_map(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         let config = self.sink.state().config();
@@ -328,12 +379,6 @@ impl VectorManager {
         }
 
         map
-    }
-
-    /// Get the default topic for unmapped Vector events.
-    fn default_topic(&self) -> String {
-        let config = self.sink.state().config();
-        format!("vector{}", config.topic_suffix())
     }
 
     /// Start a managed Vector container instance.
@@ -461,6 +506,48 @@ mod tests {
         }
     }
 
+    /// A sidecar instance (no container is started for it) on `topic`,
+    /// sharing the shared listener or on its own `address`.
+    fn instance(name: &str, topic: &str, address: Option<&str>) -> crate::config::VectorInstance {
+        crate::config::VectorInstance {
+            name: name.into(),
+            mode: "sidecar".into(),
+            image: None,
+            vector_config: None,
+            vector_config_path: None,
+            topic: topic.into(),
+            grpc_bind_address: address.map(str::to_owned),
+        }
+    }
+
+    /// Start `manager` and return its one listener's address.
+    async fn only_listener(manager: &VectorManager) -> SocketAddr {
+        let addresses = manager.start().await.expect("start");
+        assert_eq!(addresses.len(), 1, "{addresses:?}");
+        addresses[0]
+    }
+
+    /// Push one event to `addr`.
+    async fn push(
+        addr: SocketAddr,
+        event: serde_json::Value,
+    ) -> scalo::transport::TransportResult<()> {
+        VectorCompatClient::connect_lazy(&format!("http://{addr}"))
+            .expect("client")
+            .send_events(&[event])
+            .await
+    }
+
+    /// The topic every record the memory output has taken landed on.
+    async fn topics(output: &MemoryTransport) -> Vec<String> {
+        let batch = output.recv(100).await.expect("recv");
+        batch
+            .records
+            .iter()
+            .map(|r| r.key.as_deref().unwrap_or_default().to_owned())
+            .collect()
+    }
+
     /// Every payload the memory output has taken, parsed.
     async fn delivered(output: &MemoryTransport) -> Vec<serde_json::Value> {
         let mut rows = Vec::new();
@@ -491,7 +578,7 @@ mod tests {
             Arc::clone(&metrics),
             shutdown.clone(),
         );
-        let addr = manager.start().await.expect("start").expect("listening");
+        let addr = only_listener(&manager).await;
 
         let client = VectorCompatClient::connect_lazy(&format!("http://{addr}")).expect("client");
         client
@@ -521,7 +608,7 @@ mod tests {
             Arc::clone(&metrics),
             shutdown.clone(),
         );
-        let addr = manager.start().await.expect("start").expect("listening");
+        let addr = only_listener(&manager).await;
 
         let client = VectorCompatClient::connect_lazy(&format!("http://{addr}")).expect("client");
         let err = client
@@ -539,6 +626,130 @@ mod tests {
                 .contains("dfe_fetcher_extractor_records_total 0"),
             "a failed event is never counted received"
         );
+        shutdown.cancel();
+    }
+
+    /// The one instance on the shared listener owns its pushes, so they land
+    /// on that instance's topic, not on `vector`.
+    #[tokio::test]
+    async fn the_instance_on_the_shared_listener_lands_on_its_topic() {
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let shutdown = CancellationToken::new();
+        let mut config = receiver_config(true);
+        config.instances = vec![instance("syslog-collector", "syslog", None)];
+        let manager = VectorManager::new(config, state, metrics, shutdown.clone());
+        let addr = only_listener(&manager).await;
+
+        push(addr, serde_json::json!({"id": 1}))
+            .await
+            .expect("delivered");
+
+        assert_eq!(topics(&output).await, ["syslog_land"]);
+        shutdown.cancel();
+    }
+
+    /// Each instance on its own listener lands on its own topic, and the
+    /// shared listener with no instance on it lands on `vector`.
+    #[tokio::test]
+    async fn each_instance_on_its_own_listener_lands_on_its_topic() {
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let shutdown = CancellationToken::new();
+        let mut config = receiver_config(true);
+        config.instances = vec![
+            instance("syslog-collector", "syslog", Some("127.0.0.1:0")),
+            instance("firewall", "firewall", Some("127.0.0.1:0")),
+        ];
+        let manager = VectorManager::new(config, state, metrics, shutdown.clone());
+        let addresses = manager.start().await.expect("start");
+        assert_eq!(addresses.len(), 3, "the shared listener and one each");
+
+        for (addr, id) in addresses.iter().zip(1..) {
+            push(*addr, serde_json::json!({ "id": id }))
+                .await
+                .expect("delivered");
+        }
+
+        assert_eq!(
+            topics(&output).await,
+            ["vector_land", "syslog_land", "firewall_land"]
+        );
+        shutdown.cancel();
+    }
+
+    /// Two instances on the shared listener cannot be told apart, so the
+    /// manager refuses to start rather than land both on one topic.
+    #[tokio::test]
+    async fn two_instances_on_the_shared_listener_are_refused() {
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let mut config = receiver_config(true);
+        config.instances = vec![
+            instance("syslog-collector", "syslog", None),
+            instance("firewall", "firewall", None),
+        ];
+        let manager = VectorManager::new(config, state, metrics, CancellationToken::new());
+
+        let err = manager.start().await.expect_err("refused");
+
+        assert!(matches!(err, Error::Config(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("syslog-collector, firewall"),
+            "{err}"
+        );
+    }
+
+    /// A pressure source whose reading the test sets.
+    struct Settable(std::sync::atomic::AtomicU64);
+
+    impl scalo::governor::PressureSource for Settable {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn sample(&self) -> scalo::governor::Pressure {
+            scalo::governor::Pressure::new(
+                self.0.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0,
+            )
+        }
+        fn is_hard(&self) -> bool {
+            true
+        }
+    }
+
+    /// While the fetcher's pressure latch holds, a push is refused
+    /// UNAVAILABLE before any work, and it is taken again once the latch
+    /// releases.
+    #[tokio::test]
+    async fn a_push_under_memory_pressure_is_refused_for_retry() {
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let reading = Arc::new(Settable(std::sync::atomic::AtomicU64::new(100)));
+        let pressure = Arc::new(UnifiedPressure::new(
+            vec![Arc::clone(&reading) as Arc<dyn scalo::governor::PressureSource>],
+            scalo::governor::Hysteresis::new(0.8, 0.6).expect("band"),
+        ));
+        let shutdown = CancellationToken::new();
+        let manager = VectorManager::new(
+            receiver_config(true),
+            state,
+            Arc::clone(&metrics),
+            shutdown.clone(),
+        )
+        .with_pressure(Some(pressure));
+        let addr = only_listener(&manager).await;
+
+        let err = push(addr, serde_json::json!({"id": 1}))
+            .await
+            .expect_err("refused under pressure");
+        assert!(err.to_string().contains("under pressure"), "{err}");
+        assert!(topics(&output).await.is_empty(), "nothing was taken");
+
+        reading.0.store(0, std::sync::atomic::Ordering::Relaxed);
+        push(addr, serde_json::json!({"id": 2}))
+            .await
+            .expect("taken once the latch releases");
+        assert_eq!(topics(&output).await, ["vector_land"]);
         shutdown.cancel();
     }
 

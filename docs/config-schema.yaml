@@ -5857,7 +5857,10 @@ $defs:
         items:
           type: string
       timeout_secs:
-        description: Timeout in seconds for scheduled (one-shot) containers (0 = no timeout).
+        description: |-
+          Timeout in seconds for a scheduled (one-shot) container's whole run,
+          stdout included (0 = no timeout). At the timeout the container is
+          killed and the run fails.
         type:
         - integer
         - 'null'
@@ -5909,11 +5912,17 @@ $defs:
         type: boolean
         default: false
       grpc_bind_address:
-        description: gRPC bind address for receiving Vector sink data.
+        description: |-
+          The shared gRPC listener for Vector sink data, the one the chart
+          publishes. Its pushes land on the topic of the one instance with no
+          `grpc_bind_address` of its own, or on `vector` when there is none.
         type: string
         default: 0.0.0.0:6000
       instances:
-        description: Managed Vector instances.
+        description: |-
+          Vector instances. A Vector push names no instance, so the listener a
+          push arrives on is what says which instance sent it: at most one
+          instance shares `grpc_bind_address`, and each other one gives its own.
         type: array
         items:
           $ref: '#/$defs/VectorInstance'
@@ -5955,8 +5964,19 @@ $defs:
         - string
         - 'null'
       topic:
-        description: Output Kafka topic.
+        description: Output topic (before the suffix) for the events this instance pushes.
         type: string
+      grpc_bind_address:
+        description: |-
+          The instance's own gRPC listener. Its pushes land on this instance's
+          `topic`, and its Vector `vector` sink must point here. Unset, the
+          instance shares `extractors.vector.grpc_bind_address`, which only one
+          instance may do. The chart publishes only the shared listener, so an
+          own listener serves a sidecar in the pod or a container on the host.
+        type:
+        - string
+        - 'null'
+        default: null
     required:
     - name
     - topic
