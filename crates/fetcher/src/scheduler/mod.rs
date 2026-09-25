@@ -181,16 +181,9 @@ impl Scheduler {
                 .await
                 {
                     Ok(window) => window,
-                    Err(e) => {
+                    // Logged, debounced by cause, where it is built.
+                    Err(_) => {
                         metrics.inc_fetches_error_for(label);
-                        // Refused every tick until a cursor exists; each one
-                        // counts in dfe_fetcher_fetches_total.
-                        if scalo::logger::log_debounced(
-                            &source_log.refused_logged_at,
-                            REPEAT_LOG_EVERY_MS,
-                        ) {
-                            error!(source = label, error = %e, "Fetch refused");
-                        }
                         metrics.dec_active_fetches();
                         drop(permit);
                         if wait_for_next_tick(&shutdown, next_tick, label).await {
@@ -447,8 +440,10 @@ struct SourceLog<'a> {
     cold_start_warned: std::sync::atomic::AtomicBool,
     /// When a cursor read failure was last logged, for `log_debounced`.
     read_failure_logged_at: std::sync::atomic::AtomicU64,
-    /// When a refused fetch was last logged, for `log_debounced`.
-    refused_logged_at: std::sync::atomic::AtomicU64,
+    /// When a fetch refused for a cold start was last logged.
+    refused_cold_start_logged_at: std::sync::atomic::AtomicU64,
+    /// When a fetch refused for a failed cursor read was last logged.
+    refused_read_failure_logged_at: std::sync::atomic::AtomicU64,
 }
 
 impl<'a> SourceLog<'a> {
@@ -457,7 +452,8 @@ impl<'a> SourceLog<'a> {
             name,
             cold_start_warned: std::sync::atomic::AtomicBool::new(false),
             read_failure_logged_at: std::sync::atomic::AtomicU64::new(0),
-            refused_logged_at: std::sync::atomic::AtomicU64::new(0),
+            refused_cold_start_logged_at: std::sync::atomic::AtomicU64::new(0),
+            refused_read_failure_logged_at: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -493,8 +489,9 @@ enum NoCursor {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Cursor`] on a cold start when `on_missing` is
-/// [`MissingCursor::Refuse`].
+/// Returns [`Error::Cursor`], logged at ERROR at most once per
+/// `REPEAT_LOG_EVERY_MS` for each cause, when there is no cursor and
+/// `on_missing` is [`MissingCursor::Refuse`].
 async fn build_fetch_window(
     store: Option<&dyn CursorStore>,
     cursor_key: &str,
@@ -553,7 +550,7 @@ async fn build_fetch_window(
     };
 
     let lookback = on_missing == MissingCursor::Lookback;
-    let cause = match missing {
+    let (cause, refused_logged_at) = match missing {
         NoCursor::ColdStart(cause) => {
             metrics.inc_cursor_cold_start(source_prefix);
             // Taken only under lookback, so a reload from refuse still warns.
@@ -578,7 +575,7 @@ async fn build_fetch_window(
                     cursor_key, cause, "Cursor cold start: fetching the default lookback window"
                 );
             }
-            cause.to_owned()
+            (cause.to_owned(), &source.refused_cold_start_logged_at)
         }
         NoCursor::ReadFailed(error) => {
             metrics.inc_cursor_read_failure(source_prefix);
@@ -594,20 +591,31 @@ async fn build_fetch_window(
                      before it is skipped. Counted in dfe_fetcher_cursor_read_failures_total"
                 );
             }
-            format!("the cursor read failed: {error}")
+            (
+                format!("the cursor read failed: {error}"),
+                &source.refused_read_failure_logged_at,
+            )
         }
     };
 
-    // Under refuse the caller logs the refused tick, debounced.
     match on_missing {
         MissingCursor::Lookback => Ok(FetchWindow {
             start: now - max_span,
             end: now,
         }),
-        MissingCursor::Refuse => Err(Error::Cursor(format!(
-            "{cause} for {cursor_key} and cursor.on_missing_cursor is refuse: nothing is fetched \
-             until a cursor exists or the setting is lookback"
-        ))),
+        MissingCursor::Refuse => {
+            let refused = Error::Cursor(format!(
+                "{cause} for {cursor_key} and cursor.on_missing_cursor is refuse: nothing is \
+                 fetched until a cursor exists or the setting is lookback"
+            ));
+            // Refused every tick until a cursor exists, each one counted in
+            // dfe_fetcher_fetches_total, so each cause is logged on its own
+            // debounce: a new cause is not held back behind an old one.
+            if scalo::logger::log_debounced(refused_logged_at, REPEAT_LOG_EVERY_MS) {
+                error!(source = source_prefix, error = %refused, "Fetch refused");
+            }
+            Err(refused)
+        }
     }
 }
 
@@ -1005,51 +1013,16 @@ mod tests {
         assert_eq!(cold_starts(&recorder, "storeless"), Some(1));
     }
 
-    /// Counts the events at `level` the scheduler logs on this thread, which
-    /// includes the tasks a current-thread runtime spawns.
-    #[derive(Clone)]
-    struct SchedulerEvents {
-        level: tracing::Level,
-        count: Arc<AtomicU64>,
-    }
-
-    impl SchedulerEvents {
-        fn at(level: tracing::Level) -> Self {
-            Self {
-                level,
-                count: Arc::default(),
-            }
-        }
-
-        fn count(&self) -> u64 {
-            self.count.load(Ordering::Relaxed)
-        }
-    }
-
-    impl tracing::Subscriber for SchedulerEvents {
-        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let meta = event.metadata();
-            if *meta.level() == self.level && meta.target() == "dfe_fetcher::scheduler" {
-                self.count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
+    /// Counts the events at `level` the scheduler logs.
+    fn scheduler_events(level: tracing::Level) -> crate::logged::Events {
+        crate::logged::Events::at(level, "dfe_fetcher::scheduler")
     }
 
     /// With no cursor store every tick is a cold start: each one counts, and
     /// the WARN is logged once per source, not once a tick.
     #[tokio::test]
     async fn a_storeless_source_warns_of_its_cold_start_once() {
-        let warnings = SchedulerEvents::at(tracing::Level::WARN);
+        let warnings = scheduler_events(tracing::Level::WARN);
         let _guard = tracing::subscriber::set_default(warnings.clone());
         let metrics = Metrics::new();
         let nostore = SourceLog::new("nostore");
@@ -1095,7 +1068,7 @@ mod tests {
     /// is debounced.
     #[tokio::test]
     async fn a_read_failure_after_a_cold_start_still_warns() {
-        let warnings = SchedulerEvents::at(tracing::Level::WARN);
+        let warnings = scheduler_events(tracing::Level::WARN);
         let _guard = tracing::subscriber::set_default(warnings.clone());
         let metrics = Metrics::new();
         let store = FlakyReads::default();
@@ -1125,6 +1098,37 @@ mod tests {
             "every failed read counts"
         );
         assert_eq!(metrics.cursor_cold_starts(), 2, "and none as a cold start");
+    }
+
+    /// Under refuse each cause of a refused tick is logged on its own
+    /// debounce: a repeat of one cause is held back, a new cause is not.
+    #[tokio::test]
+    async fn a_refused_tick_is_logged_once_per_cause_in_its_window() {
+        let errors = scheduler_events(tracing::Level::ERROR);
+        let _guard = tracing::subscriber::set_default(errors.clone());
+        let metrics = Metrics::new();
+        let store = FlakyReads::default();
+        let refused = SourceLog::new("refused-causes");
+        let tick = || {
+            build_fetch_window(
+                Some(&store),
+                "inst.refused-causes",
+                chrono::Duration::hours(1),
+                None,
+                MissingCursor::Refuse,
+                &metrics,
+                &refused,
+            )
+        };
+
+        tick().await.expect_err("refused: none stored");
+        tick().await.expect_err("refused: none stored");
+        assert_eq!(errors.count(), 1, "the repeat is held back");
+
+        store.failing.store(true, Ordering::Relaxed);
+        let err = tick().await.expect_err("refused: the read failed");
+        assert!(err.to_string().contains("the cursor read failed"), "{err}");
+        assert_eq!(errors.count(), 2, "a new cause logs at once");
     }
 
     /// A stored cursor is resumed under either setting and is no cold start.
@@ -1919,7 +1923,7 @@ mod tests {
     async fn refuse_never_fetches_a_source_with_no_cursor() {
         use crate::cursor::file::FileCursorStore;
 
-        let errors = SchedulerEvents::at(tracing::Level::ERROR);
+        let errors = scheduler_events(tracing::Level::ERROR);
         let _guard = tracing::subscriber::set_default(errors.clone());
         tokio::time::pause();
 

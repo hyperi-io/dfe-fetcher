@@ -871,7 +871,7 @@ mod tests {
 
         let raised = recorder.raised_gauges("pipeline_delivery_guarantee");
         let wanted = [
-            ("intake", "vector"),
+            ("listener", "vector"),
             ("guarantee", "best_effort"),
             ("reason", "acks_disabled"),
         ];

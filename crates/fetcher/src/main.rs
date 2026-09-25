@@ -39,7 +39,7 @@ use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
 use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
-use dfe_fetcher::pipeline::{HeldUntilDelivered, Orchestrator};
+use dfe_fetcher::pipeline::{IntakeAcks, Orchestrator};
 use dfe_fetcher::scheduler::Scheduler;
 use dfe_fetcher_core::SourceMaturity;
 use dfe_fetcher_core::batch::AccumulateConfig;
@@ -661,7 +661,10 @@ async fn run_fetcher_service(
     if !running.is_empty() {
         pipeline_state.publish_guarantee(
             "scheduled",
-            Some(&HeldUntilDelivered(scalo::transport::AckKind::Pull)),
+            Some(&IntakeAcks {
+                kind: scalo::transport::AckKind::Pull,
+                enabled: true,
+            }),
         );
     }
 
@@ -717,10 +720,19 @@ async fn run_fetcher_service(
         shutdown_token.clone(),
     )
     .with_pressure(pressure.clone());
-    if vector_manager.is_enabled()
-        && let Err(e) = vector_manager.start().await
-    {
-        error!(error = %e, "Failed to start Vector manager");
+    // A listener that cannot bind leaves the intake dead while the pod reads
+    // Ready, so the process drains, stops and exits non-zero to be restarted.
+    let vector_failed = if vector_manager.is_enabled() {
+        vector_manager.start().await.err()
+    } else {
+        None
+    };
+    if let Some(e) = &vector_failed {
+        error!(
+            error = %e,
+            "The Vector extractor failed to start: shutting down to exit non-zero"
+        );
+        shutdown_token.cancel();
     }
 
     // Run pipeline orchestrator (blocks until shutdown)
@@ -734,6 +746,9 @@ async fn run_fetcher_service(
     if let Err(e) = run {
         error!(error = %e, "Pipeline error");
         std::process::exit(1);
+    }
+    if let Some(e) = vector_failed {
+        return Err(anyhow::anyhow!("the Vector extractor failed to start: {e}"));
     }
 
     info!("Shutdown complete");

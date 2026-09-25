@@ -6247,7 +6247,7 @@ dependencies = [
 [[package]]
 name = "scalo"
 version = "2.12.0"
-source = "git+https://github.com/hyperi-io/scalo-rs?branch=fix%2Fat-least-once#42a88ba54d5f37f8dcc271fb7088639dd44fd828"
+source = "git+https://github.com/hyperi-io/scalo-rs?branch=fix%2Fat-least-once#c1a475f557d9c75e5803a964a6c0b98eb47f1ff9"
 dependencies = [
  "aes-gcm",
  "arc-swap",

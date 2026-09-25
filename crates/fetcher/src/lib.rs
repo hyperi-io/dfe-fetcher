@@ -54,3 +54,52 @@ pub mod profiles;
 pub mod scheduler;
 
 pub use error::{Error, Result};
+
+/// A tracing subscriber the lib tests count log events with.
+#[cfg(test)]
+pub(crate) mod logged {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Counts the events at `level` from `target` logged on the thread it is
+    /// set on, which includes the tasks a current-thread runtime spawns.
+    #[derive(Clone)]
+    pub(crate) struct Events {
+        level: tracing::Level,
+        target: &'static str,
+        count: Arc<AtomicU64>,
+    }
+
+    impl Events {
+        pub(crate) fn at(level: tracing::Level, target: &'static str) -> Self {
+            Self {
+                level,
+                target,
+                count: Arc::default(),
+            }
+        }
+
+        pub(crate) fn count(&self) -> u64 {
+            self.count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl tracing::Subscriber for Events {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let meta = event.metadata();
+            if *meta.level() == self.level && meta.target() == self.target {
+                self.count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+}

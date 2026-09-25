@@ -823,6 +823,12 @@ ingest:
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
   # auth_token: "vault:kv/data/dfe:ingest_token"
+  # On (the default), a POST is answered 200 only once its record reaches the
+  # outputs or the DLQ confirms it, and 503 with Retry-After otherwise so the
+  # client re-sends. Off, a POST is answered 200 at once and a failed delivery
+  # or a crash loses it.
+  acknowledgements:
+    enabled: true
 
 # =============================================================================
 # Output transport -- REQUIRES RESTART

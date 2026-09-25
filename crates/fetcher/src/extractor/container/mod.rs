@@ -32,6 +32,13 @@ use crate::pipeline::PipelineState;
 /// up on: the grace `docker stop --time 10` gives the container.
 const STOP_GRACE: Duration = Duration::from_secs(10);
 
+/// First pause before a held stdout line is sent again; it doubles each time.
+const HOLD_PAUSE_MIN: Duration = Duration::from_secs(1);
+/// Longest pause between two attempts at a held stdout line.
+const HOLD_PAUSE_MAX: Duration = Duration::from_secs(30);
+/// Least time between two warnings that a line is still held.
+const HOLD_WARN_EVERY_MS: u64 = 60_000;
+
 /// What ended one read of the container's stdout.
 enum Next {
     Shutdown,
@@ -63,6 +70,8 @@ pub struct ContainerExtractor {
     shutdown: CancellationToken,
     /// Lines dropped since start, for the sampled drop log.
     drop_samples: AtomicU64,
+    /// When a held line was last warned of, for `log_debounced`.
+    held_warned_at: AtomicU64,
 }
 
 impl ContainerExtractor {
@@ -79,6 +88,7 @@ impl ContainerExtractor {
             metrics,
             shutdown,
             drop_samples: AtomicU64::new(0),
+            held_warned_at: AtomicU64::new(0),
         }
     }
 
@@ -182,19 +192,34 @@ impl ContainerExtractor {
     }
 
     /// Deliver one stdout line, counting it received only once it is
-    /// delivered. A pipe cannot be re-read, so a line that fails is dropped
-    /// and counted as such.
+    /// delivered.
+    ///
+    /// A pipe cannot be re-read, so a line the outputs cannot take yet is
+    /// held and retried with a growing pause rather than dropped. Nothing
+    /// reads the container's stdout meanwhile, so the container blocks on its
+    /// own writes until the outputs recover. Only a failure no retry can clear
+    /// (no output configured) drops the line, and at shutdown a held line gets
+    /// one more attempt before it is dropped. Either way it is counted.
     async fn deliver_counted(&self, line: &str) -> bool {
         let line = line.trim();
         if line.is_empty() {
             return false;
         }
-        match self.deliver_line(line.to_owned()).await {
-            Ok(()) => {
-                self.metrics.add_extractor_records(1);
-                true
-            }
-            Err(e) => {
+        let mut pause = HOLD_PAUSE_MIN;
+        let mut held = false;
+        loop {
+            let e = match self.deliver_line(line.to_owned()).await {
+                Ok(()) => {
+                    self.metrics.add_extractor_records(1);
+                    if held {
+                        info!(name = %self.config.name, "Outputs took the held container line");
+                    }
+                    return true;
+                }
+                Err(e) => e,
+            };
+            let permanent = matches!(e, Error::Config(_));
+            if permanent || self.shutdown.is_cancelled() {
                 self.metrics.add_extractor_records_failed(
                     "container",
                     ExtractorFailure::Dropped,
@@ -208,8 +233,22 @@ impl ContainerExtractor {
                         "Container output not delivered and dropped: its stdout cannot be re-read (sampled 1/100)"
                     );
                 }
-                false
+                return false;
             }
+            if !held || scalo::logger::log_debounced(&self.held_warned_at, HOLD_WARN_EVERY_MS) {
+                warn!(
+                    name = %self.config.name,
+                    error = %e,
+                    retry_in_ms = pause.as_millis(),
+                    "Outputs cannot take a container line: holding it, and the container's stdout, until they recover"
+                );
+            }
+            held = true;
+            tokio::select! {
+                () = self.shutdown.cancelled() => {}
+                () = tokio::time::sleep(pause) => {}
+            }
+            pause = pause.saturating_mul(2).min(HOLD_PAUSE_MAX);
         }
     }
 
@@ -786,6 +825,51 @@ mod tests {
             ContainerExtractor::new(config, state, Arc::clone(&metrics), shutdown),
             metrics,
         )
+    }
+
+    /// An output outage longer than the emitter's own retries (about 6 s)
+    /// loses no line: the line is held, the container's stdout is not read
+    /// meanwhile, and the line is delivered once the output takes records
+    /// again.
+    #[tokio::test(start_paused = true)]
+    async fn a_line_is_held_through_an_output_outage_not_dropped() {
+        use scalo::transport::{MemoryConfig, MemoryTransport, TransportReceiver, TransportSender};
+
+        let output = Arc::new(
+            MemoryTransport::new(&MemoryConfig {
+                buffer_size: 1,
+                ..MemoryConfig::default()
+            })
+            .expect("memory transport"),
+        );
+        // The one slot taken: every send is backpressured until it is read.
+        assert!(matches!(
+            TransportSender::send(&*output, "filler", Bytes::from_static(b"{}")).await,
+            scalo::transport::SendResult::Ok
+        ));
+        let (ext, metrics) = extractor_over(Some(&output), CancellationToken::new());
+        let ext = Arc::new(ext);
+        let held = tokio::spawn({
+            let ext = Arc::clone(&ext);
+            async move { ext.deliver_counted(r#"{"n":1}"#).await }
+        });
+
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert!(!held.is_finished(), "still held 30 s into the outage");
+        assert_eq!(metrics.extractor_records_failed(), 0, "nothing dropped");
+
+        let filler = output.recv(1).await.expect("recv");
+        assert_eq!(filler.records.len(), 1, "the outage ends");
+        assert!(
+            held.await.expect("joined"),
+            "delivered once the output takes records again"
+        );
+        let batch = output.recv(10).await.expect("recv");
+        assert_eq!(batch.records.len(), 1);
+        let row: serde_json::Value =
+            serde_json::from_slice(&batch.records[0].payload).expect("json");
+        assert_eq!(row["n"], 1);
+        assert_eq!(metrics.extractor_records_failed(), 0);
     }
 
     /// A line the outputs refuse cannot be read again from the pipe: it is

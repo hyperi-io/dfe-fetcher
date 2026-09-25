@@ -181,9 +181,17 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
 }
 
 /// How long shutdown waits for the extractors to deliver what they hold before
-/// the outputs close: inside Kubernetes' 30 s grace period after the runtime's
-/// 5 s pre-stop delay.
+/// the outputs close. After the runtime's 5 s pre-stop delay it fits the 45 s
+/// termination grace the DFE charts give (`dfe-common.terminationGrace`) with
+/// room for the final flush, and Kubernetes' 30 s default too.
 pub const INTAKE_DRAIN_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Least time between two logs of a DLQ fault that repeats every write.
+const DLQ_LOG_EVERY_MS: u64 = 5_000;
+/// When a dead letter no DLQ backend can hold was last logged.
+static DLQ_REFUSED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// When a failed DLQ write was last logged.
+static DLQ_WRITE_FAILED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One record for the dead-letter queue.
 #[derive(Debug, Clone)]
@@ -196,15 +204,21 @@ pub struct DeadLetter {
     pub reason: String,
 }
 
-/// An intake that answers only once its records are delivered or held by the
-/// DLQ, in the shape scalo's guarantee reads: a scheduled source advances its
-/// cursor then (`Pull`), the ingest listener answers then (`Push`).
+/// An intake's acknowledgement in the shape scalo's guarantee reads. Enabled,
+/// it answers only once its records are delivered or held by the DLQ: a
+/// scheduled source advances its cursor then (`Pull`), the ingest listener
+/// answers then (`Push`).
 #[derive(Debug, Clone, Copy)]
-pub struct HeldUntilDelivered(pub AckKind);
+pub struct IntakeAcks {
+    /// How the intake acknowledges.
+    pub kind: AckKind,
+    /// Whether it holds its acknowledgement until delivery.
+    pub enabled: bool,
+}
 
-impl AckControl for HeldUntilDelivered {
+impl AckControl for IntakeAcks {
     fn enabled(&self) -> bool {
-        true
+        self.enabled
     }
 
     fn arm(&self) {}
@@ -214,7 +228,7 @@ impl AckControl for HeldUntilDelivered {
     }
 
     fn kind(&self) -> AckKind {
-        self.0
+        self.kind
     }
 
     fn held(&self) -> HeldAcks {
@@ -226,8 +240,13 @@ impl AckControl for HeldUntilDelivered {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum DeadLettered {
-    /// A DLQ backend confirmed it holds every record.
-    Held,
+    /// A DLQ backend confirmed it holds every record it could take. The
+    /// `dropped` ones no backend can ever hold (over every ceiling) were left
+    /// out and counted in `pipeline_dead_letters_dropped_total`.
+    Held {
+        /// Records no DLQ backend can hold.
+        dropped: u64,
+    },
     /// No DLQ is configured, so nothing holds them.
     NoQueue,
 }
@@ -513,28 +532,49 @@ impl PipelineState {
     /// Write `letters` to the dead-letter queue and wait until a backend holds
     /// every one, so a caller counts a record handled only once it is durable.
     ///
+    /// A letter no backend can ever hold (scalo's `Dlq::refusal`: over the
+    /// Kafka DLQ's ceiling once encoded) is left out of the write and counted
+    /// dropped, since no retry could land it and it would hold its source for
+    /// good.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Dlq`] when the DLQ refused the write or could not
-    /// confirm it, and nothing in `letters` may then be counted as handled.
+    /// confirm it. That can clear, so nothing in `letters` may then be counted
+    /// as handled, and the caller holds and retries.
     pub async fn dead_letter(&self, letters: Vec<DeadLetter>) -> Result<DeadLettered> {
         let Some(dlq) = self.dlq.as_ref().filter(|d| d.is_enabled()) else {
             return Ok(DeadLettered::NoQueue);
         };
-        if letters.is_empty() {
-            return Ok(DeadLettered::Held);
+        let mut dropped = 0;
+        let mut held = Vec::with_capacity(letters.len());
+        let mut entries = Vec::with_capacity(letters.len());
+        for letter in letters {
+            let entry = DlqEntry::new("dfe-fetcher", &letter.reason, letter.payload.to_vec())
+                .with_destination(&*letter.topic);
+            if let Some(refusal) = dlq.refusal(&entry) {
+                dropped += 1;
+                self.metrics.add_dead_letters_dropped(refusal.as_str(), 1);
+                if scalo::logger::log_debounced(&DLQ_REFUSED_WARNED_AT, DLQ_LOG_EVERY_MS) {
+                    warn!(
+                        topic = %letter.topic,
+                        reason = %letter.reason,
+                        refusal = %refusal,
+                        "A dead letter no DLQ backend can hold was dropped. Counted in \
+                         pipeline_dead_letters_dropped_total"
+                    );
+                }
+            } else {
+                entries.push(entry);
+                held.push(letter);
+            }
         }
-        let entries = letters
-            .iter()
-            .map(|l| {
-                DlqEntry::new("dfe-fetcher", &l.reason, l.payload.to_vec())
-                    .with_destination(&*l.topic)
-            })
-            .collect();
+        if entries.is_empty() {
+            return Ok(DeadLettered::Held { dropped });
+        }
+        let letters = held;
         if let Err(dlq_err) = dlq.write_confirmed(entries).await {
-            use std::sync::atomic::AtomicU64;
-            static DLQ_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
-            if scalo::logger::log_debounced(&DLQ_DEBOUNCE, 5_000) {
+            if scalo::logger::log_debounced(&DLQ_WRITE_FAILED_AT, DLQ_LOG_EVERY_MS) {
                 error!(
                     error = %dlq_err,
                     records = letters.len(),
@@ -559,19 +599,16 @@ impl PipelineState {
                 }
             }
         }
-        Ok(DeadLettered::Held)
+        Ok(DeadLettered::Held { dropped })
     }
 
-    /// Publish `pipeline_delivery_guarantee{intake, guarantee, reason}` for one
-    /// intake, whose source acknowledgement is `source` (`None` for one that
-    /// holds nothing, such as a container's stdout), against what the outputs
-    /// confirm.
-    ///
-    /// scalo's `EffectiveGuarantee::publish` carries no intake label, and the
-    /// fetcher's intakes give different guarantees.
+    /// Publish `pipeline_delivery_guarantee{listener, guarantee, reason}`
+    /// through scalo's `EffectiveGuarantee::publish_for` for one intake, whose
+    /// source acknowledgement is `source` (`None` for one that holds nothing,
+    /// such as a container's stdout), against what the outputs confirm.
     pub fn publish_guarantee(
         &self,
-        intake: &'static str,
+        listener: &str,
         source: Option<&dyn AckControl>,
     ) -> EffectiveGuarantee {
         let sink = self
@@ -579,16 +616,7 @@ impl PipelineState {
             .as_ref()
             .map_or(SinkConfirmation::None, |o| o.confirms_delivery());
         let effective = EffectiveGuarantee::of(source, sink);
-        let guarantee = effective.guarantee.as_str();
-        let reason = effective.reason.as_str();
-        metrics::gauge!(
-            "pipeline_delivery_guarantee",
-            "intake" => intake,
-            "guarantee" => guarantee,
-            "reason" => reason
-        )
-        .set(1.0);
-        info!(intake, guarantee, reason, "Intake delivery guarantee");
+        effective.publish_for(listener);
         effective
     }
 
@@ -1131,7 +1159,7 @@ mod tests {
                 .dead_letter(vec![letter(1), letter(2)])
                 .await
                 .expect("held"),
-            DeadLettered::Held
+            DeadLettered::Held { dropped: 0 }
         );
         let lines = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
             .expect("the DLQ file");
@@ -1147,6 +1175,62 @@ mod tests {
         assert_eq!(
             without.dead_letter(vec![letter(4)]).await.expect("no DLQ"),
             DeadLettered::NoQueue
+        );
+    }
+
+    /// A dead letter over the only DLQ backend's ceiling can never be held,
+    /// so it is dropped and counted instead of failing the write on every
+    /// attempt and holding its source for good.
+    #[tokio::test]
+    async fn a_dead_letter_no_dlq_backend_can_hold_is_dropped_and_counted() {
+        let recorder = crate::metrics::recorded::Recorder::new();
+        let _recording = recorder.install();
+        // Nothing listens here: the ceiling is the producer's own.
+        let mut kafka = scalo::transport::KafkaConfig {
+            brokers: vec!["127.0.0.1:1".into()],
+            group: String::new(),
+            ..scalo::transport::KafkaConfig::default()
+        };
+        kafka.sizing.producer.message_max_bytes = Some(2_000);
+        let mut dlq_config = Config::default().dlq;
+        dlq_config.enabled = true;
+        dlq_config.mode = scalo::dlq::DlqMode::KafkaOnly;
+        dlq_config.file.enabled = false;
+        dlq_config.kafka.enabled = true;
+        dlq_config.kafka.send_timeout_ms = 300;
+        let dlq = Dlq::spawn(
+            &dlq_config,
+            "dfe-fetcher",
+            Some(&kafka),
+            CancellationToken::new(),
+        )
+        .expect("dlq");
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::for_tests_with_dlq(
+            SharedConfig::new(Config::default()),
+            Arc::clone(&metrics),
+            None,
+            dlq,
+        );
+        let big = DeadLetter {
+            topic: Arc::from("t_land"),
+            payload: Bytes::from(vec![b'x'; 4_000]),
+            reason: "refused".into(),
+        };
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), state.dead_letter(vec![big]))
+            .await
+            .expect("answered at once, not held")
+            .expect("a refusal is not a DLQ failure");
+
+        assert_eq!(outcome, DeadLettered::Held { dropped: 1 });
+        assert_eq!(metrics.dead_letters_dropped(), 1);
+        assert_eq!(
+            recorder.counter(
+                "pipeline_dead_letters_dropped_total",
+                &[("reason", "too_large")]
+            ),
+            Some(1)
         );
     }
 

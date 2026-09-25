@@ -12,7 +12,8 @@
 //! server, which delivers it through the extractor sink to the outputs. A
 //! POST is never held for the output: when the pipeline is not ready or the
 //! record is backpressured the answer is `503` with `Retry-After` at once,
-//! so the client backs off and re-sends.
+//! so the client backs off and re-sends. With `ingest.acknowledgements` off,
+//! a ready pipeline answers `200` at once and delivers the record after.
 //!
 //! ## Endpoints
 //!
@@ -28,6 +29,7 @@
 //! always exempt (K8s probes need unauthenticated access).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::Router;
 use axum::body::{Body, Bytes};
@@ -38,21 +40,30 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use scalo::http_server::{HttpServer, HttpServerConfig};
 use scalo::logger::security;
+use scalo::transport::{AckKind, AcknowledgementsConfig};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::IngestConfig;
 use crate::error::Error;
 use crate::extractor::ExtractorSink;
-use crate::metrics::Metrics;
-use crate::pipeline::{HeldUntilDelivered, PipelineState};
+use crate::metrics::{ExtractorFailure, Metrics};
+use crate::pipeline::{IntakeAcks, PipelineState};
 
 /// What a refused client is told to wait before re-sending, in seconds.
 const RETRY_AFTER_SECS: &str = "5";
 
+/// Records delivered after their POST was answered that failed, for the
+/// sampled log.
+static DROPPED_AFTER_ANSWER: AtomicU64 = AtomicU64::new(0);
+
 /// Shared state for the ingest server.
 struct IngestState {
     sink: ExtractorSink,
+    /// With `acknowledgements` off, the sink a record is delivered through
+    /// after its POST is answered: it holds a backpressured record for the
+    /// emitter's retries, since no client is waiting.
+    after_answer: Option<ExtractorSink>,
     metrics: Arc<Metrics>,
     /// Resolved bearer token. `None` means no authentication required.
     auth_token: Option<String>,
@@ -64,18 +75,45 @@ impl IngestState {
         pipeline: Arc<PipelineState>,
         metrics: Arc<Metrics>,
         auth_token: Option<String>,
+        acknowledgements: AcknowledgementsConfig,
     ) -> Self {
         Self {
-            sink: ExtractorSink::immediate(pipeline, Arc::clone(&metrics)),
+            sink: ExtractorSink::immediate(Arc::clone(&pipeline), Arc::clone(&metrics)),
+            after_answer: (!acknowledgements.enabled)
+                .then(|| ExtractorSink::new(pipeline, Arc::clone(&metrics))),
             metrics,
             auth_token,
         }
     }
 
+    /// Answer a POST at once and deliver its record after, on the intake
+    /// tracker so shutdown waits for it. A failure is counted dropped.
+    fn deliver_after_answer(&self, sink: &ExtractorSink, source: &str, topic: &str, body: Bytes) {
+        let sink = sink.clone();
+        let metrics = Arc::clone(&self.metrics);
+        let (source, topic) = (source.to_owned(), topic.to_owned());
+        self.sink.state().intake().spawn(async move {
+            if let Err(e) = sink.deliver(&source, "ingest", &topic, body).await {
+                metrics.add_extractor_records_failed("ingest", ExtractorFailure::Dropped, 1);
+                if scalo::logger::log_sampled(&DROPPED_AFTER_ANSWER, 100) {
+                    error!(
+                        source,
+                        topic,
+                        error = %e,
+                        dropped = DROPPED_AFTER_ANSWER.load(Ordering::Relaxed),
+                        "An answered ingest record was not delivered and is lost \
+                         (acknowledgements are off; sampled 1/100)"
+                    );
+                }
+            }
+        });
+    }
+
     /// Deliver one POSTed record and answer the client: `200` when the
     /// output took it, `503` with `Retry-After` at once when the pipeline
     /// is not ready or the output is backpressured, `503` for any other
-    /// failure.
+    /// failure. With `acknowledgements` off, `200` once a ready pipeline has
+    /// the record, delivered after.
     async fn ingest(&self, source: &str, topic: &str, body: Bytes) -> Response {
         let start = std::time::Instant::now();
         if body.is_empty() {
@@ -85,7 +123,14 @@ impl IngestState {
         }
         debug!(source, topic, bytes = body.len(), "Ingest received");
         self.metrics.add_records_fetched(1);
-        let outcome = if self.sink.state().is_ready() {
+        let ready = self.sink.state().is_ready();
+        if ready && let Some(after_answer) = &self.after_answer {
+            self.deliver_after_answer(after_answer, source, topic, body);
+            self.metrics.record_ingest_duration(start.elapsed());
+            self.metrics.inc_ingest_request("success");
+            return StatusCode::OK.into_response();
+        }
+        let outcome = if ready {
             self.sink.deliver(source, "ingest", topic, body).await
         } else {
             Err(Error::Backpressured("pipeline not ready".into()))
@@ -194,10 +239,14 @@ pub async fn run_ingest_server(
         info!("Ingest server disabled");
         return Ok(());
     }
-    // A POST is answered only once its record is delivered or dead-lettered.
+    // With acknowledgements on, a POST is answered only once its record is
+    // delivered or dead-lettered.
     pipeline.publish_guarantee(
         "ingest",
-        Some(&HeldUntilDelivered(scalo::transport::AckKind::Push)),
+        Some(&IntakeAcks {
+            kind: AckKind::Push,
+            enabled: config.acknowledgements.enabled,
+        }),
     );
 
     let resolved_token = match config.auth_token.as_deref() {
@@ -215,7 +264,12 @@ pub async fn run_ingest_server(
         }
     };
 
-    let state = Arc::new(IngestState::new(pipeline, metrics, resolved_token));
+    let state = Arc::new(IngestState::new(
+        pipeline,
+        metrics,
+        resolved_token,
+        config.acknowledgements,
+    ));
 
     let app = Router::new()
         .route("/ingest/{source}", post(handle_ingest))
@@ -288,6 +342,15 @@ mod tests {
         output: Option<crate::output::OutputManager>,
         auth_token: Option<String>,
     ) -> (Router, Arc<PipelineState>) {
+        test_app_acks(output, auth_token, AcknowledgementsConfig::default())
+    }
+
+    /// The test app over `output`, answering as `acknowledgements` says.
+    fn test_app_acks(
+        output: Option<crate::output::OutputManager>,
+        auth_token: Option<String>,
+        acknowledgements: AcknowledgementsConfig,
+    ) -> (Router, Arc<PipelineState>) {
         let config = Config::default();
         let shared = SharedConfig::new(config);
         let metrics = Arc::new(Metrics::new());
@@ -296,7 +359,12 @@ mod tests {
             Arc::clone(&metrics),
             output,
         ));
-        let state = Arc::new(IngestState::new(pipeline.clone(), metrics, auth_token));
+        let state = Arc::new(IngestState::new(
+            pipeline.clone(),
+            metrics,
+            auth_token,
+            acknowledgements,
+        ));
 
         let app = Router::new()
             .route("/ingest/{source}", post(handle_ingest))
@@ -406,6 +474,58 @@ mod tests {
             "one pass, no retry backoff: {:?}",
             started.elapsed()
         );
+    }
+
+    /// With acknowledgements off, a POST is answered `200` at once even while
+    /// the output is backpressured, and its record is delivered after, once
+    /// the output takes records again.
+    #[tokio::test]
+    async fn with_acknowledgements_off_a_post_is_answered_at_once_and_delivered_after() {
+        use scalo::transport::{MemoryConfig, MemoryTransport, TransportReceiver, TransportSender};
+
+        let transport = Arc::new(
+            MemoryTransport::new(&MemoryConfig {
+                buffer_size: 1,
+                ..MemoryConfig::default()
+            })
+            .expect("memory transport"),
+        );
+        // The one slot taken: every send is backpressured until it is read.
+        assert!(matches!(
+            TransportSender::send(&*transport, "filler", Bytes::from_static(b"{}")).await,
+            scalo::transport::SendResult::Ok
+        ));
+        let (app, _) = test_app_acks(
+            Some(crate::output::OutputManager::memory(Arc::clone(&transport))),
+            None,
+            AcknowledgementsConfig::new(false),
+        );
+
+        let started = std::time::Instant::now();
+        let response = post_event(app, "/ingest/second").await;
+        assert_eq!(response.status(), StatusCode::OK, "answered, not refused");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "answered before delivery: {:?}",
+            started.elapsed()
+        );
+
+        let filler = transport.recv(1).await.expect("recv");
+        assert_eq!(filler.records.len(), 1);
+        let second = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let batch = transport.recv(1).await.expect("recv");
+                if !batch.records.is_empty() {
+                    return batch;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("delivered once the channel frees");
+        let row: serde_json::Value =
+            serde_json::from_slice(&second.records[0].payload).expect("json");
+        assert_eq!(row["_source"], "second");
     }
 
     /// Backward-compatible helper: no auth configured.

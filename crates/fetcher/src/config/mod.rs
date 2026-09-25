@@ -4361,7 +4361,15 @@ pub struct IngestConfig {
     /// Bearer token for authentication (credential resolver format).
     /// Empty or absent = no auth (backward compatible, logs warning).
     #[serde(default)]
+    #[schemars(extend("x-dfe-secret" = true, "writeOnly" = true))]
     pub auth_token: Option<String>,
+
+    /// When a POST is answered. Enabled (the default), only once its record
+    /// is delivered to the outputs or confirmed in the DLQ, and `503` with
+    /// `Retry-After` otherwise so the client re-sends. Disabled, a POST is
+    /// answered `200` as soon as it is accepted and delivered after, so a
+    /// failed delivery or a crash loses it.
+    pub acknowledgements: AcknowledgementsConfig,
 }
 
 impl Default for IngestConfig {
@@ -4374,6 +4382,7 @@ impl Default for IngestConfig {
             bind_address: "0.0.0.0:8080".to_string(),
             max_body_size: 10 * 1024 * 1024, // 10MB
             auth_token: None,
+            acknowledgements: AcknowledgementsConfig::default(),
         }
     }
 }

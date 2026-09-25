@@ -37,11 +37,17 @@ use dfe_fetcher_core::error::{Error, Result};
 /// File extension for cursor files.
 const CURSOR_EXTENSION: &str = "cursor.json";
 
+/// Least time between two warnings that a write was not persisted: a
+/// read-only store stays so for the life of the process.
+const READ_ONLY_WARN_EVERY_MS: u64 = 60_000;
+
 /// File-based cursor store -- one `.cursor.json` file per key in a directory.
 pub struct FileCursorStore {
     directory: PathBuf,
     cache: RwLock<HashMap<String, CursorValue>>,
     read_only: bool,
+    /// When a write the read-only store could not persist was last warned of.
+    read_only_warned_at: std::sync::atomic::AtomicU64,
 }
 
 impl FileCursorStore {
@@ -64,6 +70,7 @@ impl FileCursorStore {
                 directory: dir_path,
                 cache: RwLock::new(HashMap::new()),
                 read_only: true,
+                read_only_warned_at: std::sync::atomic::AtomicU64::new(0),
             });
         }
 
@@ -131,6 +138,7 @@ impl FileCursorStore {
             directory: dir_path,
             cache: RwLock::new(cache),
             read_only,
+            read_only_warned_at: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -209,10 +217,13 @@ impl CursorStore for FileCursorStore {
         }
 
         if self.read_only {
-            warn!(
-                key,
-                "Cursor store is read-only, cache updated but not persisted to disk"
-            );
+            if scalo::logger::log_debounced(&self.read_only_warned_at, READ_ONLY_WARN_EVERY_MS) {
+                warn!(
+                    key,
+                    "Cursor store is read-only, cache updated but not persisted to disk \
+                     (logged at most once a minute)"
+                );
+            }
             return Ok(());
         }
 
@@ -374,6 +385,27 @@ mod tests {
 
         // File uses normalised name
         assert!(tmp.path().join("aws.cloudtrail.cursor.json").exists());
+    }
+
+    /// A read-only store warns that a write was not persisted once in its
+    /// window, not on every write.
+    #[tokio::test]
+    async fn a_read_only_store_warns_of_unpersisted_writes_once_in_its_window() {
+        let warnings = crate::logged::Events::at(tracing::Level::WARN, "dfe_fetcher::cursor::file");
+        let _guard = tracing::subscriber::set_default(warnings.clone());
+        let store = FileCursorStore::new("/proc/nonexistent/cursors").unwrap();
+        let construction = warnings.count();
+
+        for i in 0..3 {
+            let key = format!("test.key{i}");
+            store.set(&key, &make_cursor(&key)).await.unwrap();
+        }
+
+        assert_eq!(
+            warnings.count() - construction,
+            1,
+            "one WARN for three writes"
+        );
     }
 
     #[tokio::test]

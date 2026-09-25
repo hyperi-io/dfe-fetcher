@@ -1195,14 +1195,16 @@ mod tests {
         );
     }
 
-    /// Each intake reports its guarantee against what the outputs confirm. A
-    /// gRPC output confirms remotely, so a scheduled source, whose cursor
-    /// waits on delivery, is at-least-once, and a container's stdout, which
-    /// holds nothing, is best effort. An in-process output confirms nothing.
+    /// Each intake reports its guarantee under its own `listener` label
+    /// against what the outputs confirm. A gRPC output confirms remotely, so a
+    /// scheduled source, whose cursor waits on delivery, is at-least-once; an
+    /// ingest listener with acknowledgements off, and a container's stdout,
+    /// which holds nothing, are best effort. An in-process output confirms
+    /// nothing.
     #[tokio::test]
     async fn each_intake_reports_its_delivery_guarantee() {
         use crate::metrics::recorded::{Recorder, carries};
-        use crate::pipeline::HeldUntilDelivered;
+        use crate::pipeline::IntakeAcks;
         use scalo::transport::AckKind;
 
         let recorder = Recorder::new();
@@ -1217,19 +1219,27 @@ mod tests {
         assert_eq!(grpc.confirms_delivery(), SinkConfirmation::Remote);
         let (sink, _) = Box::pin(sink_over(config)).await;
 
+        let held = |kind, enabled| IntakeAcks { kind, enabled };
         sink.state()
-            .publish_guarantee("scheduled", Some(&HeldUntilDelivered(AckKind::Pull)));
+            .publish_guarantee("scheduled", Some(&held(AckKind::Pull, true)));
+        sink.state()
+            .publish_guarantee("ingest", Some(&held(AckKind::Push, false)));
         sink.state().publish_guarantee("container", None);
 
         let raised = recorder.raised_gauges("pipeline_delivery_guarantee");
         for wanted in [
             [
-                ("intake", "scheduled"),
+                ("listener", "scheduled"),
                 ("guarantee", "at_least_once"),
                 ("reason", "confirmed"),
             ],
             [
-                ("intake", "container"),
+                ("listener", "ingest"),
+                ("guarantee", "best_effort"),
+                ("reason", "acks_disabled"),
+            ],
+            [
+                ("listener", "container"),
                 ("guarantee", "best_effort"),
                 ("reason", "source_cannot_ack"),
             ],

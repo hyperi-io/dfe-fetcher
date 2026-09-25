@@ -802,16 +802,14 @@ impl Metrics {
     /// one.
     ///
     /// Emits `pipeline_dead_letters_dropped_total{reason}`, the series scalo's
-    /// run loops count their own dropped dead letters in.
+    /// run loops count their own dropped dead letters in. `reason` is a
+    /// [`DroppedDeadLetter`] label, or scalo's own for a refusal it named.
     #[inline]
-    pub fn add_dead_letters_dropped(&self, reason: DroppedDeadLetter, count: u64) {
+    pub fn add_dead_letters_dropped(&self, reason: &'static str, count: u64) {
         self.dead_letters_dropped_total
             .fetch_add(count, Ordering::Relaxed);
-        metrics::counter!(
-            "pipeline_dead_letters_dropped_total",
-            "reason" => reason.as_str()
-        )
-        .increment(count);
+        metrics::counter!("pipeline_dead_letters_dropped_total", "reason" => reason)
+            .increment(count);
     }
 
     /// Dead letters dropped with nowhere to go, across every reason.

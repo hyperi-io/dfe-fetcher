@@ -196,9 +196,10 @@ impl Emitter {
     }
 
     /// Dead-letter the round's refused records in one confirmed write, so a
-    /// record counts as handled only once the DLQ holds it. With no DLQ
-    /// configured the refusal is still permanent, so they are dropped and
-    /// counted rather than refetched for ever.
+    /// record counts as handled only once the DLQ holds it. A refusal is
+    /// permanent, so a record with nowhere to go -- no DLQ configured, or one
+    /// no DLQ backend can hold -- is dropped and counted rather than refetched
+    /// for ever.
     async fn dead_letter(&self, refused: Vec<DeadLetter>, report: &mut EmitReport) -> Result<()> {
         if refused.is_empty() {
             return Ok(());
@@ -207,14 +208,15 @@ impl Emitter {
         let first_topic = Arc::clone(&refused[0].topic);
         let first_reason = refused[0].reason.clone();
         match self.state.dead_letter(refused).await {
-            Ok(DeadLettered::Held) => {
-                report.dead_lettered += count;
+            Ok(DeadLettered::Held { dropped }) => {
+                report.dead_lettered += count - dropped;
+                report.dropped += dropped;
                 Ok(())
             }
             Ok(DeadLettered::NoQueue) => {
                 report.dropped += count;
                 self.metrics
-                    .add_dead_letters_dropped(DroppedDeadLetter::TransportRefused, count);
+                    .add_dead_letters_dropped(DroppedDeadLetter::TransportRefused.as_str(), count);
                 if scalo::logger::log_debounced(&DROPPED_WARNED_AT, DROPPED_WARN_EVERY_MS) {
                     warn!(
                         records = count,
