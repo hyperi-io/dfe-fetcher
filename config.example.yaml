@@ -791,12 +791,15 @@ extractors:
     # - name: syslog-collector
     #   mode: container
     #   image: timberio/vector:latest-alpine
+    #   # Written to a file mounted read-only into the container, read with
+    #   # --config, removed at stop. Or name a file with vector_config_path.
     #   vector_config: |
     #     [sources.syslog]
     #     type = "syslog"
     #     address = "0.0.0.0:514"
     #     [sinks.dfe]
     #     type = "vector"
+    #     inputs = ["syslog"]
     #     address = "dfe-fetcher:6000"
     #   topic: syslog
     # - name: firewall

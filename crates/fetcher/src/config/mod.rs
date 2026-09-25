@@ -4244,10 +4244,15 @@ pub struct VectorInstance {
     /// Container image for container mode.
     pub image: Option<String>,
 
-    /// Vector configuration (inline TOML/YAML).
+    /// Inline Vector configuration, TOML or YAML, for container mode. It is
+    /// written to a file in a private temporary directory (`.yaml` when it
+    /// parses as a YAML mapping, else `.toml`), mounted read-only, passed to
+    /// Vector with `--config`, and removed when the fetcher stops.
     pub vector_config: Option<String>,
 
-    /// Path to Vector configuration file.
+    /// Path, on the container runtime's host, to a Vector configuration file
+    /// for container mode. It is mounted read-only under its own file name,
+    /// whose extension tells Vector its format, and passed with `--config`.
     pub vector_config_path: Option<String>,
 
     /// Output topic (before the suffix) for the events this instance pushes.

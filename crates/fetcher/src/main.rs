@@ -716,14 +716,16 @@ async fn run_fetcher_service(
     }
 
     // Run pipeline orchestrator (blocks until shutdown)
-    if let Err(e) = orchestrator.run().await {
-        error!(error = %e, "Pipeline error");
-        std::process::exit(1);
-    }
+    let run = orchestrator.run().await;
 
-    // Cleanup
+    // Before any exit: process::exit skips drops, leaving the managed Vector
+    // containers running and their inline configs on disk.
     if let Err(e) = vector_manager.stop().await {
         warn!(error = %e, "Error stopping Vector manager");
+    }
+    if let Err(e) = run {
+        error!(error = %e, "Pipeline error");
+        std::process::exit(1);
     }
 
     info!("Shutdown complete");

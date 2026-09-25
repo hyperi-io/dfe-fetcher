@@ -36,8 +36,12 @@
 //!
 //! ## Modes
 //!
-//! 1. **Container mode** -- Vector runs as a managed container, configured via
-//!    a generated `vector.toml`. Data flows: external source -> Vector -> gRPC -> fetcher.
+//! 1. **Container mode** -- Vector runs as a managed container. Data flows:
+//!    external source -> Vector -> gRPC -> fetcher. An inline `vector_config`
+//!    is written to a file in a private temporary directory, mounted read-only
+//!    and removed at stop. A `vector_config_path` is mounted read-only under
+//!    its own file name. Vector is started with `--config` naming each file,
+//!    and picks each one's format from its extension.
 //!
 //! 2. **Sidecar mode** -- Vector runs alongside the fetcher (e.g., in same pod),
 //!    connecting to the fetcher's gRPC endpoint.
@@ -59,6 +63,7 @@
 //!           address = "0.0.0.0:514"
 //!           [sinks.dfe]
 //!           type = "vector"
+//!           inputs = ["syslog"]
 //!           address = "host.docker.internal:6000"
 //!         topic: syslog
 //!       - name: firewall
@@ -69,8 +74,10 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use scalo::governor::UnifiedPressure;
 use scalo::transport::ack::HOLD_RELEASE_MARGIN;
 use scalo::transport::{
@@ -80,7 +87,7 @@ use scalo::transport::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::VectorExtractorConfig;
+use crate::config::{VectorExtractorConfig, VectorInstance};
 use crate::emit::EmitReport;
 use crate::error::{Error, Result};
 use crate::extractor::ExtractorSink;
@@ -89,6 +96,24 @@ use crate::pipeline::PipelineState;
 
 /// Most events one receive takes off the queue.
 const RECV_MAX: usize = 100;
+
+/// Where a managed instance's inline config is mounted inside its container.
+const INLINE_CONFIG_DIR: &str = "/etc/vector/dfe-fetcher";
+
+/// Where a managed instance's `vector_config_path` is mounted inside its
+/// container, under the file's own name.
+const MOUNTED_CONFIG_DIR: &str = "/etc/vector";
+
+/// The file an inline config is written to in `dir`. Vector picks the format
+/// from the file name: YAML and JSON configs parse to a YAML mapping, and a
+/// TOML config's `[table]` lines do not.
+fn inline_config_file(dir: &Path, index: usize, config: &str) -> PathBuf {
+    let extension = match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(config) {
+        Ok(serde_yaml_ng::Value::Mapping(_)) => "yaml",
+        _ => "toml",
+    };
+    dir.join(format!("instance-{index}.{extension}"))
+}
 
 /// The DFE source name behind an output topic: the topic minus the suffix.
 ///
@@ -259,6 +284,11 @@ pub struct VectorManager {
     shutdown: CancellationToken,
     /// The fetcher's memory-pressure latch, shed on by every listener.
     pressure: Option<Arc<UnifiedPressure>>,
+    /// The container runtime managed instances run under.
+    runtime: String,
+    /// The private directory holding the managed instances' inline configs,
+    /// removed at stop.
+    config_dir: Mutex<Option<tempfile::TempDir>>,
 }
 
 impl VectorManager {
@@ -275,7 +305,16 @@ impl VectorManager {
             metrics,
             shutdown,
             pressure: None,
+            runtime: "docker".to_owned(),
+            config_dir: Mutex::new(None),
         }
+    }
+
+    /// Run managed instances under `runtime` instead of `docker`.
+    #[cfg(test)]
+    fn with_runtime(mut self, runtime: String) -> Self {
+        self.runtime = runtime;
+        self
     }
 
     /// Refuse pushes with `UNAVAILABLE` while `pressure` holds, as the other
@@ -293,12 +332,16 @@ impl VectorManager {
     /// # Errors
     ///
     /// Returns [`Error::Config`] when more than one instance shares the
-    /// shared listener, and [`Error::Source`] when a listener cannot bind.
+    /// shared listener, and [`Error::Source`] when an inline config cannot be
+    /// written or a listener cannot bind.
     pub async fn start(&self) -> Result<Vec<SocketAddr>> {
         if !self.config.enabled {
             return Ok(Vec::new());
         }
         let listeners = self.config.listeners()?;
+        // Written before anything binds, so a failed write leaves nothing
+        // started, and a failed bind drops the directory with its files.
+        let config_dir = self.write_inline_configs()?;
 
         info!(
             grpc_bind = %self.config.grpc_bind_address,
@@ -315,12 +358,18 @@ impl VectorManager {
             transports.push(self.listen(&listener.bind_address).await?);
         }
 
-        // Start managed container instances
-        for instance in &self.config.instances {
+        for (index, instance) in self.config.instances.iter().enumerate() {
             if instance.mode == "container" {
-                self.start_vector_container(instance);
+                let inline = config_dir.as_ref().and_then(|dir| {
+                    instance
+                        .vector_config
+                        .as_deref()
+                        .map(|config| inline_config_file(dir.path(), index, config))
+                });
+                self.start_vector_container(instance, inline.as_deref());
             }
         }
+        *self.config_dir.lock() = config_dir;
 
         let suffix = self.sink.state().config().topic_suffix().to_owned();
         let topic_map = self.build_topic_map();
@@ -381,8 +430,49 @@ impl VectorManager {
         map
     }
 
-    /// Start a managed Vector container instance.
-    fn start_vector_container(&self, instance: &crate::config::VectorInstance) {
+    /// Write each container instance's inline config to its file in a new
+    /// private temporary directory, or return `None` when no instance has one.
+    fn write_inline_configs(&self) -> Result<Option<tempfile::TempDir>> {
+        let inline: Vec<(usize, &VectorInstance, &str)> = self
+            .config
+            .instances
+            .iter()
+            .enumerate()
+            .filter(|(_, instance)| instance.mode == "container")
+            .filter_map(|(index, instance)| {
+                instance
+                    .vector_config
+                    .as_deref()
+                    .map(|config| (index, instance, config))
+            })
+            .collect();
+        if inline.is_empty() {
+            return Ok(None);
+        }
+        let dir = tempfile::Builder::new()
+            .prefix("dfe-fetcher-vector-")
+            .tempdir()
+            .map_err(|e| {
+                Error::Source(format!(
+                    "cannot create a directory for the Vector inline configs: {e}"
+                ))
+            })?;
+        for (index, instance, config) in inline {
+            let path = inline_config_file(dir.path(), index, config);
+            std::fs::write(&path, config).map_err(|e| {
+                Error::Source(format!(
+                    "cannot write Vector instance '{}' config to {}: {e}",
+                    instance.name,
+                    path.display()
+                ))
+            })?;
+        }
+        Ok(Some(dir))
+    }
+
+    /// Start a managed Vector container instance, reading its inline config
+    /// from `inline` and its `vector_config_path`, each mounted read-only.
+    fn start_vector_container(&self, instance: &VectorInstance, inline: Option<&Path>) {
         let image = instance
             .image
             .as_deref()
@@ -395,8 +485,6 @@ impl VectorManager {
             "Starting managed Vector instance"
         );
 
-        // Build vector config and start container
-        let runtime = "docker";
         let container_name = format!("dfe-fetcher-vector-{}", instance.name);
 
         let mut args = vec![
@@ -408,21 +496,37 @@ impl VectorManager {
             "managed-by=dfe-fetcher".to_string(),
         ];
 
-        // Pass vector config as environment variable if provided
-        if let Some(ref config_str) = instance.vector_config {
-            args.push("--env".to_string());
-            args.push(format!("VECTOR_CONFIG={config_str}"));
-        }
-
-        // Mount vector config file if path provided
-        if let Some(ref config_path) = instance.vector_config_path {
+        let mut config_files = Vec::new();
+        if let Some(host) = inline {
+            let file_name = host
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("vector.toml");
+            let in_container = format!("{INLINE_CONFIG_DIR}/{file_name}");
             args.push("-v".to_string());
-            args.push(format!("{config_path}:/etc/vector/vector.toml:ro"));
+            args.push(format!("{}:{in_container}:ro", host.display()));
+            config_files.push(in_container);
+        }
+        if let Some(ref config_path) = instance.vector_config_path {
+            let file_name = Path::new(config_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("vector.yaml");
+            let in_container = format!("{MOUNTED_CONFIG_DIR}/{file_name}");
+            args.push("-v".to_string());
+            args.push(format!("{config_path}:{in_container}:ro"));
+            config_files.push(in_container);
         }
 
         args.push(image.to_string());
+        // Arguments after the image go to Vector: with no --config it reads
+        // only /etc/vector/vector.yaml.
+        for file in config_files {
+            args.push("--config".to_string());
+            args.push(file);
+        }
 
-        let spawn_result = tokio::process::Command::new(runtime)
+        let spawn_result = tokio::process::Command::new(&self.runtime)
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -442,7 +546,7 @@ impl VectorManager {
         }
     }
 
-    /// Stop all managed Vector instances.
+    /// Stop all managed Vector instances, then remove their inline configs.
     pub async fn stop(&self) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
@@ -450,14 +554,21 @@ impl VectorManager {
 
         info!("Stopping Vector extractor manager");
 
-        // Stop managed containers
         for instance in &self.config.instances {
             if instance.mode == "container" {
                 let container_name = format!("dfe-fetcher-vector-{}", instance.name);
-                let _ = tokio::process::Command::new("docker")
+                let _ = tokio::process::Command::new(&self.runtime)
                     .args(["stop", "--time", "10", &container_name])
                     .output()
                     .await;
+            }
+        }
+
+        let config_dir = self.config_dir.lock().take();
+        if let Some(dir) = config_dir {
+            let path = dir.path().display().to_string();
+            if let Err(e) = dir.close() {
+                warn!(path = %path, error = %e, "Could not remove the Vector inline configs");
             }
         }
 
@@ -697,6 +808,136 @@ mod tests {
         assert!(
             err.to_string().contains("syslog-collector, firewall"),
             "{err}"
+        );
+    }
+
+    /// A container runtime stand-in: `run` appends every mounted file to
+    /// `seen`, which proves it readable at launch, then writes its arguments
+    /// to `args`, one per line. Every other command does nothing.
+    fn fake_runtime(dir: &Path, seen: &Path, args: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("runtime");
+        let script = format!(
+            r#"#!/bin/sh
+[ "$1" = run ] || exit 0
+for arg in "$@"; do
+  case "$arg" in *:/etc/vector/*) cat "${{arg%%:*}}" >> '{seen}' ;; esac
+done
+printf '%s\n' "$@" > '{args}.part'
+mv '{args}.part' '{args}'
+"#,
+            seen = seen.display(),
+            args = args.display(),
+        );
+        std::fs::write(&path, script).expect("write the runtime");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        path.display().to_string()
+    }
+
+    /// A managed instance's inline config reaches Vector as a file: written
+    /// under a name for its format, mounted read-only beside the
+    /// `vector_config_path` file, each named to Vector with `--config`, and
+    /// removed at stop.
+    #[tokio::test]
+    async fn an_inline_config_is_mounted_as_a_file_vector_reads_and_removed_at_stop() {
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seen = dir.path().join("seen");
+        let args_file = dir.path().join("args");
+        let inline = "[sources.syslog]\ntype = \"syslog\"\naddress = \"0.0.0.0:514\"\n\
+                      [sinks.dfe]\ntype = \"vector\"\ninputs = [\"syslog\"]\n\
+                      address = \"127.0.0.1:6000\"\n";
+        let mounted = dir.path().join("extra.yaml");
+        std::fs::write(&mounted, "data_dir: /var/lib/vector\n").expect("write the mounted file");
+        let mut config = receiver_config(true);
+        config.instances = vec![crate::config::VectorInstance {
+            mode: "container".into(),
+            vector_config: Some(inline.into()),
+            vector_config_path: Some(mounted.display().to_string()),
+            ..instance("syslog-collector", "syslog", None)
+        }];
+        let shutdown = CancellationToken::new();
+        let manager = VectorManager::new(config, state, metrics, shutdown.clone())
+            .with_runtime(fake_runtime(dir.path(), &seen, &args_file));
+
+        manager.start().await.expect("start");
+        let args = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(args) = std::fs::read_to_string(&args_file) {
+                    return args;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the runtime was run");
+        let args: Vec<&str> = args.lines().collect();
+
+        let mounts: Vec<&str> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-v")
+            .map(|pair| pair[1])
+            .collect();
+        let (host, in_container) = mounts[0].split_once(':').expect("host:container:ro");
+        assert_eq!(in_container, "/etc/vector/dfe-fetcher/instance-0.toml:ro");
+        assert_eq!(
+            mounts[1],
+            format!("{}:/etc/vector/extra.yaml:ro", mounted.display())
+        );
+        let image = args
+            .iter()
+            .position(|arg| *arg == "timberio/vector:latest-alpine")
+            .expect("the image");
+        assert_eq!(
+            args[image + 1..],
+            [
+                "--config",
+                "/etc/vector/dfe-fetcher/instance-0.toml",
+                "--config",
+                "/etc/vector/extra.yaml"
+            ],
+            "Vector is told to read both files"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("VECTOR_CONFIG")),
+            "{args:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&seen).expect("the runtime read the mounted files"),
+            format!("{inline}data_dir: /var/lib/vector\n")
+        );
+
+        manager.stop().await.expect("stop");
+        let host = Path::new(host);
+        assert!(!host.exists(), "the inline config is removed at stop");
+        assert!(
+            !host.parent().expect("its directory").exists(),
+            "and its directory with it"
+        );
+        assert!(mounted.exists(), "a vector_config_path file is left alone");
+        shutdown.cancel();
+    }
+
+    /// Vector picks a config's format from its file name, so an inline
+    /// config is written as `.yaml` when it parses as a YAML mapping (YAML or
+    /// JSON) and as `.toml` otherwise.
+    #[test]
+    fn an_inline_config_is_named_for_its_format() {
+        let dir = Path::new("/configs");
+        assert_eq!(
+            inline_config_file(dir, 0, "[sources.in]\ntype = \"stdin\"\n"),
+            dir.join("instance-0.toml")
+        );
+        assert_eq!(
+            inline_config_file(dir, 1, "sources:\n  in:\n    type: stdin\n"),
+            dir.join("instance-1.yaml")
+        );
+        assert_eq!(
+            inline_config_file(dir, 2, r#"{"sources": {"in": {"type": "stdin"}}}"#),
+            dir.join("instance-2.yaml")
         );
     }
 
