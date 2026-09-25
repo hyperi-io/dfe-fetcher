@@ -941,8 +941,9 @@ version_check:
 # be, so a source hours behind drains a span per tick instead of asking for the
 # whole backlog, and it is the lookback when no cursor exists.
 # Unset, the store falls back to the directory holding the config file.
-# A tick with no cursor to resume from is a cold start: it logs a WARN and
-# counts in dfe_fetcher_cursor_cold_start_total{source}. An empty store cannot
+# A tick with no cursor to resume from is a cold start: it counts in
+# dfe_fetcher_cursor_cold_start_total{source}, and the first one per source
+# logs a WARN (later ones log at DEBUG). An empty store cannot
 # tell a new source from a lost cursor (a directory with no volume behind it
 # loses every cursor on restart), so alert on cold starts of sources that have
 # run before. on_missing_cursor (hot-reloaded) decides what a cold start does:

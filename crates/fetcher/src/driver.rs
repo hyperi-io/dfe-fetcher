@@ -56,7 +56,7 @@ use crate::config::{Config, SharedConfig};
 use crate::emit::{EmitReport, Emitter};
 use crate::error::{Error, Result};
 use crate::json_unwrap::unwrap_nested_json;
-use crate::metrics::Metrics;
+use crate::metrics::{DroppedDeadLetter, Metrics};
 use crate::pipeline::{DeadLetter, DeadLettered, SourceNames};
 
 /// How long the driver waits between admission checks while held.
@@ -525,6 +525,8 @@ impl Driver {
         match self.emitter.state().dead_letter(vec![letter]).await? {
             DeadLettered::Held => {}
             DeadLettered::NoQueue => {
+                self.metrics
+                    .add_dead_letters_dropped(DroppedDeadLetter::TooLarge, 1);
                 debug!(source = self.name, unit = %unit.name, bytes = raw.len(), "oversize row dropped; no dead-letter queue");
             }
         }

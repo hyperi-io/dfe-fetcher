@@ -425,11 +425,21 @@ fn max_window_span(window_hours: u64, interval_secs: u64) -> chrono::Duration {
         .max(chrono::Duration::try_seconds(secs).unwrap_or(chrono::Duration::MAX))
 }
 
+/// Whether this is `source`'s first cold start in this process.
+///
+/// With no cursor store every tick is a cold start, so the WARN is logged once
+/// per source and the counter carries the rest.
+fn first_cold_start(source: &str) -> bool {
+    static WARNED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    WARNED.lock().insert(source.to_owned())
+}
+
 /// Build a `FetchWindow` from the cursor store. With no cursor to resume from
 /// -- none stored, a failed read, or no store at all -- the tick is a cold
 /// start: counted in `dfe_fetcher_cursor_cold_start_total{source}`, logged at
-/// WARN, and either widened to `now - max_span` or refused, as `on_missing`
-/// says.
+/// WARN the first time per source, and either widened to `now - max_span` or
+/// refused, as `on_missing` says.
 ///
 /// A window running on from a cursor is at most `max_span` wide, or
 /// `retry_span` wide when the last attempt failed, so a tick that fails is
@@ -503,14 +513,25 @@ async fn build_fetch_window(
     metrics.inc_cursor_cold_start(source_prefix);
     match on_missing {
         MissingCursor::Lookback => {
-            warn!(
-                source = source_prefix,
-                cursor_key,
-                cause = %cause,
-                lookback_secs = max_span.num_seconds(),
-                "Cursor cold start: fetching the default lookback window. A new source starts \
-                 this way; for an existing one, anything before the window is skipped"
-            );
+            if first_cold_start(source_prefix) {
+                warn!(
+                    source = source_prefix,
+                    cursor_key,
+                    cause = %cause,
+                    lookback_secs = max_span.num_seconds(),
+                    "Cursor cold start: fetching the default lookback window. A new source \
+                     starts this way; for an existing one, anything before the window is \
+                     skipped. Later cold starts of this source log at DEBUG and count in \
+                     dfe_fetcher_cursor_cold_start_total"
+                );
+            } else {
+                debug!(
+                    source = source_prefix,
+                    cursor_key,
+                    cause = %cause,
+                    "Cursor cold start: fetching the default lookback window"
+                );
+            }
             Ok(FetchWindow {
                 start: now - max_span,
                 end: now,
@@ -578,6 +599,7 @@ mod tests {
 
     use crate::driver::{DriverParts, Shape};
     use crate::emit::Emitter;
+    use crate::metrics::recorded::Recorder;
     use crate::pipeline::PipelineState;
     use dfe_fetcher_core::batch::AccumulateConfig;
     use dfe_fetcher_core::envelope::OversizePolicy;
@@ -798,45 +820,18 @@ mod tests {
         .expect("lookback never refuses a tick")
     }
 
-    /// A recorder shared by every test in this binary, so each reads the
-    /// labelled series under a source name of its own.
-    fn recorded() -> &'static metrics_util::debugging::Snapshotter {
-        static SNAPSHOTTER: std::sync::OnceLock<metrics_util::debugging::Snapshotter> =
-            std::sync::OnceLock::new();
-        SNAPSHOTTER.get_or_init(|| {
-            let recorder = metrics_util::debugging::DebuggingRecorder::new();
-            let snapshotter = recorder.snapshotter();
-            recorder
-                .install()
-                .expect("no other global recorder in the lib tests");
-            snapshotter
-        })
-    }
-
-    /// The cold starts counted for `source`, or `None` when it has none.
-    fn cold_starts(source: &str) -> Option<u64> {
-        recorded()
-            .snapshot()
-            .into_vec()
-            .into_iter()
-            .find_map(|(key, _, _, value)| {
-                let labelled = key.key().name() == "dfe_fetcher_cursor_cold_start_total"
-                    && key
-                        .key()
-                        .labels()
-                        .any(|l| l.key() == "source" && l.value() == source);
-                match value {
-                    metrics_util::debugging::DebugValue::Counter(n) if labelled => Some(n),
-                    _ => None,
-                }
-            })
+    /// The cold starts `recorder` counted for `source`, or `None` when it has
+    /// none.
+    fn cold_starts(recorder: &Recorder, source: &str) -> Option<u64> {
+        recorder.counter("dfe_fetcher_cursor_cold_start_total", &[("source", source)])
     }
 
     /// A source with no cursor is a cold start every time: it counts, and the
     /// default still fetches the lookback window so a new source starts.
     #[tokio::test]
     async fn a_missing_cursor_counts_a_cold_start_and_looks_back() {
-        recorded();
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
         let dir = tempfile::TempDir::new().unwrap();
         let store =
             crate::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
@@ -858,7 +853,7 @@ mod tests {
                 < 2,
             "the default fetches the lookback window"
         );
-        assert_eq!(cold_starts("fresh"), Some(1));
+        assert_eq!(cold_starts(&recorder, "fresh"), Some(1));
 
         lookback_window(
             Some(&store),
@@ -876,7 +871,8 @@ mod tests {
     /// data, and the miss is still counted.
     #[tokio::test]
     async fn refuse_fails_a_tick_with_no_cursor() {
-        recorded();
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
         let dir = tempfile::TempDir::new().unwrap();
         let store =
             crate::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
@@ -896,13 +892,14 @@ mod tests {
 
         assert!(matches!(err, Error::Cursor(_)), "{err:?}");
         assert!(err.to_string().contains("on_missing_cursor"), "{err}");
-        assert_eq!(cold_starts("lost"), Some(1));
+        assert_eq!(cold_starts(&recorder, "lost"), Some(1));
     }
 
     /// No store at all is a cold start too, refused under `refuse`.
     #[tokio::test]
     async fn refuse_fails_a_tick_with_no_cursor_store() {
-        recorded();
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
         let metrics = Metrics::new();
 
         let err = build_fetch_window(
@@ -918,7 +915,68 @@ mod tests {
         .expect_err("refuse fetches nothing without a store");
 
         assert!(err.to_string().contains("no cursor store"), "{err}");
-        assert_eq!(cold_starts("storeless"), Some(1));
+        assert_eq!(cold_starts(&recorder, "storeless"), Some(1));
+    }
+
+    /// Counts the WARN events the scheduler logs on this thread.
+    #[derive(Clone, Default)]
+    struct SchedulerWarnings(Arc<AtomicU64>);
+
+    impl tracing::Subscriber for SchedulerWarnings {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let meta = event.metadata();
+            if *meta.level() == tracing::Level::WARN && meta.target() == "dfe_fetcher::scheduler" {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// With no cursor store every tick is a cold start: each one counts, and
+    /// the WARN is logged once per source, not once a tick.
+    #[tokio::test]
+    async fn a_storeless_source_warns_of_its_cold_start_once() {
+        let warnings = SchedulerWarnings::default();
+        let _guard = tracing::subscriber::set_default(warnings.clone());
+        let metrics = Metrics::new();
+
+        for _ in 0..3 {
+            lookback_window(
+                None,
+                "inst.nostore",
+                chrono::Duration::hours(1),
+                None,
+                &metrics,
+                "nostore",
+            )
+            .await;
+        }
+        assert_eq!(warnings.0.load(Ordering::Relaxed), 1, "one WARN a source");
+        assert_eq!(metrics.cursor_cold_starts(), 3, "every tick still counts");
+
+        lookback_window(
+            None,
+            "inst.nostore-other",
+            chrono::Duration::hours(1),
+            None,
+            &metrics,
+            "nostore-other",
+        )
+        .await;
+        assert_eq!(
+            warnings.0.load(Ordering::Relaxed),
+            2,
+            "another source warns of its own"
+        );
     }
 
     /// A stored cursor is resumed under either setting and is no cold start.
@@ -926,7 +984,8 @@ mod tests {
     async fn a_stored_cursor_is_resumed_even_under_refuse() {
         use crate::cursor::file::FileCursorStore;
 
-        recorded();
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
         let dir = tempfile::TempDir::new().unwrap();
         let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
         let last_end = Utc::now() - chrono::Duration::minutes(10);
@@ -946,7 +1005,7 @@ mod tests {
         .expect("a stored cursor is resumed");
 
         assert_eq!(window.start, last_end);
-        assert_eq!(cold_starts("kept"), None);
+        assert_eq!(cold_starts(&recorder, "kept"), None);
     }
 
     #[tokio::test]

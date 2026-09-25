@@ -35,6 +35,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use scalo::dlq::{Dlq, DlqEntry};
 use scalo::logger::security;
+use scalo::transport::ack::EffectiveGuarantee;
+use scalo::transport::{AckControl, AckKind, HeldAcks, SinkConfirmation};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
@@ -192,6 +194,32 @@ pub struct DeadLetter {
     pub payload: Bytes,
     /// Why it was not sent.
     pub reason: String,
+}
+
+/// An intake that answers only once its records are delivered or held by the
+/// DLQ, in the shape scalo's guarantee reads: a scheduled source advances its
+/// cursor then (`Pull`), the ingest listener answers then (`Push`).
+#[derive(Debug, Clone, Copy)]
+pub struct HeldUntilDelivered(pub AckKind);
+
+impl AckControl for HeldUntilDelivered {
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    fn arm(&self) {}
+
+    fn is_armed(&self) -> bool {
+        true
+    }
+
+    fn kind(&self) -> AckKind {
+        self.0
+    }
+
+    fn held(&self) -> HeldAcks {
+        HeldAcks::default()
+    }
 }
 
 /// Where a dead-letter write ended up.
@@ -532,6 +560,36 @@ impl PipelineState {
             }
         }
         Ok(DeadLettered::Held)
+    }
+
+    /// Publish `pipeline_delivery_guarantee{intake, guarantee, reason}` for one
+    /// intake, whose source acknowledgement is `source` (`None` for one that
+    /// holds nothing, such as a container's stdout), against what the outputs
+    /// confirm.
+    ///
+    /// scalo's `EffectiveGuarantee::publish` carries no intake label, and the
+    /// fetcher's intakes give different guarantees.
+    pub fn publish_guarantee(
+        &self,
+        intake: &'static str,
+        source: Option<&dyn AckControl>,
+    ) -> EffectiveGuarantee {
+        let sink = self
+            .output
+            .as_ref()
+            .map_or(SinkConfirmation::None, |o| o.confirms_delivery());
+        let effective = EffectiveGuarantee::of(source, sink);
+        let guarantee = effective.guarantee.as_str();
+        let reason = effective.reason.as_str();
+        metrics::gauge!(
+            "pipeline_delivery_guarantee",
+            "intake" => intake,
+            "guarantee" => guarantee,
+            "reason" => reason
+        )
+        .set(1.0);
+        info!(intake, guarantee, reason, "Intake delivery guarantee");
+        effective
     }
 
     /// Get memory guard for external access (scaling pressure, metrics).

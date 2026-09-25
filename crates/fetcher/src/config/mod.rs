@@ -4777,11 +4777,11 @@ pub struct CursorConfig {
     /// tick, floored at the fetch interval.
     pub default_window_hours: u64,
 
-    /// What a tick does when its source has no cursor. Every miss logs a
-    /// warning and counts in `dfe_fetcher_cursor_cold_start_total{source}`,
-    /// because an empty store cannot tell a new source from a lost cursor
-    /// (a cursor directory with no volume behind it loses every cursor on a
-    /// restart).
+    /// What a tick does when its source has no cursor. Every miss counts in
+    /// `dfe_fetcher_cursor_cold_start_total{source}`, and the first one per
+    /// source logs a warning, because an empty store cannot tell a new source
+    /// from a lost cursor (a cursor directory with no volume behind it loses
+    /// every cursor on a restart).
     pub on_missing_cursor: MissingCursor,
 }
 

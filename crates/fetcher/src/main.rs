@@ -39,7 +39,7 @@ use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
 use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
-use dfe_fetcher::pipeline::Orchestrator;
+use dfe_fetcher::pipeline::{HeldUntilDelivered, Orchestrator};
 use dfe_fetcher::scheduler::Scheduler;
 use dfe_fetcher_core::SourceMaturity;
 use dfe_fetcher_core::batch::AccumulateConfig;
@@ -654,6 +654,14 @@ async fn run_fetcher_service(
             Arc::clone(&metrics),
             entry.cancel,
             Arc::new(move || ready_state.is_ready()),
+        );
+    }
+
+    // A scheduled source's cursor advances only once its records are delivered.
+    if !running.is_empty() {
+        pipeline_state.publish_guarantee(
+            "scheduled",
+            Some(&HeldUntilDelivered(scalo::transport::AckKind::Pull)),
         );
     }
 

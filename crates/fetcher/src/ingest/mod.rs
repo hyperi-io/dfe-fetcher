@@ -45,7 +45,7 @@ use crate::config::IngestConfig;
 use crate::error::Error;
 use crate::extractor::ExtractorSink;
 use crate::metrics::Metrics;
-use crate::pipeline::PipelineState;
+use crate::pipeline::{HeldUntilDelivered, PipelineState};
 
 /// What a refused client is told to wait before re-sending, in seconds.
 const RETRY_AFTER_SECS: &str = "5";
@@ -194,6 +194,11 @@ pub async fn run_ingest_server(
         info!("Ingest server disabled");
         return Ok(());
     }
+    // A POST is answered only once its record is delivered or dead-lettered.
+    pipeline.publish_guarantee(
+        "ingest",
+        Some(&HeldUntilDelivered(scalo::transport::AckKind::Push)),
+    );
 
     let resolved_token = match config.auth_token.as_deref() {
         Some(token) if !token.is_empty() => {

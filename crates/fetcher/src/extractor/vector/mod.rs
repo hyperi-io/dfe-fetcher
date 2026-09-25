@@ -324,11 +324,12 @@ impl VectorReceiver {
     }
 }
 
-/// The delivery status a block's emit reports: dead-lettered records the DLQ
-/// confirmed still release the push.
+/// The delivery status a block's emit reports: records the DLQ confirmed, or
+/// dropped as permanently refused with no DLQ, still release the push.
 fn status_of(emitted: &Result<EmitReport>) -> DeliveryStatus {
     match emitted {
         Ok(report) if report.dead_lettered > 0 => DeliveryStatus::Rejected,
+        Ok(report) if report.dropped > 0 => DeliveryStatus::Dropped,
         Ok(_) => DeliveryStatus::Delivered,
         Err(_) => DeliveryStatus::Errored,
     }
@@ -417,6 +418,12 @@ impl VectorManager {
         let mut transports = Vec::with_capacity(listeners.len());
         for listener in &listeners {
             transports.push(self.listen(&listener.bind_address).await?);
+        }
+        // Every listener is built from the one acknowledgements setting.
+        if let Some(first) = transports.first() {
+            self.sink
+                .state()
+                .publish_guarantee("vector", first.ack_control());
         }
 
         for (index, instance) in self.config.instances.iter().enumerate() {
@@ -848,6 +855,50 @@ mod tests {
         shutdown.cancel();
     }
 
+    /// The Vector intake reports the guarantee its listeners give, read from
+    /// the listener itself: with acknowledgements off, best effort.
+    #[tokio::test]
+    async fn the_vector_intake_reports_its_delivery_guarantee() {
+        use crate::metrics::recorded::{Recorder, carries};
+
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let shutdown = CancellationToken::new();
+        let manager = VectorManager::new(receiver_config(false), state, metrics, shutdown.clone());
+        only_listener(&manager).await;
+
+        let raised = recorder.raised_gauges("pipeline_delivery_guarantee");
+        let wanted = [
+            ("intake", "vector"),
+            ("guarantee", "best_effort"),
+            ("reason", "acks_disabled"),
+        ];
+        assert!(
+            raised.iter().any(|labels| carries(labels, &wanted)),
+            "{wanted:?} not in {raised:?}"
+        );
+        shutdown.cancel();
+    }
+
+    /// Records dropped as permanently refused with no DLQ release the push,
+    /// as dead-lettered ones do: only a failed emit answers it for retry.
+    #[test]
+    fn a_dropped_record_releases_its_push() {
+        let dropped = EmitReport {
+            sent: 1,
+            dead_lettered: 0,
+            dropped: 1,
+        };
+        assert_eq!(status_of(&Ok(dropped)), DeliveryStatus::Dropped);
+        assert!(status_of(&Ok(dropped)).should_commit());
+        assert_eq!(
+            status_of(&Err(Error::Transport("down".into()))),
+            DeliveryStatus::Errored
+        );
+    }
+
     /// Two instances on the shared listener cannot be told apart, so the
     /// manager refuses to start rather than land both on one topic.
     #[tokio::test]
@@ -873,17 +924,7 @@ mod tests {
     /// A container runtime stand-in in `dir` that runs `run` for `run` and
     /// does nothing for any other command.
     fn runtime_script(dir: &Path, run: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = dir.join("runtime");
-        std::fs::write(
-            &path,
-            format!("#!/bin/sh\n[ \"$1\" = run ] || exit 0\n{run}"),
-        )
-        .expect("write the runtime");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make it executable");
-        path.display().to_string()
+        crate::extractor::fake_runtime::write(dir, &format!("[ \"$1\" = run ] || exit 0\n{run}"))
     }
 
     /// A runtime whose `run` appends every mounted file to `seen`, which

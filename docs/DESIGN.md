@@ -196,6 +196,10 @@ takes over.
 
 A dead letter counts only once the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ refuses or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
 
+With no DLQ configured, or a disabled one, a record the transport refuses is still refused for good, so fetching it again would only hold the source back. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, and an oversize row in `{reason="too_large"}`, and the tick carries on.
+
+Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{intake, guarantee, reason}`, from scalo's `EffectiveGuarantee` against what the outputs confirm. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. Vector follows its `acknowledgements` setting, and a container's stdout is `best_effort` (`source_cannot_ack`).
+
 ### Enrichment
 
 Four names are reserved on every record: `_timestamp_fetcher`,
@@ -216,7 +220,7 @@ warning naming the key.
 
 ## Cursor Cold Start
 
-A tick with no window cursor to resume from -- none stored, a failed read, no store at all -- is a cold start. It logs a WARN and counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart.
+A tick with no window cursor to resume from -- none stored, a failed read, no store at all -- is a cold start. Every one counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart. The first cold start of a source logs a WARN and later ones log at DEBUG, since with no store at all every tick is one.
 
 `cursor.on_missing_cursor` decides what the tick does. `lookback` (the default) fetches the last `default_window_hours`, so a new source starts on its own and a lost cursor skips anything older. `refuse` fetches nothing and fails the tick until a cursor exists, so a lost cursor never skips data and a new source never starts on its own.
 

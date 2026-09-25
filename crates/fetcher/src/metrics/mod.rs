@@ -49,6 +49,28 @@ impl ExtractorFailure {
     }
 }
 
+/// Why a dead letter was dropped: the `reason` label of
+/// `pipeline_dead_letters_dropped_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DroppedDeadLetter {
+    /// An output refused the record itself (its size or format, or an
+    /// outbound `dlq` filter) and would refuse it again.
+    TransportRefused,
+    /// The row is over `max_record_bytes`, scalo's `too_large`.
+    TooLarge,
+}
+
+impl DroppedDeadLetter {
+    /// The `reason` label value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TransportRefused => "transport_refused",
+            Self::TooLarge => "too_large",
+        }
+    }
+}
+
 /// The kind of each framework series, for registration and for the test that
 /// keeps this list equal to the core's name list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,6 +208,7 @@ pub struct Metrics {
     cursor_writes_total: AtomicU64,
     cursor_write_failures_total: AtomicU64,
     cursor_cold_starts_total: AtomicU64,
+    dead_letters_dropped_total: AtomicU64,
 
     // Pipeline / delivery
     pipeline_ready: AtomicU64,          // gauge: 1=ready, 0=backpressured
@@ -241,6 +264,7 @@ impl Metrics {
             cursor_writes_total: AtomicU64::new(0),
             cursor_write_failures_total: AtomicU64::new(0),
             cursor_cold_starts_total: AtomicU64::new(0),
+            dead_letters_dropped_total: AtomicU64::new(0),
             pipeline_ready: AtomicU64::new(1),
             records_delivered_total: AtomicU64::new(0),
             active_fetches: AtomicU64::new(0),
@@ -747,6 +771,28 @@ impl Metrics {
         self.extractor_records_failed_total.load(Ordering::Relaxed)
     }
 
+    /// Count dead letters dropped with nowhere to go: no DLQ, or a disabled
+    /// one.
+    ///
+    /// Emits `pipeline_dead_letters_dropped_total{reason}`, the series scalo's
+    /// run loops count their own dropped dead letters in.
+    #[inline]
+    pub fn add_dead_letters_dropped(&self, reason: DroppedDeadLetter, count: u64) {
+        self.dead_letters_dropped_total
+            .fetch_add(count, Ordering::Relaxed);
+        metrics::counter!(
+            "pipeline_dead_letters_dropped_total",
+            "reason" => reason.as_str()
+        )
+        .increment(count);
+    }
+
+    /// Dead letters dropped with nowhere to go, across every reason.
+    #[inline]
+    pub fn dead_letters_dropped(&self) -> u64 {
+        self.dead_letters_dropped_total.load(Ordering::Relaxed)
+    }
+
     // ==========================================================================
     // Pipeline / delivery
     // ==========================================================================
@@ -1088,6 +1134,80 @@ impl Metrics {
 impl Default for Metrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A recorder one test reads the `metrics` series from.
+///
+/// It is the test thread's own default recorder, never the global one, so it
+/// cannot collide with a test that installs a `MetricsManager`, and no test
+/// sees another's series. A `#[tokio::test]` runs on one thread, so what it
+/// awaits records here too.
+#[cfg(test)]
+pub(crate) mod recorded {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    /// Whether `labels` carries every pair in `wanted`.
+    pub(crate) fn carries(labels: &[(String, String)], wanted: &[(&str, &str)]) -> bool {
+        wanted
+            .iter()
+            .all(|(k, v)| labels.iter().any(|(lk, lv)| lk == k && lv == v))
+    }
+
+    /// The recorder a test sets for its thread with [`Recorder::install`].
+    pub(crate) struct Recorder(DebuggingRecorder);
+
+    impl Recorder {
+        pub(crate) fn new() -> Self {
+            Self(DebuggingRecorder::new())
+        }
+
+        /// Record this thread's series here until the guard drops.
+        pub(crate) fn install(&self) -> metrics::LocalRecorderGuard<'_> {
+            metrics::set_default_local_recorder(&self.0)
+        }
+
+        /// Every series named `name` in one snapshot, which drains what it
+        /// reads: its labels, then its value.
+        fn series(&self, name: &str) -> Vec<(Vec<(String, String)>, DebugValue)> {
+            self.0
+                .snapshotter()
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .filter(|(key, _, _, _)| key.key().name() == name)
+                .map(|(key, _, _, value)| {
+                    let labels = key
+                        .key()
+                        .labels()
+                        .map(|l| (l.key().to_owned(), l.value().to_owned()))
+                        .collect();
+                    (labels, value)
+                })
+                .collect()
+        }
+
+        /// The labels of every gauge named `name` set above zero.
+        pub(crate) fn raised_gauges(&self, name: &str) -> Vec<Vec<(String, String)>> {
+            self.series(name)
+                .into_iter()
+                .filter_map(|(labels, value)| match value {
+                    DebugValue::Gauge(g) if g.0 > 0.0 => Some(labels),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The count of counter `name` carrying every pair in `labels` since
+        /// the last read, or `None` when nothing recorded it.
+        pub(crate) fn counter(&self, name: &str, labels: &[(&str, &str)]) -> Option<u64> {
+            self.series(name)
+                .into_iter()
+                .find_map(|(found, value)| match value {
+                    DebugValue::Counter(n) if carries(&found, labels) => Some(n),
+                    _ => None,
+                })
+        }
     }
 }
 

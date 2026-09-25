@@ -468,6 +468,11 @@ impl ContainerExtractor {
         let interval_secs = self.config.interval_secs.unwrap_or(300);
         let name = self.config.name.clone();
         let intake = self.sink.state().intake().clone();
+        // A pipe holds no acknowledgement. A container posting to the ingest
+        // listener gets that intake's guarantee instead.
+        if self.config.communication == "stdout" {
+            self.sink.state().publish_guarantee("container", None);
+        }
 
         intake.spawn(async move {
             if is_scheduled {
@@ -849,17 +854,13 @@ mod tests {
     /// A container runtime stand-in: `run` writes one line and keeps stdout
     /// open, `kill` records the container it was asked to kill in `killed`.
     fn fake_runtime(dir: &std::path::Path, killed: &std::path::Path) -> String {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = dir.join("runtime");
-        let script = format!(
-            "#!/bin/sh\ncase \"$1\" in\n  run) echo '{{\"n\":1}}'; exec sleep 30 ;;\n  kill) echo \"$2\" >> '{}' ;;\nesac\n",
-            killed.display()
-        );
-        std::fs::write(&path, script).expect("write the runtime");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make it executable");
-        path.display().to_string()
+        crate::extractor::fake_runtime::write(
+            dir,
+            &format!(
+                "case \"$1\" in\n  run) echo '{{\"n\":1}}'; exec sleep 30 ;;\n  kill) echo \"$2\" >> '{}' ;;\nesac\n",
+                killed.display()
+            ),
+        )
     }
 
     /// A scheduled container that keeps stdout open is still stopped at its
