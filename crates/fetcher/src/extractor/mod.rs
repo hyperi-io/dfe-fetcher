@@ -189,18 +189,13 @@ mod tests {
     use std::future::Future;
     use std::task::{Context, Waker};
 
-    use tokio_util::sync::CancellationToken;
-
     use crate::config::{Config, SharedConfig};
     use crate::error::Error;
 
     fn sink() -> ExtractorSink {
         let shared = SharedConfig::new(Config::default());
         let metrics = Arc::new(Metrics::new());
-        let state = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
-                .expect("pipeline state"),
-        );
+        let state = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
         ExtractorSink::new(state, metrics)
     }
 

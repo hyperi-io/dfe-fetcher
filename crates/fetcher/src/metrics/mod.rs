@@ -603,14 +603,14 @@ impl Metrics {
         }
     }
 
-    /// Increment transport send errors.
+    /// Increment the local transport send error total.
+    ///
+    /// The platform `transport_send_errors_total` is counted by the scalo
+    /// output transport under its own label, so it is not counted here too.
     #[inline]
     pub fn inc_transport_send_errors(&self) {
         self.transport_send_errors_total
             .fetch_add(1, Ordering::Relaxed);
-        if let Some(ref dfe) = self.dfe {
-            dfe.transport_send_errors(TransportKind::Kafka, 1);
-        }
     }
 
     /// Set transport health gauge (1=healthy, 0=unhealthy).
@@ -1101,6 +1101,91 @@ mod tests {
         metrics.inc_transport_send_errors();
         let output = metrics.render();
         assert!(output.contains("dfe_transport_send_errors_total 3"));
+    }
+
+    /// Counts one named counter across every label set, as a `sum()` over the
+    /// name reads it.
+    struct CountingRecorder {
+        name: &'static str,
+        hits: std::sync::Arc<AtomicU64>,
+    }
+
+    impl metrics::Recorder for CountingRecorder {
+        fn describe_counter(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_gauge(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_histogram(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+
+        fn register_counter(
+            &self,
+            key: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Counter {
+            if key.name() == self.name {
+                metrics::Counter::from_arc(std::sync::Arc::clone(&self.hits))
+            } else {
+                metrics::Counter::noop()
+            }
+        }
+
+        fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::noop()
+        }
+
+        fn register_histogram(
+            &self,
+            _: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
+    /// Run `f` with a thread-local recorder counting `name`.
+    fn counted(name: &'static str, f: impl FnOnce()) -> u64 {
+        let hits = std::sync::Arc::new(AtomicU64::new(0));
+        let recorder = CountingRecorder {
+            name,
+            hits: std::sync::Arc::clone(&hits),
+        };
+        metrics::with_local_recorder(&recorder, f);
+        hits.load(Ordering::Acquire)
+    }
+
+    /// The scalo output transport counts its own failed sends, so a failed
+    /// send counted here as well would read twice.
+    #[test]
+    fn a_failed_send_is_left_to_the_transport_in_transport_send_errors_total() {
+        let manager = MetricsManager::with_config(scalo::metrics::MetricsConfig::offline(""));
+        let mut output = String::new();
+        let hits = counted("transport_send_errors_total", || {
+            let m = Metrics::with_dfe(&manager);
+            m.inc_transport_send_errors();
+            m.inc_transport_send_errors();
+            output = m.render();
+        });
+        assert_eq!(hits, 0, "the fetcher adds nothing to the transport's count");
+        assert!(
+            output.contains("dfe_transport_send_errors_total 2"),
+            "the local total still counts both: {output}"
+        );
     }
 
     #[test]
