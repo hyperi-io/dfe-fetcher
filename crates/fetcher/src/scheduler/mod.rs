@@ -25,7 +25,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{SchedulerConfig, SharedConfig};
+use crate::config::{MissingCursor, SchedulerConfig, SharedConfig};
 use crate::cursor::{CursorStore, CursorValue};
 use crate::driver::Driver;
 use crate::error::Error;
@@ -162,19 +162,34 @@ impl Scheduler {
                 };
 
                 metrics.inc_active_fetches();
+                let next_tick = Duration::from_secs(base_secs + jitter);
 
                 // Read cursor to compute fetch window. Lowering
                 // `default_window_hours` mid-freeze narrows the retry --
                 // raising it does not widen it.
-                let window = build_fetch_window(
+                let window = match build_fetch_window(
                     cursor_store.as_deref(),
                     &cursor_key,
                     max_span,
                     retry_span.map(|span| span.min(max_span)),
+                    config.cursor.on_missing_cursor,
                     &metrics,
                     label,
                 )
-                .await;
+                .await
+                {
+                    Ok(window) => window,
+                    Err(e) => {
+                        metrics.inc_fetches_error_for(label);
+                        error!(source = label, error = %e, "Fetch refused");
+                        metrics.dec_active_fetches();
+                        drop(permit);
+                        if wait_for_next_tick(&shutdown, next_tick, label).await {
+                            break;
+                        }
+                        continue;
+                    }
+                };
 
                 debug!(
                     source = label,
@@ -259,14 +274,8 @@ impl Scheduler {
                 drop(permit);
 
                 // Sleep until next fetch cycle (interval re-computed per tick)
-                let sleep_duration = Duration::from_secs(base_secs + jitter);
-                tokio::select! {
-                    biased;
-                    () = shutdown.cancelled() => {
-                        info!(source = label, "Scheduler shutting down");
-                        break;
-                    }
-                    () = tokio::time::sleep(sleep_duration) => {}
+                if wait_for_next_tick(&shutdown, next_tick, label).await {
+                    break;
                 }
             }
         });
@@ -361,6 +370,18 @@ fn reconcile_running_sources(
     }
 }
 
+/// Sleep until the next tick is due, returning `true` when shutdown came first.
+async fn wait_for_next_tick(shutdown: &CancellationToken, wait: Duration, label: &str) -> bool {
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => {
+            info!(source = label, "Scheduler shutting down");
+            true
+        }
+        () = tokio::time::sleep(wait) => false,
+    }
+}
+
 /// Calculate jitter amount based on configured percentage.
 fn calculate_jitter(base_secs: u64, jitter_percent: u8) -> u64 {
     if jitter_percent == 0 {
@@ -404,8 +425,11 @@ fn max_window_span(window_hours: u64, interval_secs: u64) -> chrono::Duration {
         .max(chrono::Duration::try_seconds(secs).unwrap_or(chrono::Duration::MAX))
 }
 
-/// Build a `FetchWindow` from the cursor store. If no cursor exists or the
-/// read fails, falls back to `now - max_span`.
+/// Build a `FetchWindow` from the cursor store. With no cursor to resume from
+/// -- none stored, a failed read, or no store at all -- the tick is a cold
+/// start: counted in `dfe_fetcher_cursor_cold_start_total{source}`, logged at
+/// WARN, and either widened to `now - max_span` or refused, as `on_missing`
+/// says.
 ///
 /// A window running on from a cursor is at most `max_span` wide, or
 /// `retry_span` wide when the last attempt failed, so a tick that fails is
@@ -415,18 +439,25 @@ fn max_window_span(window_hours: u64, interval_secs: u64) -> chrono::Duration {
 ///
 /// When a cursor is found, records its age (seconds since `last_fetch_end`)
 /// as `dfe_fetcher_cursor_age_seconds` for staleness monitoring.
+///
+/// # Errors
+///
+/// Returns [`Error::Cursor`] on a cold start when `on_missing` is
+/// [`MissingCursor::Refuse`].
 async fn build_fetch_window(
     store: Option<&dyn CursorStore>,
     cursor_key: &str,
     max_span: chrono::Duration,
     retry_span: Option<chrono::Duration>,
+    on_missing: MissingCursor,
     metrics: &Metrics,
     source_prefix: &str,
-) -> FetchWindow {
+) -> Result<FetchWindow, Error> {
     let now = Utc::now();
 
-    if let Some(store) = store {
-        match store.get(cursor_key).await {
+    let cause = match store {
+        None => "no cursor store is available".to_owned(),
+        Some(store) => match store.get(cursor_key).await {
             Ok(Some(cursor)) => {
                 let age_secs = (now - cursor.last_fetch_end).num_seconds().max(0) as f64;
                 debug!(
@@ -459,26 +490,37 @@ async fn build_fetch_window(
                     .unwrap_or(chrono::DateTime::<Utc>::MAX_UTC)
                     .min(now)
                     .max(cursor.last_fetch_end);
-                return FetchWindow {
+                return Ok(FetchWindow {
                     start: cursor.last_fetch_end,
                     end,
-                };
+                });
             }
-            Ok(None) => {
-                debug!(
-                    cursor_key,
-                    max_span_secs = max_span.num_seconds(),
-                    "No cursor found, using default lookback window"
-                );
-            }
-            Err(e) => {
-                warn!(cursor_key, error = %e, "Cursor read failed, using default lookback");
-            }
-        }
-    }
+            Ok(None) => "no cursor is stored".to_owned(),
+            Err(e) => format!("the cursor read failed: {e}"),
+        },
+    };
 
-    let start = now - max_span;
-    FetchWindow { start, end: now }
+    metrics.inc_cursor_cold_start(source_prefix);
+    match on_missing {
+        MissingCursor::Lookback => {
+            warn!(
+                source = source_prefix,
+                cursor_key,
+                cause = %cause,
+                lookback_secs = max_span.num_seconds(),
+                "Cursor cold start: fetching the default lookback window. A new source starts \
+                 this way; for an existing one, anything before the window is skipped"
+            );
+            Ok(FetchWindow {
+                start: now - max_span,
+                end: now,
+            })
+        }
+        MissingCursor::Refuse => Err(Error::Cursor(format!(
+            "{cause} for {cursor_key} and cursor.on_missing_cursor is refuse: nothing is fetched \
+             until a cursor exists or the setting is lookback"
+        ))),
+    }
 }
 
 /// Write cursor after a successful fetch. Logs warning on failure but does
@@ -734,10 +776,183 @@ mod tests {
         assert_eq!(calculate_jitter(0, 10), 0);
     }
 
+    /// The window a tick builds under the default `lookback` cold start.
+    async fn lookback_window(
+        store: Option<&dyn CursorStore>,
+        cursor_key: &str,
+        max_span: chrono::Duration,
+        retry_span: Option<chrono::Duration>,
+        metrics: &Metrics,
+        source_prefix: &str,
+    ) -> FetchWindow {
+        build_fetch_window(
+            store,
+            cursor_key,
+            max_span,
+            retry_span,
+            MissingCursor::Lookback,
+            metrics,
+            source_prefix,
+        )
+        .await
+        .expect("lookback never refuses a tick")
+    }
+
+    /// A recorder shared by every test in this binary, so each reads the
+    /// labelled series under a source name of its own.
+    fn recorded() -> &'static metrics_util::debugging::Snapshotter {
+        static SNAPSHOTTER: std::sync::OnceLock<metrics_util::debugging::Snapshotter> =
+            std::sync::OnceLock::new();
+        SNAPSHOTTER.get_or_init(|| {
+            let recorder = metrics_util::debugging::DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            recorder
+                .install()
+                .expect("no other global recorder in the lib tests");
+            snapshotter
+        })
+    }
+
+    /// The cold starts counted for `source`, or `None` when it has none.
+    fn cold_starts(source: &str) -> Option<u64> {
+        recorded()
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .find_map(|(key, _, _, value)| {
+                let labelled = key.key().name() == "dfe_fetcher_cursor_cold_start_total"
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "source" && l.value() == source);
+                match value {
+                    metrics_util::debugging::DebugValue::Counter(n) if labelled => Some(n),
+                    _ => None,
+                }
+            })
+    }
+
+    /// A source with no cursor is a cold start every time: it counts, and the
+    /// default still fetches the lookback window so a new source starts.
+    #[tokio::test]
+    async fn a_missing_cursor_counts_a_cold_start_and_looks_back() {
+        recorded();
+        let dir = tempfile::TempDir::new().unwrap();
+        let store =
+            crate::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+
+        let window = lookback_window(
+            Some(&store),
+            "inst.fresh",
+            chrono::Duration::hours(2),
+            None,
+            &metrics,
+            "fresh",
+        )
+        .await;
+        assert!(
+            (window.start - (Utc::now() - chrono::Duration::hours(2)))
+                .num_seconds()
+                .abs()
+                < 2,
+            "the default fetches the lookback window"
+        );
+        assert_eq!(cold_starts("fresh"), Some(1));
+
+        lookback_window(
+            Some(&store),
+            "inst.fresh",
+            chrono::Duration::hours(2),
+            None,
+            &metrics,
+            "fresh",
+        )
+        .await;
+        assert_eq!(metrics.cursor_cold_starts(), 2, "every miss counts");
+    }
+
+    /// `refuse` fetches nothing without a cursor, so a lost cursor cannot skip
+    /// data, and the miss is still counted.
+    #[tokio::test]
+    async fn refuse_fails_a_tick_with_no_cursor() {
+        recorded();
+        let dir = tempfile::TempDir::new().unwrap();
+        let store =
+            crate::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let metrics = Metrics::new();
+
+        let err = build_fetch_window(
+            Some(&store),
+            "inst.lost",
+            chrono::Duration::hours(1),
+            None,
+            MissingCursor::Refuse,
+            &metrics,
+            "lost",
+        )
+        .await
+        .expect_err("refuse fetches nothing without a cursor");
+
+        assert!(matches!(err, Error::Cursor(_)), "{err:?}");
+        assert!(err.to_string().contains("on_missing_cursor"), "{err}");
+        assert_eq!(cold_starts("lost"), Some(1));
+    }
+
+    /// No store at all is a cold start too, refused under `refuse`.
+    #[tokio::test]
+    async fn refuse_fails_a_tick_with_no_cursor_store() {
+        recorded();
+        let metrics = Metrics::new();
+
+        let err = build_fetch_window(
+            None,
+            "inst.storeless",
+            chrono::Duration::hours(1),
+            None,
+            MissingCursor::Refuse,
+            &metrics,
+            "storeless",
+        )
+        .await
+        .expect_err("refuse fetches nothing without a store");
+
+        assert!(err.to_string().contains("no cursor store"), "{err}");
+        assert_eq!(cold_starts("storeless"), Some(1));
+    }
+
+    /// A stored cursor is resumed under either setting and is no cold start.
+    #[tokio::test]
+    async fn a_stored_cursor_is_resumed_even_under_refuse() {
+        use crate::cursor::file::FileCursorStore;
+
+        recorded();
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
+        let last_end = Utc::now() - chrono::Duration::minutes(10);
+        seed_cursor(&store, "inst.kept", last_end).await;
+        let metrics = Metrics::new();
+
+        let window = build_fetch_window(
+            Some(&store),
+            "inst.kept",
+            chrono::Duration::hours(1),
+            None,
+            MissingCursor::Refuse,
+            &metrics,
+            "kept",
+        )
+        .await
+        .expect("a stored cursor is resumed");
+
+        assert_eq!(window.start, last_end);
+        assert_eq!(cold_starts("kept"), None);
+    }
+
     #[tokio::test]
     async fn test_build_fetch_window_no_store() {
         let metrics = Metrics::new();
-        let window = build_fetch_window(
+        let window = lookback_window(
             None,
             "test.key",
             chrono::Duration::hours(2),
@@ -772,7 +987,7 @@ mod tests {
         store.set("test.key", &cursor).await.unwrap();
 
         let metrics = Metrics::new();
-        let window = build_fetch_window(
+        let window = lookback_window(
             Some(&store),
             "test.key",
             chrono::Duration::hours(2),
@@ -821,7 +1036,7 @@ mod tests {
         seed_cursor(&store, "test.key", last_end).await;
 
         let metrics = Metrics::new();
-        let window = build_fetch_window(
+        let window = lookback_window(
             Some(&store),
             "test.key",
             chrono::Duration::hours(1),
@@ -851,7 +1066,7 @@ mod tests {
         seed_cursor(&store, "test.key", last_end).await;
 
         let metrics = Metrics::new();
-        let window = build_fetch_window(
+        let window = lookback_window(
             Some(&store),
             "test.key",
             chrono::Duration::hours(1),
@@ -883,7 +1098,7 @@ mod tests {
         seed_cursor(&store, "test.key", last_end).await;
 
         let metrics = Metrics::new();
-        let window = build_fetch_window(
+        let window = lookback_window(
             Some(&store),
             "test.key",
             chrono::Duration::hours(1),
@@ -912,7 +1127,7 @@ mod tests {
         seed_cursor(&store, "test.key", last_end).await;
 
         let metrics = Metrics::new();
-        let window = build_fetch_window(
+        let window = lookback_window(
             Some(&store),
             "test.key",
             chrono::Duration::hours(1),
@@ -1345,10 +1560,10 @@ mod tests {
 
         let span = chrono::Duration::hours(1);
         let first =
-            build_fetch_window(Some(&store), "source.paced", span, None, &metrics, "test").await;
+            lookback_window(Some(&store), "source.paced", span, None, &metrics, "test").await;
         write_cursor(Some(&store), "source.paced", &first, 10_000, &metrics).await;
         let second =
-            build_fetch_window(Some(&store), "source.paced", span, None, &metrics, "test").await;
+            lookback_window(Some(&store), "source.paced", span, None, &metrics, "test").await;
 
         assert_eq!(
             second.start, first.end,
@@ -1381,7 +1596,7 @@ mod tests {
         let store = FileCursorStore::new(dir.path().to_str().unwrap()).unwrap();
         let metrics = Metrics::new();
 
-        let window = build_fetch_window(
+        let window = lookback_window(
             Some(&store),
             "corrupt.key",
             chrono::Duration::hours(3),
@@ -1488,6 +1703,64 @@ mod tests {
         // A source-level override is still honoured
         let overridden = scheduler.effective_interval(Some(45));
         assert_eq!(overridden.as_secs(), 45);
+    }
+
+    /// Under `refuse`, a source with no cursor is never fetched, each tick is
+    /// counted a failure, and the schedule keeps running for a cursor to
+    /// appear.
+    #[tokio::test]
+    async fn refuse_never_fetches_a_source_with_no_cursor() {
+        use crate::cursor::file::FileCursorStore;
+
+        tokio::time::pause();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let store: Arc<dyn CursorStore> =
+            Arc::new(FileCursorStore::new(dir.path().to_str().unwrap()).unwrap());
+        let mut cfg = test_config_no_jitter();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.cursor.on_missing_cursor = MissingCursor::Refuse;
+        let shared = SharedConfig::new(cfg);
+        let scheduler = Scheduler::new(
+            &SchedulerConfig {
+                default_interval_secs: 1,
+                max_concurrent_fetches: 10,
+                jitter_percent: 0,
+            },
+            shared.clone(),
+            Some(store),
+            "inst".into(),
+        );
+
+        let metrics = Arc::new(Metrics::new());
+        let ticks = Arc::new(AtomicU64::new(0));
+        let driver = counting_driver(&shared, &metrics, "refused", Arc::clone(&ticks));
+        let shutdown = CancellationToken::new();
+        scheduler.spawn_source_task(
+            driver,
+            Some(1),
+            Arc::clone(&metrics),
+            shutdown.clone(),
+            Arc::new(|| true),
+        );
+
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        shutdown.cancel();
+
+        assert_eq!(ticks.load(Ordering::Relaxed), 0, "nothing is fetched");
+        assert!(
+            metrics.cursor_cold_starts() >= 2,
+            "every refused tick is a counted cold start, got {}",
+            metrics.cursor_cold_starts()
+        );
+        let rendered = metrics.render();
+        assert!(
+            !rendered.contains("dfe_fetcher_fetches_total{status=\"error\"} 0\n"),
+            "a refused tick counts as a failed fetch:\n{rendered}"
+        );
     }
 
     /// Two drivers over the SAME shape but DIFFERENT connection ids must

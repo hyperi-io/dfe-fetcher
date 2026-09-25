@@ -1116,6 +1116,44 @@ mod tests {
         );
     }
 
+    /// A dead letter counts only once the DLQ confirms it holds the record: a
+    /// write the DLQ refuses fails the emit, so the tick keeps its cursor and
+    /// the record is fetched again rather than counted handled and lost.
+    #[tokio::test]
+    async fn a_dead_letter_the_dlq_refuses_fails_the_emit() {
+        use dfe_fetcher_core::batch::Outbound;
+        use scalo::transport::GrpcConfig;
+        use scalo::transport::filter::{FilterAction, FilterRule};
+
+        let (_default_rx, default_ep) = grpc_listener().await;
+        let mut config = Config::default();
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(GrpcConfig {
+            filters_out: vec![FilterRule {
+                expression: r#"id == "poison""#.into(),
+                action: FilterAction::Dlq,
+            }],
+            ..GrpcConfig::client(&default_ep)
+        });
+        let dlq = tempfile::tempdir().unwrap();
+        let sink = Box::pin(fanout_pipeline(config, dlq.path())).await;
+        // A plain file where the DLQ's directory belongs: every write fails.
+        let service_dir = dlq.path().join("dfe-fetcher");
+        std::fs::remove_dir_all(&service_dir).unwrap();
+        std::fs::write(&service_dir, b"not a directory").unwrap();
+
+        let err = sink
+            .emit(vec![Outbound::new("fixture_land", r#"{"id":"poison"}"#)])
+            .await
+            .expect_err("a dead letter nothing holds fails the emit");
+
+        assert!(matches!(err, Error::Transport(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("could not be dead-lettered"),
+            "{err}"
+        );
+    }
+
     /// A record over a bus destination's `message.max.bytes` is refused by
     /// librdkafka before any broker is asked, and scalo answers that with
     /// `FilteredDlq`: the record goes to the DLQ and still reaches the gRPC

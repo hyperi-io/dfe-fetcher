@@ -775,6 +775,11 @@ extractors:
   vector:
     enabled: false
     grpc_bind_address: "0.0.0.0:6000"
+    # On (the default), a push is answered only once its events reach the
+    # outputs or the DLQ confirms them, and a failure answers UNAVAILABLE so
+    # Vector re-sends. Off, a push is answered once queued and a crash loses it.
+    acknowledgements:
+      enabled: true
     instances: []
     # - name: syslog-collector
     #   mode: container
@@ -921,9 +926,19 @@ version_check:
 # be, so a source hours behind drains a span per tick instead of asking for the
 # whole backlog, and it is the lookback when no cursor exists.
 # Unset, the store falls back to the directory holding the config file.
+# A tick with no cursor to resume from is a cold start: it logs a WARN and
+# counts in dfe_fetcher_cursor_cold_start_total{source}. An empty store cannot
+# tell a new source from a lost cursor (a directory with no volume behind it
+# loses every cursor on restart), so alert on cold starts of sources that have
+# run before. on_missing_cursor (hot-reloaded) decides what a cold start does:
+#   lookback (default) -- fetch the last default_window_hours: a new source
+#                         starts on its own, a lost cursor skips older data
+#   refuse             -- fetch nothing and fail the tick until a cursor exists:
+#                         a lost cursor never skips data, a new source never starts
 # cursor:
 #   directory: "/var/lib/dfe-fetcher/cursors"  # REQUIRES RESTART
 #   default_window_hours: 1                     # hot-reloaded, caps one tick
+#   on_missing_cursor: lookback                 # hot-reloaded: lookback | refuse
 
 # =============================================================================
 # Horizontal scaling pressure (scalo engine) -- REQUIRES RESTART

@@ -15,6 +15,7 @@ description: |-
   - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
   - `sources.*.filter` -- CEL filter re-evaluated on each record
   - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
+  - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
   - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 
   **Requires pod restart:**
@@ -175,6 +176,8 @@ properties:
         enabled: false
         grpc_bind_address: 0.0.0.0:6000
         instances: []
+        acknowledgements:
+          enabled: true
   ingest:
     description: HTTP ingest server configuration (for container extractors to post data).
     $ref: '#/$defs/IngestConfig'
@@ -266,6 +269,7 @@ properties:
     default:
       directory: ''
       default_window_hours: 1
+      on_missing_cursor: lookback
   scaling:
     description: Scaling pressure configuration for KEDA autoscaling.
     $ref: '#/$defs/ScalingPressureConfig'
@@ -5778,6 +5782,8 @@ $defs:
           enabled: false
           grpc_bind_address: 0.0.0.0:6000
           instances: []
+          acknowledgements:
+            enabled: true
   ContainerExtractorConfig:
     description: |-
       Container-based extractor configuration.
@@ -5912,6 +5918,16 @@ $defs:
         items:
           $ref: '#/$defs/VectorInstance'
         default: []
+      acknowledgements:
+        description: |-
+          When the receiver answers a push. Enabled (the default), a push is
+          answered only once its events are delivered to the outputs or confirmed
+          in the DLQ, and a failure answers `UNAVAILABLE` so Vector re-sends.
+          Disabled, a push is answered once queued, and a crash or a failed
+          delivery loses what was answered.
+        $ref: '#/$defs/AcknowledgementsConfig'
+        default:
+          enabled: true
   VectorInstance:
     description: A managed Vector instance configuration.
     type: object
@@ -5944,6 +5960,30 @@ $defs:
     required:
     - name
     - topic
+  AcknowledgementsConfig:
+    description: |-
+      The `acknowledgements` section of an ack-capable transport.
+
+      With `enabled: true` (the default) a source releases its acknowledgement --
+      a Kafka offset commit, a gRPC or HTTP response -- only once every piece of
+      work built from the record has been delivered, dead-lettered with the DLQ's
+      confirmation, or dropped by policy. A failed delivery withholds it, so the
+      record is delivered again: duplicates are possible, loss is not.
+
+      With `enabled: false` the source acknowledges at receipt, before the record
+      is processed: a crash or a failed delivery loses what was acknowledged.
+
+      ```yaml
+      kafka:
+        acknowledgements:
+          enabled: true
+      ```
+    type: object
+    properties:
+      enabled:
+        description: Hold the source acknowledgement until every piece is delivered.
+        type: boolean
+        default: true
   IngestConfig:
     description: |-
       HTTP ingest server for container extractors to post data.
@@ -6219,7 +6259,9 @@ $defs:
         Default order: Kafka first, file fallback.
       type: string
       const: cascade
-    - description: Write to all enabled backends; report any failures.
+    - description: |-
+        Write every batch to all enabled backends. The write succeeds when at
+        least one backend takes the whole batch, and fails only when none does.
       type: string
       const: fan_out
     - description: File backend only (no Kafka dependency).
@@ -6289,7 +6331,12 @@ $defs:
         type: string
         default: dfe.dlq
       send_timeout_ms:
-        description: Send timeout in milliseconds.
+        description: |-
+          How long a `flush` or the shutdown waits for the broker to ack the
+          entries queued to Kafka, in milliseconds. Entries still unacked then
+          are purged and counted as dropped. The purge adds a wait of up to 5 s
+          for the purged entries' delivery reports, so `0` skips the ack wait
+          but not that one. Default 5000.
         type: integer
         format: uint64
         minimum: 0
@@ -7115,7 +7162,11 @@ $defs:
         - 'null'
         default: null
       recv_buffer_size:
-        description: Receive buffer size (messages buffered from incoming RPCs).
+        description: |-
+          Receive buffer size (messages buffered from incoming RPCs).
+
+          A `RouteBatch` with more records than this is held whole beside the
+          buffer, one batch at a time.
         type: integer
         format: uint
         minimum: 0
@@ -7128,10 +7179,19 @@ $defs:
         default: 100
       send_timeout_ms:
         description: |-
-          Per-RPC send deadline in milliseconds (0 = no deadline).
+          Send deadline in milliseconds (0 = no deadline). Default 30s.
 
-          Bounds a single `push` so a hung/black-holing server cannot block a
-          sender task forever. Applied as the `grpc-timeout` header. Default 30s.
+          Bounds each `send`, and each request of a `send_batch`, end to end --
+          DNS, TCP connect, TLS handshake and the RPC -- so a server that is down
+          or never answers returns `Backpressured` at the limit. A dial still
+          unfinished at nine tenths of it is abandoned, so the next send dials
+          afresh. Also sent as the `grpc-timeout` header, which an armed receiver
+          holds its answer within.
+
+          A connection that has read nothing for this long is sent an HTTP/2
+          PING, and closed if the PING goes unanswered for as long again (30s
+          each when 0), so a server that stays connected but stops answering is
+          dropped and the next send dials afresh.
         type: integer
         format: uint64
         minimum: 0
@@ -7291,6 +7351,28 @@ $defs:
         format: uint64
         minimum: 0
         default: 1
+      on_missing_cursor:
+        description: |-
+          What a tick does when its source has no cursor. Every miss logs a
+          warning and counts in `dfe_fetcher_cursor_cold_start_total{source}`,
+          because an empty store cannot tell a new source from a lost cursor
+          (a cursor directory with no volume behind it loses every cursor on a
+          restart).
+        $ref: '#/$defs/MissingCursor'
+        default: lookback
+  MissingCursor:
+    description: What a tick does when its source has no cursor.
+    oneOf:
+    - description: |-
+        Fetch the last `default_window_hours` and carry on, so a new source
+        starts on its own. A lost cursor can skip whatever came before that.
+      type: string
+      const: lookback
+    - description: |-
+        Fetch nothing and fail the tick until an operator writes a cursor or
+        switches back to `lookback`, so a lost cursor never skips data.
+      type: string
+      const: refuse
   ScalingPressureConfig:
     description: |-
       Base configuration for scaling pressure calculation.

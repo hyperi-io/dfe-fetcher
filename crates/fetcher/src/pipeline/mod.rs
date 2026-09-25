@@ -36,6 +36,7 @@ use bytes::Bytes;
 use scalo::dlq::{Dlq, DlqEntry};
 use scalo::logger::security;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
 use crate::config::{Config, SharedConfig};
@@ -177,6 +178,32 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
     serde_json::to_vec(&map).ok().map(Bytes::from)
 }
 
+/// How long shutdown waits for the extractors to deliver what they hold before
+/// the outputs close: inside Kubernetes' 30 s grace period after the runtime's
+/// 5 s pre-stop delay.
+pub const INTAKE_DRAIN_DEADLINE: Duration = Duration::from_secs(20);
+
+/// One record for the dead-letter queue.
+#[derive(Debug, Clone)]
+pub struct DeadLetter {
+    /// The topic the record was bound for.
+    pub topic: Arc<str>,
+    /// The record as it would have been sent.
+    pub payload: Bytes,
+    /// Why it was not sent.
+    pub reason: String,
+}
+
+/// Where a dead-letter write ended up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum DeadLettered {
+    /// A DLQ backend confirmed it holds every record.
+    Held,
+    /// No DLQ is configured, so nothing holds them.
+    NoQueue,
+}
+
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
@@ -185,6 +212,8 @@ pub struct PipelineState {
     dlq: Option<Dlq>,
     metrics: Arc<Metrics>,
     ready: AtomicBool,
+    /// The extractor tasks shutdown waits for before the outputs close.
+    intake: TaskTracker,
 }
 
 impl PipelineState {
@@ -237,6 +266,7 @@ impl PipelineState {
             dlq,
             metrics,
             ready: AtomicBool::new(true),
+            intake: TaskTracker::new(),
         })
     }
 
@@ -263,7 +293,28 @@ impl PipelineState {
             dlq: None,
             metrics,
             ready: AtomicBool::new(true),
+            intake: TaskTracker::new(),
         }
+    }
+
+    /// State as [`Self::for_tests`], with `dlq` as its dead-letter queue.
+    #[cfg(test)]
+    pub(crate) fn for_tests_with_dlq(
+        shared_config: SharedConfig,
+        metrics: Arc<Metrics>,
+        output: Option<OutputManager>,
+        dlq: Dlq,
+    ) -> Self {
+        Self {
+            dlq: Some(dlq),
+            ..Self::for_tests(shared_config, metrics, output)
+        }
+    }
+
+    /// The extractor tasks shutdown drains: a task spawned here keeps the
+    /// outputs open until it finishes or [`INTAKE_DRAIN_DEADLINE`] passes.
+    pub fn intake(&self) -> &TaskTracker {
+        &self.intake
     }
 
     /// Get the current configuration.
@@ -431,41 +482,56 @@ impl PipelineState {
         output.send_to(destinations, topic, payload).await
     }
 
-    /// Put one record on the dead-letter queue. `true` when it landed; `false`
-    /// when there is no DLQ or the DLQ refused it, in which case the caller
-    /// still holds the failure.
-    pub async fn dead_letter(&self, topic: &str, payload: Bytes, reason: &str) -> bool {
-        let Some(ref dlq) = self.dlq else {
-            return false;
+    /// Write `letters` to the dead-letter queue and wait until a backend holds
+    /// every one, so a caller counts a record handled only once it is durable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Dlq`] when the DLQ refused the write or could not
+    /// confirm it, and nothing in `letters` may then be counted as handled.
+    pub async fn dead_letter(&self, letters: Vec<DeadLetter>) -> Result<DeadLettered> {
+        let Some(dlq) = self.dlq.as_ref().filter(|d| d.is_enabled()) else {
+            return Ok(DeadLettered::NoQueue);
         };
-        let entry = DlqEntry::new("dfe-fetcher", reason, payload.to_vec()).with_destination(topic);
-        if let Err(dlq_err) = dlq.send(entry).await {
+        if letters.is_empty() {
+            return Ok(DeadLettered::Held);
+        }
+        let entries = letters
+            .iter()
+            .map(|l| {
+                DlqEntry::new("dfe-fetcher", &l.reason, l.payload.to_vec())
+                    .with_destination(&*l.topic)
+            })
+            .collect();
+        if let Err(dlq_err) = dlq.write_confirmed(entries).await {
             use std::sync::atomic::AtomicU64;
             static DLQ_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
             if scalo::logger::log_debounced(&DLQ_DEBOUNCE, 5_000) {
                 error!(
                     error = %dlq_err,
-                    topic,
-                    "Failed to send to DLQ (debounced, max 1/5s)"
+                    records = letters.len(),
+                    "The DLQ refused a dead-letter write, so its records stay undelivered (debounced, max 1/5s)"
                 );
             }
-            return false;
+            return Err(dlq_err.into());
         }
-        self.metrics.inc_messages_dlq();
-        security::record_dlq("transport_failure", reason, Some(topic));
         {
             use std::sync::atomic::{AtomicU64, Ordering};
             static DLQ_SAMPLES: AtomicU64 = AtomicU64::new(0);
-            if scalo::logger::log_sampled(&DLQ_SAMPLES, 100) {
-                warn!(
-                    topic,
-                    reason,
-                    total = DLQ_SAMPLES.load(Ordering::Relaxed),
-                    "Message routed to DLQ after transport failure (sampled 1/100)"
-                );
+            for letter in &letters {
+                self.metrics.inc_messages_dlq();
+                security::record_dlq("transport_failure", &letter.reason, Some(&letter.topic));
+                if scalo::logger::log_sampled(&DLQ_SAMPLES, 100) {
+                    warn!(
+                        topic = %letter.topic,
+                        reason = %letter.reason,
+                        total = DLQ_SAMPLES.load(Ordering::Relaxed),
+                        "Message routed to DLQ after transport failure (sampled 1/100)"
+                    );
+                }
             }
         }
-        true
+        Ok(DeadLettered::Held)
     }
 
     /// Get memory guard for external access (scaling pressure, metrics).
@@ -597,6 +663,7 @@ impl Orchestrator {
         self.shutdown.cancelled().await;
 
         info!("Pipeline orchestrator shutting down");
+        self.drain_intake().await;
 
         // Close all output transports
         if let Some(ref output) = self.state.output {
@@ -605,6 +672,31 @@ impl Orchestrator {
 
         info!("Pipeline orchestrator stopped");
         Ok(())
+    }
+
+    /// Wait for the extractors to deliver what they hold, while the outputs
+    /// are still open, for at most [`INTAKE_DRAIN_DEADLINE`].
+    async fn drain_intake(&self) {
+        let intake = self.state.intake();
+        intake.close();
+        if intake.is_empty() {
+            return;
+        }
+        info!(
+            tasks = intake.len(),
+            deadline_secs = INTAKE_DRAIN_DEADLINE.as_secs(),
+            "Draining extractor intake before the outputs close"
+        );
+        if tokio::time::timeout(INTAKE_DRAIN_DEADLINE, intake.wait())
+            .await
+            .is_err()
+        {
+            warn!(
+                tasks = intake.len(),
+                "Extractor intake still draining at the deadline. Closing the outputs: \
+                 what it holds is answered for retry or counted dropped"
+            );
+        }
     }
 }
 
@@ -632,6 +724,7 @@ mod tests {
                     dlq: None,
                     metrics: Arc::new(Metrics::new()),
                     ready: AtomicBool::new(true),
+                    intake: TaskTracker::new(),
                 }
             });
 
@@ -793,6 +886,7 @@ mod tests {
             dlq: None,
             metrics,
             ready: AtomicBool::new(true),
+            intake: TaskTracker::new(),
         };
         // Add bytes to trigger pressure
         state.memory_guard.add_bytes(100);
@@ -892,6 +986,112 @@ mod tests {
         run_result.expect("run() should exit cleanly on shutdown");
     }
 
+    /// Shutdown waits for a tracked extractor to deliver what it holds before
+    /// the outputs close.
+    #[tokio::test]
+    async fn shutdown_waits_for_the_intake_to_drain() {
+        let shutdown = CancellationToken::new();
+        let orchestrator = Box::pin(Orchestrator::new(
+            Config::default(),
+            Arc::new(Metrics::new()),
+            shutdown.clone(),
+        ))
+        .await
+        .expect("orchestrator");
+        let drained = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&drained);
+        let token = shutdown.clone();
+        orchestrator.state().intake().spawn(async move {
+            token.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            flag.store(true, Ordering::Release);
+        });
+
+        shutdown.cancel();
+        orchestrator.run().await.expect("run");
+
+        assert!(
+            drained.load(Ordering::Acquire),
+            "run closed the outputs before the intake drained"
+        );
+    }
+
+    /// An intake task that never finishes holds the outputs open for the drain
+    /// deadline and no longer.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_closes_the_outputs_at_the_drain_deadline() {
+        let shutdown = CancellationToken::new();
+        let orchestrator = Box::pin(Orchestrator::new(
+            Config::default(),
+            Arc::new(Metrics::new()),
+            shutdown.clone(),
+        ))
+        .await
+        .expect("orchestrator");
+        orchestrator
+            .state()
+            .intake()
+            .spawn(std::future::pending::<()>());
+
+        shutdown.cancel();
+        let started = tokio::time::Instant::now();
+        orchestrator.run().await.expect("run");
+
+        assert!(
+            started.elapsed() >= INTAKE_DRAIN_DEADLINE,
+            "gave up after {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A DLQ write is counted only once a backend confirms it. With no DLQ the
+    /// caller hears that nothing holds the records.
+    #[tokio::test]
+    async fn a_dead_letter_is_confirmed_before_it_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dlq_config = Config::default().dlq;
+        dlq_config.enabled = true;
+        dlq_config.mode = scalo::dlq::DlqMode::FileOnly;
+        dlq_config.file.path = dir.path().to_path_buf();
+        let dlq =
+            Dlq::spawn(&dlq_config, "dfe-fetcher", None, CancellationToken::new()).expect("dlq");
+        let metrics = Arc::new(Metrics::new());
+        let state = PipelineState::for_tests_with_dlq(
+            SharedConfig::new(Config::default()),
+            Arc::clone(&metrics),
+            None,
+            dlq,
+        );
+        let letter = |id: u8| DeadLetter {
+            topic: Arc::from("t_land"),
+            payload: Bytes::from(format!(r#"{{"id":{id}}}"#)),
+            reason: "refused".into(),
+        };
+
+        assert_eq!(
+            state
+                .dead_letter(vec![letter(1), letter(2)])
+                .await
+                .expect("held"),
+            DeadLettered::Held
+        );
+        let lines = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
+            .expect("the DLQ file");
+        assert_eq!(lines.lines().count(), 2, "on disk before the call returned");
+
+        // The service directory replaced by a file: the next write is refused.
+        std::fs::remove_dir_all(dir.path().join("dfe-fetcher")).unwrap();
+        std::fs::write(dir.path().join("dfe-fetcher"), b"not a directory").unwrap();
+        let refused = state.dead_letter(vec![letter(3)]).await;
+        assert!(matches!(refused, Err(Error::Dlq(_))), "{refused:?}");
+
+        let without = make_pipeline_state();
+        assert_eq!(
+            without.dead_letter(vec![letter(4)]).await.expect("no DLQ"),
+            DeadLettered::NoQueue
+        );
+    }
+
     // -- update_metrics --
 
     #[tokio::test]
@@ -915,6 +1115,7 @@ mod tests {
             dlq: None,
             metrics: Arc::clone(&metrics),
             ready: AtomicBool::new(true),
+            intake: TaskTracker::new(),
         };
 
         // Push some bytes through the guard so current_bytes > 0

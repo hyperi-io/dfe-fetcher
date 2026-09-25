@@ -194,6 +194,8 @@ backpressured subset is retried with a bounded backoff and, if still refused,
 the whole tick aborts without a checkpoint so the scheduler's stall handling
 takes over.
 
+A dead letter counts only once the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ refuses or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
+
 ### Enrichment
 
 Four names are reserved on every record: `_timestamp_fetcher`,
@@ -211,6 +213,12 @@ reserved name and its `_original` -- a replayed record on a second enrich
 pass, say -- keeps the `_original` it arrived with, and the colliding value is
 parked under the next free `<key>_original_<n>` counting from 2, with a
 warning naming the key.
+
+## Cursor Cold Start
+
+A tick with no window cursor to resume from -- none stored, a failed read, no store at all -- is a cold start. It logs a WARN and counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart.
+
+`cursor.on_missing_cursor` decides what the tick does. `lookback` (the default) fetches the last `default_window_hours`, so a new source starts on its own and a lost cursor skips anything older. `refuse` fetches nothing and fails the tick until a cursor exists, so a lost cursor never skips data and a new source never starts on its own.
 
 ## The Profile Grammar
 
@@ -367,6 +375,14 @@ flowchart TB
         P3 --> D3[Deliver to pipeline]
     end
 ```
+
+What each mode guarantees:
+
+- Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is answered only after its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` too, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it.
+- HTTP: `/ingest` answers `200` only after the outputs took the record or the DLQ confirmed it, and `503` with `Retry-After` otherwise.
+- stdout: a pipe cannot be read twice, so a line the outputs refuse is dropped and counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}`, never in the received count.
+
+At shutdown the extractors deliver what they hold before the outputs close, for up to 20 s: the Vector receiver refuses new pushes and delivers what it has queued, and a container extractor stops its container while still reading its stdout to the end.
 
 ## Configuration Cascade
 

@@ -57,7 +57,7 @@ use crate::emit::{EmitReport, Emitter};
 use crate::error::{Error, Result};
 use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::Metrics;
-use crate::pipeline::SourceNames;
+use crate::pipeline::{DeadLetter, DeadLettered, SourceNames};
 
 /// How long the driver waits between admission checks while held.
 const HOLD_POLL: Duration = Duration::from_millis(250);
@@ -500,23 +500,35 @@ impl Driver {
 
     /// Count an oversize row and put its truncated copy on the dead-letter
     /// queue; the caller decides what, if anything, stands in for the row.
+    ///
+    /// # Errors
+    ///
+    /// A DLQ that refuses or cannot confirm the copy aborts the unit, so its
+    /// checkpoint never passes a row nothing holds.
     async fn dead_letter_oversize(
         &self,
         unit: &UnitSpec,
         topic: &str,
         raw: &Bytes,
         run: &mut UnitRun,
-    ) {
+    ) -> Result<()> {
         run.report.oversize += 1;
-        let copy = self.oversize.truncate(raw);
-        let reason = format!(
-            "row exceeds max_record_bytes ({} > {})",
-            raw.len(),
-            self.oversize.max_record_bytes
-        );
-        if !self.emitter.state().dead_letter(topic, copy, &reason).await {
-            debug!(source = self.name, unit = %unit.name, bytes = raw.len(), "oversize row dropped; no dead-letter queue");
+        let letter = DeadLetter {
+            topic: Arc::from(topic),
+            payload: self.oversize.truncate(raw),
+            reason: format!(
+                "row exceeds max_record_bytes ({} > {})",
+                raw.len(),
+                self.oversize.max_record_bytes
+            ),
+        };
+        match self.emitter.state().dead_letter(vec![letter]).await? {
+            DeadLettered::Held => {}
+            DeadLettered::NoQueue => {
+                debug!(source = self.name, unit = %unit.name, bytes = raw.len(), "oversize row dropped; no dead-letter queue");
+            }
         }
+        Ok(())
     }
 
     /// Run one unit's rows through the loop. Cancel-safe at every await: the
@@ -630,13 +642,13 @@ impl Driver {
                     let stub = s.oversize(key.as_deref(), raw.len());
                     metrics::counter!(metric_names::SNAPSHOT_ROWS_OVERSIZE_TOTAL, "store" => store.clone()).increment(1);
                     self.dead_letter_oversize(unit, &topic, &raw, &mut run)
-                        .await;
+                        .await?;
                     (stub, true)
                 }
                 Some(s) => (s.row(&raw), false),
                 None if oversize => {
                     self.dead_letter_oversize(unit, &topic, &raw, &mut run)
-                        .await;
+                        .await?;
                     run.batch.consume(mark);
                     continue;
                 }

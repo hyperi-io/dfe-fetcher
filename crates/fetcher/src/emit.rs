@@ -12,10 +12,12 @@
 //! delivery report and has no batch call, so the emitter issues a flush's
 //! sends as concurrent futures (`in_flight` at a time) and librdkafka forms its
 //! own wire batches behind them. Every record gets a terminal outcome: sent,
-//! dead-lettered whole (the transport refused THAT record and would again),
-//! or backpressured -- the backpressured subset is retried with a bounded
-//! backoff and, if still refused, the whole tick aborts WITHOUT a checkpoint
-//! so the scheduler's stall loop takes over. A failure the transport reports
+//! dead-lettered whole (the transport refused THAT record and would again, and
+//! the DLQ confirmed it holds the record -- a refused or unconfirmed dead-letter
+//! write aborts the tick like a transport failure), or backpressured -- the
+//! backpressured subset is retried with a bounded backoff and, if still
+//! refused, the whole tick aborts WITHOUT a checkpoint so the scheduler's
+//! stall loop takes over. A failure the transport reports
 //! for every record alike (closed, timed out, the topic or broker gone) is
 //! not a dead-letter case: the tick aborts with no checkpoint and the rows
 //! are re-fetched, which is the at-least-once side of the contract. The
@@ -33,7 +35,7 @@ use dfe_fetcher_core::batch::{Batch, Outbound};
 
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
-use crate::pipeline::PipelineState;
+use crate::pipeline::{DeadLetter, DeadLettered, PipelineState};
 
 /// How many times a backpressured subset is re-sent before the tick aborts.
 const BACKPRESSURE_RETRIES: u32 = 5;
@@ -142,6 +144,7 @@ impl Emitter {
         report: &mut EmitReport,
     ) -> Result<Vec<Outbound>> {
         let mut held = Vec::new();
+        let mut refused = Vec::new();
         let mut in_flight = FuturesUnordered::new();
         let mut rows = rows.into_iter();
         loop {
@@ -164,22 +167,11 @@ impl Emitter {
                 // batch goes on.
                 Err(Error::TransportRecord(e)) => {
                     self.metrics.inc_transport_send_errors();
-                    if self
-                        .state
-                        .dead_letter(
-                            &row.topic,
-                            row.payload.clone(),
-                            &format!("transport refused the record: {e}"),
-                        )
-                        .await
-                    {
-                        report.dead_lettered += 1;
-                    } else {
-                        return Err(Error::Transport(format!(
-                            "record to {} refused and could not be dead-lettered: {e}",
-                            row.topic
-                        )));
-                    }
+                    refused.push(DeadLetter {
+                        topic: row.topic,
+                        payload: row.payload,
+                        reason: format!("transport refused the record: {e}"),
+                    });
                 }
                 // Anything else is the transport's own failure: no record is
                 // dead-lettered and the tick aborts with no checkpoint.
@@ -189,7 +181,30 @@ impl Emitter {
                 }
             }
         }
+        self.dead_letter(refused, report).await?;
         Ok(held)
+    }
+
+    /// Dead-letter the round's refused records in one confirmed write, so a
+    /// record counts as handled only once the DLQ holds it.
+    async fn dead_letter(&self, refused: Vec<DeadLetter>, report: &mut EmitReport) -> Result<()> {
+        if refused.is_empty() {
+            return Ok(());
+        }
+        let count = refused.len() as u64;
+        let first_topic = Arc::clone(&refused[0].topic);
+        match self.state.dead_letter(refused).await {
+            Ok(DeadLettered::Held) => {
+                report.dead_lettered += count;
+                Ok(())
+            }
+            Ok(DeadLettered::NoQueue) => Err(Error::Transport(format!(
+                "{count} record(s) to {first_topic} refused and no dead-letter queue is configured"
+            ))),
+            Err(e) => Err(Error::Transport(format!(
+                "{count} record(s) to {first_topic} refused and could not be dead-lettered: {e}"
+            ))),
+        }
     }
 
     async fn send_one(&self, row: Outbound) -> (Outbound, Result<()>) {

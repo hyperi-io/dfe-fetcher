@@ -29,6 +29,26 @@ use dfe_fetcher_core::metric_names as fw;
 use scalo::metrics::{MetricsManager, ServiceMetrics, TransportKind};
 use scalo::scaling::RateWindow;
 
+/// What became of extractor records that were not delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractorFailure {
+    /// The sender was answered to re-send them.
+    Retry,
+    /// Nothing can re-send them: they are lost.
+    Dropped,
+}
+
+impl ExtractorFailure {
+    /// The `outcome` label value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
 /// The kind of each framework series, for registration and for the test that
 /// keeps this list equal to the core's name list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,8 +182,10 @@ pub struct Metrics {
     // Filtering / extractor lifecycle
     records_filtered_total: AtomicU64,
     extractor_restart_exhausted_total: AtomicU64,
+    extractor_records_failed_total: AtomicU64,
     cursor_writes_total: AtomicU64,
     cursor_write_failures_total: AtomicU64,
+    cursor_cold_starts_total: AtomicU64,
 
     // Pipeline / delivery
     pipeline_ready: AtomicU64,          // gauge: 1=ready, 0=backpressured
@@ -215,8 +237,10 @@ impl Metrics {
             transport_healthy: AtomicU64::new(1),
             records_filtered_total: AtomicU64::new(0),
             extractor_restart_exhausted_total: AtomicU64::new(0),
+            extractor_records_failed_total: AtomicU64::new(0),
             cursor_writes_total: AtomicU64::new(0),
             cursor_write_failures_total: AtomicU64::new(0),
+            cursor_cold_starts_total: AtomicU64::new(0),
             pipeline_ready: AtomicU64::new(1),
             records_delivered_total: AtomicU64::new(0),
             active_fetches: AtomicU64::new(0),
@@ -275,6 +299,14 @@ impl Metrics {
         metrics::describe_counter!(
             "dfe_fetcher_cursor_write_failures_total",
             "Cursor state write failures"
+        );
+        metrics::describe_counter!(
+            "dfe_fetcher_cursor_cold_start_total",
+            "Ticks that found no cursor to resume from, by source"
+        );
+        metrics::describe_counter!(
+            "dfe_fetcher_extractor_records_failed_total",
+            "Extractor records not delivered, by extractor and outcome (retry or dropped)"
         );
         metrics::describe_gauge!(
             "dfe_fetcher_active_fetches",
@@ -663,6 +695,56 @@ impl Metrics {
         if self.dfe.is_some() {
             metrics::counter!("dfe_fetcher_cursor_write_failures_total").increment(1);
         }
+    }
+
+    /// Count a tick that found no cursor to resume from.
+    ///
+    /// Emits `dfe_fetcher_cursor_cold_start_total{source}` on every miss: an
+    /// empty store cannot tell a new source from a lost cursor, so an alert
+    /// on a source that has run before is how a lost cursor is noticed.
+    #[inline]
+    pub fn inc_cursor_cold_start(&self, source: &str) {
+        self.cursor_cold_starts_total
+            .fetch_add(1, Ordering::Relaxed);
+        metrics::counter!(
+            "dfe_fetcher_cursor_cold_start_total",
+            "source" => source.to_string()
+        )
+        .increment(1);
+    }
+
+    /// Ticks that found no cursor to resume from, across every source.
+    #[inline]
+    pub fn cursor_cold_starts(&self) -> u64 {
+        self.cursor_cold_starts_total.load(Ordering::Relaxed)
+    }
+
+    /// Count records an extractor took in but could not deliver.
+    ///
+    /// Emits `dfe_fetcher_extractor_records_failed_total{extractor, outcome}`:
+    /// `retry` when the sender was answered to re-send them, `dropped` when
+    /// nothing can re-send them (a container's stdout).
+    #[inline]
+    pub fn add_extractor_records_failed(
+        &self,
+        extractor: &'static str,
+        outcome: ExtractorFailure,
+        count: u64,
+    ) {
+        self.extractor_records_failed_total
+            .fetch_add(count, Ordering::Relaxed);
+        metrics::counter!(
+            "dfe_fetcher_extractor_records_failed_total",
+            "extractor" => extractor,
+            "outcome" => outcome.as_str()
+        )
+        .increment(count);
+    }
+
+    /// Records extractors took in but could not deliver, across every outcome.
+    #[inline]
+    pub fn extractor_records_failed(&self) -> u64 {
+        self.extractor_records_failed_total.load(Ordering::Relaxed)
     }
 
     // ==========================================================================

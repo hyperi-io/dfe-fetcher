@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` -- fetch interval re-computed each cycle\n- `scheduler.jitter_percent` -- jitter re-computed each cycle\n- `kafka.topic_suffix` -- topic name suffix re-read on each delivery\n- `sources.*.filter` -- CEL filter re-evaluated on each record\n- `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle\n- dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload\n\n**Requires pod restart:**\n- `output.*` -- transport connections established at startup\n- `kafka.*` (except `topic_suffix`) -- transport config bound at startup\n- `ingest.*` -- HTTP server binds at startup, auth token resolved once\n- `extractors.*` -- containers and Vector instances spawned at startup\n- `metrics.*` -- metrics server binds at startup\n- `instance_id` -- cursor key prefix set at startup\n- `cursor.directory` -- cursor store created at startup\n- adding a source, or `sources.*.enabled: true` -- source registration at startup\n- `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup\n- `scheduler.max_concurrent_fetches` -- semaphore created at startup\n- `dlq.*` -- DLQ created at startup\n- `buffer.*` -- buffer manager created at startup",
+  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` -- fetch interval re-computed each cycle\n- `scheduler.jitter_percent` -- jitter re-computed each cycle\n- `kafka.topic_suffix` -- topic name suffix re-read on each delivery\n- `sources.*.filter` -- CEL filter re-evaluated on each record\n- `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle\n- `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle\n- dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload\n\n**Requires pod restart:**\n- `output.*` -- transport connections established at startup\n- `kafka.*` (except `topic_suffix`) -- transport config bound at startup\n- `ingest.*` -- HTTP server binds at startup, auth token resolved once\n- `extractors.*` -- containers and Vector instances spawned at startup\n- `metrics.*` -- metrics server binds at startup\n- `instance_id` -- cursor key prefix set at startup\n- `cursor.directory` -- cursor store created at startup\n- adding a source, or `sources.*.enabled: true` -- source registration at startup\n- `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup\n- `scheduler.max_concurrent_fetches` -- semaphore created at startup\n- `dlq.*` -- DLQ created at startup\n- `buffer.*` -- buffer manager created at startup",
   "type": "object",
   "properties": {
     "scheduler": {
@@ -170,7 +170,10 @@
         "vector": {
           "enabled": false,
           "grpc_bind_address": "0.0.0.0:6000",
-          "instances": []
+          "instances": [],
+          "acknowledgements": {
+            "enabled": true
+          }
         }
       }
     },
@@ -281,7 +284,8 @@
       "$ref": "#/$defs/CursorConfig",
       "default": {
         "directory": "",
-        "default_window_hours": 1
+        "default_window_hours": 1,
+        "on_missing_cursor": "lookback"
       }
     },
     "scaling": {
@@ -6696,7 +6700,10 @@
           "default": {
             "enabled": false,
             "grpc_bind_address": "0.0.0.0:6000",
-            "instances": []
+            "instances": [],
+            "acknowledgements": {
+              "enabled": true
+            }
           }
         }
       }
@@ -6869,6 +6876,13 @@
             "$ref": "#/$defs/VectorInstance"
           },
           "default": []
+        },
+        "acknowledgements": {
+          "description": "When the receiver answers a push. Enabled (the default), a push is\nanswered only once its events are delivered to the outputs or confirmed\nin the DLQ, and a failure answers `UNAVAILABLE` so Vector re-sends.\nDisabled, a push is answered once queued, and a crash or a failed\ndelivery loses what was answered.",
+          "$ref": "#/$defs/AcknowledgementsConfig",
+          "default": {
+            "enabled": true
+          }
         }
       }
     },
@@ -6915,6 +6929,17 @@
         "name",
         "topic"
       ]
+    },
+    "AcknowledgementsConfig": {
+      "description": "The `acknowledgements` section of an ack-capable transport.\n\nWith `enabled: true` (the default) a source releases its acknowledgement --\na Kafka offset commit, a gRPC or HTTP response -- only once every piece of\nwork built from the record has been delivered, dead-lettered with the DLQ's\nconfirmation, or dropped by policy. A failed delivery withholds it, so the\nrecord is delivered again: duplicates are possible, loss is not.\n\nWith `enabled: false` the source acknowledges at receipt, before the record\nis processed: a crash or a failed delivery loses what was acknowledged.\n\n```yaml\nkafka:\n  acknowledgements:\n    enabled: true\n```",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Hold the source acknowledgement until every piece is delivered.",
+          "type": "boolean",
+          "default": true
+        }
+      }
     },
     "IngestConfig": {
       "description": "HTTP ingest server for container extractors to post data.\n\nOff unless a deployment enables it. `/ingest/{source}/{topic}` takes the\ndestination topic from the URL, so an exposed listener with no token lets\nanything that can reach the port write to any topic.",
@@ -7215,7 +7240,7 @@
           "const": "cascade"
         },
         {
-          "description": "Write to all enabled backends; report any failures.",
+          "description": "Write every batch to all enabled backends. The write succeeds when at\nleast one backend takes the whole batch, and fails only when none does.",
           "type": "string",
           "const": "fan_out"
         },
@@ -7304,7 +7329,7 @@
           "default": "dfe.dlq"
         },
         "send_timeout_ms": {
-          "description": "Send timeout in milliseconds.",
+          "description": "How long a `flush` or the shutdown waits for the broker to ack the\nentries queued to Kafka, in milliseconds. Entries still unacked then\nare purged and counted as dropped. The purge adds a wait of up to 5 s\nfor the purged entries' delivery reports, so `0` skips the ack wait\nbut not that one. Default 5000.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
@@ -7985,7 +8010,7 @@
           "default": null
         },
         "recv_buffer_size": {
-          "description": "Receive buffer size (messages buffered from incoming RPCs).",
+          "description": "Receive buffer size (messages buffered from incoming RPCs).\n\nA `RouteBatch` with more records than this is held whole beside the\nbuffer, one batch at a time.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
@@ -7999,7 +8024,7 @@
           "default": 100
         },
         "send_timeout_ms": {
-          "description": "Per-RPC send deadline in milliseconds (0 = no deadline).\n\nBounds a single `push` so a hung/black-holing server cannot block a\nsender task forever. Applied as the `grpc-timeout` header. Default 30s.",
+          "description": "Send deadline in milliseconds (0 = no deadline). Default 30s.\n\nBounds each `send`, and each request of a `send_batch`, end to end --\nDNS, TCP connect, TLS handshake and the RPC -- so a server that is down\nor never answers returns `Backpressured` at the limit. A dial still\nunfinished at nine tenths of it is abandoned, so the next send dials\nafresh. Also sent as the `grpc-timeout` header, which an armed receiver\nholds its answer within.\n\nA connection that has read nothing for this long is sent an HTTP/2\nPING, and closed if the PING goes unanswered for as long again (30s\neach when 0), so a server that stays connected but stops answering is\ndropped and the next send dials afresh.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
@@ -8187,8 +8212,28 @@
           "format": "uint64",
           "minimum": 0,
           "default": 1
+        },
+        "on_missing_cursor": {
+          "description": "What a tick does when its source has no cursor. Every miss logs a\nwarning and counts in `dfe_fetcher_cursor_cold_start_total{source}`,\nbecause an empty store cannot tell a new source from a lost cursor\n(a cursor directory with no volume behind it loses every cursor on a\nrestart).",
+          "$ref": "#/$defs/MissingCursor",
+          "default": "lookback"
         }
       }
+    },
+    "MissingCursor": {
+      "description": "What a tick does when its source has no cursor.",
+      "oneOf": [
+        {
+          "description": "Fetch the last `default_window_hours` and carry on, so a new source\nstarts on its own. A lost cursor can skip whatever came before that.",
+          "type": "string",
+          "const": "lookback"
+        },
+        {
+          "description": "Fetch nothing and fail the tick until an operator writes a cursor or\nswitches back to `lookback`, so a lost cursor never skips data.",
+          "type": "string",
+          "const": "refuse"
+        }
+      ]
     },
     "ScalingPressureConfig": {
       "description": "Base configuration for scaling pressure calculation.\n\nLives in the app's config cascade so thresholds are env-var overridable\n(e.g., `DFE_LOADER__SCALING__MEMORY_GATE_THRESHOLD=0.9`).\n\nComponent weights and saturation points are app-specific -- defined in\neach app's config and passed to [`super::ScalingPressure::new`] via\n[`ScalingComponent`].",

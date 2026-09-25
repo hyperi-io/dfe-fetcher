@@ -45,6 +45,7 @@ use scalo::config::flat_env::{self, ApplyFlatEnv};
 use scalo::config::sensitive::SensitiveString;
 use scalo::config::{self, ConfigOptions};
 use scalo::dlq::DlqConfig;
+use scalo::transport::AcknowledgementsConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -66,6 +67,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
 /// - `sources.*.filter` -- CEL filter re-evaluated on each record
 /// - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
+/// - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
 /// - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 ///
 /// **Requires pod restart:**
@@ -4201,6 +4203,13 @@ pub struct VectorExtractorConfig {
 
     /// Managed Vector instances.
     pub instances: Vec<VectorInstance>,
+
+    /// When the receiver answers a push. Enabled (the default), a push is
+    /// answered only once its events are delivered to the outputs or confirmed
+    /// in the DLQ, and a failure answers `UNAVAILABLE` so Vector re-sends.
+    /// Disabled, a push is answered once queued, and a crash or a failed
+    /// delivery loses what was answered.
+    pub acknowledgements: AcknowledgementsConfig,
 }
 
 impl Default for VectorExtractorConfig {
@@ -4209,6 +4218,7 @@ impl Default for VectorExtractorConfig {
             enabled: false,
             grpc_bind_address: "0.0.0.0:6000".to_string(),
             instances: vec![],
+            acknowledgements: AcknowledgementsConfig::default(),
         }
     }
 }
@@ -4679,6 +4689,13 @@ pub struct CursorConfig {
     /// cursor exists -- a source further behind than this drains a span per
     /// tick, floored at the fetch interval.
     pub default_window_hours: u64,
+
+    /// What a tick does when its source has no cursor. Every miss logs a
+    /// warning and counts in `dfe_fetcher_cursor_cold_start_total{source}`,
+    /// because an empty store cannot tell a new source from a lost cursor
+    /// (a cursor directory with no volume behind it loses every cursor on a
+    /// restart).
+    pub on_missing_cursor: MissingCursor,
 }
 
 impl Default for CursorConfig {
@@ -4686,8 +4703,24 @@ impl Default for CursorConfig {
         Self {
             directory: String::new(), // empty = auto-resolve from config path
             default_window_hours: 1,
+            on_missing_cursor: MissingCursor::default(),
         }
     }
+}
+
+/// What a tick does when its source has no cursor.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingCursor {
+    /// Fetch the last `default_window_hours` and carry on, so a new source
+    /// starts on its own. A lost cursor can skip whatever came before that.
+    #[default]
+    Lookback,
+    /// Fetch nothing and fail the tick until an operator writes a cursor or
+    /// switches back to `lookback`, so a lost cursor never skips data.
+    Refuse,
 }
 
 #[cfg(test)]
