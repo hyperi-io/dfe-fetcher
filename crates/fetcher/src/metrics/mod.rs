@@ -208,6 +208,7 @@ pub struct Metrics {
     cursor_writes_total: AtomicU64,
     cursor_write_failures_total: AtomicU64,
     cursor_cold_starts_total: AtomicU64,
+    cursor_read_failures_total: AtomicU64,
     dead_letters_dropped_total: AtomicU64,
 
     // Pipeline / delivery
@@ -264,6 +265,7 @@ impl Metrics {
             cursor_writes_total: AtomicU64::new(0),
             cursor_write_failures_total: AtomicU64::new(0),
             cursor_cold_starts_total: AtomicU64::new(0),
+            cursor_read_failures_total: AtomicU64::new(0),
             dead_letters_dropped_total: AtomicU64::new(0),
             pipeline_ready: AtomicU64::new(1),
             records_delivered_total: AtomicU64::new(0),
@@ -326,7 +328,11 @@ impl Metrics {
         );
         metrics::describe_counter!(
             "dfe_fetcher_cursor_cold_start_total",
-            "Ticks that found no cursor to resume from, by source"
+            "Ticks that found no cursor stored, or no cursor store, by source"
+        );
+        metrics::describe_counter!(
+            "dfe_fetcher_cursor_read_failures_total",
+            "Ticks whose cursor read failed, by source"
         );
         metrics::describe_counter!(
             "dfe_fetcher_extractor_records_failed_total",
@@ -721,7 +727,7 @@ impl Metrics {
         }
     }
 
-    /// Count a tick that found no cursor to resume from.
+    /// Count a tick that found no cursor stored, or no store at all.
     ///
     /// Emits `dfe_fetcher_cursor_cold_start_total{source}` on every miss: an
     /// empty store cannot tell a new source from a lost cursor, so an alert
@@ -741,6 +747,27 @@ impl Metrics {
     #[inline]
     pub fn cursor_cold_starts(&self) -> u64 {
         self.cursor_cold_starts_total.load(Ordering::Relaxed)
+    }
+
+    /// Count a tick whose cursor read failed.
+    ///
+    /// Emits `dfe_fetcher_cursor_read_failures_total{source}`: the store
+    /// failed while the process runs, so unlike a cold start it is a fault.
+    #[inline]
+    pub fn inc_cursor_read_failure(&self, source: &str) {
+        self.cursor_read_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+        metrics::counter!(
+            "dfe_fetcher_cursor_read_failures_total",
+            "source" => source.to_string()
+        )
+        .increment(1);
+    }
+
+    /// Ticks whose cursor read failed, across every source.
+    #[inline]
+    pub fn cursor_read_failures(&self) -> u64 {
+        self.cursor_read_failures_total.load(Ordering::Relaxed)
     }
 
     /// Count records an extractor took in but could not deliver.
