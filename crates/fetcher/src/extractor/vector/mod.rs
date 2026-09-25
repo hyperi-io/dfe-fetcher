@@ -41,7 +41,9 @@
 //!    is written to a file in a private temporary directory, mounted read-only
 //!    and removed at stop. A `vector_config_path` is mounted read-only under
 //!    its own file name. Vector is started with `--config` naming each file,
-//!    and picks each one's format from its extension.
+//!    and picks each one's format from its extension. The default image is
+//!    [`crate::config::DEFAULT_VECTOR_IMAGE`], pinned by digest. The container's stderr is
+//!    forwarded to the fetcher's log at the level Vector gave each line.
 //!
 //! 2. **Sidecar mode** -- Vector runs alongside the fetcher (e.g., in same pod),
 //!    connecting to the fetcher's gRPC endpoint.
@@ -56,7 +58,7 @@
 //!     instances:
 //!       - name: syslog-collector
 //!         mode: container
-//!         image: timberio/vector:latest-alpine
+//!         image: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
 //!         vector_config: |
 //!           [sources.syslog]
 //!           type = "syslog"
@@ -84,10 +86,11 @@ use scalo::transport::{
     DeliveryStatus, GrpcConfig, GrpcToken, GrpcTransport, SourceAck, TransportBase, TransportError,
     TransportReceiver, WorkBatch,
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{Level, debug, error, info, warn};
 
-use crate::config::{VectorExtractorConfig, VectorInstance};
+use crate::config::{DEFAULT_VECTOR_IMAGE, VectorExtractorConfig, VectorInstance};
 use crate::emit::EmitReport;
 use crate::error::{Error, Result};
 use crate::extractor::ExtractorSink;
@@ -113,6 +116,64 @@ fn inline_config_file(dir: &Path, index: usize, config: &str) -> PathBuf {
         _ => "toml",
     };
     dir.join(format!("instance-{index}.{extension}"))
+}
+
+/// Forward a managed instance's stderr to the fetcher's log until it closes,
+/// then log how the runtime client exited.
+///
+/// The pipe is read for the client's whole life: a full pipe blocks it, and a
+/// closed one kills it with `SIGPIPE`. Vector rate-limits its own logs, so
+/// each line is forwarded as it comes.
+async fn forward_output(name: String, mut child: tokio::process::Child) {
+    if let Some(stderr) = child.stderr.take() {
+        let mut lines = BufReader::new(stderr).split(b'\n');
+        loop {
+            match lines.next_segment().await {
+                Ok(Some(line)) => log_vector_line(&name, &String::from_utf8_lossy(&line)),
+                Ok(None) => break,
+                Err(e) => {
+                    warn!(name = %name, error = %e, "Reading the Vector container's output failed");
+                    break;
+                }
+            }
+        }
+    }
+    match child.wait().await {
+        Ok(status) if status.success() => info!(name = %name, "Vector container exited"),
+        Ok(status) => {
+            warn!(name = %name, status = %status, "Vector container exited with a failure");
+        }
+        Err(e) => warn!(name = %name, error = %e, "Waiting on the Vector container failed"),
+    }
+}
+
+/// Log one line of a managed instance's output at the level Vector gave it.
+/// A line with no level comes from the runtime or a crash, so it warns.
+fn log_vector_line(name: &str, line: &str) {
+    let line = line.trim_end();
+    if line.is_empty() {
+        return;
+    }
+    match vector_line_level(line) {
+        Some(Level::ERROR) => error!(name = %name, line = %line, "Vector instance output"),
+        Some(Level::INFO) => info!(name = %name, line = %line, "Vector instance output"),
+        Some(Level::DEBUG | Level::TRACE) => {
+            debug!(name = %name, line = %line, "Vector instance output");
+        }
+        _ => warn!(name = %name, line = %line, "Vector instance output"),
+    }
+}
+
+/// The level of a Vector text log line, `<timestamp>  <LEVEL> <target>: ...`.
+fn vector_line_level(line: &str) -> Option<Level> {
+    match line.split_whitespace().nth(1)? {
+        "ERROR" => Some(Level::ERROR),
+        "WARN" => Some(Level::WARN),
+        "INFO" => Some(Level::INFO),
+        "DEBUG" => Some(Level::DEBUG),
+        "TRACE" => Some(Level::TRACE),
+        _ => None,
+    }
 }
 
 /// The DFE source name behind an output topic: the topic minus the suffix.
@@ -473,10 +534,7 @@ impl VectorManager {
     /// Start a managed Vector container instance, reading its inline config
     /// from `inline` and its `vector_config_path`, each mounted read-only.
     fn start_vector_container(&self, instance: &VectorInstance, inline: Option<&Path>) {
-        let image = instance
-            .image
-            .as_deref()
-            .unwrap_or("timberio/vector:latest-alpine");
+        let image = instance.image.as_deref().unwrap_or(DEFAULT_VECTOR_IMAGE);
 
         info!(
             name = %instance.name,
@@ -533,8 +591,9 @@ impl VectorManager {
             .spawn();
 
         match spawn_result {
-            Ok(_child) => {
+            Ok(child) => {
                 info!(name = %instance.name, "Vector container started");
+                tokio::spawn(forward_output(instance.name.clone(), child));
             }
             Err(e) => {
                 error!(
@@ -811,29 +870,112 @@ mod tests {
         );
     }
 
-    /// A container runtime stand-in: `run` appends every mounted file to
-    /// `seen`, which proves it readable at launch, then writes its arguments
-    /// to `args`, one per line. Every other command does nothing.
-    fn fake_runtime(dir: &Path, seen: &Path, args: &Path) -> String {
+    /// A container runtime stand-in in `dir` that runs `run` for `run` and
+    /// does nothing for any other command.
+    fn runtime_script(dir: &Path, run: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
 
         let path = dir.join("runtime");
-        let script = format!(
-            r#"#!/bin/sh
-[ "$1" = run ] || exit 0
-for arg in "$@"; do
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n[ \"$1\" = run ] || exit 0\n{run}"),
+        )
+        .expect("write the runtime");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        path.display().to_string()
+    }
+
+    /// A runtime whose `run` appends every mounted file to `seen`, which
+    /// proves it readable at launch, then writes its arguments to `args`, one
+    /// per line.
+    fn fake_runtime(dir: &Path, seen: &Path, args: &Path) -> String {
+        runtime_script(
+            dir,
+            &format!(
+                r#"for arg in "$@"; do
   case "$arg" in *:/etc/vector/*) cat "${{arg%%:*}}" >> '{seen}' ;; esac
 done
 printf '%s\n' "$@" > '{args}.part'
 mv '{args}.part' '{args}'
 "#,
-            seen = seen.display(),
-            args = args.display(),
+                seen = seen.display(),
+                args = args.display(),
+            ),
+        )
+    }
+
+    /// Wait up to 10 s for `path` to exist.
+    async fn appears(path: &Path) -> bool {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    /// The runtime client's stderr is read for as long as it runs: a client
+    /// that writes well past a pipe's 64 KiB neither blocks on a full pipe
+    /// nor dies writing to a closed one, and finishes.
+    #[tokio::test]
+    async fn a_container_writing_past_a_full_pipe_to_stderr_still_finishes() {
+        let output = memory_output();
+        let (state, metrics) = pipeline_over(&output);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let finished = dir.path().join("finished");
+        // 2048 lines of 61 bytes, 122 KiB. `&&` holds the marker back if the
+        // write fails.
+        let runtime = runtime_script(
+            dir.path(),
+            &format!(
+                "yes '2026-09-25T00:00:00.000000Z  INFO vector::app: stderr filler' \
+                 | head -n 2048 >&2 && touch '{}'\n",
+                finished.display()
+            ),
         );
-        std::fs::write(&path, script).expect("write the runtime");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make it executable");
-        path.display().to_string()
+        let mut config = receiver_config(true);
+        config.instances = vec![crate::config::VectorInstance {
+            mode: "container".into(),
+            ..instance("chatty", "chatty", None)
+        }];
+        let shutdown = CancellationToken::new();
+        let manager =
+            VectorManager::new(config, state, metrics, shutdown.clone()).with_runtime(runtime);
+
+        manager.start().await.expect("start");
+
+        assert!(
+            appears(&finished).await,
+            "the client wrote all 122 KiB to stderr and finished"
+        );
+        manager.stop().await.expect("stop");
+        shutdown.cancel();
+    }
+
+    /// A Vector line is logged at the level Vector gave it, and a line with
+    /// none (the runtime's, or a crash) has no level.
+    #[test]
+    fn a_vector_line_is_logged_at_its_own_level() {
+        let at = |line| vector_line_level(line);
+        assert_eq!(
+            at("2026-09-25T00:00:00.000000Z ERROR vector::topology: Sink failed."),
+            Some(Level::ERROR)
+        );
+        assert_eq!(
+            at("2026-09-25T00:00:00.000000Z  WARN vector::sinks: Retrying."),
+            Some(Level::WARN)
+        );
+        assert_eq!(
+            at("2026-09-25T00:00:00.000000Z  INFO vector::app: Loading configs."),
+            Some(Level::INFO)
+        );
+        assert_eq!(
+            at("docker: Error response from daemon: No such image."),
+            None
+        );
+        assert_eq!(at(""), None);
     }
 
     /// A managed instance's inline config reaches Vector as a file: written
@@ -889,7 +1031,7 @@ mv '{args}.part' '{args}'
         );
         let image = args
             .iter()
-            .position(|arg| *arg == "timberio/vector:latest-alpine")
+            .position(|arg| *arg == DEFAULT_VECTOR_IMAGE)
             .expect("the image");
         assert_eq!(
             args[image + 1..],

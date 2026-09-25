@@ -4241,7 +4241,8 @@ pub struct VectorInstance {
     #[serde(default = "default_container_mode")]
     pub mode: String,
 
-    /// Container image for container mode.
+    /// Container image for container mode, pinned by digest.
+    #[serde(default = "default_vector_image")]
     pub image: Option<String>,
 
     /// Inline Vector configuration, TOML or YAML, for container mode. It is
@@ -4269,6 +4270,18 @@ pub struct VectorInstance {
 
 fn default_container_mode() -> String {
     "container".to_string()
+}
+
+/// The Vector image a container-mode instance runs when it names none: a
+/// release tag pinned to its multi-arch index digest.
+pub const DEFAULT_VECTOR_IMAGE: &str = "timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773";
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "serde's default for an Option field returns the Option"
+)]
+fn default_vector_image() -> Option<String> {
+    Some(DEFAULT_VECTOR_IMAGE.to_owned())
 }
 
 /// The topic, before the suffix, that the shared Vector listener's pushes land
@@ -5568,6 +5581,17 @@ mod tests {
         cfg.extractors.vector.instances = vec![vector_instance("syslog", Some("nowhere"))];
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("'nowhere'"), "{err}");
+    }
+
+    #[test]
+    fn a_vector_instance_naming_no_image_runs_the_digest_pinned_default() {
+        let instance: VectorInstance =
+            serde_yaml_ng::from_str("name: syslog\ntopic: syslog\n").expect("parse");
+        assert_eq!(instance.image.as_deref(), Some(DEFAULT_VECTOR_IMAGE));
+        assert!(
+            DEFAULT_VECTOR_IMAGE.contains("@sha256:"),
+            "{DEFAULT_VECTOR_IMAGE}"
+        );
     }
 
     // =========================================================================
