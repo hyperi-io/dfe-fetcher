@@ -5197,7 +5197,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -5218,7 +5218,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -6246,9 +6246,8 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.12.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e20a778ba0224513f688db556007f9f7375b0fae04b75b9f7f2a8c9b6ce6a389"
+version = "2.12.0"
+source = "git+https://github.com/hyperi-io/scalo-rs?branch=fix%2Fat-least-once#42a88ba54d5f37f8dcc271fb7088639dd44fd828"
 dependencies = [
  "aes-gcm",
  "arc-swap",
@@ -6266,6 +6265,7 @@ dependencies = [
  "file-rotate",
  "governor",
  "hkdf",
+ "hyper-util",
  "libc",
  "lz4_flex 0.13.0",
  "memchr",

@@ -38,7 +38,7 @@ dfe-fetcher-file = { path = "crates/file" }
 
 # scalo shared library (crates.io). Features are chosen per member; the core
 # takes `expression` only.
-scalo = { version = ">=2.12.7, <3", default-features = false }
+scalo = { version = ">=2.12.0, <3", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
 cel = { version = ">=0.13, <0.14", features = ["json"] }
@@ -163,6 +163,10 @@ trivially_copy_pass_by_ref = "allow"
 format_push_string = "allow"
 single_char_add_str = "allow"
 uninlined_format_args = "allow"
+
+# The held source acknowledgements live on this scalo branch until it publishes.
+[patch.crates-io]
+scalo = { git = "https://github.com/hyperi-io/scalo-rs", branch = "fix/at-least-once" }
 
 [profile.release]
 lto = "thin"
