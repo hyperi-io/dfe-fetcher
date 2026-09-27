@@ -691,6 +691,31 @@ mod tests {
         );
     }
 
+    /// The legacy producer codec reaches scalo as an override, which wins over
+    /// scalo's own producer settings, so its default must be scalo's codec and
+    /// name no level, leaving scalo to give zstd its level.
+    #[test]
+    fn the_legacy_producer_codec_defaults_to_scalos() {
+        let result = build_scalo_kafka_config(&KafkaConfig::default());
+        let scalo_default = result.sizing.resolved_producer_map();
+        assert_eq!(scalo_default["compression.type"], "zstd");
+        assert_eq!(scalo_default["compression.level"], "3");
+        assert_eq!(
+            result.librdkafka_overrides.get("compression.type"),
+            Some(&scalo_default["compression.type"])
+        );
+        assert!(
+            !result
+                .librdkafka_overrides
+                .contains_key("compression.level")
+        );
+        assert!(
+            !result
+                .librdkafka_overrides
+                .contains_key("compression.codec")
+        );
+    }
+
     #[test]
     fn test_build_scalo_kafka_config_custom_brokers() {
         let mut legacy = KafkaConfig::default();

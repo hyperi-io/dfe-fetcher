@@ -4520,7 +4520,8 @@ pub struct ProducerConfig {
     /// Linger time in milliseconds.
     pub linger_ms: u32,
 
-    /// Compression type (none, gzip, snappy, lz4, zstd).
+    /// Compression type (none, gzip, snappy, lz4, zstd). The default, zstd,
+    /// runs at `compression.level` 3.
     pub compression: String,
 
     /// Acknowledgment level (0, 1, all).
@@ -4536,7 +4537,7 @@ impl Default for ProducerConfig {
             batch_size: 8 * 1024 * 1024, // 8MiB
             batch_messages: 10_000,
             linger_ms: 20,
-            compression: "lz4".to_string(),
+            compression: "zstd".to_string(),
             acks: "all".to_string(),
             retries: 5,
         }

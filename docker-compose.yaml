@@ -7,14 +7,19 @@ services:
         condition: service_healthy
     ports:
       - "9090:9090"
-      - "8080:8080"
-      - "6000:6000"
+      # - "8080:8080"  # only when config.ingest.enabled is true; uncomment to publish
+      # - "6000:6000"  # only when config.extractors.vector.enabled is true; uncomment to publish
     volumes:
-      - ./config/config.yaml:/etc/dfe/fetcher.yaml:ro
+      - ./config/fetcher.yaml:/etc/dfe/fetcher.yaml:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9090/livez"]
       interval: 10s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "${DFE_FETCHER_CPU_LIMIT:-2}"
+          memory: ${DFE_FETCHER_MEM_LIMIT:-1G}
     command: ["dfe-fetcher", "--config", "/etc/dfe/fetcher.yaml"]
 
