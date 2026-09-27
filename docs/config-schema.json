@@ -7676,7 +7676,7 @@
           "default": false
         },
         "sizing": {
-          "description": "Kafka sizing surface: profile + named knobs + raw librdkafka escape hatch.\n\nControls the byte-budget and latency envelope for GET (consumer) and\nSEND (producer) paths. See [`KafkaSizingConfig`] for full documentation.\n\nExample YAML:\n```yaml\nkafka:\n  sizing:\n    profile: throughput\n    consumer:\n      fetch_min_bytes: 2097152  # 2 MiB, overrides profile default\n    producer:\n      compression_type: zstd    # opt into zstd for storage-bound topics\n    consumer_librdkafka:\n      fetch.wait.max.ms: \"75\"   # raw override wins over everything\n    producer_librdkafka:\n      linger.ms: \"50\"\n```",
+          "description": "Kafka sizing surface: profile + named knobs + raw librdkafka escape hatch.\n\nControls the byte-budget and latency envelope for GET (consumer) and\nSEND (producer) paths. See [`KafkaSizingConfig`] for full documentation.\n\nExample YAML:\n```yaml\nkafka:\n  sizing:\n    profile: throughput\n    consumer:\n      fetch_min_bytes: 2097152  # 2 MiB, overrides profile default\n    producer:\n      compression_type: lz4     # the default is zstd at level 3\n    consumer_librdkafka:\n      fetch.wait.max.ms: \"75\"   # raw override wins over the knobs\n    producer_librdkafka:\n      linger.ms: \"50\"\n```",
           "$ref": "#/$defs/KafkaSizingConfig",
           "default": {
             "profile": "throughput",
@@ -7701,7 +7701,7 @@
           }
         },
         "librdkafka_overrides": {
-          "description": "Librdkafka configuration overrides.\n\nThese settings override both the profile defaults and explicit config fields.\nUse this to customize any librdkafka setting not exposed as an explicit field.\n\nExample:\n```yaml\nlibrdkafka_overrides:\n  statistics.interval.ms: \"5000\"\n  fetch.min.bytes: \"2097152\"\n```",
+          "description": "Librdkafka configuration overrides.\n\nThese settings override the profile defaults, the explicit config\nfields and the whole sizing surface: every producer and consumer path\napplies them after all three. Use this to customize any librdkafka\nsetting not exposed as an explicit field.\n\nExample:\n```yaml\nlibrdkafka_overrides:\n  statistics.interval.ms: \"5000\"\n  fetch.min.bytes: \"2097152\"\n```",
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -7784,7 +7784,7 @@
       ]
     },
     "KafkaSizingConfig": {
-      "description": "Kafka sizing surface: profile + named per-knob overrides + raw escape hatch.\n\nResolution precedence (lowest to highest):\n1. `SelfRegulationProfile` defaults\n2. Named knobs in `consumer` / `producer` (explicit `Some(v)` wins)\n3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka` (wins\n   over everything, applied last via `ClientConfig::set`)\n\nThe raw maps are logged (one line per key) when they override a property\nthat the sizing surface depends on (the fetch byte sizes and\n`enable.auto.commit`).",
+      "description": "Kafka sizing surface: profile + named per-knob overrides + raw escape hatch.\n\nResolution precedence (lowest to highest), the same on every producer and\nconsumer path:\n1. `SelfRegulationProfile` defaults\n2. Named knobs in `consumer` / `producer` (explicit `Some(v)` wins)\n3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka`\n4. [`KafkaConfig::librdkafka_overrides`], which the transport applies after\n   this whole surface\n\nThe raw maps are logged (one line per key) when they override a property\nthat the sizing surface depends on (the fetch byte sizes and\n`enable.auto.commit`).",
       "type": "object",
       "properties": {
         "profile": {
@@ -7817,7 +7817,7 @@
           }
         },
         "consumer_librdkafka": {
-          "description": "Raw librdkafka consumer properties applied LAST, winning over everything.\n\nKeys must be valid librdkafka property names (e.g. `fetch.wait.max.ms`).\nAn invalid key silently no-ops in librdkafka -- double-check spelling.",
+          "description": "Raw librdkafka consumer properties, winning over the profile and the\nnamed knobs. [`KafkaConfig::librdkafka_overrides`] is applied after\nthem.\n\nKeys must be valid librdkafka property names (e.g. `fetch.wait.max.ms`).\nAn invalid key silently no-ops in librdkafka -- double-check spelling.\nA key replaces the other librdkafka name for its property from the\nlayers below it (`fetch.message.max.bytes` for\n`max.partition.fetch.bytes`).",
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -7825,7 +7825,7 @@
           "default": {}
         },
         "producer_librdkafka": {
-          "description": "Raw librdkafka producer properties applied LAST, winning over everything.\n\nKeys must be valid librdkafka property names (e.g. `linger.ms`).",
+          "description": "Raw librdkafka producer properties, winning over the profile and the\nnamed knobs. Only [`KafkaConfig::librdkafka_overrides`] is applied after\nthem.\n\nKeys must be valid librdkafka property names (e.g. `linger.ms`). A key\nreplaces the other librdkafka name for its property from the layers\nbelow it (`compression.codec` for `compression.type`,\n`request.required.acks` for `acks`).",
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -7835,20 +7835,20 @@
       }
     },
     "SelfRegulationProfile": {
-      "description": "Opinionated sizing profile for the Kafka GET/SEND surface.\n\nThe profile sets default values for all named knobs below. An explicit\nper-knob value in [`KafkaSizingConfig`] always wins over the profile\ndefault. The raw librdkafka escape hatch in [`KafkaConfig`] wins over\neverything.\n\nProfiles target the BYTE-level throughput budget and latency envelope:\n\n| Profile | Use case |\n|---|---|\n| `throughput` (default) | PB/day batch ingest, large fanout topics |\n| `balanced` | Mixed OLTP + analytics, moderate batch size |\n| `low_latency` | Near-real-time, event-driven, small messages |",
+      "description": "Opinionated sizing profile for the Kafka GET/SEND surface.\n\nThe profile sets default values for all named knobs below. An explicit\nper-knob value in [`KafkaSizingConfig`] always wins over the profile\ndefault. The raw librdkafka maps win over both, and\n[`KafkaConfig::librdkafka_overrides`] is applied after all of them.\n\nProfiles target the BYTE-level throughput budget and latency envelope.\nThey differ in batching and latency only: every profile produces with\n`zstd` at `compression.level` 3.\n\n| Profile | Use case |\n|---|---|\n| `throughput` (default) | PB/day batch ingest, large fanout topics |\n| `balanced` | Mixed OLTP + analytics, moderate batch size |\n| `low_latency` | Near-real-time, event-driven, small messages |",
       "oneOf": [
         {
-          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,\n50 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight,\n16 MiB record ceiling.",
+          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,\n50 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, zstd level 3, 64 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
           "type": "string",
           "const": "throughput"
         },
         {
-          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight,\n16 MiB record ceiling.",
+          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, zstd level 3, 32 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
           "type": "string",
           "const": "balanced"
         },
         {
-          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,\n16 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight,\n16 MiB record ceiling.",
+          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,\n16 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, zstd level 3, 16 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
           "type": "string",
           "const": "low_latency"
         }
@@ -7931,7 +7931,7 @@
           "default": null
         },
         "compression_type": {
-          "description": "Compression codec for MessageSets.\n\nlibrdkafka: `compression.type` (alias for `compression.codec`).\nValid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.\nDefault (all profiles): `lz4` -- best throughput/ratio tradeoff.\nUse `zstd` for storage-bound topics that can absorb the CPU cost.",
+          "description": "Compression codec for MessageSets.\n\nlibrdkafka: `compression.type` (alias for `compression.codec`).\nValid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.\nDefault (all profiles): `zstd` at `compression.level` 3.\n\nThe level is set only while the resolved codec is `zstd`, so another\ncodec named here runs at librdkafka's own default level for it. To run\nzstd at another level, set `compression.level` in `producer_librdkafka`.",
           "type": [
             "string",
             "null"

@@ -6736,9 +6736,9 @@ $defs:
               consumer:
                 fetch_min_bytes: 2097152  # 2 MiB, overrides profile default
               producer:
-                compression_type: zstd    # opt into zstd for storage-bound topics
+                compression_type: lz4     # the default is zstd at level 3
               consumer_librdkafka:
-                fetch.wait.max.ms: "75"   # raw override wins over everything
+                fetch.wait.max.ms: "75"   # raw override wins over the knobs
               producer_librdkafka:
                 linger.ms: "50"
           ```
@@ -6765,8 +6765,10 @@ $defs:
         description: |-
           Librdkafka configuration overrides.
 
-          These settings override both the profile defaults and explicit config fields.
-          Use this to customize any librdkafka setting not exposed as an explicit field.
+          These settings override the profile defaults, the explicit config
+          fields and the whole sizing surface: every producer and consumer path
+          applies them after all three. Use this to customize any librdkafka
+          setting not exposed as an explicit field.
 
           Example:
           ```yaml
@@ -6856,11 +6858,13 @@ $defs:
     description: |-
       Kafka sizing surface: profile + named per-knob overrides + raw escape hatch.
 
-      Resolution precedence (lowest to highest):
+      Resolution precedence (lowest to highest), the same on every producer and
+      consumer path:
       1. `SelfRegulationProfile` defaults
       2. Named knobs in `consumer` / `producer` (explicit `Some(v)` wins)
-      3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka` (wins
-         over everything, applied last via `ClientConfig::set`)
+      3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka`
+      4. [`KafkaConfig::librdkafka_overrides`], which the transport applies after
+         this whole surface
 
       The raw maps are logged (one line per key) when they override a property
       that the sizing surface depends on (the fetch byte sizes and
@@ -6893,19 +6897,29 @@ $defs:
           message_max_bytes: null
       consumer_librdkafka:
         description: |-
-          Raw librdkafka consumer properties applied LAST, winning over everything.
+          Raw librdkafka consumer properties, winning over the profile and the
+          named knobs. [`KafkaConfig::librdkafka_overrides`] is applied after
+          them.
 
           Keys must be valid librdkafka property names (e.g. `fetch.wait.max.ms`).
           An invalid key silently no-ops in librdkafka -- double-check spelling.
+          A key replaces the other librdkafka name for its property from the
+          layers below it (`fetch.message.max.bytes` for
+          `max.partition.fetch.bytes`).
         type: object
         additionalProperties:
           type: string
         default: {}
       producer_librdkafka:
         description: |-
-          Raw librdkafka producer properties applied LAST, winning over everything.
+          Raw librdkafka producer properties, winning over the profile and the
+          named knobs. Only [`KafkaConfig::librdkafka_overrides`] is applied after
+          them.
 
-          Keys must be valid librdkafka property names (e.g. `linger.ms`).
+          Keys must be valid librdkafka property names (e.g. `linger.ms`). A key
+          replaces the other librdkafka name for its property from the layers
+          below it (`compression.codec` for `compression.type`,
+          `request.required.acks` for `acks`).
         type: object
         additionalProperties:
           type: string
@@ -6916,10 +6930,12 @@ $defs:
 
       The profile sets default values for all named knobs below. An explicit
       per-knob value in [`KafkaSizingConfig`] always wins over the profile
-      default. The raw librdkafka escape hatch in [`KafkaConfig`] wins over
-      everything.
+      default. The raw librdkafka maps win over both, and
+      [`KafkaConfig::librdkafka_overrides`] is applied after all of them.
 
-      Profiles target the BYTE-level throughput budget and latency envelope:
+      Profiles target the BYTE-level throughput budget and latency envelope.
+      They differ in batching and latency only: every profile produces with
+      `zstd` at `compression.level` 3.
 
       | Profile | Use case |
       |---|---|
@@ -6932,8 +6948,8 @@ $defs:
 
         Consumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,
         50 MiB total, 2000 poll-safety cap.
-        Producer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight,
-        16 MiB record ceiling.
+        Producer: 128 KiB batch, 20 ms linger, zstd level 3, 64 MiB buffer,
+        5 in-flight, 16 MiB record ceiling.
       type: string
       const: throughput
     - description: |-
@@ -6941,8 +6957,8 @@ $defs:
 
         Consumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,
         50 MiB total, 1000 poll-safety cap.
-        Producer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight,
-        16 MiB record ceiling.
+        Producer: 64 KiB batch, 5 ms linger, zstd level 3, 32 MiB buffer,
+        5 in-flight, 16 MiB record ceiling.
       type: string
       const: balanced
     - description: |-
@@ -6950,8 +6966,8 @@ $defs:
 
         Consumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,
         16 MiB total, 500 poll-safety cap.
-        Producer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight,
-        16 MiB record ceiling.
+        Producer: 16 KiB batch, 0 ms linger, zstd level 3, 16 MiB buffer,
+        5 in-flight, 16 MiB record ceiling.
       type: string
       const: low_latency
   ConsumerKnobs:
@@ -7067,8 +7083,11 @@ $defs:
 
           librdkafka: `compression.type` (alias for `compression.codec`).
           Valid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.
-          Default (all profiles): `lz4` -- best throughput/ratio tradeoff.
-          Use `zstd` for storage-bound topics that can absorb the CPU cost.
+          Default (all profiles): `zstd` at `compression.level` 3.
+
+          The level is set only while the resolved codec is `zstd`, so another
+          codec named here runs at librdkafka's own default level for it. To run
+          zstd at another level, set `compression.level` in `producer_librdkafka`.
         type:
         - string
         - 'null'
