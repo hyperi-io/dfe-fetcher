@@ -1,7 +1,7 @@
 # Copy to terraform.tfvars and fill in actual values
 # terraform.tfvars is gitignored — never commit it
 
-aws_profile           = "hypersec-internet-services"
+aws_profile           = "my-aws-profile"
 aws_region            = "ap-southeast-2"
-azure_subscription_id = ""  # e.g. "a9d0ef2e-4f1f-4782-adba-26973f122450"
-gcp_project_id        = ""  # e.g. "infra-486601"
+azure_subscription_id = ""  # e.g. "00000000-0000-0000-0000-000000000000"
+gcp_project_id        = ""  # e.g. "my-gcp-project"

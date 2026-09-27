@@ -301,13 +301,11 @@ sources:
 
   # ---------------------------------------------------------------------------
   # Google Workspace Reports API
-  # ALPHA (code-complete, not production-validated) - additionally pending
-  # hyperi-infra#5. The code is written but the live
-  # tenant integration cannot be tested until a domain-wide-delegation
-  # service account is provisioned AND the Admin-console operator manually
-  # grants the Reports API scope to that SA's numeric client ID under
-  # Security -> API controls -> Domain-wide delegation. Until then this
-  # stanza is documentation only. Leave `enabled: false`.
+  # ALPHA (code-complete, not production-validated). Requires a Google
+  # Workspace service account with domain-wide delegation, AND the
+  # Admin-console operator must grant the Reports API scope to that SA's
+  # numeric client ID under Security -> API controls -> Domain-wide
+  # delegation. Leave `enabled: false` until both are in place.
   # ---------------------------------------------------------------------------
 
   google_workspace:
@@ -338,14 +336,13 @@ sources:
 
   # ---------------------------------------------------------------------------
   # GCP Pub/Sub pull
-  # ALPHA (code-complete, not production-validated) - additionally pending a
-  # hyperi-infra issue (TBD). The fetcher pulls and
+  # ALPHA (code-complete, not production-validated). The fetcher pulls and
   # acknowledges Pub/Sub messages via the REST `:pull` / `:acknowledge`
   # endpoints. Each subscription requires:
   #   1. A Cloud Logging Log Sink (or app publisher) populating a topic.
   #   2. A Pub/Sub subscription on that topic.
   #   3. The fetcher SA granted `roles/pubsub.subscriber` on the subscription.
-  # Leave `enabled: false` until the infra issue is closed.
+  # Leave `enabled: false` until all three are provisioned.
   # ---------------------------------------------------------------------------
 
   gcp_pubsub:

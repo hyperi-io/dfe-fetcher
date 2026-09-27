@@ -9,7 +9,7 @@
 //! Integration tests requiring a running Kafka broker.
 //!
 //! Supports dual-mode via `TEST_MODE` env var (see `tests/common/mod.rs`):
-//! - `remote` (default) -- devex Kafka cluster via `.env`
+//! - `remote` (default) -- a remote Kafka cluster via `.env`
 //! - `docker` -- dfe-docker infra profile (localhost:19092, no auth)
 //!
 //! Run with: `cargo test --test e2e -- --ignored`

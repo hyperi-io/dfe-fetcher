@@ -328,7 +328,7 @@ Three ways a green run says more than it proved:
 
 ### Where this sits
 
-Generated with `python3 /projects/dfe-infra/scripts/dfe-stack suite --consumer
+Generated with `python3 ../dfe-infra/scripts/dfe-stack suite --consumer
 dfe-fetcher` and `--producer dfe-fetcher`. Nothing else in the suite graph names
 this repo in either direction.
 
