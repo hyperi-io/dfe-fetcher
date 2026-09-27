@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.30](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.29...v1.4.30) (2026-09-27)
+
+### Bug Fixes
+
+* **fetcher:** hold Vector and container intake until delivery ([#192](https://github.com/hyperi-io/dfe-fetcher/issues/192)) ([26c0437](https://github.com/hyperi-io/dfe-fetcher/commit/26c04379a5e10fd3bb7caa460227afdd00460c7f))
+* **metrics:** count each failed send once ([#191](https://github.com/hyperi-io/dfe-fetcher/issues/191)) ([ff200e3](https://github.com/hyperi-io/dfe-fetcher/commit/ff200e314917d9f6e70c9916fd47fce6692bdefc))
+
 ## [1.4.29](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.28...v1.4.29) (2026-09-24)
 
 ### Bug Fixes
