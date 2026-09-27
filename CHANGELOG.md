@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.31](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.30...v1.4.31) (2026-09-27)
+
+### Bug Fixes
+
+* zstd producer default, steadier tail test, regenerated compose ([#194](https://github.com/hyperi-io/dfe-fetcher/issues/194)) ([0e44c7b](https://github.com/hyperi-io/dfe-fetcher/commit/0e44c7bafaa142c60d5c84c8356f1afbf13ea2ae))
+
 ## [1.4.30](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.29...v1.4.30) (2026-09-27)
 
 ### Bug Fixes
