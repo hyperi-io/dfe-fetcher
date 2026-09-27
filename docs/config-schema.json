@@ -540,7 +540,7 @@
           }
         },
         "google_workspace": {
-          "description": "Google Workspace Reports API source configuration.\n\n**Alpha** - additionally pending hyperi-infra#5 (domain-wide-delegation\nservice account + manual Admin-console scope grants) before live use.",
+          "description": "Google Workspace Reports API source configuration.\n\n**Alpha** - requires a Google Workspace service account with\ndomain-wide delegation and Admin-console scope grants.",
           "$ref": "#/$defs/GoogleWorkspaceSourceConfig",
           "default": {
             "enabled": false,
@@ -550,7 +550,7 @@
           }
         },
         "gcp_pubsub": {
-          "description": "GCP Pub/Sub pull source configuration.\n\n**Alpha** - additionally pending a hyperi-infra issue (TBD) for\ntenant-side Log Sink + Pub/Sub topic + subscription provisioning.",
+          "description": "GCP Pub/Sub pull source configuration.\n\n**Alpha** - requires a tenant-side Log Sink, Pub/Sub topic and\nsubscription.",
           "$ref": "#/$defs/GcpPubsubSourceConfig",
           "default": {
             "enabled": false,
@@ -2756,7 +2756,7 @@
       }
     },
     "GoogleWorkspaceSourceConfig": {
-      "description": "Google Workspace Reports API source configuration.\n\n**Alpha** (code-complete, not production-validated) and additionally\npending hyperi-infra#5. The fetcher code is written\nagainst the documented Workspace Reports API but cannot be live-tested\nuntil the GCP service account is provisioned with domain-wide delegation\nand the manual Admin-console scope grants are completed.\n\nPulls per-application audit/activity reports from\n`admin.googleapis.com/admin/reports/v1/activity/users/all/applications/<app>`.\nAuth: OAuth2 service account using JWT-with-subject (RS256) - the SA\nimpersonates a designated Workspace admin email so the Reports API\nreturns data scoped to the tenant.",
+      "description": "Google Workspace Reports API source configuration.\n\n**Alpha** (code-complete, not production-validated). The fetcher code is\nwritten against the documented Workspace Reports API. Live use requires a\nGCP service account with domain-wide delegation and the Admin-console\nscope grants for the Reports API.\n\nPulls per-application audit/activity reports from\n`admin.googleapis.com/admin/reports/v1/activity/users/all/applications/<app>`.\nAuth: OAuth2 service account using JWT-with-subject (RS256) - the SA\nimpersonates a designated Workspace admin email so the Reports API\nreturns data scoped to the tenant.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -2929,7 +2929,7 @@
       ]
     },
     "GcpPubsubSourceConfig": {
-      "description": "GCP Pub/Sub pull source configuration.\n\n**Alpha** (code-complete, not production-validated) and additionally\npending a hyperi-infra issue (TBD). The Pub/Sub pull\nsource is written but cannot be exercised against the live HyperI GCP\ntenant until:\n\n1. A Cloud Logging Log Sink is provisioned to route the desired\n   log entries (audit, VPC flow, DNS query, custom workloads) into\n   a Pub/Sub topic.\n2. A Pub/Sub subscription is created on that topic for the fetcher\n   SA to pull from.\n3. The fetcher's GCP SA is granted `roles/pubsub.subscriber` on the\n   subscription.\n\nSubscriptions are read via the REST `:pull` endpoint (synchronous\npull); the fetcher acknowledges drained messages with `:acknowledge`\nafter they have been emitted to Kafka. The gRPC StreamingPull variant\nis intentionally not used - fetcher volumes do not justify the extra\ndependency surface (tonic + protobuf). If a tenant's subscription\never sustains volumes that REST pull cannot keep up with, revisit\nwith a v2 source.\n\nEach subscription is one entry under `subscriptions`. The fetcher\nemits one record per Pub/Sub message; `message.data` is base64\ndecoded and parsed as JSON if possible (typical for Log Sink\npayloads), otherwise emitted as a string.",
+      "description": "GCP Pub/Sub pull source configuration.\n\n**Alpha** (code-complete, not production-validated). Live use requires,\nin the tenant's GCP project:\n\n1. A Cloud Logging Log Sink that routes the desired log entries\n   (audit, VPC flow, DNS query, custom workloads) into a Pub/Sub topic.\n2. A Pub/Sub subscription on that topic for the fetcher SA to pull\n   from.\n3. `roles/pubsub.subscriber` on the subscription, granted to the\n   fetcher's GCP SA.\n\nSubscriptions are read via the REST `:pull` endpoint (synchronous\npull); the fetcher acknowledges drained messages with `:acknowledge`\nafter they have been emitted to Kafka. The gRPC StreamingPull variant\nis intentionally not used - fetcher volumes do not justify the extra\ndependency surface (tonic + protobuf). If a tenant's subscription\never sustains volumes that REST pull cannot keep up with, revisit\nwith a v2 source.\n\nEach subscription is one entry under `subscriptions`. The fetcher\nemits one record per Pub/Sub message; `message.data` is base64\ndecoded and parsed as JSON if possible (typical for Log Sink\npayloads), otherwise emitted as a string.",
       "type": "object",
       "properties": {
         "enabled": {

@@ -1083,14 +1083,14 @@ pub struct SourcesConfig {
 
     /// Google Workspace Reports API source configuration.
     ///
-    /// **Alpha** - additionally pending hyperi-infra#5 (domain-wide-delegation
-    /// service account + manual Admin-console scope grants) before live use.
+    /// **Alpha** - requires a Google Workspace service account with
+    /// domain-wide delegation and Admin-console scope grants.
     pub google_workspace: GoogleWorkspaceSourceConfig,
 
     /// GCP Pub/Sub pull source configuration.
     ///
-    /// **Alpha** - additionally pending a hyperi-infra issue (TBD) for
-    /// tenant-side Log Sink + Pub/Sub topic + subscription provisioning.
+    /// **Alpha** - requires a tenant-side Log Sink, Pub/Sub topic and
+    /// subscription.
     pub gcp_pubsub: GcpPubsubSourceConfig,
 
     /// Object-store source family configuration (S3 / GCS / Azure Blob).
@@ -3305,11 +3305,10 @@ impl Default for CratesIoSourceConfig {
 
 /// Google Workspace Reports API source configuration.
 ///
-/// **Alpha** (code-complete, not production-validated) and additionally
-/// pending hyperi-infra#5. The fetcher code is written
-/// against the documented Workspace Reports API but cannot be live-tested
-/// until the GCP service account is provisioned with domain-wide delegation
-/// and the manual Admin-console scope grants are completed.
+/// **Alpha** (code-complete, not production-validated). The fetcher code is
+/// written against the documented Workspace Reports API. Live use requires a
+/// GCP service account with domain-wide delegation and the Admin-console
+/// scope grants for the Reports API.
 ///
 /// Pulls per-application audit/activity reports from
 /// `admin.googleapis.com/admin/reports/v1/activity/users/all/applications/<app>`.
@@ -3706,18 +3705,15 @@ pub struct SalesforceService {
 
 /// GCP Pub/Sub pull source configuration.
 ///
-/// **Alpha** (code-complete, not production-validated) and additionally
-/// pending a hyperi-infra issue (TBD). The Pub/Sub pull
-/// source is written but cannot be exercised against the live HyperI GCP
-/// tenant until:
+/// **Alpha** (code-complete, not production-validated). Live use requires,
+/// in the tenant's GCP project:
 ///
-/// 1. A Cloud Logging Log Sink is provisioned to route the desired
-///    log entries (audit, VPC flow, DNS query, custom workloads) into
-///    a Pub/Sub topic.
-/// 2. A Pub/Sub subscription is created on that topic for the fetcher
-///    SA to pull from.
-/// 3. The fetcher's GCP SA is granted `roles/pubsub.subscriber` on the
-///    subscription.
+/// 1. A Cloud Logging Log Sink that routes the desired log entries
+///    (audit, VPC flow, DNS query, custom workloads) into a Pub/Sub topic.
+/// 2. A Pub/Sub subscription on that topic for the fetcher SA to pull
+///    from.
+/// 3. `roles/pubsub.subscriber` on the subscription, granted to the
+///    fetcher's GCP SA.
 ///
 /// Subscriptions are read via the REST `:pull` endpoint (synchronous
 /// pull); the fetcher acknowledges drained messages with `:acknowledge`

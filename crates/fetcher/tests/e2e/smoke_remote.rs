@@ -1266,15 +1266,14 @@ async fn go_modules_fetch_known_module() {
 // Google Workspace Reports API -- SPECULATIVE
 // =============================================================================
 //
-// These tests will fail on every supported environment until
-// hyperi-infra#5 is completed:
+// These tests need a Workspace tenant with:
 //   1. A GCP service account with domain-wide delegation provisioned.
 //   2. Reports API scope manually granted in the Admin console
 //      (Security -> API controls -> Domain-wide delegation).
 //   3. Admin email surfaced in env so the JWT `sub` claim impersonates it.
 //
 // The fetcher code is written and unit-tested; the live tests stay
-// `#[ignore]`'d and additionally noted as pending the infra issue.
+// `#[ignore]`'d.
 
 fn google_workspace_base() -> GoogleWorkspaceSourceConfig {
     GoogleWorkspaceSourceConfig {
@@ -1292,7 +1291,7 @@ fn google_workspace_base() -> GoogleWorkspaceSourceConfig {
 }
 
 #[tokio::test]
-#[ignore = "requires Workspace SA + admin scope grant (hyperi-infra#5 must be completed first)"]
+#[ignore = "requires a Workspace SA with domain-wide delegation + admin scope grant"]
 async fn google_workspace_health_check() {
     load_env();
     let _ = require("GOOGLE_WORKSPACE_ADMIN_EMAIL");
@@ -1315,7 +1314,7 @@ async fn google_workspace_health_check() {
 }
 
 #[tokio::test]
-#[ignore = "requires Workspace SA + admin scope grant (hyperi-infra#5 must be completed first)"]
+#[ignore = "requires a Workspace SA with domain-wide delegation + admin scope grant"]
 async fn google_workspace_login_activity_fetch() {
     load_env();
     let _ = require("GOOGLE_WORKSPACE_ADMIN_EMAIL");
@@ -1345,15 +1344,14 @@ async fn google_workspace_login_activity_fetch() {
 // GCP Pub/Sub pull -- SPECULATIVE
 // =============================================================================
 //
-// These tests will fail on every supported environment until the
-// pending hyperi-infra issue is completed:
+// These tests need a GCP project with:
 //   1. A Cloud Logging Log Sink routing entries into a Pub/Sub topic.
 //   2. A Pub/Sub subscription on that topic.
 //   3. `roles/pubsub.subscriber` granted to the fetcher SA on that
 //      subscription.
 //
 // The fetcher code is written and unit-tested; the live tests stay
-// `#[ignore]`'d and additionally noted as pending the infra issue.
+// `#[ignore]`'d.
 
 fn gcp_pubsub_base() -> GcpPubsubSourceConfig {
     GcpPubsubSourceConfig {
@@ -1392,7 +1390,7 @@ fn pubsub_shape(cfg: &GcpPubsubSourceConfig) -> dfe_fetcher_rest::shape::queue::
 
 /// The token exchange for the Pub/Sub scope with the configured key.
 #[tokio::test]
-#[ignore = "requires Pub/Sub Log Sink + subscription (pending hyperi-infra issue TBD)"]
+#[ignore = "requires a Pub/Sub Log Sink + subscription"]
 async fn gcp_pubsub_health_check() {
     load_env();
     assert!(
@@ -1410,7 +1408,7 @@ async fn gcp_pubsub_health_check() {
 /// yields, each marked with its ack id, which stay UNACKNOWLEDGED here
 /// (only the driver acks, after delivery), so the broker redelivers them.
 #[tokio::test]
-#[ignore = "requires Pub/Sub Log Sink + subscription (pending hyperi-infra issue TBD)"]
+#[ignore = "requires a Pub/Sub Log Sink + subscription"]
 async fn gcp_pubsub_pull_subscription() {
     use futures::StreamExt;
 

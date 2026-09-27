@@ -9,7 +9,7 @@
 //! Shared test helpers for dual-mode test infrastructure.
 //!
 //! Tests can run against either:
-//! - **Remote** -- devex cluster via `.env` (KAFKA_BROKERS, KAFKA_SASL_*, etc.)
+//! - **Remote** -- a remote Kafka cluster via `.env` (KAFKA_BROKERS, KAFKA_SASL_*, etc.)
 //! - **Docker** -- dfe-docker infra profile (localhost:19092, PLAINTEXT, no SASL)
 //!
 //! Set `TEST_MODE=docker` or `TEST_MODE=remote` in `.env` or environment.
