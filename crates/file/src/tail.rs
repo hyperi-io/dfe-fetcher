@@ -883,11 +883,12 @@ mod tailer_tests {
 
     /// Tick until the read from `cp` yields `want` rows.
     ///
-    /// The tailer does not re-glob inside `glob_minimum_cooldown_ms`, so the
-    /// tick straight after an append can legitimately see nothing. Each tick
-    /// is a complete read from `cp` rather than a continuation, so the tick
-    /// that sees the appended lines sees all of them and nothing is counted
-    /// twice.
+    /// A pass is stamped when the tailer sends it, after its read, so a pass
+    /// read just before an append can end the next tick with nothing. A new
+    /// file also waits for the next glob after `glob_minimum_cooldown_ms`.
+    /// Each tick is a complete read from `cp` rather than a continuation, so
+    /// the tick that sees the appended lines sees all of them and nothing is
+    /// counted twice.
     async fn tick_until(
         tail: &FileTail,
         cp: Option<&CheckpointValue>,
@@ -930,7 +931,7 @@ mod tailer_tests {
         assert_eq!(cp, Some(CheckpointValue::Lines(vec![(file_id, 16)])));
 
         append(&log, &["{\"n\":3}"]);
-        let (rows, cp2) = tick(&tail, cp.as_ref()).await;
+        let (rows, cp2) = tick_until(&tail, cp.as_ref(), 1).await;
         assert_eq!(texts(&rows), ["{\"n\":3}"], "only the new line");
         assert_eq!(cp2, Some(CheckpointValue::Lines(vec![(file_id, 24)])));
 
@@ -1006,7 +1007,7 @@ mod tailer_tests {
         // A second tick reads a line the driver never acknowledges (the tick
         // is lost: no checkpoint handed back).
         append(&log, &["{\"n\":3}"]);
-        let (rows, _lost) = tick(&tail, committed.as_ref()).await;
+        let (rows, _lost) = tick_until(&tail, committed.as_ref(), 1).await;
         assert_eq!(texts(&rows), ["{\"n\":3}"]);
         tail.stop().await;
 
@@ -1014,7 +1015,7 @@ mod tailer_tests {
         // the driver hands the last committed checkpoint to the first tick.
         let again = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
         append(&log, &["{\"n\":4}"]);
-        let (rows, cp) = tick(&again, committed.as_ref()).await;
+        let (rows, cp) = tick_until(&again, committed.as_ref(), 2).await;
         assert_eq!(
             texts(&rows),
             ["{\"n\":3}", "{\"n\":4}"],

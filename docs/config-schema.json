@@ -208,7 +208,7 @@
           "batch_size": 8388608,
           "batch_messages": 10000,
           "linger_ms": 20,
-          "compression": "lz4",
+          "compression": "zstd",
           "acks": "all",
           "retries": 5
         }
@@ -7044,7 +7044,7 @@
             "batch_size": 8388608,
             "batch_messages": 10000,
             "linger_ms": 20,
-            "compression": "lz4",
+            "compression": "zstd",
             "acks": "all",
             "retries": 5
           }
@@ -7140,9 +7140,9 @@
           "default": 20
         },
         "compression": {
-          "description": "Compression type (none, gzip, snappy, lz4, zstd).",
+          "description": "Compression type (none, gzip, snappy, lz4, zstd). The default, zstd,\nruns at `compression.level` 3.",
           "type": "string",
-          "default": "lz4"
+          "default": "zstd"
         },
         "acks": {
           "description": "Acknowledgment level (0, 1, all).",

@@ -28,6 +28,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "BUSL-1.1"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
+description = "Pulls security and operational data from cloud and SaaS APIs, databases and files into the DFE pipeline over Kafka or gRPC"
 
 [workspace.dependencies]
 # Internal crates
