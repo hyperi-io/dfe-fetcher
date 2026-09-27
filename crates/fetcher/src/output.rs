@@ -23,7 +23,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use scalo::transport::{
     GrpcTransport, KafkaConfig as ScaloKafkaConfig, KafkaTransport, MemoryTransport, RoutedSender,
-    SendResult, TransportBase, TransportConfig, TransportError, TransportSender, TransportType,
+    SendResult, SinkConfirmation, TransportBase, TransportConfig, TransportError, TransportSender,
+    TransportType,
 };
 use tracing::{debug, error, info, trace};
 
@@ -148,6 +149,15 @@ impl OutputTransport {
         }
     }
 
+    /// What this transport's `Ok` proves about delivery.
+    fn confirms_delivery(&self) -> SinkConfirmation {
+        match self {
+            Self::Kafka(t) => t.confirms_delivery(),
+            Self::Grpc(t) => t.confirms_delivery(),
+            Self::Memory(t) => t.confirms_delivery(),
+        }
+    }
+
     /// Check if this transport is healthy.
     fn is_healthy(&self) -> bool {
         match self {
@@ -238,6 +248,23 @@ impl OutputManager {
             transports,
             destinations,
         })
+    }
+
+    /// What a send's `Ok` proves: the weakest confirmation among the default
+    /// transports. A named destination is Kafka or gRPC, which both confirm
+    /// remotely, so it never weakens it.
+    #[must_use]
+    pub fn confirms_delivery(&self) -> SinkConfirmation {
+        let strength = |c: SinkConfirmation| match c {
+            SinkConfirmation::Remote => 2,
+            SinkConfirmation::Local => 1,
+            _ => 0,
+        };
+        self.transports
+            .iter()
+            .map(OutputTransport::confirms_delivery)
+            .min_by_key(|c| strength(*c))
+            .unwrap_or_default()
     }
 
     /// An output over one in-process transport, with no named destinations.
@@ -974,6 +1001,16 @@ mod tests {
         config.dlq.mode = scalo::dlq::DlqMode::FileOnly;
         config.dlq.file.path = dlq.to_path_buf();
         config.dlq.flush_interval_ms = 10;
+        Box::pin(sink_over(config)).await.0
+    }
+
+    /// An extractor sink over `config`'s output and DLQ, with its metrics.
+    async fn sink_over(
+        config: Config,
+    ) -> (
+        crate::extractor::ExtractorSink,
+        Arc<crate::metrics::Metrics>,
+    ) {
         let output = OutputManager::new(&config.output, &config.kafka)
             .await
             .unwrap();
@@ -987,7 +1024,10 @@ mod tests {
             )
             .unwrap(),
         );
-        crate::extractor::ExtractorSink::new(state, metrics)
+        (
+            crate::extractor::ExtractorSink::new(state, Arc::clone(&metrics)),
+            metrics,
+        )
     }
 
     /// Every entry the file DLQ under `dir` holds once its first entry has
@@ -1093,7 +1133,8 @@ mod tests {
             report,
             crate::emit::EmitReport {
                 sent: 1,
-                dead_lettered: 1
+                dead_lettered: 1,
+                dropped: 0
             }
         );
         assert_eq!(received_ids(&loader_rx).await, ["clean", "poison"]);
@@ -1113,6 +1154,157 @@ mod tests {
             entries[0].reason.contains("siem") && entries[0].reason.contains("archive"),
             "{}",
             entries[0].reason
+        );
+    }
+
+    /// A dead letter counts only once the DLQ confirms it holds the record: a
+    /// write the DLQ refuses fails the emit, so the tick keeps its cursor and
+    /// the record is fetched again rather than counted handled and lost.
+    #[tokio::test]
+    async fn a_dead_letter_the_dlq_refuses_fails_the_emit() {
+        use dfe_fetcher_core::batch::Outbound;
+        use scalo::transport::GrpcConfig;
+        use scalo::transport::filter::{FilterAction, FilterRule};
+
+        let (_default_rx, default_ep) = grpc_listener().await;
+        let mut config = Config::default();
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(GrpcConfig {
+            filters_out: vec![FilterRule {
+                expression: r#"id == "poison""#.into(),
+                action: FilterAction::Dlq,
+            }],
+            ..GrpcConfig::client(&default_ep)
+        });
+        let dlq = tempfile::tempdir().unwrap();
+        let sink = Box::pin(fanout_pipeline(config, dlq.path())).await;
+        // A plain file where the DLQ's directory belongs: every write fails.
+        let service_dir = dlq.path().join("dfe-fetcher");
+        std::fs::remove_dir_all(&service_dir).unwrap();
+        std::fs::write(&service_dir, b"not a directory").unwrap();
+
+        let err = sink
+            .emit(vec![Outbound::new("fixture_land", r#"{"id":"poison"}"#)])
+            .await
+            .expect_err("a dead letter nothing holds fails the emit");
+
+        assert!(matches!(err, Error::Transport(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("could not be dead-lettered"),
+            "{err}"
+        );
+    }
+
+    /// Each intake reports its guarantee under its own `listener` label
+    /// against what the outputs confirm. A gRPC output confirms remotely, so a
+    /// scheduled source, whose cursor waits on delivery, is at-least-once; an
+    /// ingest listener with acknowledgements off, and a container's stdout,
+    /// which holds nothing, are best effort. An in-process output confirms
+    /// nothing.
+    #[tokio::test]
+    async fn each_intake_reports_its_delivery_guarantee() {
+        use crate::metrics::recorded::{Recorder, carries};
+        use crate::pipeline::IntakeAcks;
+        use scalo::transport::AckKind;
+
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (_rx, endpoint) = grpc_listener().await;
+        let mut config = Config::default();
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(scalo::transport::GrpcConfig::client(&endpoint));
+        let grpc = OutputManager::new(&config.output, &config.kafka)
+            .await
+            .unwrap();
+        assert_eq!(grpc.confirms_delivery(), SinkConfirmation::Remote);
+        let (sink, _) = Box::pin(sink_over(config)).await;
+
+        let held = |kind, enabled| IntakeAcks { kind, enabled };
+        sink.state()
+            .publish_guarantee("scheduled", Some(&held(AckKind::Pull, true)));
+        sink.state()
+            .publish_guarantee("ingest", Some(&held(AckKind::Push, false)));
+        sink.state().publish_guarantee("container", None);
+
+        let raised = recorder.raised_gauges("pipeline_delivery_guarantee");
+        for wanted in [
+            [
+                ("listener", "scheduled"),
+                ("guarantee", "at_least_once"),
+                ("reason", "confirmed"),
+            ],
+            [
+                ("listener", "ingest"),
+                ("guarantee", "best_effort"),
+                ("reason", "acks_disabled"),
+            ],
+            [
+                ("listener", "container"),
+                ("guarantee", "best_effort"),
+                ("reason", "source_cannot_ack"),
+            ],
+        ] {
+            assert!(
+                raised.iter().any(|labels| carries(labels, &wanted)),
+                "{wanted:?} not in {raised:?}"
+            );
+        }
+
+        let memory = OutputManager::memory(Arc::new(
+            MemoryTransport::new(&scalo::transport::MemoryConfig::default()).unwrap(),
+        ));
+        assert_eq!(memory.confirms_delivery(), SinkConfirmation::None);
+    }
+
+    /// With no DLQ a record the transport refuses is still a permanent
+    /// refusal: it is dropped and counted by reason, the rest of the batch is
+    /// delivered, and the emit succeeds, so the source moves past a record it
+    /// could never send instead of fetching it again for ever.
+    #[tokio::test]
+    async fn a_refused_record_with_no_dlq_is_dropped_and_counted() {
+        use dfe_fetcher_core::batch::Outbound;
+        use scalo::transport::GrpcConfig;
+        use scalo::transport::filter::{FilterAction, FilterRule};
+
+        let recorder = crate::metrics::recorded::Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = grpc_listener().await;
+        let mut config = Config::default();
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(GrpcConfig {
+            filters_out: vec![FilterRule {
+                expression: r#"id == "poison""#.into(),
+                action: FilterAction::Dlq,
+            }],
+            ..GrpcConfig::client(&default_ep)
+        });
+        config.dlq.enabled = false;
+        let (sink, metrics) = Box::pin(sink_over(config)).await;
+
+        let report = sink
+            .emit(vec![
+                Outbound::new("fixture_land", r#"{"id":"poison"}"#),
+                Outbound::new("fixture_land", r#"{"id":"clean"}"#),
+            ])
+            .await
+            .expect("a permanent refusal does not fail the batch");
+
+        assert_eq!(
+            report,
+            crate::emit::EmitReport {
+                sent: 1,
+                dead_lettered: 0,
+                dropped: 1
+            }
+        );
+        assert_eq!(received_ids(&default_rx).await, ["clean"]);
+        assert_eq!(metrics.dead_letters_dropped(), 1);
+        assert_eq!(
+            recorder.counter(
+                "pipeline_dead_letters_dropped_total",
+                &[("reason", "transport_refused")]
+            ),
+            Some(1)
         );
     }
 
@@ -1170,7 +1362,8 @@ mod tests {
             report,
             crate::emit::EmitReport {
                 sent: 0,
-                dead_lettered: 1
+                dead_lettered: 1,
+                dropped: 0
             }
         );
         assert_eq!(received_ids(&loader_rx).await, ["big"]);

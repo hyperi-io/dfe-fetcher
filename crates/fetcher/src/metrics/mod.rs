@@ -29,6 +29,48 @@ use dfe_fetcher_core::metric_names as fw;
 use scalo::metrics::{MetricsManager, ServiceMetrics, TransportKind};
 use scalo::scaling::RateWindow;
 
+/// What became of extractor records that were not delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractorFailure {
+    /// The sender was answered to re-send them.
+    Retry,
+    /// Nothing can re-send them: they are lost.
+    Dropped,
+}
+
+impl ExtractorFailure {
+    /// The `outcome` label value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+/// Why a dead letter was dropped: the `reason` label of
+/// `pipeline_dead_letters_dropped_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DroppedDeadLetter {
+    /// An output refused the record itself (its size or format, or an
+    /// outbound `dlq` filter) and would refuse it again.
+    TransportRefused,
+    /// The row is over `max_record_bytes`, scalo's `too_large`.
+    TooLarge,
+}
+
+impl DroppedDeadLetter {
+    /// The `reason` label value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TransportRefused => "transport_refused",
+            Self::TooLarge => "too_large",
+        }
+    }
+}
+
 /// The kind of each framework series, for registration and for the test that
 /// keeps this list equal to the core's name list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,8 +204,12 @@ pub struct Metrics {
     // Filtering / extractor lifecycle
     records_filtered_total: AtomicU64,
     extractor_restart_exhausted_total: AtomicU64,
+    extractor_records_failed_total: AtomicU64,
     cursor_writes_total: AtomicU64,
     cursor_write_failures_total: AtomicU64,
+    cursor_cold_starts_total: AtomicU64,
+    cursor_read_failures_total: AtomicU64,
+    dead_letters_dropped_total: AtomicU64,
 
     // Pipeline / delivery
     pipeline_ready: AtomicU64,          // gauge: 1=ready, 0=backpressured
@@ -215,8 +261,12 @@ impl Metrics {
             transport_healthy: AtomicU64::new(1),
             records_filtered_total: AtomicU64::new(0),
             extractor_restart_exhausted_total: AtomicU64::new(0),
+            extractor_records_failed_total: AtomicU64::new(0),
             cursor_writes_total: AtomicU64::new(0),
             cursor_write_failures_total: AtomicU64::new(0),
+            cursor_cold_starts_total: AtomicU64::new(0),
+            cursor_read_failures_total: AtomicU64::new(0),
+            dead_letters_dropped_total: AtomicU64::new(0),
             pipeline_ready: AtomicU64::new(1),
             records_delivered_total: AtomicU64::new(0),
             active_fetches: AtomicU64::new(0),
@@ -275,6 +325,18 @@ impl Metrics {
         metrics::describe_counter!(
             "dfe_fetcher_cursor_write_failures_total",
             "Cursor state write failures"
+        );
+        metrics::describe_counter!(
+            "dfe_fetcher_cursor_cold_start_total",
+            "Ticks that found no cursor stored, or no cursor store, by source"
+        );
+        metrics::describe_counter!(
+            "dfe_fetcher_cursor_read_failures_total",
+            "Ticks whose cursor read failed, by source"
+        );
+        metrics::describe_counter!(
+            "dfe_fetcher_extractor_records_failed_total",
+            "Extractor records not delivered, by extractor and outcome (retry or dropped)"
         );
         metrics::describe_gauge!(
             "dfe_fetcher_active_fetches",
@@ -665,6 +727,97 @@ impl Metrics {
         }
     }
 
+    /// Count a tick that found no cursor stored, or no store at all.
+    ///
+    /// Emits `dfe_fetcher_cursor_cold_start_total{source}` on every miss: an
+    /// empty store cannot tell a new source from a lost cursor, so an alert
+    /// on a source that has run before is how a lost cursor is noticed.
+    #[inline]
+    pub fn inc_cursor_cold_start(&self, source: &str) {
+        self.cursor_cold_starts_total
+            .fetch_add(1, Ordering::Relaxed);
+        metrics::counter!(
+            "dfe_fetcher_cursor_cold_start_total",
+            "source" => source.to_string()
+        )
+        .increment(1);
+    }
+
+    /// Ticks that found no cursor to resume from, across every source.
+    #[inline]
+    pub fn cursor_cold_starts(&self) -> u64 {
+        self.cursor_cold_starts_total.load(Ordering::Relaxed)
+    }
+
+    /// Count a tick whose cursor read failed.
+    ///
+    /// Emits `dfe_fetcher_cursor_read_failures_total{source}`: the store
+    /// failed while the process runs, so unlike a cold start it is a fault.
+    #[inline]
+    pub fn inc_cursor_read_failure(&self, source: &str) {
+        self.cursor_read_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+        metrics::counter!(
+            "dfe_fetcher_cursor_read_failures_total",
+            "source" => source.to_string()
+        )
+        .increment(1);
+    }
+
+    /// Ticks whose cursor read failed, across every source.
+    #[inline]
+    pub fn cursor_read_failures(&self) -> u64 {
+        self.cursor_read_failures_total.load(Ordering::Relaxed)
+    }
+
+    /// Count records an extractor took in but could not deliver.
+    ///
+    /// Emits `dfe_fetcher_extractor_records_failed_total{extractor, outcome}`:
+    /// `retry` when the sender was answered to re-send them, `dropped` when
+    /// nothing can re-send them (a container's stdout).
+    #[inline]
+    pub fn add_extractor_records_failed(
+        &self,
+        extractor: &'static str,
+        outcome: ExtractorFailure,
+        count: u64,
+    ) {
+        self.extractor_records_failed_total
+            .fetch_add(count, Ordering::Relaxed);
+        metrics::counter!(
+            "dfe_fetcher_extractor_records_failed_total",
+            "extractor" => extractor,
+            "outcome" => outcome.as_str()
+        )
+        .increment(count);
+    }
+
+    /// Records extractors took in but could not deliver, across every outcome.
+    #[inline]
+    pub fn extractor_records_failed(&self) -> u64 {
+        self.extractor_records_failed_total.load(Ordering::Relaxed)
+    }
+
+    /// Count dead letters dropped with nowhere to go: no DLQ, or a disabled
+    /// one.
+    ///
+    /// Emits `pipeline_dead_letters_dropped_total{reason}`, the series scalo's
+    /// run loops count their own dropped dead letters in. `reason` is a
+    /// [`DroppedDeadLetter`] label, or scalo's own for a refusal it named.
+    #[inline]
+    pub fn add_dead_letters_dropped(&self, reason: &'static str, count: u64) {
+        self.dead_letters_dropped_total
+            .fetch_add(count, Ordering::Relaxed);
+        metrics::counter!("pipeline_dead_letters_dropped_total", "reason" => reason)
+            .increment(count);
+    }
+
+    /// Dead letters dropped with nowhere to go, across every reason.
+    #[inline]
+    pub fn dead_letters_dropped(&self) -> u64 {
+        self.dead_letters_dropped_total.load(Ordering::Relaxed)
+    }
+
     // ==========================================================================
     // Pipeline / delivery
     // ==========================================================================
@@ -1006,6 +1159,80 @@ impl Metrics {
 impl Default for Metrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A recorder one test reads the `metrics` series from.
+///
+/// It is the test thread's own default recorder, never the global one, so it
+/// cannot collide with a test that installs a `MetricsManager`, and no test
+/// sees another's series. A `#[tokio::test]` runs on one thread, so what it
+/// awaits records here too.
+#[cfg(test)]
+pub(crate) mod recorded {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    /// Whether `labels` carries every pair in `wanted`.
+    pub(crate) fn carries(labels: &[(String, String)], wanted: &[(&str, &str)]) -> bool {
+        wanted
+            .iter()
+            .all(|(k, v)| labels.iter().any(|(lk, lv)| lk == k && lv == v))
+    }
+
+    /// The recorder a test sets for its thread with [`Recorder::install`].
+    pub(crate) struct Recorder(DebuggingRecorder);
+
+    impl Recorder {
+        pub(crate) fn new() -> Self {
+            Self(DebuggingRecorder::new())
+        }
+
+        /// Record this thread's series here until the guard drops.
+        pub(crate) fn install(&self) -> metrics::LocalRecorderGuard<'_> {
+            metrics::set_default_local_recorder(&self.0)
+        }
+
+        /// Every series named `name` in one snapshot, which drains what it
+        /// reads: its labels, then its value.
+        fn series(&self, name: &str) -> Vec<(Vec<(String, String)>, DebugValue)> {
+            self.0
+                .snapshotter()
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .filter(|(key, _, _, _)| key.key().name() == name)
+                .map(|(key, _, _, value)| {
+                    let labels = key
+                        .key()
+                        .labels()
+                        .map(|l| (l.key().to_owned(), l.value().to_owned()))
+                        .collect();
+                    (labels, value)
+                })
+                .collect()
+        }
+
+        /// The labels of every gauge named `name` set above zero.
+        pub(crate) fn raised_gauges(&self, name: &str) -> Vec<Vec<(String, String)>> {
+            self.series(name)
+                .into_iter()
+                .filter_map(|(labels, value)| match value {
+                    DebugValue::Gauge(g) if g.0 > 0.0 => Some(labels),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The count of counter `name` carrying every pair in `labels` since
+        /// the last read, or `None` when nothing recorded it.
+        pub(crate) fn counter(&self, name: &str, labels: &[(&str, &str)]) -> Option<u64> {
+            self.series(name)
+                .into_iter()
+                .find_map(|(found, value)| match value {
+                    DebugValue::Counter(n) if carries(&found, labels) => Some(n),
+                    _ => None,
+                })
+        }
     }
 }
 

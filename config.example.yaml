@@ -775,18 +775,38 @@ extractors:
   vector:
     enabled: false
     grpc_bind_address: "0.0.0.0:6000"
+    # On (the default), a push is answered only once its events reach the
+    # outputs or the DLQ confirms them, and a failure answers UNAVAILABLE so
+    # Vector re-sends. Off, a push is answered once queued and a crash loses it.
+    acknowledgements:
+      enabled: true
+    # A Vector push names no instance, so the listener it arrives on decides
+    # its topic. At most one instance shares grpc_bind_address (the one port
+    # the chart publishes) and lands on its own topic, or pushes there land on
+    # `vector` when none does. Every other instance names its own
+    # grpc_bind_address, and its Vector sink must point at that address. Two
+    # instances sharing the listener are refused at load. `topic` takes the
+    # topic suffix like every other topic.
     instances: []
     # - name: syslog-collector
     #   mode: container
-    #   image: timberio/vector:latest-alpine
+    #   # The default. Pin any other image by digest too.
+    #   image: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
+    #   # Written to a file mounted read-only into the container, read with
+    #   # --config, removed at stop. Or name a file with vector_config_path.
     #   vector_config: |
     #     [sources.syslog]
     #     type = "syslog"
     #     address = "0.0.0.0:514"
     #     [sinks.dfe]
     #     type = "vector"
+    #     inputs = ["syslog"]
     #     address = "dfe-fetcher:6000"
-    #   topic: syslog_land
+    #   topic: syslog
+    # - name: firewall
+    #   mode: sidecar
+    #   grpc_bind_address: "127.0.0.1:6001"
+    #   topic: firewall
 
 # =============================================================================
 # Ingest server -- REQUIRES RESTART
@@ -803,6 +823,12 @@ ingest:
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
   # auth_token: "vault:kv/data/dfe:ingest_token"
+  # On (the default), a POST is answered 200 only once its record reaches the
+  # outputs or the DLQ confirms it, and 503 with Retry-After otherwise so the
+  # client re-sends. Off, a POST is answered 200 at once and a failed delivery
+  # or a crash loses it.
+  acknowledgements:
+    enabled: true
 
 # =============================================================================
 # Output transport -- REQUIRES RESTART
@@ -921,9 +947,22 @@ version_check:
 # be, so a source hours behind drains a span per tick instead of asking for the
 # whole backlog, and it is the lookback when no cursor exists.
 # Unset, the store falls back to the directory holding the config file.
+# A tick with no cursor stored, or no cursor store, is a cold start: it counts
+# in dfe_fetcher_cursor_cold_start_total{source}, and the first one per source
+# logs a WARN (later ones log at DEBUG). An empty store cannot
+# tell a new source from a lost cursor (a directory with no volume behind it
+# loses every cursor on restart), so alert on cold starts of sources that have
+# run before. A cursor read that fails counts in
+# dfe_fetcher_cursor_read_failures_total{source} and warns every time.
+# on_missing_cursor (hot-reloaded) decides what either does:
+#   lookback (default) -- fetch the last default_window_hours: a new source
+#                         starts on its own, a lost cursor skips older data
+#   refuse             -- fetch nothing and fail the tick until a cursor exists:
+#                         a lost cursor never skips data, a new source never starts
 # cursor:
 #   directory: "/var/lib/dfe-fetcher/cursors"  # REQUIRES RESTART
 #   default_window_hours: 1                     # hot-reloaded, caps one tick
+#   on_missing_cursor: lookback                 # hot-reloaded: lookback | refuse
 
 # =============================================================================
 # Horizontal scaling pressure (scalo engine) -- REQUIRES RESTART

@@ -38,7 +38,7 @@ dfe-fetcher-file = { path = "crates/file" }
 
 # scalo shared library (crates.io). Features are chosen per member; the core
 # takes `expression` only.
-scalo = { version = ">=2.12.7, <3", default-features = false }
+scalo = { version = ">=2.13.0, <3", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
 cel = { version = ">=0.13, <0.14", features = ["json"] }

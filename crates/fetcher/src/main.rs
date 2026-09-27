@@ -39,7 +39,7 @@ use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
 use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
-use dfe_fetcher::pipeline::Orchestrator;
+use dfe_fetcher::pipeline::{IntakeAcks, Orchestrator};
 use dfe_fetcher::scheduler::Scheduler;
 use dfe_fetcher_core::SourceMaturity;
 use dfe_fetcher_core::batch::AccumulateConfig;
@@ -657,6 +657,17 @@ async fn run_fetcher_service(
         );
     }
 
+    // A scheduled source's cursor advances only once its records are delivered.
+    if !running.is_empty() {
+        pipeline_state.publish_guarantee(
+            "scheduled",
+            Some(&IntakeAcks {
+                kind: scalo::transport::AckKind::Pull,
+                enabled: true,
+            }),
+        );
+    }
+
     // Diff the running fetch tasks against every reload, so a source dropped
     // from the config stops fetching without a restart.
     scheduler.spawn_source_watch(running, shutdown_token.clone());
@@ -707,22 +718,37 @@ async fn run_fetcher_service(
         Arc::clone(&pipeline_state),
         Arc::clone(&metrics),
         shutdown_token.clone(),
-    );
-    if vector_manager.is_enabled()
-        && let Err(e) = vector_manager.start().await
-    {
-        error!(error = %e, "Failed to start Vector manager");
+    )
+    .with_pressure(pressure.clone());
+    // A listener that cannot bind leaves the intake dead while the pod reads
+    // Ready, so the process drains, stops and exits non-zero to be restarted.
+    let vector_failed = if vector_manager.is_enabled() {
+        vector_manager.start().await.err()
+    } else {
+        None
+    };
+    if let Some(e) = &vector_failed {
+        error!(
+            error = %e,
+            "The Vector extractor failed to start: shutting down to exit non-zero"
+        );
+        shutdown_token.cancel();
     }
 
     // Run pipeline orchestrator (blocks until shutdown)
-    if let Err(e) = orchestrator.run().await {
+    let run = orchestrator.run().await;
+
+    // Before any exit: process::exit skips drops, leaving the managed Vector
+    // containers running and their inline configs on disk.
+    if let Err(e) = vector_manager.stop().await {
+        warn!(error = %e, "Error stopping Vector manager");
+    }
+    if let Err(e) = run {
         error!(error = %e, "Pipeline error");
         std::process::exit(1);
     }
-
-    // Cleanup
-    if let Err(e) = vector_manager.stop().await {
-        warn!(error = %e, "Error stopping Vector manager");
+    if let Some(e) = vector_failed {
+        return Err(anyhow::anyhow!("the Vector extractor failed to start: {e}"));
     }
 
     info!("Shutdown complete");

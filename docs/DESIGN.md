@@ -194,6 +194,12 @@ backpressured subset is retried with a bounded backoff and, if still refused,
 the whole tick aborts without a checkpoint so the scheduler's stall handling
 takes over.
 
+A dead letter counts only once the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ refuses or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
+
+With no DLQ configured, or a disabled one, a record the transport refuses is still refused for good, so fetching it again would only hold the source back. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, and an oversize row in `{reason="too_large"}`, and the tick carries on. A dead letter no DLQ backend can ever hold (scalo's `Dlq::refusal`: over the Kafka DLQ's ceiling once encoded, which a Vector or ingest record over about 12 MiB can be) is left out of the DLQ write and dropped the same way, counted under scalo's reason. Any other DLQ failure can clear, so it still aborts the tick.
+
+Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{listener, guarantee, reason}`, from scalo's `EffectiveGuarantee::publish_for` against what the outputs confirm. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. The ingest listener and Vector follow their `acknowledgements` setting, and a container's stdout is `best_effort` (`source_cannot_ack`).
+
 ### Enrichment
 
 Four names are reserved on every record: `_timestamp_fetcher`,
@@ -211,6 +217,14 @@ reserved name and its `_original` -- a replayed record on a second enrich
 pass, say -- keeps the `_original` it arrived with, and the colliding value is
 parked under the next free `<key>_original_<n>` counting from 2, with a
 warning naming the key.
+
+## Cursor Cold Start
+
+A tick with no window cursor stored, or no cursor store at all, is a cold start. Every one counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart. The first cold start of a source logs a WARN and later ones log at DEBUG, since with no store at all every tick is one.
+
+A cursor read that fails is a fault, not a cold start. It counts in `dfe_fetcher_cursor_read_failures_total{source}` and logs a WARN every time, at most one every 10 s per source, and the tick falls back the same way.
+
+`cursor.on_missing_cursor` decides what the tick does. `lookback` (the default) fetches the last `default_window_hours`, so a new source starts on its own and a lost cursor skips anything older. `refuse` fetches nothing and fails the tick until a cursor exists, so a lost cursor never skips data and a new source never starts on its own. Each refused tick counts as a failed fetch, and the refusal logs an ERROR at most once every 10 s per source.
 
 ## The Profile Grammar
 
@@ -367,6 +381,18 @@ flowchart TB
         P3 --> D3[Deliver to pipeline]
     end
 ```
+
+What each mode guarantees:
+
+- Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is answered only after its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` too, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. While the fetcher's memory-pressure latch holds, a push is refused `UNAVAILABLE` before any work.
+- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` only after the outputs took the record or the DLQ confirmed it, and `503` with `Retry-After` otherwise. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it; such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
+- stdout: a pipe cannot be read twice, so a line the outputs cannot take yet is held and retried, pausing from 1 s up to 30 s, and the container's stdout is not read meanwhile, so the container blocks on its own writes until the outputs recover. Only a failure no retry can clear (no output configured), or a line still held at shutdown after one more attempt, is dropped, counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}` and never in the received count.
+
+At shutdown the extractors deliver what they hold before the outputs close, for up to 20 s: the Vector receiver refuses new pushes and delivers what it has queued, and a container extractor stops its container while still reading its stdout to the end. A scheduled container's `timeout_secs` bounds the whole run, stdout included: at the timeout the container is killed and the run fails. A line held for an output outage is not interrupted by the timeout; the kill follows once the line is delivered.
+
+A Vector listener that cannot bind at start-up fails the process: it drains, stops its containers and exits non-zero, so the pod restarts rather than stay Ready with a dead intake.
+
+A Vector push names no instance, so the listener it arrives on decides its topic. The shared `extractors.vector.grpc_bind_address`, the one port the chart publishes, carries at most one instance and lands on that instance's `topic`, or on `vector` when none shares it. Every other instance names its own `grpc_bind_address` and lands on its own `topic`. Two instances sharing the listener are refused at load.
 
 ## Configuration Cascade
 

@@ -183,6 +183,42 @@ impl ExtractorSink {
     }
 }
 
+/// A container runtime stand-in the extractor tests run.
+#[cfg(test)]
+pub(crate) mod fake_runtime {
+    use std::path::Path;
+
+    /// `ETXTBSY`: a file still open for writing cannot be executed.
+    const TEXT_FILE_BUSY: i32 = 26;
+
+    /// Write the shell script `body` to `dir/runtime`, make it executable,
+    /// and return its path. The script must do nothing for the command
+    /// `probe`.
+    ///
+    /// A child another test thread forks while the script is being written
+    /// keeps it open for writing until that child execs, and executing it
+    /// then fails with "Text file busy". The script is probed until it
+    /// starts, so the caller's first run cannot hit that.
+    pub(crate) fn write(dir: &Path, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("runtime");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}")).expect("write the runtime");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make it executable");
+        for _ in 0..200 {
+            match std::process::Command::new(&path).arg("probe").status() {
+                Err(e) if e.raw_os_error() == Some(TEXT_FILE_BUSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("the runtime does not start: {e}"),
+                Ok(_) => break,
+            }
+        }
+        path.display().to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

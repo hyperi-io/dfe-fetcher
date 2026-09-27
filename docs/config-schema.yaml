@@ -15,6 +15,7 @@ description: |-
   - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
   - `sources.*.filter` -- CEL filter re-evaluated on each record
   - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
+  - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
   - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 
   **Requires pod restart:**
@@ -175,6 +176,8 @@ properties:
         enabled: false
         grpc_bind_address: 0.0.0.0:6000
         instances: []
+        acknowledgements:
+          enabled: true
   ingest:
     description: HTTP ingest server configuration (for container extractors to post data).
     $ref: '#/$defs/IngestConfig'
@@ -183,6 +186,8 @@ properties:
       bind_address: 0.0.0.0:8080
       max_body_size: 10485760
       auth_token: null
+      acknowledgements:
+        enabled: true
   kafka:
     description: Kafka producer configuration (output).
     $ref: '#/$defs/KafkaConfig'
@@ -266,6 +271,7 @@ properties:
     default:
       directory: ''
       default_window_hours: 1
+      on_missing_cursor: lookback
   scaling:
     description: Scaling pressure configuration for KEDA autoscaling.
     $ref: '#/$defs/ScalingPressureConfig'
@@ -5778,6 +5784,8 @@ $defs:
           enabled: false
           grpc_bind_address: 0.0.0.0:6000
           instances: []
+          acknowledgements:
+            enabled: true
   ContainerExtractorConfig:
     description: |-
       Container-based extractor configuration.
@@ -5851,7 +5859,10 @@ $defs:
         items:
           type: string
       timeout_secs:
-        description: Timeout in seconds for scheduled (one-shot) containers (0 = no timeout).
+        description: |-
+          Timeout in seconds for a scheduled (one-shot) container's whole run,
+          stdout included (0 = no timeout). At the timeout the container is
+          killed and the run fails.
         type:
         - integer
         - 'null'
@@ -5903,15 +5914,31 @@ $defs:
         type: boolean
         default: false
       grpc_bind_address:
-        description: gRPC bind address for receiving Vector sink data.
+        description: |-
+          The shared gRPC listener for Vector sink data, the one the chart
+          publishes. Its pushes land on the topic of the one instance with no
+          `grpc_bind_address` of its own, or on `vector` when there is none.
         type: string
         default: 0.0.0.0:6000
       instances:
-        description: Managed Vector instances.
+        description: |-
+          Vector instances. A Vector push names no instance, so the listener a
+          push arrives on is what says which instance sent it: at most one
+          instance shares `grpc_bind_address`, and each other one gives its own.
         type: array
         items:
           $ref: '#/$defs/VectorInstance'
         default: []
+      acknowledgements:
+        description: |-
+          When the receiver answers a push. Enabled (the default), a push is
+          answered only once its events are delivered to the outputs or confirmed
+          in the DLQ, and a failure answers `UNAVAILABLE` so Vector re-sends.
+          Disabled, a push is answered once queued, and a crash or a failed
+          delivery loses what was answered.
+        $ref: '#/$defs/AcknowledgementsConfig'
+        default:
+          enabled: true
   VectorInstance:
     description: A managed Vector instance configuration.
     type: object
@@ -5924,26 +5951,69 @@ $defs:
         type: string
         default: container
       image:
-        description: Container image for container mode.
+        description: Container image for container mode, pinned by digest.
         type:
         - string
         - 'null'
+        default: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
       vector_config:
-        description: Vector configuration (inline TOML/YAML).
+        description: |-
+          Inline Vector configuration, TOML or YAML, for container mode. It is
+          written to a file in a private temporary directory (`.yaml` when it
+          parses as a YAML mapping, else `.toml`), mounted read-only, passed to
+          Vector with `--config`, and removed when the fetcher stops.
         type:
         - string
         - 'null'
       vector_config_path:
-        description: Path to Vector configuration file.
+        description: |-
+          Path, on the container runtime's host, to a Vector configuration file
+          for container mode. It is mounted read-only under its own file name,
+          whose extension tells Vector its format, and passed with `--config`.
         type:
         - string
         - 'null'
       topic:
-        description: Output Kafka topic.
+        description: Output topic (before the suffix) for the events this instance pushes.
         type: string
+      grpc_bind_address:
+        description: |-
+          The instance's own gRPC listener. Its pushes land on this instance's
+          `topic`, and its Vector `vector` sink must point here. Unset, the
+          instance shares `extractors.vector.grpc_bind_address`, which only one
+          instance may do. The chart publishes only the shared listener, so an
+          own listener serves a sidecar in the pod or a container on the host.
+        type:
+        - string
+        - 'null'
+        default: null
     required:
     - name
     - topic
+  AcknowledgementsConfig:
+    description: |-
+      The `acknowledgements` section of an ack-capable transport.
+
+      With `enabled: true` (the default) a source releases its acknowledgement --
+      a Kafka offset commit, a gRPC or HTTP response -- only once every piece of
+      work built from the record has been delivered, dead-lettered with the DLQ's
+      confirmation, or dropped by policy. A failed delivery withholds it, so the
+      record is delivered again: duplicates are possible, loss is not.
+
+      With `enabled: false` the source acknowledges at receipt, before the record
+      is processed: a crash or a failed delivery loses what was acknowledged.
+
+      ```yaml
+      kafka:
+        acknowledgements:
+          enabled: true
+      ```
+    type: object
+    properties:
+      enabled:
+        description: Hold the source acknowledgement until every piece is delivered.
+        type: boolean
+        default: true
   IngestConfig:
     description: |-
       HTTP ingest server for container extractors to post data.
@@ -5975,6 +6045,18 @@ $defs:
         - string
         - 'null'
         default: null
+        x-dfe-secret: true
+        writeOnly: true
+      acknowledgements:
+        description: |-
+          When a POST is answered. Enabled (the default), only once its record
+          is delivered to the outputs or confirmed in the DLQ, and `503` with
+          `Retry-After` otherwise so the client re-sends. Disabled, a POST is
+          answered `200` as soon as it is accepted and delivered after, so a
+          failed delivery or a crash loses it.
+        $ref: '#/$defs/AcknowledgementsConfig'
+        default:
+          enabled: true
   KafkaConfig:
     description: |-
       Legacy Kafka producer configuration.
@@ -6219,7 +6301,9 @@ $defs:
         Default order: Kafka first, file fallback.
       type: string
       const: cascade
-    - description: Write to all enabled backends; report any failures.
+    - description: |-
+        Write every batch to all enabled backends. The write succeeds when at
+        least one backend takes the whole batch, and fails only when none does.
       type: string
       const: fan_out
     - description: File backend only (no Kafka dependency).
@@ -6289,7 +6373,12 @@ $defs:
         type: string
         default: dfe.dlq
       send_timeout_ms:
-        description: Send timeout in milliseconds.
+        description: |-
+          How long a `flush` or the shutdown waits for the broker to ack the
+          entries queued to Kafka, in milliseconds. Entries still unacked then
+          are purged and counted as dropped. The purge adds a wait of up to 5 s
+          for the purged entries' delivery reports, so `0` skips the ack wait
+          but not that one. Default 5000.
         type: integer
         format: uint64
         minimum: 0
@@ -6647,9 +6736,9 @@ $defs:
               consumer:
                 fetch_min_bytes: 2097152  # 2 MiB, overrides profile default
               producer:
-                compression_type: zstd    # opt into zstd for storage-bound topics
+                compression_type: lz4     # the default is zstd at level 3
               consumer_librdkafka:
-                fetch.wait.max.ms: "75"   # raw override wins over everything
+                fetch.wait.max.ms: "75"   # raw override wins over the knobs
               producer_librdkafka:
                 linger.ms: "50"
           ```
@@ -6676,8 +6765,10 @@ $defs:
         description: |-
           Librdkafka configuration overrides.
 
-          These settings override both the profile defaults and explicit config fields.
-          Use this to customize any librdkafka setting not exposed as an explicit field.
+          These settings override the profile defaults, the explicit config
+          fields and the whole sizing surface: every producer and consumer path
+          applies them after all three. Use this to customize any librdkafka
+          setting not exposed as an explicit field.
 
           Example:
           ```yaml
@@ -6767,11 +6858,13 @@ $defs:
     description: |-
       Kafka sizing surface: profile + named per-knob overrides + raw escape hatch.
 
-      Resolution precedence (lowest to highest):
+      Resolution precedence (lowest to highest), the same on every producer and
+      consumer path:
       1. `SelfRegulationProfile` defaults
       2. Named knobs in `consumer` / `producer` (explicit `Some(v)` wins)
-      3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka` (wins
-         over everything, applied last via `ClientConfig::set`)
+      3. Raw librdkafka maps `consumer_librdkafka` / `producer_librdkafka`
+      4. [`KafkaConfig::librdkafka_overrides`], which the transport applies after
+         this whole surface
 
       The raw maps are logged (one line per key) when they override a property
       that the sizing surface depends on (the fetch byte sizes and
@@ -6804,19 +6897,29 @@ $defs:
           message_max_bytes: null
       consumer_librdkafka:
         description: |-
-          Raw librdkafka consumer properties applied LAST, winning over everything.
+          Raw librdkafka consumer properties, winning over the profile and the
+          named knobs. [`KafkaConfig::librdkafka_overrides`] is applied after
+          them.
 
           Keys must be valid librdkafka property names (e.g. `fetch.wait.max.ms`).
           An invalid key silently no-ops in librdkafka -- double-check spelling.
+          A key replaces the other librdkafka name for its property from the
+          layers below it (`fetch.message.max.bytes` for
+          `max.partition.fetch.bytes`).
         type: object
         additionalProperties:
           type: string
         default: {}
       producer_librdkafka:
         description: |-
-          Raw librdkafka producer properties applied LAST, winning over everything.
+          Raw librdkafka producer properties, winning over the profile and the
+          named knobs. Only [`KafkaConfig::librdkafka_overrides`] is applied after
+          them.
 
-          Keys must be valid librdkafka property names (e.g. `linger.ms`).
+          Keys must be valid librdkafka property names (e.g. `linger.ms`). A key
+          replaces the other librdkafka name for its property from the layers
+          below it (`compression.codec` for `compression.type`,
+          `request.required.acks` for `acks`).
         type: object
         additionalProperties:
           type: string
@@ -6827,10 +6930,12 @@ $defs:
 
       The profile sets default values for all named knobs below. An explicit
       per-knob value in [`KafkaSizingConfig`] always wins over the profile
-      default. The raw librdkafka escape hatch in [`KafkaConfig`] wins over
-      everything.
+      default. The raw librdkafka maps win over both, and
+      [`KafkaConfig::librdkafka_overrides`] is applied after all of them.
 
-      Profiles target the BYTE-level throughput budget and latency envelope:
+      Profiles target the BYTE-level throughput budget and latency envelope.
+      They differ in batching and latency only: every profile produces with
+      `zstd` at `compression.level` 3.
 
       | Profile | Use case |
       |---|---|
@@ -6843,8 +6948,8 @@ $defs:
 
         Consumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,
         50 MiB total, 2000 poll-safety cap.
-        Producer: 128 KiB batch, 20 ms linger, lz4, 64 MiB buffer, 5 in-flight,
-        16 MiB record ceiling.
+        Producer: 128 KiB batch, 20 ms linger, zstd level 3, 64 MiB buffer,
+        5 in-flight, 16 MiB record ceiling.
       type: string
       const: throughput
     - description: |-
@@ -6852,8 +6957,8 @@ $defs:
 
         Consumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,
         50 MiB total, 1000 poll-safety cap.
-        Producer: 64 KiB batch, 5 ms linger, lz4, 32 MiB buffer, 5 in-flight,
-        16 MiB record ceiling.
+        Producer: 64 KiB batch, 5 ms linger, zstd level 3, 32 MiB buffer,
+        5 in-flight, 16 MiB record ceiling.
       type: string
       const: balanced
     - description: |-
@@ -6861,8 +6966,8 @@ $defs:
 
         Consumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,
         16 MiB total, 500 poll-safety cap.
-        Producer: 16 KiB batch, 0 ms linger, lz4, 16 MiB buffer, 5 in-flight,
-        16 MiB record ceiling.
+        Producer: 16 KiB batch, 0 ms linger, zstd level 3, 16 MiB buffer,
+        5 in-flight, 16 MiB record ceiling.
       type: string
       const: low_latency
   ConsumerKnobs:
@@ -6978,8 +7083,11 @@ $defs:
 
           librdkafka: `compression.type` (alias for `compression.codec`).
           Valid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.
-          Default (all profiles): `lz4` -- best throughput/ratio tradeoff.
-          Use `zstd` for storage-bound topics that can absorb the CPU cost.
+          Default (all profiles): `zstd` at `compression.level` 3.
+
+          The level is set only while the resolved codec is `zstd`, so another
+          codec named here runs at librdkafka's own default level for it. To run
+          zstd at another level, set `compression.level` in `producer_librdkafka`.
         type:
         - string
         - 'null'
@@ -7115,7 +7223,11 @@ $defs:
         - 'null'
         default: null
       recv_buffer_size:
-        description: Receive buffer size (messages buffered from incoming RPCs).
+        description: |-
+          Receive buffer size (messages buffered from incoming RPCs).
+
+          A `RouteBatch` with more records than this is held whole beside the
+          buffer, one batch at a time.
         type: integer
         format: uint
         minimum: 0
@@ -7128,10 +7240,19 @@ $defs:
         default: 100
       send_timeout_ms:
         description: |-
-          Per-RPC send deadline in milliseconds (0 = no deadline).
+          Send deadline in milliseconds (0 = no deadline). Default 30s.
 
-          Bounds a single `push` so a hung/black-holing server cannot block a
-          sender task forever. Applied as the `grpc-timeout` header. Default 30s.
+          Bounds each `send`, and each request of a `send_batch`, end to end --
+          DNS, TCP connect, TLS handshake and the RPC -- so a server that is down
+          or never answers returns `Backpressured` at the limit. A dial still
+          unfinished at nine tenths of it is abandoned, so the next send dials
+          afresh. Also sent as the `grpc-timeout` header, which an armed receiver
+          holds its answer within.
+
+          A connection that has read nothing for this long is sent an HTTP/2
+          PING, and closed if the PING goes unanswered for as long again (30s
+          each when 0), so a server that stays connected but stops answering is
+          dropped and the next send dials afresh.
         type: integer
         format: uint64
         minimum: 0
@@ -7291,6 +7412,29 @@ $defs:
         format: uint64
         minimum: 0
         default: 1
+      on_missing_cursor:
+        description: |-
+          What a tick does when its source has no cursor. A cursor never stored
+          counts in `dfe_fetcher_cursor_cold_start_total{source}`, and the first
+          one per source logs a warning, because an empty store cannot tell a new
+          source from a lost cursor (a cursor directory with no volume behind it
+          loses every cursor on a restart). A read that fails counts in
+          `dfe_fetcher_cursor_read_failures_total{source}` and warns every time.
+        $ref: '#/$defs/MissingCursor'
+        default: lookback
+  MissingCursor:
+    description: What a tick does when its source has no cursor.
+    oneOf:
+    - description: |-
+        Fetch the last `default_window_hours` and carry on, so a new source
+        starts on its own. A lost cursor can skip whatever came before that.
+      type: string
+      const: lookback
+    - description: |-
+        Fetch nothing and fail the tick until an operator writes a cursor or
+        switches back to `lookback`, so a lost cursor never skips data.
+      type: string
+      const: refuse
   ScalingPressureConfig:
     description: |-
       Base configuration for scaling pressure calculation.

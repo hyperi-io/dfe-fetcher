@@ -45,6 +45,7 @@ use scalo::config::flat_env::{self, ApplyFlatEnv};
 use scalo::config::sensitive::SensitiveString;
 use scalo::config::{self, ConfigOptions};
 use scalo::dlq::DlqConfig;
+use scalo::transport::AcknowledgementsConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -66,6 +67,7 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
 /// - `sources.*.filter` -- CEL filter re-evaluated on each record
 /// - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
+/// - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
 /// - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 ///
 /// **Requires pod restart:**
@@ -517,19 +519,21 @@ impl Config {
             validate_connection_ids(block.name, &block.connection_ids(&self.sources))?;
         }
 
-        // Validate Vector gRPC address
-        if self.extractors.vector.enabled
-            && self
-                .extractors
-                .vector
-                .grpc_bind_address
-                .parse::<std::net::SocketAddr>()
-                .is_err()
-        {
-            return Err(Error::Config(format!(
-                "invalid vector gRPC bind address: '{}'",
-                self.extractors.vector.grpc_bind_address
-            )));
+        // Validate the Vector listeners: which instance each serves, and each
+        // address.
+        if self.extractors.vector.enabled {
+            for listener in self.extractors.vector.listeners()? {
+                if listener
+                    .bind_address
+                    .parse::<std::net::SocketAddr>()
+                    .is_err()
+                {
+                    return Err(Error::Config(format!(
+                        "invalid vector gRPC bind address: '{}'",
+                        listener.bind_address
+                    )));
+                }
+            }
         }
 
         self.accumulate.validate()?;
@@ -4130,7 +4134,9 @@ pub struct ContainerExtractorConfig {
     /// Override container command.
     pub command: Option<Vec<String>>,
 
-    /// Timeout in seconds for scheduled (one-shot) containers (0 = no timeout).
+    /// Timeout in seconds for a scheduled (one-shot) container's whole run,
+    /// stdout included (0 = no timeout). At the timeout the container is
+    /// killed and the run fails.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 
@@ -4196,11 +4202,22 @@ pub struct VectorExtractorConfig {
     /// Enable Vector extractor integration.
     pub enabled: bool,
 
-    /// gRPC bind address for receiving Vector sink data.
+    /// The shared gRPC listener for Vector sink data, the one the chart
+    /// publishes. Its pushes land on the topic of the one instance with no
+    /// `grpc_bind_address` of its own, or on `vector` when there is none.
     pub grpc_bind_address: String,
 
-    /// Managed Vector instances.
+    /// Vector instances. A Vector push names no instance, so the listener a
+    /// push arrives on is what says which instance sent it: at most one
+    /// instance shares `grpc_bind_address`, and each other one gives its own.
     pub instances: Vec<VectorInstance>,
+
+    /// When the receiver answers a push. Enabled (the default), a push is
+    /// answered only once its events are delivered to the outputs or confirmed
+    /// in the DLQ, and a failure answers `UNAVAILABLE` so Vector re-sends.
+    /// Disabled, a push is answered once queued, and a crash or a failed
+    /// delivery loses what was answered.
+    pub acknowledgements: AcknowledgementsConfig,
 }
 
 impl Default for VectorExtractorConfig {
@@ -4209,6 +4226,7 @@ impl Default for VectorExtractorConfig {
             enabled: false,
             grpc_bind_address: "0.0.0.0:6000".to_string(),
             instances: vec![],
+            acknowledgements: AcknowledgementsConfig::default(),
         }
     }
 }
@@ -4223,21 +4241,100 @@ pub struct VectorInstance {
     #[serde(default = "default_container_mode")]
     pub mode: String,
 
-    /// Container image for container mode.
+    /// Container image for container mode, pinned by digest.
+    #[serde(default = "default_vector_image")]
     pub image: Option<String>,
 
-    /// Vector configuration (inline TOML/YAML).
+    /// Inline Vector configuration, TOML or YAML, for container mode. It is
+    /// written to a file in a private temporary directory (`.yaml` when it
+    /// parses as a YAML mapping, else `.toml`), mounted read-only, passed to
+    /// Vector with `--config`, and removed when the fetcher stops.
     pub vector_config: Option<String>,
 
-    /// Path to Vector configuration file.
+    /// Path, on the container runtime's host, to a Vector configuration file
+    /// for container mode. It is mounted read-only under its own file name,
+    /// whose extension tells Vector its format, and passed with `--config`.
     pub vector_config_path: Option<String>,
 
-    /// Output Kafka topic.
+    /// Output topic (before the suffix) for the events this instance pushes.
     pub topic: String,
+
+    /// The instance's own gRPC listener. Its pushes land on this instance's
+    /// `topic`, and its Vector `vector` sink must point here. Unset, the
+    /// instance shares `extractors.vector.grpc_bind_address`, which only one
+    /// instance may do. The chart publishes only the shared listener, so an
+    /// own listener serves a sidecar in the pod or a container on the host.
+    #[serde(default)]
+    pub grpc_bind_address: Option<String>,
 }
 
 fn default_container_mode() -> String {
     "container".to_string()
+}
+
+/// The Vector image a container-mode instance runs when it names none: a
+/// release tag pinned to its multi-arch index digest.
+pub const DEFAULT_VECTOR_IMAGE: &str = "timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773";
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "serde's default for an Option field returns the Option"
+)]
+fn default_vector_image() -> Option<String> {
+    Some(DEFAULT_VECTOR_IMAGE.to_owned())
+}
+
+/// The topic, before the suffix, that the shared Vector listener's pushes land
+/// on when no instance shares it.
+pub const DEFAULT_VECTOR_TOPIC: &str = "vector";
+
+/// One gRPC listener the Vector extractor opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorListener {
+    /// The address it binds.
+    pub bind_address: String,
+    /// The topic, before the suffix, that pushes arriving on it land on.
+    pub topic: String,
+}
+
+impl VectorExtractorConfig {
+    /// The listeners the extractor opens: the shared one first, then one per
+    /// instance that names its own address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when more than one instance shares the
+    /// shared listener: their pushes carry nothing that tells them apart.
+    pub fn listeners(&self) -> Result<Vec<VectorListener>> {
+        let shared: Vec<&VectorInstance> = self
+            .instances
+            .iter()
+            .filter(|i| i.grpc_bind_address.is_none())
+            .collect();
+        if shared.len() > 1 {
+            let names: Vec<&str> = shared.iter().map(|i| i.name.as_str()).collect();
+            return Err(Error::Config(format!(
+                "extractors.vector.instances {} all share grpc_bind_address {}: a Vector push \
+                 names no instance, so their events cannot be told apart and land on one topic. \
+                 Give every instance but one its own grpc_bind_address",
+                names.join(", "),
+                self.grpc_bind_address
+            )));
+        }
+        let mut listeners = vec![VectorListener {
+            bind_address: self.grpc_bind_address.clone(),
+            topic: shared
+                .first()
+                .map_or_else(|| DEFAULT_VECTOR_TOPIC.to_owned(), |i| i.topic.clone()),
+        }];
+        listeners.extend(self.instances.iter().filter_map(|i| {
+            i.grpc_bind_address.as_ref().map(|address| VectorListener {
+                bind_address: address.clone(),
+                topic: i.topic.clone(),
+            })
+        }));
+        Ok(listeners)
+    }
 }
 
 // =============================================================================
@@ -4264,7 +4361,15 @@ pub struct IngestConfig {
     /// Bearer token for authentication (credential resolver format).
     /// Empty or absent = no auth (backward compatible, logs warning).
     #[serde(default)]
+    #[schemars(extend("x-dfe-secret" = true, "writeOnly" = true))]
     pub auth_token: Option<String>,
+
+    /// When a POST is answered. Enabled (the default), only once its record
+    /// is delivered to the outputs or confirmed in the DLQ, and `503` with
+    /// `Retry-After` otherwise so the client re-sends. Disabled, a POST is
+    /// answered `200` as soon as it is accepted and delivered after, so a
+    /// failed delivery or a crash loses it.
+    pub acknowledgements: AcknowledgementsConfig,
 }
 
 impl Default for IngestConfig {
@@ -4277,6 +4382,7 @@ impl Default for IngestConfig {
             bind_address: "0.0.0.0:8080".to_string(),
             max_body_size: 10 * 1024 * 1024, // 10MB
             auth_token: None,
+            acknowledgements: AcknowledgementsConfig::default(),
         }
     }
 }
@@ -4679,6 +4785,14 @@ pub struct CursorConfig {
     /// cursor exists -- a source further behind than this drains a span per
     /// tick, floored at the fetch interval.
     pub default_window_hours: u64,
+
+    /// What a tick does when its source has no cursor. A cursor never stored
+    /// counts in `dfe_fetcher_cursor_cold_start_total{source}`, and the first
+    /// one per source logs a warning, because an empty store cannot tell a new
+    /// source from a lost cursor (a cursor directory with no volume behind it
+    /// loses every cursor on a restart). A read that fails counts in
+    /// `dfe_fetcher_cursor_read_failures_total{source}` and warns every time.
+    pub on_missing_cursor: MissingCursor,
 }
 
 impl Default for CursorConfig {
@@ -4686,8 +4800,24 @@ impl Default for CursorConfig {
         Self {
             directory: String::new(), // empty = auto-resolve from config path
             default_window_hours: 1,
+            on_missing_cursor: MissingCursor::default(),
         }
     }
+}
+
+/// What a tick does when its source has no cursor.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingCursor {
+    /// Fetch the last `default_window_hours` and carry on, so a new source
+    /// starts on its own. A lost cursor can skip whatever came before that.
+    #[default]
+    Lookback,
+    /// Fetch nothing and fail the tick until an operator writes a cursor or
+    /// switches back to `lookback`, so a lost cursor never skips data.
+    Refuse,
 }
 
 #[cfg(test)]
@@ -5405,6 +5535,72 @@ mod tests {
         assert!(
             err.contains("invalid vector gRPC bind address"),
             "Expected invalid vector gRPC bind address error, got: {err}"
+        );
+    }
+
+    /// A sidecar Vector instance whose topic is its name, on its own listener
+    /// when it has an address.
+    fn vector_instance(name: &str, address: Option<&str>) -> VectorInstance {
+        VectorInstance {
+            name: name.into(),
+            mode: "sidecar".into(),
+            image: None,
+            vector_config: None,
+            vector_config_path: None,
+            topic: name.into(),
+            grpc_bind_address: address.map(str::to_owned),
+        }
+    }
+
+    /// Two instances on the shared listener carry nothing that tells their
+    /// pushes apart, so the config is refused at load, naming both.
+    #[test]
+    fn two_vector_instances_on_the_shared_listener_are_refused_at_load() {
+        let mut cfg = valid_config();
+        cfg.extractors.vector.enabled = true;
+        cfg.extractors.vector.instances = vec![
+            vector_instance("syslog", None),
+            vector_instance("firewall", None),
+        ];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("syslog, firewall"), "{err}");
+
+        cfg.extractors.vector.instances[1].grpc_bind_address = Some("127.0.0.1:6001".into());
+        cfg.validate()
+            .expect("one shared instance and one on its own listener load");
+        assert_eq!(
+            cfg.extractors.vector.listeners().unwrap(),
+            vec![
+                VectorListener {
+                    bind_address: "0.0.0.0:6000".into(),
+                    topic: "syslog".into(),
+                },
+                VectorListener {
+                    bind_address: "127.0.0.1:6001".into(),
+                    topic: "firewall".into(),
+                },
+            ]
+        );
+    }
+
+    /// An instance's own listener address is checked like the shared one.
+    #[test]
+    fn an_invalid_vector_instance_address_is_refused_at_load() {
+        let mut cfg = valid_config();
+        cfg.extractors.vector.enabled = true;
+        cfg.extractors.vector.instances = vec![vector_instance("syslog", Some("nowhere"))];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("'nowhere'"), "{err}");
+    }
+
+    #[test]
+    fn a_vector_instance_naming_no_image_runs_the_digest_pinned_default() {
+        let instance: VectorInstance =
+            serde_yaml_ng::from_str("name: syslog\ntopic: syslog\n").expect("parse");
+        assert_eq!(instance.image.as_deref(), Some(DEFAULT_VECTOR_IMAGE));
+        assert!(
+            DEFAULT_VECTOR_IMAGE.contains("@sha256:"),
+            "{DEFAULT_VECTOR_IMAGE}"
         );
     }
 

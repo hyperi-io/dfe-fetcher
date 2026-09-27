@@ -334,6 +334,6 @@ this repo in either direction.
 
 | Repo | Direction | How it interacts |
 |---|---|---|
-| scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo = { version = ">=2.12.3, <3" }`. A scalo release reaches here: if the range admits it, `cargo update -p scalo` and rebuild, otherwise widen the range first. |
+| scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo = { version = ">=2.13.0, <3", default-features = false }`. A scalo release reaches here: if the range admits it, `cargo update -p scalo` and rebuild, otherwise widen the range first. |
 | scalo-rs | inbound, lockstep | `generated-file`. The committed `Dockerfile` is written by `scalo::deployment::generate_dockerfile()`, and its banner names the generator and the schema version it emitted. A release that changes either needs the file regenerated and committed. |
 | dfe-infra | outbound -- it depends on this | `image-pin`, lockstep. `dfe-infra/helm/charts/dfe-fetcher/Chart.yaml` pins this service's image by `appVersion`, drift-checked against that repo's `versions.yaml`. A release here is consumed by bumping the tag and re-resolving the digest. |

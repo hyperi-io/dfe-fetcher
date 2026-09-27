@@ -12,7 +12,12 @@
 //! delivery report and has no batch call, so the emitter issues a flush's
 //! sends as concurrent futures (`in_flight` at a time) and librdkafka forms its
 //! own wire batches behind them. Every record gets a terminal outcome: sent,
-//! dead-lettered whole (the transport refused THAT record and would again),
+//! dead-lettered whole (the transport refused THAT record and would again, and
+//! the DLQ confirmed it holds the record -- a refused or unconfirmed dead-letter
+//! write aborts the tick like a transport failure), dropped (refused the same
+//! way with no DLQ configured, counted in
+//! `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, so a
+//! record the transport always refuses cannot hold its source back for good),
 //! or backpressured -- the backpressured subset is retried with a bounded
 //! backoff and, if still refused, the whole tick aborts WITHOUT a checkpoint
 //! so the scheduler's stall loop takes over. A failure the transport reports
@@ -23,22 +28,27 @@
 //! outcome is known.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use dfe_fetcher_core::batch::{Batch, Outbound};
 
 use crate::error::{Error, Result};
-use crate::metrics::Metrics;
-use crate::pipeline::PipelineState;
+use crate::metrics::{DroppedDeadLetter, Metrics};
+use crate::pipeline::{DeadLetter, DeadLettered, PipelineState};
 
 /// How many times a backpressured subset is re-sent before the tick aborts.
 const BACKPRESSURE_RETRIES: u32 = 5;
 /// First wait between backpressure retries; doubles each time.
 const BACKPRESSURE_BACKOFF: Duration = Duration::from_millis(200);
+/// Least time between two warnings of refused records dropped.
+const DROPPED_WARN_EVERY_MS: u64 = 10_000;
+/// When refused records dropped were last warned of.
+static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 
 /// What one flush did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -47,6 +57,8 @@ pub struct EmitReport {
     pub sent: u64,
     /// Records that went to the dead-letter queue instead.
     pub dead_lettered: u64,
+    /// Records the transport refused that no dead-letter queue could take.
+    pub dropped: u64,
 }
 
 /// Sends batches through the pipeline's output.
@@ -142,6 +154,7 @@ impl Emitter {
         report: &mut EmitReport,
     ) -> Result<Vec<Outbound>> {
         let mut held = Vec::new();
+        let mut refused = Vec::new();
         let mut in_flight = FuturesUnordered::new();
         let mut rows = rows.into_iter();
         loop {
@@ -164,22 +177,11 @@ impl Emitter {
                 // batch goes on.
                 Err(Error::TransportRecord(e)) => {
                     self.metrics.inc_transport_send_errors();
-                    if self
-                        .state
-                        .dead_letter(
-                            &row.topic,
-                            row.payload.clone(),
-                            &format!("transport refused the record: {e}"),
-                        )
-                        .await
-                    {
-                        report.dead_lettered += 1;
-                    } else {
-                        return Err(Error::Transport(format!(
-                            "record to {} refused and could not be dead-lettered: {e}",
-                            row.topic
-                        )));
-                    }
+                    refused.push(DeadLetter {
+                        topic: row.topic,
+                        payload: row.payload,
+                        reason: format!("transport refused the record: {e}"),
+                    });
                 }
                 // Anything else is the transport's own failure: no record is
                 // dead-lettered and the tick aborts with no checkpoint.
@@ -189,7 +191,47 @@ impl Emitter {
                 }
             }
         }
+        self.dead_letter(refused, report).await?;
         Ok(held)
+    }
+
+    /// Dead-letter the round's refused records in one confirmed write, so a
+    /// record counts as handled only once the DLQ holds it. A refusal is
+    /// permanent, so a record with nowhere to go -- no DLQ configured, or one
+    /// no DLQ backend can hold -- is dropped and counted rather than refetched
+    /// for ever.
+    async fn dead_letter(&self, refused: Vec<DeadLetter>, report: &mut EmitReport) -> Result<()> {
+        if refused.is_empty() {
+            return Ok(());
+        }
+        let count = refused.len() as u64;
+        let first_topic = Arc::clone(&refused[0].topic);
+        let first_reason = refused[0].reason.clone();
+        match self.state.dead_letter(refused).await {
+            Ok(DeadLettered::Held { dropped }) => {
+                report.dead_lettered += count - dropped;
+                report.dropped += dropped;
+                Ok(())
+            }
+            Ok(DeadLettered::NoQueue) => {
+                report.dropped += count;
+                self.metrics
+                    .add_dead_letters_dropped(DroppedDeadLetter::TransportRefused.as_str(), count);
+                if scalo::logger::log_debounced(&DROPPED_WARNED_AT, DROPPED_WARN_EVERY_MS) {
+                    warn!(
+                        records = count,
+                        topic = %first_topic,
+                        reason = %first_reason,
+                        "Records the transport refused were dropped: no dead-letter queue is \
+                         configured. Counted in pipeline_dead_letters_dropped_total"
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => Err(Error::Transport(format!(
+                "{count} record(s) to {first_topic} refused and could not be dead-lettered: {e}"
+            ))),
+        }
     }
 
     async fn send_one(&self, row: Outbound) -> (Outbound, Result<()>) {

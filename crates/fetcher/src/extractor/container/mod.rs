@@ -12,20 +12,54 @@
 //! Supports image pulling, stderr capture, timeouts, and health monitoring.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdout, Command};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::ContainerExtractorConfig;
 use crate::error::{Error, Result};
 use crate::extractor::{Extractor, ExtractorSink};
-use crate::metrics::Metrics;
+use crate::metrics::{ExtractorFailure, Metrics};
 use crate::pipeline::PipelineState;
+
+/// How long a stopped or killed container's stdout is read before it is given
+/// up on: the grace `docker stop --time 10` gives the container.
+const STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// First pause before a held stdout line is sent again; it doubles each time.
+const HOLD_PAUSE_MIN: Duration = Duration::from_secs(1);
+/// Longest pause between two attempts at a held stdout line.
+const HOLD_PAUSE_MAX: Duration = Duration::from_secs(30);
+/// Least time between two warnings that a line is still held.
+const HOLD_WARN_EVERY_MS: u64 = 60_000;
+
+/// What ended one read of the container's stdout.
+enum Next {
+    Shutdown,
+    TimedOut,
+    Line(std::io::Result<Option<String>>),
+}
+
+/// What one stdout pump delivered, and whether the run's timeout ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pumped {
+    delivered: u64,
+    timed_out: bool,
+}
+
+/// Resolve at `deadline`, or never when there is none.
+async fn until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
 
 /// Container-based extractor.
 pub struct ContainerExtractor {
@@ -34,6 +68,10 @@ pub struct ContainerExtractor {
     sink: ExtractorSink,
     metrics: Arc<Metrics>,
     shutdown: CancellationToken,
+    /// Lines dropped since start, for the sampled drop log.
+    drop_samples: AtomicU64,
+    /// When a held line was last warned of, for `log_debounced`.
+    held_warned_at: AtomicU64,
 }
 
 impl ContainerExtractor {
@@ -49,7 +87,178 @@ impl ContainerExtractor {
             sink: ExtractorSink::new(pipeline, Arc::clone(&metrics)),
             metrics,
             shutdown,
+            drop_samples: AtomicU64::new(0),
+            held_warned_at: AtomicU64::new(0),
         }
+    }
+
+    /// Deliver the container's stdout, a JSON record per line, until it
+    /// closes, shutdown comes, or `deadline` passes.
+    ///
+    /// On shutdown the container is stopped while its stdout is still read, so
+    /// what it writes on the way out is delivered before the outputs close. At
+    /// `deadline` the container is killed, and what it wrote before the kill
+    /// is still delivered.
+    async fn pump_stdout(
+        &self,
+        stdout: ChildStdout,
+        child: &mut Child,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Pumped {
+        let mut lines = BufReader::new(stdout).lines();
+        let mut delivered = 0;
+        loop {
+            let next = tokio::select! {
+                biased;
+                () = self.shutdown.cancelled() => Next::Shutdown,
+                () = until(deadline) => Next::TimedOut,
+                line = lines.next_line() => Next::Line(line),
+            };
+            match next {
+                Next::Shutdown => {
+                    info!(
+                        name = %self.config.name,
+                        "Shutdown: stopping the container and delivering what it still writes"
+                    );
+                    let ((), ()) = tokio::join!(
+                        self.stop_container(),
+                        self.drain_stdout(&mut lines, &mut delivered)
+                    );
+                    return Pumped {
+                        delivered,
+                        timed_out: false,
+                    };
+                }
+                Next::TimedOut => {
+                    self.kill_container(child).await;
+                    // Bounded: a pipe some other process still holds open never closes.
+                    let _ = tokio::time::timeout(
+                        STOP_GRACE,
+                        self.drain_stdout(&mut lines, &mut delivered),
+                    )
+                    .await;
+                    return Pumped {
+                        delivered,
+                        timed_out: true,
+                    };
+                }
+                Next::Line(Ok(Some(line))) => {
+                    if self.deliver_counted(&line).await {
+                        delivered += 1;
+                    }
+                }
+                Next::Line(Ok(None)) => {
+                    debug!(name = %self.config.name, "Container stdout closed");
+                    return Pumped {
+                        delivered,
+                        timed_out: false,
+                    };
+                }
+                Next::Line(Err(e)) => {
+                    error!(name = %self.config.name, error = %e, "Error reading container stdout");
+                    return Pumped {
+                        delivered,
+                        timed_out: false,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Deliver every line left on stdout, until it closes, counting each one
+    /// delivered into `delivered`.
+    async fn drain_stdout(&self, lines: &mut Lines<BufReader<ChildStdout>>, delivered: &mut u64) {
+        while let Ok(Some(line)) = lines.next_line().await {
+            if self.deliver_counted(&line).await {
+                *delivered += 1;
+            }
+        }
+    }
+
+    /// Kill a container that ran past its timeout: the container itself, then
+    /// the runtime client, whose exit closes the stdout pipe.
+    async fn kill_container(&self, child: &mut Child) {
+        warn!(
+            name = %self.config.name,
+            timeout_secs = self.config.timeout_secs.unwrap_or_default(),
+            "Container timed out, killing it"
+        );
+        let container_name = self.container_name();
+        let _ = Command::new(self.runtime_cmd())
+            .args(["kill", &container_name])
+            .output()
+            .await;
+        let _ = child.start_kill();
+    }
+
+    /// Deliver one stdout line, counting it received only once it is
+    /// delivered.
+    ///
+    /// A pipe cannot be re-read, so a line the outputs cannot take yet is
+    /// held and retried with a growing pause rather than dropped. Nothing
+    /// reads the container's stdout meanwhile, so the container blocks on its
+    /// own writes until the outputs recover. Only a failure no retry can clear
+    /// (no output configured) drops the line, and at shutdown a held line gets
+    /// one more attempt before it is dropped. Either way it is counted.
+    async fn deliver_counted(&self, line: &str) -> bool {
+        let line = line.trim();
+        if line.is_empty() {
+            return false;
+        }
+        let mut pause = HOLD_PAUSE_MIN;
+        let mut held = false;
+        loop {
+            let e = match self.deliver_line(line.to_owned()).await {
+                Ok(()) => {
+                    self.metrics.add_extractor_records(1);
+                    if held {
+                        info!(name = %self.config.name, "Outputs took the held container line");
+                    }
+                    return true;
+                }
+                Err(e) => e,
+            };
+            let permanent = matches!(e, Error::Config(_));
+            if permanent || self.shutdown.is_cancelled() {
+                self.metrics.add_extractor_records_failed(
+                    "container",
+                    ExtractorFailure::Dropped,
+                    1,
+                );
+                if scalo::logger::log_sampled(&self.drop_samples, 100) {
+                    error!(
+                        name = %self.config.name,
+                        error = %e,
+                        dropped = self.drop_samples.load(Ordering::Relaxed),
+                        "Container output not delivered and dropped: its stdout cannot be re-read (sampled 1/100)"
+                    );
+                }
+                return false;
+            }
+            if !held || scalo::logger::log_debounced(&self.held_warned_at, HOLD_WARN_EVERY_MS) {
+                warn!(
+                    name = %self.config.name,
+                    error = %e,
+                    retry_in_ms = pause.as_millis(),
+                    "Outputs cannot take a container line: holding it, and the container's stdout, until they recover"
+                );
+            }
+            held = true;
+            tokio::select! {
+                () = self.shutdown.cancelled() => {}
+                () = tokio::time::sleep(pause) => {}
+            }
+            pause = pause.saturating_mul(2).min(HOLD_PAUSE_MAX);
+        }
+    }
+
+    /// Stop the container, giving it 10 s to exit.
+    async fn stop_container(&self) {
+        let container_name = self.container_name();
+        let _ = Command::new(self.runtime_cmd())
+            .args(["stop", "--time", "10", &container_name])
+            .output()
+            .await;
     }
 
     /// Deliver one stdout line as a record on the extractor's topic.
@@ -203,65 +412,47 @@ impl ContainerExtractor {
 
         Self::spawn_stderr_logger(&mut child, self.config.name.clone());
 
-        if self.config.communication == "stdout"
-            && let Some(stdout) = child.stdout.take()
-        {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            let mut record_count: u64 = 0;
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-                if let Err(e) = self.deliver_line(line).await {
-                    error!(name = %self.config.name, error = %e, "Failed to deliver container output");
-                } else {
-                    record_count += 1;
-                }
-            }
-
-            if record_count > 0 {
-                self.metrics.add_extractor_records(record_count);
-                info!(name = %self.config.name, records = record_count, "Scheduled extraction complete");
-            }
-        }
-
-        // Wait with optional timeout
-        let timeout = self
+        // One deadline for the whole run, stdout included: a container that
+        // keeps its stdout open is still killed on time.
+        let deadline = self
             .config
             .timeout_secs
             .filter(|&t| t > 0)
-            .map(std::time::Duration::from_secs);
+            .map(|t| tokio::time::Instant::now() + Duration::from_secs(t));
 
-        let status = if let Some(dur) = timeout {
-            match tokio::time::timeout(dur, child.wait()).await {
-                Ok(result) => {
-                    result.map_err(|e| Error::Source(format!("container wait failed: {e}")))?
-                }
-                Err(_) => {
-                    warn!(name = %self.config.name, timeout_secs = dur.as_secs(), "Container timed out, killing");
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    return Err(Error::Source(format!(
-                        "container '{}' timed out after {}s",
-                        self.config.name,
-                        dur.as_secs()
-                    )));
-                }
+        let mut timed_out = false;
+        if self.config.communication == "stdout"
+            && let Some(stdout) = child.stdout.take()
+        {
+            let pumped = self.pump_stdout(stdout, &mut child, deadline).await;
+            timed_out = pumped.timed_out;
+            if pumped.delivered > 0 {
+                info!(name = %self.config.name, records = pumped.delivered, "Scheduled extraction complete");
             }
-        } else {
-            child
-                .wait()
-                .await
-                .map_err(|e| Error::Source(format!("container wait failed: {e}")))?
-        };
-
-        if !status.success() {
-            warn!(name = %self.config.name, exit_code = status.code().unwrap_or(-1), "Container exited with non-zero status");
         }
-        Ok(())
+
+        if !timed_out {
+            let exited = match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, child.wait()).await.ok(),
+                None => Some(child.wait().await),
+            };
+            if let Some(exited) = exited {
+                let status =
+                    exited.map_err(|e| Error::Source(format!("container wait failed: {e}")))?;
+                if !status.success() {
+                    warn!(name = %self.config.name, exit_code = status.code().unwrap_or(-1), "Container exited with non-zero status");
+                }
+                return Ok(());
+            }
+            self.kill_container(&mut child).await;
+        }
+
+        let _ = child.wait().await;
+        Err(Error::Source(format!(
+            "container '{}' timed out after {}s and was killed",
+            self.config.name,
+            self.config.timeout_secs.unwrap_or_default()
+        )))
     }
 
     async fn run_continuous(&self) -> Result<()> {
@@ -287,34 +478,7 @@ impl ContainerExtractor {
 
         if self.config.communication == "stdout" {
             if let Some(stdout) = child.stdout.take() {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-                let config_name = self.config.name.as_str();
-
-                loop {
-                    tokio::select! {
-                        biased;
-                        () = self.shutdown.cancelled() => {
-                            info!(name = %config_name, "Shutdown signal, stopping container");
-                            break;
-                        }
-                        line_result = lines.next_line() => {
-                            match line_result {
-                                Ok(Some(line)) => {
-                                    let line = line.trim().to_string();
-                                    if line.is_empty() { continue; }
-                                    if let Err(e) = self.deliver_line(line).await {
-                                        error!(name = %config_name, error = %e, "Failed to deliver container output");
-                                    } else {
-                                        self.metrics.add_extractor_records(1);
-                                    }
-                                }
-                                Ok(None) => { info!(name = %config_name, "Container stdout closed"); break; }
-                                Err(e) => { error!(name = %config_name, error = %e, "Error reading container stdout"); break; }
-                            }
-                        }
-                    }
-                }
+                self.pump_stdout(stdout, &mut child, None).await;
             }
         } else {
             tokio::select! {
@@ -332,20 +496,24 @@ impl ContainerExtractor {
             }
         }
 
-        let container_name = self.container_name();
-        let _ = Command::new(&runtime)
-            .args(["stop", "--time", "10", &container_name])
-            .output()
-            .await;
+        self.stop_container().await;
         Ok(())
     }
 
+    /// Run the extractor on the pipeline's intake tracker, so shutdown keeps
+    /// the outputs open while it delivers what its container still writes.
     pub fn spawn(self: Arc<Self>) {
         let is_scheduled = self.config.mode == "scheduled";
         let interval_secs = self.config.interval_secs.unwrap_or(300);
         let name = self.config.name.clone();
+        let intake = self.sink.state().intake().clone();
+        // A pipe holds no acknowledgement. A container posting to the ingest
+        // listener gets that intake's guarantee instead.
+        if self.config.communication == "stdout" {
+            self.sink.state().publish_guarantee("container", None);
+        }
 
-        tokio::spawn(async move {
+        intake.spawn(async move {
             if is_scheduled {
                 let mut interval =
                     tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -386,6 +554,9 @@ impl ContainerExtractor {
                         }
                     }
                     self.running.store(false, Ordering::Relaxed);
+                    if self.shutdown.is_cancelled() {
+                        break;
+                    }
 
                     // Reset backoff if container ran long enough to be considered stable
                     if start.elapsed().as_secs() >= self.config.stable_after_secs {
@@ -630,6 +801,197 @@ mod tests {
         assert!(args.contains(&"1.5".to_string()));
         assert!(args.contains(&"--network".to_string()));
         assert!(args.contains(&"dfe-net".to_string()));
+    }
+
+    /// An extractor over a pipeline whose only output is `output` (or none).
+    fn extractor_over(
+        output: Option<&Arc<scalo::transport::MemoryTransport>>,
+        shutdown: CancellationToken,
+    ) -> (ContainerExtractor, Arc<Metrics>) {
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            output.map(|o| crate::output::OutputManager::memory(Arc::clone(o))),
+        ));
+        let config = ContainerExtractorConfig {
+            name: "pump".to_string(),
+            image: "unused".to_string(),
+            // `true stop ...` exits 0, so no container runtime is touched.
+            runtime: Some("true".to_string()),
+            ..default_container_config()
+        };
+        (
+            ContainerExtractor::new(config, state, Arc::clone(&metrics), shutdown),
+            metrics,
+        )
+    }
+
+    /// An output outage longer than the emitter's own retries (about 6 s)
+    /// loses no line: the line is held, the container's stdout is not read
+    /// meanwhile, and the line is delivered once the output takes records
+    /// again.
+    #[tokio::test(start_paused = true)]
+    async fn a_line_is_held_through_an_output_outage_not_dropped() {
+        use scalo::transport::{MemoryConfig, MemoryTransport, TransportReceiver, TransportSender};
+
+        let output = Arc::new(
+            MemoryTransport::new(&MemoryConfig {
+                buffer_size: 1,
+                ..MemoryConfig::default()
+            })
+            .expect("memory transport"),
+        );
+        // The one slot taken: every send is backpressured until it is read.
+        assert!(matches!(
+            TransportSender::send(&*output, "filler", Bytes::from_static(b"{}")).await,
+            scalo::transport::SendResult::Ok
+        ));
+        let (ext, metrics) = extractor_over(Some(&output), CancellationToken::new());
+        let ext = Arc::new(ext);
+        let held = tokio::spawn({
+            let ext = Arc::clone(&ext);
+            async move { ext.deliver_counted(r#"{"n":1}"#).await }
+        });
+
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert!(!held.is_finished(), "still held 30 s into the outage");
+        assert_eq!(metrics.extractor_records_failed(), 0, "nothing dropped");
+
+        let filler = output.recv(1).await.expect("recv");
+        assert_eq!(filler.records.len(), 1, "the outage ends");
+        assert!(
+            held.await.expect("joined"),
+            "delivered once the output takes records again"
+        );
+        let batch = output.recv(10).await.expect("recv");
+        assert_eq!(batch.records.len(), 1);
+        let row: serde_json::Value =
+            serde_json::from_slice(&batch.records[0].payload).expect("json");
+        assert_eq!(row["n"], 1);
+        assert_eq!(metrics.extractor_records_failed(), 0);
+    }
+
+    /// A line the outputs refuse cannot be read again from the pipe: it is
+    /// counted dropped and never counted received.
+    #[tokio::test]
+    async fn an_undelivered_line_is_counted_dropped_not_received() {
+        let (ext, metrics) = extractor_over(None, CancellationToken::new());
+
+        assert!(!ext.deliver_counted(r#"{"event":"x"}"#).await);
+        assert!(!ext.deliver_counted("   ").await, "a blank line is skipped");
+
+        assert_eq!(metrics.extractor_records_failed(), 1);
+        assert!(
+            metrics
+                .render()
+                .contains("dfe_fetcher_extractor_records_total 0"),
+            "never counted received"
+        );
+    }
+
+    /// At shutdown the pipe is read to its end, so what the tool writes on
+    /// the way out is delivered, not left in the pipe.
+    #[tokio::test]
+    async fn shutdown_delivers_what_the_container_still_writes() {
+        let output = Arc::new(
+            scalo::transport::MemoryTransport::new(&scalo::transport::MemoryConfig::default())
+                .expect("memory transport"),
+        );
+        let shutdown = CancellationToken::new();
+        let (ext, metrics) = extractor_over(Some(&output), shutdown.clone());
+
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                r#"echo '{"n":1}'; sleep 1; echo '{"n":2}'; echo '{"n":3}'"#,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh");
+        let stdout = child.stdout.take().expect("stdout");
+        shutdown.cancel();
+
+        let pumped = tokio::time::timeout(
+            Duration::from_secs(10),
+            ext.pump_stdout(stdout, &mut child, None),
+        )
+        .await
+        .expect("the pipe closes");
+        let _ = child.wait().await;
+
+        assert_eq!(
+            pumped,
+            Pumped {
+                delivered: 3,
+                timed_out: false
+            },
+            "every line written after the shutdown too"
+        );
+        assert_eq!(metrics.extractor_records_failed(), 0);
+        let batch = scalo::transport::TransportReceiver::recv(&*output, 10)
+            .await
+            .expect("recv");
+        assert_eq!(batch.records.len(), 3);
+    }
+
+    /// A container runtime stand-in: `run` writes one line and keeps stdout
+    /// open, `kill` records the container it was asked to kill in `killed`.
+    fn fake_runtime(dir: &std::path::Path, killed: &std::path::Path) -> String {
+        crate::extractor::fake_runtime::write(
+            dir,
+            &format!(
+                "case \"$1\" in\n  run) echo '{{\"n\":1}}'; exec sleep 30 ;;\n  kill) echo \"$2\" >> '{}' ;;\nesac\n",
+                killed.display()
+            ),
+        )
+    }
+
+    /// A scheduled container that keeps stdout open is still stopped at its
+    /// timeout: the container is killed, the run fails as timed out, and the
+    /// line it wrote first is delivered.
+    #[tokio::test]
+    async fn a_scheduled_container_holding_stdout_open_is_killed_at_its_timeout() {
+        let output = Arc::new(
+            scalo::transport::MemoryTransport::new(&scalo::transport::MemoryConfig::default())
+                .expect("memory transport"),
+        );
+        let (_, metrics) = extractor_over(None, CancellationToken::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            Some(crate::output::OutputManager::memory(Arc::clone(&output))),
+        ));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let killed = dir.path().join("killed");
+        let config = ContainerExtractorConfig {
+            name: "stuck".to_string(),
+            image: "unused".to_string(),
+            runtime: Some(fake_runtime(dir.path(), &killed)),
+            pull_policy: "never".to_string(),
+            timeout_secs: Some(1),
+            ..default_container_config()
+        };
+        let ext = ContainerExtractor::new(config, state, metrics, CancellationToken::new());
+
+        let started = std::time::Instant::now();
+        let err = tokio::time::timeout(Duration::from_secs(15), ext.run_scheduled())
+            .await
+            .expect("the run ends at its timeout, not when stdout closes")
+            .expect_err("a timed-out run fails");
+
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert_eq!(
+            std::fs::read_to_string(&killed)
+                .expect("the container was killed")
+                .trim(),
+            "dfe-fetcher-stuck"
+        );
+        let batch = scalo::transport::TransportReceiver::recv(&*output, 10)
+            .await
+            .expect("recv");
+        assert_eq!(batch.records.len(), 1, "the line written before the kill");
     }
 
     fn default_container_config() -> ContainerExtractorConfig {

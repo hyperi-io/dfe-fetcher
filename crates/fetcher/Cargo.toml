@@ -143,12 +143,15 @@ url = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+# A managed Vector container's inline config is written to a private temporary
+# directory that is removed at stop.
+tempfile = { workspace = true }
+
 # Optional allocator (jemalloc-only per DFE allocator policy 2026-04-17)
 tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
-tempfile = { workspace = true }
 # Test-only: the framework suite wraps a channel as a stream, and three suites
 # name their fixtures by uuid. Neither reaches the binary.
 tokio-stream = { workspace = true }
