@@ -443,11 +443,11 @@ fn tls_without_sasl_selects_the_ssl_protocol() {
 
 /// `metrics.address` must reach the listener on the `--config` path.
 ///
-/// The runtime resolves it from scalo's cascade, which `--config` never
-/// populates, so the value shipped in chart/values.yaml, in the contract's
-/// default config and in config.example.yaml was read by nothing and the
-/// listener bound the hard-coded default. `config-check` reports the address
-/// the runtime would use, so it is the honest place to assert.
+/// The runtime resolves it from scalo's cascade, so a `--config` file that does
+/// not reach the cascade leaves the value shipped in chart/values.yaml, in the
+/// contract's default config and in config.example.yaml read by nothing, and
+/// the listener binds the hard-coded default. `config-check` reports the
+/// address the runtime would use, so it is the honest place to assert.
 #[test]
 fn metrics_address_from_the_config_file_reaches_the_listener() {
     // The child process inherits this process's env at spawn.

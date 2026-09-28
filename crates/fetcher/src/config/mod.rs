@@ -20,10 +20,12 @@
 //!    defaults.yaml from the scalo cascade
 //! 6. Hard-coded defaults
 //!
-//! Layer 3 applies on BOTH load paths. `--config` bypasses the scalo cascade
-//! (it discovers files by name, and the container mounts `fetcher.yaml`), so
-//! without the env merge in `apply_nested_env` every env var above would be
-//! silently dropped in exactly the deployment that sets them.
+//! Layer 3 applies on BOTH load paths. `--config` reads the fetcher's own
+//! sections straight from the file, not through the scalo cascade, so without
+//! the env merge in `apply_nested_env` every env var above would be silently
+//! dropped in exactly the deployment that sets them. The file is also the
+//! cascade's settings layer, where the runtime reads `version_check` and
+//! `metrics`.
 
 pub mod builtin;
 pub mod resolve;
@@ -301,6 +303,7 @@ impl Config {
     pub fn load(config_path: Option<&str>) -> Result<Self> {
         // If an explicit config file is provided, load it directly
         if let Some(path) = config_path {
+            init_cascade(path)?;
             return Self::load_from_file(path);
         }
 
@@ -341,9 +344,9 @@ impl Config {
     /// Load configuration from a YAML file directly.
     ///
     /// This is the path every container takes: the entrypoint passes
-    /// `--config /etc/dfe/fetcher.yaml`, and the scalo cascade can only
-    /// discover files it names itself. Env layering therefore has to happen
-    /// here too, or the deployment's env vars reach nothing.
+    /// `--config /etc/dfe/fetcher.yaml`, and the file is deserialised here
+    /// rather than through the scalo cascade. Env layering therefore has to
+    /// happen here too, or the deployment's env vars reach nothing.
     pub fn load_from_file(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
@@ -765,6 +768,26 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+/// Set up scalo's cascade with the `--config` file as its settings layer.
+///
+/// The fetcher reads its own sections from the file directly, but the sections
+/// scalo's runtime owns (`version_check`, `metrics` and the rest) resolve from
+/// the cascade alone. A reload re-enters here, and the cascade is set once per
+/// process.
+fn init_cascade(path: &str) -> Result<()> {
+    let opts = ConfigOptions {
+        env_prefix: ENV_PREFIX.to_string(),
+        config_paths: vec![std::path::PathBuf::from(path)],
+        // A working-tree `.env` must not reach a deployment's `--config` load.
+        load_dotenv: false,
+        ..Default::default()
+    };
+    match config::setup(opts) {
+        Ok(()) | Err(config::ConfigError::AlreadyInitialised) => Ok(()),
+        Err(e) => Err(Error::Config(format!("failed to setup config: {e}"))),
     }
 }
 

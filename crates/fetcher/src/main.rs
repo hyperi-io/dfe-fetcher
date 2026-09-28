@@ -170,12 +170,9 @@ impl ServiceApp for App {
 /// Carry `metrics.address` from an explicit `--config` file onto the runtime's
 /// metrics bind address.
 ///
-/// scalo resolves that address from ITS cascade, which `--config` never
-/// populates (the cascade discovers files by name and the container mounts
-/// `fetcher.yaml`). So on the one path every deployment takes, `metrics.address`
-/// -- shipped in chart/values.yaml, in the deployment contract's default config
-/// and in config.example.yaml -- was read by nothing and the listener bound the
-/// hard-coded default.
+/// scalo resolves that address from its cascade, which takes the file but not
+/// the flat `DFE_FETCHER_METRICS_ADDRESS` override `apply_flat_env` maps, so
+/// that override reaches the listener only through here.
 ///
 /// `--metrics-addr` / `METRICS_ADDR` still win: this only fills an unset value.
 fn apply_config_metrics_addr(app: &mut App) {
@@ -798,6 +795,69 @@ fn reload_config_from_path(
 mod tests {
     use super::*;
     use scalo::lifecycle::WorkState;
+    use scalo::version_check::VersionCheckConfig;
+
+    /// The env opt-out the charts render from the app's own prefix.
+    const ENABLED_VAR: &str = "DFE_FETCHER_VERSION_CHECK__ENABLED";
+
+    /// Serialises the tests that set process-wide env vars.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The version check `ServiceRuntime::build` resolves after `load_config`
+    /// reads `yaml` as the `--config` file, with the env opt-out at `enabled`.
+    ///
+    /// The cascade is a process-global `OnceLock`, so each caller needs its own
+    /// process, which nextest gives every test.
+    #[allow(unsafe_code)]
+    fn resolved_version_check(yaml: &str, enabled: Option<&str>) -> VersionCheckConfig {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fetcher.yaml");
+        std::fs::write(&path, yaml).expect("write config");
+        let path = path.to_str().expect("utf-8 path");
+
+        // SAFETY: test-only, serialised by ENV_LOCK
+        unsafe {
+            match enabled {
+                Some(v) => std::env::set_var(ENABLED_VAR, v),
+                None => std::env::remove_var(ENABLED_VAR),
+            }
+        }
+        let app = App::parse_from(["dfe-fetcher", "--config", path]);
+        app.load_config(Some(path)).expect("config loads");
+        let resolved =
+            VersionCheckConfig::from_cascade_or(app.name(), "0.0.0", app.version_check_defaults());
+        // SAFETY: test-only, serialised by ENV_LOCK
+        unsafe { std::env::remove_var(ENABLED_VAR) };
+        resolved
+    }
+
+    #[test]
+    fn version_check_env_opt_out_stops_the_check() {
+        let resolved = resolved_version_check("{}\n", Some("false"));
+        assert!(
+            !resolved.enabled,
+            "{ENABLED_VAR}=false must stop the check under --config"
+        );
+    }
+
+    #[test]
+    fn version_check_config_file_opt_out_stops_the_check() {
+        let resolved = resolved_version_check("version_check:\n  enabled: false\n", None);
+        assert!(
+            !resolved.enabled,
+            "version_check.enabled: false in the --config file must stop the check"
+        );
+    }
+
+    #[test]
+    fn version_check_stays_on_by_default() {
+        let resolved = resolved_version_check("{}\n", None);
+        assert!(resolved.enabled, "phone-home is on unless opted out");
+        assert_eq!(resolved.api_url, "https://releases.hyperi.io/api/v1/check");
+    }
 
     /// A bus output with a broker, so the active half of the first test has a
     /// transport to name. Neither test is about the transport itself.
