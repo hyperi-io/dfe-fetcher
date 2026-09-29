@@ -1059,10 +1059,14 @@ $defs:
         - 'null'
         default: null
       service_account_key:
-        description: Path to service account key file.
+        description: |-
+          The service-account key JSON, or the path of its file. A value opening
+          with `{` is the key itself, which is how the chart's Secret delivers it.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
         default: null
       credential_secret:
         description: Secret source for credentials.
@@ -1144,10 +1148,14 @@ $defs:
         - string
         - 'null'
       service_account_key:
-        description: Path to service account key file.
+        description: |-
+          The service-account key JSON, or the path of its file. A value opening
+          with `{` is the key itself, which is how the chart's Secret delivers it.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       credential_secret:
         description: Secret source for credentials ("provider:path:key").
         type:
@@ -2425,12 +2433,14 @@ $defs:
         default: false
       service_account_key:
         description: |-
-          Path to the service account JSON key file (same shape as the GCP
-          source). The SA must have domain-wide delegation enabled and the
+          The service-account key JSON, or the path of its file, read as on the
+          GCP source. The SA must have domain-wide delegation enabled and the
           required Reports API scopes granted in the Workspace Admin console.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       credential_secret:
         description: |-
           Secret source spec for the SA key
@@ -2528,10 +2538,12 @@ $defs:
         description: Stable, unique connection id (cursor key + metric/log label).
         type: string
       service_account_key:
-        description: Path to the service account JSON key file.
+        description: The service-account key JSON, or the path of its file.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       credential_secret:
         description: Secret source spec for the SA key ("provider:path:key").
         type:
@@ -2600,11 +2612,14 @@ $defs:
         default: false
       service_account_key:
         description: |-
-          Path to a GCP service account JSON key file. The SA must have
-          `roles/pubsub.subscriber` on every configured subscription.
+          The GCP service-account key JSON, or the path of its file, read as on
+          the GCP source. The SA must have `roles/pubsub.subscriber` on every
+          configured subscription.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       credential_secret:
         description: |-
           Secret source spec for the SA key
@@ -2869,10 +2884,12 @@ $defs:
     type: object
     properties:
       service_account_key:
-        description: Service account JSON key path.
+        description: The service-account key JSON, or the path of its file.
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       credential_secret:
         description: Vault secret spec for the SA key.
         type:

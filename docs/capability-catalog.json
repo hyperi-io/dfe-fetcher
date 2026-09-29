@@ -376,9 +376,10 @@
       },
       {
         "name": "service_account_key",
-        "type": "string",
+        "type": "secret",
         "required": false,
-        "description": "Path to the service-account JSON key file."
+        "description": "The service-account key JSON, or the path of its file.",
+        "secret": true
       },
       {
         "name": "credential_secret",
@@ -997,9 +998,10 @@
       },
       {
         "name": "service_account_key",
-        "type": "string",
+        "type": "secret",
         "required": false,
-        "description": "Path to the SA JSON key (domain-wide delegation)."
+        "description": "The SA key JSON, or the path of its file (domain-wide delegation).",
+        "secret": true
       },
       {
         "name": "admin_email",
@@ -1045,9 +1047,10 @@
     "fields": [
       {
         "name": "service_account_key",
-        "type": "string",
+        "type": "secret",
         "required": false,
-        "description": "Path to the SA JSON key (roles/pubsub.subscriber)."
+        "description": "The SA key JSON, or the path of its file (roles/pubsub.subscriber).",
+        "secret": true
       },
       {
         "name": "credential_secret",
@@ -1185,9 +1188,10 @@
       },
       {
         "name": "private_key",
-        "type": "string",
+        "type": "secret",
         "required": false,
-        "description": "RSA private key PEM (JWT-bearer flow)."
+        "description": "RSA private key PEM (JWT-bearer flow).",
+        "secret": true
       },
       {
         "name": "private_key_secret",

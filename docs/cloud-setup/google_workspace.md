@@ -180,6 +180,8 @@ DFE_FETCHER_SOURCES__GOOGLE_WORKSPACE__ADMIN_EMAIL="audit-admin@example.com"
 DFE_FETCHER_SOURCES__GOOGLE_WORKSPACE__CUSTOMER_ID="my_customer"
 ```
 
+`service_account_key` also takes the key JSON itself: a value that opens with `{` is the key, anything else the path of its file.
+
 ### Secrets Manager
 
 Keep the SA key out of the config file with a vault spec:

@@ -67,7 +67,7 @@ fn pubsub_config(
 ) -> GcpPubsubSourceConfig {
     GcpPubsubSourceConfig {
         enabled: true,
-        service_account_key: Some(account.key_path.clone()),
+        service_account_key: Some(account.key_path.clone().into()),
         api_url_override: Some(server.uri()),
         token_url_override: Some(format!("{}{TOKEN_PATH}", server.uri())),
         subscriptions,
@@ -482,7 +482,7 @@ async fn a_refused_token_exchange_fails_the_tick_and_pulls_nothing() {
     )
     .expect("write key");
     let mut cfg = pubsub_config(&server, &account, vec![subscription("audit-sub", 1000)]);
-    cfg.service_account_key = Some(wrong.to_string_lossy().into_owned());
+    cfg.service_account_key = Some(wrong.to_string_lossy().into_owned().into());
     let (outcome, rows) = run(config(cfg), None).await;
     let err = outcome.expect_err("the refusal is reported");
     assert!(

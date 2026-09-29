@@ -1891,9 +1891,10 @@ pub struct GcpConnection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
 
-    /// Path to service account key file.
+    /// The service-account key JSON, or the path of its file. A value opening
+    /// with `{` is the key itself, which is how the chart's Secret delivers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_account_key: Option<String>,
+    pub service_account_key: Option<SensitiveString>,
 
     /// Secret source for credentials ("provider:path:key").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1922,8 +1923,9 @@ pub struct GcpSourceConfig {
     /// GCP project ID.
     pub project_id: Option<String>,
 
-    /// Path to service account key file.
-    pub service_account_key: Option<String>,
+    /// The service-account key JSON, or the path of its file. A value opening
+    /// with `{` is the key itself, which is how the chart's Secret delivers it.
+    pub service_account_key: Option<SensitiveString>,
 
     /// Secret source for credentials.
     pub credential_secret: Option<String>,
@@ -3345,11 +3347,11 @@ pub struct GoogleWorkspaceSourceConfig {
     /// Enable Google Workspace source.
     pub enabled: bool,
 
-    /// Path to the service account JSON key file (same shape as the GCP
-    /// source). The SA must have domain-wide delegation enabled and the
+    /// The service-account key JSON, or the path of its file, read as on the
+    /// GCP source. The SA must have domain-wide delegation enabled and the
     /// required Reports API scopes granted in the Workspace Admin console.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_account_key: Option<String>,
+    pub service_account_key: Option<SensitiveString>,
 
     /// Secret source spec for the SA key
     /// (e.g. `vault:kv/data/google_workspace:sa_key`).
@@ -3406,9 +3408,9 @@ pub struct GoogleWorkspaceConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
 
-    /// Path to the service account JSON key file.
+    /// The service-account key JSON, or the path of its file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_account_key: Option<String>,
+    pub service_account_key: Option<SensitiveString>,
 
     /// Secret source spec for the SA key ("provider:path:key").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3757,10 +3759,11 @@ pub struct GcpPubsubSourceConfig {
     /// Enable Pub/Sub pull source.
     pub enabled: bool,
 
-    /// Path to a GCP service account JSON key file. The SA must have
-    /// `roles/pubsub.subscriber` on every configured subscription.
+    /// The GCP service-account key JSON, or the path of its file, read as on
+    /// the GCP source. The SA must have `roles/pubsub.subscriber` on every
+    /// configured subscription.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_account_key: Option<String>,
+    pub service_account_key: Option<SensitiveString>,
 
     /// Secret source spec for the SA key
     /// (e.g. `vault:kv/data/gcp-pubsub:sa_key`).
@@ -3932,9 +3935,9 @@ pub struct S3BackendConfig {
 /// GCS backend configuration. **Not implemented.**
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GcsBackendConfig {
-    /// Service account JSON key path.
+    /// The service-account key JSON, or the path of its file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_account_key: Option<String>,
+    pub service_account_key: Option<SensitiveString>,
 
     /// Vault secret spec for the SA key.
     #[serde(default, skip_serializing_if = "Option::is_none")]

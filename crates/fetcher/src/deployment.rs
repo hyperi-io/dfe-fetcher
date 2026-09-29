@@ -507,8 +507,6 @@ mod tests {
     }
 
     /// Property names that hold a secret value wherever the config declares them.
-    /// `service_account_key` is not one: the typed blocks hold a key file path
-    /// under that name.
     const SECRET_FIELDS: &[&str] = &[
         "auth_token",
         "password",
@@ -519,6 +517,7 @@ mod tests {
         "token",
         "account_key",
         "sas_token",
+        "service_account_key",
     ];
 
     /// Every property declared in `schema` at any depth, as its name and whether
@@ -601,6 +600,29 @@ mod tests {
         assert_eq!(
             unmarked_secret_fields(&guarded),
             std::collections::BTreeSet::new()
+        );
+    }
+
+    /// The catalog builds the console's forms, so a secret field it declares as
+    /// a plain string is shown and edited as text.
+    #[test]
+    fn every_secret_field_the_catalog_declares_is_flagged_secret() {
+        let mut plain = std::collections::BTreeSet::new();
+        let mut stack: Vec<&scalo::deployment::Capability> = Vec::new();
+        let catalog = contract().capabilities;
+        stack.extend(&catalog);
+        while let Some(capability) = stack.pop() {
+            for field in &capability.fields {
+                if SECRET_FIELDS.contains(&field.name.as_str()) && !field.secret {
+                    plain.insert(format!("{}.{}", capability.name, field.name));
+                }
+            }
+            stack.extend(&capability.children);
+        }
+        assert_eq!(
+            plain,
+            std::collections::BTreeSet::new(),
+            "declare these with `FieldSpec::secret`"
         );
     }
 

@@ -240,9 +240,10 @@
     required: false
     description: GCP project ID.
   - name: service_account_key
-    type: string
+    type: secret
     required: false
-    description: Path to the service-account JSON key file.
+    description: The service-account key JSON, or the path of its file.
+    secret: true
   - name: credential_secret
     type: string
     required: false
@@ -643,9 +644,10 @@
     required: true
     description: Stable, unique connection id -- the cursor key and metric/log/DLQ label.
   - name: service_account_key
-    type: string
+    type: secret
     required: false
-    description: Path to the SA JSON key (domain-wide delegation).
+    description: The SA key JSON, or the path of its file (domain-wide delegation).
+    secret: true
   - name: admin_email
     type: string
     required: false
@@ -674,9 +676,10 @@
   maturity: alpha
   fields:
   - name: service_account_key
-    type: string
+    type: secret
     required: false
-    description: Path to the SA JSON key (roles/pubsub.subscriber).
+    description: The SA key JSON, or the path of its file (roles/pubsub.subscriber).
+    secret: true
   - name: credential_secret
     type: string
     required: false
@@ -767,9 +770,10 @@
     required: false
     description: Integration username (JWT sub; JWT-bearer flow).
   - name: private_key
-    type: string
+    type: secret
     required: false
     description: RSA private key PEM (JWT-bearer flow).
+    secret: true
   - name: private_key_secret
     type: string
     required: false
