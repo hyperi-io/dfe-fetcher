@@ -25,6 +25,11 @@ pub enum Error {
     #[error("source error: {0}")]
     Source(String),
 
+    /// A rendered request URL named a host the unit may not address, so the
+    /// request was refused before its credential was applied.
+    #[error("request refused: {0}")]
+    OriginRefused(String),
+
     /// A credential spec did not resolve or a token could not be minted.
     #[error("credential error: {0}")]
     Credential(String),
@@ -101,7 +106,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
     /// The bounded metrics category for this error: `throttle`, `4xx`, `5xx`,
-    /// `timeout`, `network`, `oversize_page` or `page_ceiling`.
+    /// `timeout`, `network`, `origin_refused`, `oversize_page` or
+    /// `page_ceiling`.
     ///
     /// An [`Error::Api`] classifies from its TYPED status (an S3 `SlowDown`
     /// is a 503 that means throttle) or from the profile's declared
@@ -121,6 +127,7 @@ impl Error {
                 500..=599 => "5xx",
                 _ => "network",
             },
+            Error::OriginRefused(_) => "origin_refused",
             Error::OversizePage { .. } => "oversize_page",
             Error::PageCeiling { .. } => "page_ceiling",
             Error::Item { source, .. } => source.api_error_code(),

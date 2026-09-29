@@ -2496,8 +2496,8 @@ async fn a_manifest_item_on_another_host_is_refused() {
         .await
         .expect_err("the item names a host the unit was never configured for");
     assert!(
-        matches!(err, Error::Source(_)),
-        "the provider chose the host, so the tick fails as a source fault: {err:?}"
+        matches!(err, Error::OriginRefused(_)),
+        "the provider chose the host, so the tick fails as a refusal: {err:?}"
     );
     assert!(
         err.to_string().contains("localhost"),
@@ -2584,7 +2584,7 @@ async fn a_lister_listing_path_on_another_host_is_refused() {
     let err = fetch_rows(&s, "objects", None)
         .await
         .expect_err("the listing URL is off the unit's origin");
-    assert!(matches!(err, Error::Source(_)), "{err:?}");
+    assert!(matches!(err, Error::OriginRefused(_)), "{err:?}");
     assert!(
         err.to_string().contains("localhost"),
         "the refusal names the host: {err}"
@@ -2641,7 +2641,7 @@ async fn assert_off_host_page_is_refused(fx: &common::Fixture, profile_yaml: &st
     let err = fetch(&s, unit, None)
         .await
         .expect_err("the next page is on another host");
-    assert!(matches!(err, Error::Source(_)), "{err:?}");
+    assert!(matches!(err, Error::OriginRefused(_)), "{err:?}");
     assert!(
         err.to_string().contains("localhost"),
         "the refusal names the host: {err}"

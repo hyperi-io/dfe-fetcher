@@ -99,15 +99,15 @@ impl OriginSet {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Source`], because the provider chose the host: the text
+    /// Returns [`Error::OriginRefused`], counted as `origin_refused`: the text
     /// names the ORIGIN and never the URL, whose query carries the credential
     /// under `auth.api_key.query`.
     pub fn check(&self, url: &reqwest::Url, exposed: Option<&Value>) -> Result<()> {
         if self.permits(url, exposed) {
             return Ok(());
         }
-        Err(Error::Source(format!(
-            "refusing to send this source's credential to `{}`: a rendered URL may name only the \
+        Err(Error::OriginRefused(format!(
+            "this source's credential is not sent to `{}`: a rendered URL may name only the \
              host of the unit's `base_url`, of the instance's, of a credential field the profile \
              exposes, or of an `allow_hosts` entry",
             refused_name(url)
@@ -248,7 +248,8 @@ mod tests {
             .check(&url("http://evil.net:8080/blob/1?api_key=sekrit"), None)
             .expect_err("another host");
         let text = err.to_string();
-        assert!(matches!(err, Error::Source(_)), "{err:?}");
+        assert!(matches!(err, Error::OriginRefused(_)), "{err:?}");
+        assert_eq!(err.api_error_code(), "origin_refused");
         assert!(text.contains("http://evil.net:8080"), "{text}");
         assert!(!text.contains("/blob/1"), "{text}");
         assert!(!text.contains("sekrit"), "{text}");

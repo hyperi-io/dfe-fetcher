@@ -290,9 +290,9 @@ impl RequestExecutor {
     /// # Errors
     ///
     /// Returns [`Error::Api`] for the final non-2xx status (never retried, or
-    /// retries exhausted), [`Error::Source`] when the host is not one the source
-    /// may address or the provider is unreachable, and the credential error when
-    /// the auth mode cannot be applied.
+    /// retries exhausted), [`Error::OriginRefused`] when the host is not one the
+    /// source may address, [`Error::Source`] when the provider is unreachable,
+    /// and the credential error when the auth mode cannot be applied.
     pub async fn send(
         &self,
         sending: Sending<'_>,
@@ -533,5 +533,74 @@ mod tests {
             "{:?}",
             counted.3
         );
+    }
+
+    /// A URL on a host the unit may not address is refused before the signer
+    /// runs: the credential here cannot resolve, so reaching the signer would
+    /// fail as a credential error instead. The refusal is counted under its own
+    /// code, apart from a network failure.
+    #[tokio::test]
+    async fn a_refused_host_is_counted_as_a_refusal_before_the_signer_runs() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        // One recorder per process; nextest runs each test in its own.
+        let _ = recorder.install();
+
+        let auth = AuthMode::Bearer(Placed::bearer(Secret::new(
+            "env:DFE_FETCHER_TEST_MISSING_SECRET_VAR".into(),
+        )));
+        let executor = RequestExecutor::new(
+            reqwest::Client::new(),
+            RetrySpec::default(),
+            None,
+            Vec::new(),
+        );
+        let mut origins = OriginSet::new();
+        assert!(origins.permit("https://api.example"));
+        let ctx = TemplateCtx::new();
+        let err = executor
+            .send(
+                Sending {
+                    source: "refused",
+                    auth: &auth,
+                    ctx: &ctx,
+                    origins: &origins,
+                    idempotent: true,
+                    ignore: &[],
+                },
+                || {
+                    Ok(reqwest::Request::new(
+                        reqwest::Method::GET,
+                        "https://elsewhere.example/next?page=2".parse().unwrap(),
+                    ))
+                },
+            )
+            .await
+            .expect_err("the next page is on another host");
+        assert!(
+            matches!(err, Error::OriginRefused(_)),
+            "refused at the gate, never signed: {err:?}"
+        );
+
+        let series = snapshotter.snapshot().into_vec();
+        let counted: Vec<_> = series
+            .iter()
+            .filter(|(key, _, _, _)| {
+                key.key().name() == metric_names::API_ERRORS_TOTAL
+                    && key
+                        .key()
+                        .labels()
+                        .any(|l| l.key() == "source" && l.value() == "refused")
+            })
+            .collect();
+        assert_eq!(counted.len(), 1, "one series for the refusal: {counted:?}");
+        let (key, _, _, value) = counted[0];
+        assert!(
+            key.key()
+                .labels()
+                .any(|l| l.key() == "code" && l.value() == "origin_refused"),
+            "labelled a refusal, not a network failure: {key:?}"
+        );
+        assert!(matches!(value, DebugValue::Counter(1)), "{value:?}");
     }
 }
