@@ -482,6 +482,12 @@ impl Config {
                             container.name
                         )));
                     }
+                    if let Some(issue) = reserved_container_env_issue(key) {
+                        return Err(Error::Config(format!(
+                            "container extractor '{}' env '{key}': {issue}",
+                            container.name
+                        )));
+                    }
                 }
             }
         }
@@ -4202,6 +4208,37 @@ fn default_stdout() -> String {
     "stdout".to_string()
 }
 
+/// Container extractor env names that also reach the docker/podman CLI's own
+/// process, not just the container's.
+///
+/// The launcher passes each `env` entry to the CLI as `--env NAME`, with the
+/// resolved value set in the CLI *process's* environment (`Command::env`) so
+/// it never appears on the command line. A name the CLI or its runtime reads
+/// -- `PATH` to find the binary, `HOME` for its config dir, `XDG_RUNTIME_DIR`
+/// for the podman socket -- retargets the docker/podman invocation itself
+/// rather than only the container, and `CONTAINER_HOST`/`DOCKER_*` name the
+/// daemon it talks to.
+const RESERVED_CONTAINER_ENV_NAMES: [&str; 3] = ["PATH", "HOME", "XDG_RUNTIME_DIR"];
+
+/// Why `name` cannot be used as a container extractor's env key, or `None`
+/// when it is safe to pass to the docker/podman CLI's own environment.
+fn reserved_container_env_issue(name: &str) -> Option<String> {
+    if RESERVED_CONTAINER_ENV_NAMES.contains(&name) {
+        return Some(format!(
+            "also sets the docker/podman CLI's own {name}, not just the container's -- rename \
+             this variable"
+        ));
+    }
+    if name == "CONTAINER_HOST" || name.starts_with("DOCKER_") {
+        return Some(
+            "also configures which docker/podman daemon the CLI talks to, not just the \
+             container's environment -- rename this variable"
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// Deprecated plugin configuration -- logs warning if non-empty values present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PluginsConfig {
@@ -5542,6 +5579,58 @@ mod tests {
             !err.contains("prod/aws"),
             "the refusal names the prefix and never echoes the path: {err}"
         );
+    }
+
+    /// An `env` name the launcher's `Command::env` call also sets on the
+    /// docker/podman CLI process (not only the container) is refused at load,
+    /// so the config never reaches a running fetcher where it silently
+    /// retargets the CLI's own PATH, HOME, runtime socket, or daemon.
+    #[test]
+    fn a_container_env_name_that_also_sets_the_cli_process_is_refused_at_load() {
+        let container = |key: &str| ContainerExtractorConfig {
+            name: "env-name-test".to_string(),
+            image: "img:latest".to_string(),
+            runtime: None,
+            mode: "scheduled".to_string(),
+            communication: "stdout".to_string(),
+            topic: "t".to_string(),
+            interval_secs: None,
+            env: HashMap::from([(key.to_string(), "value".to_string())]),
+            volumes: vec![],
+            network: None,
+            memory_limit: None,
+            cpu_limit: None,
+            command: None,
+            timeout_secs: None,
+            pull_policy: "if-not-present".to_string(),
+            max_restart_attempts: 0,
+            max_restart_backoff_secs: 60,
+            stable_after_secs: 300,
+        };
+
+        for key in [
+            "PATH",
+            "HOME",
+            "XDG_RUNTIME_DIR",
+            "CONTAINER_HOST",
+            "DOCKER_HOST",
+            "DOCKER_CONFIG",
+            "DOCKER_TLS_VERIFY",
+        ] {
+            let mut cfg = valid_config();
+            cfg.extractors.containers = vec![container(key)];
+            let err = cfg.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("env-name-test") && err.contains(key),
+                "{key}: {err}"
+            );
+        }
+
+        // An ordinary name still loads.
+        let mut cfg = valid_config();
+        cfg.extractors.containers = vec![container("API_TOKEN")];
+        cfg.validate()
+            .unwrap_or_else(|e| panic!("API_TOKEN should load: {e}"));
     }
 
     #[test]
