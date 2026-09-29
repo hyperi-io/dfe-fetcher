@@ -822,6 +822,9 @@ ingest:
   bind_address: "0.0.0.0:8080"
   max_body_size: 10485760     # 10MB
   # auth_token: "vault:kv/data/dfe:ingest_token"
+  # Enabled with no auth_token refuses to start. Set this to run the listener
+  # open, where anything that can reach the port can write to any topic.
+  allow_unauthenticated: false
   # On (the default), a POST is answered 200 only once its record reaches the
   # outputs or the DLQ confirms it, and 503 with Retry-After otherwise so the
   # client re-sends. Off, a POST is answered 200 at once and a failed delivery

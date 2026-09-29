@@ -185,6 +185,7 @@
         "bind_address": "0.0.0.0:8080",
         "max_body_size": 10485760,
         "auth_token": null,
+        "allow_unauthenticated": false,
         "acknowledgements": {
           "enabled": true
         }
@@ -7007,7 +7008,7 @@
           "default": 10485760
         },
         "auth_token": {
-          "description": "Bearer token for authentication (credential resolver format).\nEmpty or absent = no auth (backward compatible, logs warning).\n\nSensitive because this one is resolved at load and then held: the\nresolved token sits in the config for the life of the process, so a\n`Debug`, a `Serialize` or the published schema would otherwise show it.",
+          "description": "Bearer token for authentication (credential resolver format). An\nenabled listener with no token, or one that resolves empty, refuses to\nstart unless `allow_unauthenticated` is set.\n\nSensitive because this one is resolved at load and then held: the\nresolved token sits in the config for the life of the process, so a\n`Debug`, a `Serialize` or the published schema would otherwise show it.",
           "type": [
             "string",
             "null"
@@ -7015,6 +7016,11 @@
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
+        },
+        "allow_unauthenticated": {
+          "description": "Run the listener with no `auth_token`, so anything that can reach the\nport can write to any topic. Off by default.",
+          "type": "boolean",
+          "default": false
         },
         "acknowledgements": {
           "description": "When a POST is answered. Enabled (the default), only once its record\nis delivered to the outputs or confirmed in the DLQ, and `503` with\n`Retry-After` otherwise so the client re-sends. Disabled, a POST is\nanswered `200` as soon as it is accepted and delivered after, so a\nfailed delivery or a crash loses it.",

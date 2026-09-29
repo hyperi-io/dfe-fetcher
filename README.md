@@ -271,9 +271,11 @@ default. So grade a dependency advisory here by reachability first and severity
 second: the same advisory in dfe-receiver, which takes untrusted input, is a
 different finding. `dfe-infra/docs/THREAT-MODEL.md` is the source of truth for
 that, and an entry in its accepted-risks table is settled. The one way to hand
-this service untrusted input is enabling ingest without an `auth_token`:
+this service untrusted input is running ingest open:
 `/ingest/{source}/{topic}` takes the destination topic from the URL, so an open
-listener lets anything that can reach the port write to any topic.
+listener lets anything that can reach the port write to any topic. An enabled
+listener with no `auth_token` refuses to start unless
+`ingest.allow_unauthenticated` is set.
 
 ### Where things live
 

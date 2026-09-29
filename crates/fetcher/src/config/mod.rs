@@ -505,6 +505,15 @@ impl Config {
                 self.ingest.bind_address
             )));
         }
+        if self.ingest.enabled && !self.ingest.has_auth_token() && !self.ingest.allow_unauthenticated
+        {
+            return Err(Error::Config(
+                "ingest is enabled with no auth_token, so anything that can reach the port could \
+                 write to any topic -- set ingest.auth_token, or ingest.allow_unauthenticated: true \
+                 to run it open"
+                    .into(),
+            ));
+        }
 
         // Validate source filter expressions (CEL). Driven by the same table
         // the pipeline routes on, so a filter cannot be validated here and then
@@ -4420,14 +4429,19 @@ pub struct IngestConfig {
     /// Maximum request body size in bytes.
     pub max_body_size: usize,
 
-    /// Bearer token for authentication (credential resolver format).
-    /// Empty or absent = no auth (backward compatible, logs warning).
+    /// Bearer token for authentication (credential resolver format). An
+    /// enabled listener with no token, or one that resolves empty, refuses to
+    /// start unless `allow_unauthenticated` is set.
     ///
     /// Sensitive because this one is resolved at load and then held: the
     /// resolved token sits in the config for the life of the process, so a
     /// `Debug`, a `Serialize` or the published schema would otherwise show it.
     #[serde(default)]
     pub auth_token: Option<SensitiveString>,
+
+    /// Run the listener with no `auth_token`, so anything that can reach the
+    /// port can write to any topic. Off by default.
+    pub allow_unauthenticated: bool,
 
     /// When a POST is answered. Enabled (the default), only once its record
     /// is delivered to the outputs or confirmed in the DLQ, and `503` with
@@ -4447,8 +4461,19 @@ impl Default for IngestConfig {
             bind_address: "0.0.0.0:8080".to_string(),
             max_body_size: 10 * 1024 * 1024, // 10MB
             auth_token: None,
+            allow_unauthenticated: false,
             acknowledgements: AcknowledgementsConfig::default(),
         }
+    }
+}
+
+impl IngestConfig {
+    /// Whether `auth_token` holds a non-empty value, resolved or still a spec.
+    #[must_use]
+    pub fn has_auth_token(&self) -> bool {
+        self.auth_token
+            .as_ref()
+            .is_some_and(|token| !token.expose().is_empty())
     }
 }
 
@@ -5661,6 +5686,29 @@ mod tests {
             err.contains("empty topic"),
             "Expected empty topic error, got: {err}"
         );
+    }
+
+    /// An enabled ingest listener with no token is refused at load unless the
+    /// config opts in to running it open.
+    #[test]
+    fn an_enabled_ingest_listener_with_no_token_is_refused_unless_opted_in() {
+        let mut cfg = valid_config();
+        cfg.ingest.enabled = true;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("allow_unauthenticated"), "got: {err}");
+
+        cfg.ingest.auth_token = Some(SensitiveString::from(String::new()));
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("allow_unauthenticated"), "empty token, got: {err}");
+
+        cfg.ingest.auth_token = Some(SensitiveString::from("env:DFE_FETCHER_INGEST_TOKEN"));
+        cfg.validate()
+            .unwrap_or_else(|e| panic!("a token spec should load: {e}"));
+
+        cfg.ingest.auth_token = None;
+        cfg.ingest.allow_unauthenticated = true;
+        cfg.validate()
+            .unwrap_or_else(|e| panic!("the opt-in should load: {e}"));
     }
 
     #[test]
