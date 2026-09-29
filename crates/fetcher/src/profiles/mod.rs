@@ -1806,9 +1806,23 @@ mod tests {
         assert_eq!(
             profile.body_of(securityhub),
             Some(&serde_json::json!({
-                "Filters": {"WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
+                "Filters": {
+                    "UpdatedAt": [{"Start": "{{ window.start }}", "End": "{{ window.end }}"}],
+                    "WorkflowStatus": "{{ size(vars.workflow_status_filter) == 0 ? null : vars.workflow_status_filter }}"
+                },
                 "MaxResults": 100
             }))
+        );
+        assert_eq!(
+            profile.vars["workflow_status_filter"],
+            serde_json::json!([]),
+            "every workflow status unless the instance narrows it"
+        );
+        assert_eq!(profile.max_pages_of(securityhub), 200);
+        assert_eq!(
+            profile.rate_of(securityhub).map(|r| r.requests_per_sec),
+            Some(3.0),
+            "GetFindings allows 3 requests a second"
         );
 
         let config = unit("config");

@@ -64,7 +64,15 @@
       {
         "kind": "service",
         "name": "securityhub",
-        "description": "Security Hub findings."
+        "description": "Security Hub findings whose record changed in the window, in any workflow status.",
+        "fields": [
+          {
+            "name": "workflow_status",
+            "type": "list",
+            "required": false,
+            "description": "Workflow statuses to keep, from NEW, NOTIFIED, RESOLVED and SUPPRESSED. Every status unless set."
+          }
+        ]
       },
       {
         "kind": "service",
