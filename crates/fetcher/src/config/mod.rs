@@ -375,10 +375,10 @@ impl Config {
     /// serde ignored because no field names it.
     pub fn parse_yaml(content: &str) -> Result<(Self, Vec<String>)> {
         let mut unknown = Vec::new();
-        let config = serde_ignored::deserialize(
-            serde_yaml_ng::Deserializer::from_str(content),
-            |path| unknown.push(path.to_string()),
-        )?;
+        let config =
+            serde_ignored::deserialize(serde_yaml_ng::Deserializer::from_str(content), |path| {
+                unknown.push(path.to_string());
+            })?;
         Ok((config, unknown))
     }
 
