@@ -318,8 +318,13 @@ impl VaultTestConfig {
 /// ceiling is Kafka 4.2.0, so a test proving broker behaviour above that proves
 /// it against something nobody runs. Raise this only with the operator.
 ///
-/// renovate: datasource=docker depName=apache/kafka-native allowedVersions=<=4.2.0
+/// The JVM image: `apache/kafka-native` before 4.4.0 segfaults in `getpwuid` on ~2% of starts.
+///
+/// renovate: datasource=docker depName=apache/kafka allowedVersions=<=4.2.0
 const KAFKA_TAG: &str = "4.2.0";
+
+/// A JVM broker takes 5-12 s to become ready, longer on a busy runner, so 60 s is too tight.
+const KAFKA_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// SEMVER line only -- do NOT move this to the CalVer tags (`2026.07.0` etc).
 /// The CalVer images on `localstack/localstack` require a licence: they exit 55
@@ -700,9 +705,11 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
     for attempt in 1..=3 {
         reap_stale(&name);
         match Kafka::default()
+            .with_jvm_image()
             .with_tag(KAFKA_TAG)
             .with_container_name(&name)
             .with_labels(test_labels("kafka"))
+            .with_startup_timeout(KAFKA_STARTUP_TIMEOUT)
             .start()
             .await
         {
