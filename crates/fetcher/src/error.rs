@@ -97,6 +97,21 @@ pub enum Error {
 /// Result type alias for dfe-fetcher operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl Error {
+    /// The bounded `code` label of `dfe_fetcher_api_errors_total` for this
+    /// failure: a framework error carries its TYPED classification (`throttle`,
+    /// `4xx`, `5xx`, `timeout`, `origin_refused`, `oversize_page`,
+    /// `page_ceiling`), and anything else -- a transport, a checkpoint write --
+    /// is not an HTTP answer, so it is a `timeout` or `network` by its text.
+    #[must_use]
+    pub fn api_error_code(&self) -> &'static str {
+        match self {
+            Error::Framework(inner) => inner.api_error_code(),
+            other => dfe_fetcher_core::error::non_http_error_code(&other.to_string()),
+        }
+    }
+}
+
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Config(s)

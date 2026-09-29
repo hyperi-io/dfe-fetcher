@@ -37,7 +37,9 @@ htmlcov/
 *.profdata
 coverage-html/
 coverage.lcov
-.cargo/
+# `.cargo/*` excludes the contents, not the directory: a negation cannot
+# re-include a file whose parent directory is itself excluded.
+.cargo/*
 !.cargo/config.toml
 .tmp/
 

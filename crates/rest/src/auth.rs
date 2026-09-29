@@ -357,7 +357,7 @@ impl<R: ResolveSecret> CredentialSource for Sourced<R> {
 ///
 /// A list of scalo's placements is itself a [`RequestSigner`], so two headers
 /// arrive on one request from one pass and each is marked sensitive by the
-/// placement that wrote it. One [`Resolved`] per NAME is shared by every
+/// placement that wrote it. One `Resolved` per NAME is shared by every
 /// placement that reads it, so a credential carried in two places -- or composed
 /// into a value and also placed on its own -- resolves once.
 #[derive(Debug)]

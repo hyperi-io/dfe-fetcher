@@ -130,7 +130,8 @@ pub struct Config {
     #[serde(default)]
     pub cursor: CursorConfig,
 
-    /// Scaling pressure configuration for KEDA autoscaling.
+    /// Scaling pressure served at `/scaling/pressure` for an external autoscaler
+    /// to read. The chart declares no KEDA trigger against it.
     #[serde(default)]
     pub scaling: scalo::scaling::ScalingPressureConfig,
 
@@ -2183,7 +2184,7 @@ pub struct OktaSourceConfig {
     /// Enable Okta source.
     pub enabled: bool,
 
-    /// Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+    /// Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
     /// The OAuth-style preview API uses `oktapreview.com`; either is accepted
     /// here verbatim. Override per environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2235,7 +2236,7 @@ pub struct OktaConnection {
     /// Stable, unique connection id (cursor key + metric/log label).
     pub id: String,
 
-    /// Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+    /// Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_url: Option<String>,
 
@@ -3559,7 +3560,7 @@ pub struct SalesforceSourceConfig {
     /// RSA private key PEM for the JWT-bearer flow (full
     /// `-----BEGIN PRIVATE KEY-----` ... block). JWT-bearer flow only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<String>,
+    pub private_key: Option<SensitiveString>,
 
     /// Secret source spec resolving to the RSA private key PEM
     /// (e.g. `vault:kv/data/salesforce:private_key`). Takes precedence over
@@ -3628,7 +3629,7 @@ pub struct SalesforceConnection {
 
     /// RSA private key PEM for the JWT-bearer flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_key: Option<String>,
+    pub private_key: Option<SensitiveString>,
 
     /// Secret source spec resolving to the RSA private key PEM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4379,9 +4380,12 @@ pub struct IngestConfig {
 
     /// Bearer token for authentication (credential resolver format).
     /// Empty or absent = no auth (backward compatible, logs warning).
+    ///
+    /// Sensitive because this one is resolved at load and then held: the
+    /// resolved token sits in the config for the life of the process, so a
+    /// `Debug`, a `Serialize` or the published schema would otherwise show it.
     #[serde(default)]
-    #[schemars(extend("x-dfe-secret" = true, "writeOnly" = true))]
-    pub auth_token: Option<String>,
+    pub auth_token: Option<SensitiveString>,
 
     /// When a POST is answered. Enabled (the default), only once its record
     /// is delivered to the outputs or confirmed in the DLQ, and `503` with
@@ -4849,6 +4853,24 @@ pub enum MissingCursor {
 )]
 mod tests {
     use super::*;
+
+    /// The ingest token is resolved at load and held for the life of the
+    /// process, so neither a `Debug` log line nor a serialised config may show it.
+    #[test]
+    fn the_resolved_ingest_token_never_prints_or_serialises() {
+        let ingest: IngestConfig =
+            serde_json::from_value(serde_json::json!({"auth_token": "tok-resolved-at-load"}))
+                .expect("an ingest block");
+        assert!(
+            !format!("{ingest:?}").contains("tok-resolved-at-load"),
+            "Debug shows the token: {ingest:?}"
+        );
+        let serialised = serde_json::to_string(&ingest).expect("serialise");
+        assert!(
+            !serialised.contains("tok-resolved-at-load"),
+            "Serialize shows the token: {serialised}"
+        );
+    }
 
     #[test]
     fn test_default_config() {

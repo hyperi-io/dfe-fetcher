@@ -108,11 +108,18 @@ fn park_original(
         }
         n += 1;
     }
-    warn!(
-        reserved_key = key,
-        parked_as = parked.as_str(),
-        "Reserved key collided with an existing _original, parked under a numbered name"
-    );
+    {
+        use std::sync::atomic::AtomicU64;
+        static PARK_DEBOUNCE: AtomicU64 = AtomicU64::new(0);
+        if scalo::logger::log_debounced(&PARK_DEBOUNCE, 5_000) {
+            warn!(
+                reserved_key = key,
+                parked_as = parked.as_str(),
+                "Reserved key collided with an existing _original, parked under a numbered name \
+                 (debounced, max 1/5s)"
+            );
+        }
+    }
     map.insert(parked, value);
 }
 
@@ -367,6 +374,15 @@ impl PipelineState {
     /// Get the current configuration.
     pub fn config(&self) -> Config {
         self.shared_config.get()
+    }
+
+    /// The configured topic suffix.
+    ///
+    /// Reads the one field under the lock: `config()` clones the whole `Config`,
+    /// including every source block and destination, and the extractors call
+    /// this per batch and per line.
+    pub fn topic_suffix(&self) -> String {
+        self.shared_config.with(|c| c.topic_suffix().to_owned())
     }
 
     /// Get the shared config handle.

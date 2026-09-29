@@ -15,8 +15,9 @@
 //! every row carries `Mark::Item { key: path, position: ctime }`. The driver
 //! wraps each file as its own snapshot (`begin`, rows, `end`), folds the
 //! file's marks into the unit's checkpoint once its last batch is
-//! acknowledged, and the next tick skips every file whose change time is at
-//! or before the committed one. A tick with no new file publishes nothing.
+//! acknowledged, and the next tick skips every file at or before the committed
+//! marker in the listing's `(change time, path)` order. A tick with no new file
+//! publishes nothing.
 //!
 //! The change time (`ctime`), not the modification time, is the done marker:
 //! a file published by write-to-temp-then-rename keeps its old `mtime` but
@@ -24,6 +25,7 @@
 //! already read. A file rewritten in place gets a new `ctime` too and is read
 //! again as a new snapshot.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -168,6 +170,32 @@ pub struct Candidate {
     pub changed_at: DateTime<Utc>,
 }
 
+impl Candidate {
+    /// The file's `Mark::Item` key, which is also what the listing orders by
+    /// and what the committed marker is compared against.
+    #[must_use]
+    pub fn key(&self) -> Cow<'_, str> {
+        self.path.to_string_lossy()
+    }
+}
+
+/// Whether a file sits past the committed marker: changed later than the
+/// marker's position, or at that position under a key sorted after it.
+///
+/// A filesystem whose change times are coarse gives a run of files one
+/// position, and then only the key orders them. A file at the marker's position
+/// whose key sorts BEFORE the marker's reads as already listed, because telling
+/// it from a file that tick did list needs the set of keys seen at the
+/// position, which the marker does not carry.
+fn past_marker(candidate: &Candidate, marker: Option<&(DateTime<Utc>, String)>) -> bool {
+    match marker {
+        None => true,
+        Some((position, key)) => {
+            (candidate.changed_at, candidate.key()) > (*position, Cow::Borrowed(key.as_str()))
+        }
+    }
+}
+
 /// The inode change time of `meta`, falling back to the modification time
 /// where the platform has no `ctime`.
 fn change_time(meta: &std::fs::Metadata) -> DateTime<Utc> {
@@ -186,14 +214,20 @@ fn change_time(meta: &std::fs::Metadata) -> DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
-/// The files `patterns` match right now, oldest change first, without the
-/// ones changed at or before `after`.
+/// The files `patterns` match right now in `(change time, key)` order, without
+/// the ones at or before `marker` in that same order.
+///
+/// The ordering and the exclusion read the one key [`Candidate::key`] defines,
+/// so the marker folded from a tick is the last file that tick listed.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Config`] for a glob that does not parse and
 /// [`Error::Source`] for a directory that cannot be read.
-pub fn list(patterns: &[String], after: Option<DateTime<Utc>>) -> Result<Vec<Candidate>> {
+pub fn list(
+    patterns: &[String],
+    marker: Option<&(DateTime<Utc>, String)>,
+) -> Result<Vec<Candidate>> {
     let mut found = Vec::new();
     for pattern in patterns {
         let entries = glob::glob(pattern)
@@ -212,14 +246,17 @@ pub fn list(patterns: &[String], after: Option<DateTime<Utc>>) -> Result<Vec<Can
             if !meta.is_file() {
                 continue;
             }
-            let changed_at = change_time(&meta);
-            if after.is_some_and(|done| changed_at <= done) {
+            let candidate = Candidate {
+                changed_at: change_time(&meta),
+                path,
+            };
+            if !past_marker(&candidate, marker) {
                 continue;
             }
-            found.push(Candidate { path, changed_at });
+            found.push(candidate);
         }
     }
-    found.sort_by(|a, b| (a.changed_at, &a.path).cmp(&(b.changed_at, &b.path)));
+    found.sort_by(|a, b| (a.changed_at, a.key()).cmp(&(b.changed_at, b.key())));
     found.dedup();
     Ok(found)
 }
@@ -286,7 +323,7 @@ fn file_rows(
     max_row_bytes: usize,
     lease: Arc<dyn Lease>,
 ) -> RowStream<'static> {
-    let key: Box<str> = candidate.path.to_string_lossy().into();
+    let key: Box<str> = candidate.key().into();
     let framer = match decoder.for_path(&candidate.path) {
         Ok(d) => d.framer(max_row_bytes),
         Err(e) => {
@@ -346,11 +383,12 @@ impl FileDump {
         }
     }
 
-    /// The committed change time, if the checkpoint is a file dump's.
-    fn done_before(checkpoint: Option<&CheckpointValue>) -> Result<Option<DateTime<Utc>>> {
+    /// The committed marker, change time and key both, if the checkpoint is a
+    /// file dump's.
+    fn marker(checkpoint: Option<&CheckpointValue>) -> Result<Option<(DateTime<Utc>, String)>> {
         match checkpoint {
             None => Ok(None),
-            Some(CheckpointValue::Item { position, .. }) => Ok(Some(*position)),
+            Some(CheckpointValue::Item { position, key }) => Ok(Some((*position, key.clone()))),
             Some(other) => Err(Error::Cursor(format!(
                 "file dump has a {} checkpoint where a file marker was expected",
                 match other {
@@ -370,11 +408,11 @@ impl FileSource for FileDump {
     /// count x per-file read time exceeds its interval; row order inside one
     /// snapshot is not a contract, so nothing else changes.
     fn rows<'a>(&'a self, checkpoint: Option<&'a CheckpointValue>) -> RowStream<'a> {
-        let after = match Self::done_before(checkpoint) {
-            Ok(after) => after,
+        let marker = match Self::marker(checkpoint) {
+            Ok(marker) => marker,
             Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
         };
-        let files = match list(&self.spec.paths, after) {
+        let files = match list(&self.spec.paths, marker.as_ref()) {
             Ok(files) => files,
             Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
         };
@@ -568,13 +606,12 @@ mod tests {
         }
     }
 
-    /// Block until the wall clock's second advances.
+    /// Block until the clock's second advances.
     ///
-    /// The listing skips files whose change time is at or before the committed
-    /// marker, and change time has one-second granularity. A file created in
-    /// the same second as the marker is excluded for ever, not merely late, so
-    /// a test that needs one ordered after a marker crosses the boundary rather
-    /// than sleeping a fixed span and hoping it straddled one.
+    /// A file sharing the committed marker's change time under a key that sorts
+    /// before the marker's is skipped (see [`past_marker`]), so a test needing
+    /// such a file read crosses a second boundary rather than sleeping a fixed
+    /// span and hoping it straddled one.
     async fn wait_for_the_next_second() {
         let second = || {
             std::time::SystemTime::now()
@@ -625,6 +662,67 @@ mod tests {
         let second = collect(&dump, Some(&committed)).await.unwrap();
         assert_eq!(second.len(), 1, "the renamed-in file is new by ctime");
         assert_eq!(&second[0].payload[..], b"{\"id\":2}");
+    }
+
+    /// The change time a file shares with the committed marker is built from
+    /// the listing's own reading of it, so the tie is exact on a filesystem of
+    /// any timestamp granularity and no sleep is involved.
+    #[tokio::test]
+    async fn a_file_tying_the_marker_position_is_read_when_its_path_sorts_after_the_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.jsonl"), "{\"id\":1}\n").unwrap();
+        std::fs::write(dir.path().join("b.jsonl"), "{\"id\":2}\n").unwrap();
+        let paths = vec![format!("{}/*.jsonl", dir.path().display())];
+        let listed = list(&paths, None).unwrap();
+        assert_eq!(listed.len(), 2, "both files are candidates");
+        let a = listed.iter().find(|c| c.path.ends_with("a.jsonl")).unwrap();
+        let b = listed.iter().find(|c| c.path.ends_with("b.jsonl")).unwrap();
+
+        // The marker a tick leaves when it emits a.jsonl and b.jsonl lands at
+        // the same change time after that tick's listing.
+        let committed = CheckpointValue::Item {
+            key: a.key().into_owned(),
+            position: b.changed_at,
+        };
+        let dump = FileDump::new(
+            "u",
+            DumpSpec {
+                paths,
+                ..DumpSpec::default()
+            },
+            no_lease(),
+        );
+        let rows = collect(&dump, Some(&committed)).await.unwrap();
+        assert_eq!(rows.len(), 1, "the tied file past the marker key is read");
+        assert_eq!(&rows[0].payload[..], b"{\"id\":2}");
+    }
+
+    /// The bound the marker does not lift: a file at the marker's position
+    /// whose path sorts BEFORE the marker's key reads as already listed, and
+    /// telling it from one written after that listing needs the set of keys
+    /// seen at the position rather than a single marker.
+    #[tokio::test]
+    async fn a_tied_file_sorting_before_the_marker_key_stays_skipped() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("b.jsonl"), "{\"id\":2}\n").unwrap();
+        let paths = vec![format!("{}/*.jsonl", dir.path().display())];
+        let b = list(&paths, None).unwrap().remove(0);
+        let committed = CheckpointValue::Item {
+            key: dir.path().join("z.jsonl").to_string_lossy().into_owned(),
+            position: b.changed_at,
+        };
+        let dump = FileDump::new(
+            "u",
+            DumpSpec {
+                paths,
+                ..DumpSpec::default()
+            },
+            no_lease(),
+        );
+        assert!(
+            collect(&dump, Some(&committed)).await.unwrap().is_empty(),
+            "a known limit, not a fix: the marker cannot say this file is unread"
+        );
     }
 
     #[tokio::test]

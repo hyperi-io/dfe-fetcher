@@ -381,7 +381,7 @@ async fn run_fetcher_service(
 
     // Spawn periodic scaling pressure update. scalo 2.9 collapsed the old
     // dual-engine model (a separate runtime `scaling_signals` cell) into ONE
-    // canonical `ScalingPressure` engine, served to KEDA at `/scaling/pressure`.
+    // canonical `ScalingPressure` engine, served at `/scaling/pressure`.
     // We feed that single engine its weighted components (buffer depth + memory)
     // and the outbound-circuit gate. The fetcher's domain signals
     // (fetch_pressure / throttle_ratio) remain emitted as gauges by the metrics

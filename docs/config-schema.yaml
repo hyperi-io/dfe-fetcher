@@ -273,7 +273,9 @@ properties:
       default_window_hours: 1
       on_missing_cursor: lookback
   scaling:
-    description: Scaling pressure configuration for KEDA autoscaling.
+    description: |-
+      Scaling pressure served at `/scaling/pressure` for an external autoscaler
+      to read. The chart declares no KEDA trigger against it.
     $ref: '#/$defs/ScalingPressureConfig'
     default:
       enabled: true
@@ -1326,7 +1328,7 @@ $defs:
         default: false
       tenant_url:
         description: |-
-          Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+          Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
           The OAuth-style preview API uses `oktapreview.com`; either is accepted
           here verbatim. Override per environment.
         type:
@@ -1416,7 +1418,7 @@ $defs:
         description: Stable, unique connection id (cursor key + metric/log label).
         type: string
       tenant_url:
-        description: Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).
+        description: Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).
         type:
         - string
         - 'null'
@@ -3010,6 +3012,8 @@ $defs:
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       private_key_secret:
         description: |-
           Secret source spec resolving to the RSA private key PEM
@@ -3124,6 +3128,8 @@ $defs:
         type:
         - string
         - 'null'
+        x-dfe-secret: true
+        writeOnly: true
       private_key_secret:
         description: Secret source spec resolving to the RSA private key PEM.
         type:
@@ -6059,12 +6065,16 @@ $defs:
         description: |-
           Bearer token for authentication (credential resolver format).
           Empty or absent = no auth (backward compatible, logs warning).
+
+          Sensitive because this one is resolved at load and then held: the
+          resolved token sits in the config for the life of the process, so a
+          `Debug`, a `Serialize` or the published schema would otherwise show it.
         type:
         - string
         - 'null'
-        default: null
         x-dfe-secret: true
         writeOnly: true
+        default: null
       acknowledgements:
         description: |-
           When a POST is answered. Enabled (the default), only once its record

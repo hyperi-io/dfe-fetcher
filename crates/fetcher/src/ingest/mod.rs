@@ -38,6 +38,7 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use scalo::config::sensitive::SensitiveString;
 use scalo::http_server::{HttpServer, HttpServerConfig};
 use scalo::logger::security;
 use scalo::transport::{AckKind, AcknowledgementsConfig};
@@ -249,7 +250,7 @@ pub async fn run_ingest_server(
         }),
     );
 
-    let resolved_token = match config.auth_token.as_deref() {
+    let resolved_token = match config.auth_token.as_ref().map(SensitiveString::expose) {
         Some(token) if !token.is_empty() => {
             info!("Ingest server authentication enabled");
             Some(token.to_string())
@@ -300,7 +301,7 @@ async fn handle_ingest(
     Path(source): Path<String>,
     body: Bytes,
 ) -> Response {
-    let topic = format!("{}{}", source, state.sink.state().config().topic_suffix());
+    let topic = format!("{}{}", source, state.sink.state().topic_suffix());
     state.ingest(&source, &topic, body).await
 }
 

@@ -315,11 +315,9 @@ impl RequestExecutor {
             .build();
         loop {
             let mut request = make()?;
-            if let Err(e) = origins.check(request.url(), ctx.get("auth")) {
-                return Err(self.fail(source, e));
-            }
+            origins.check(request.url(), ctx.get("auth"))?;
             if let Err(e) = RequestSigner::sign(&auth.signer(ctx), &mut request).await {
-                return Err(self.fail(source, credential_error(e)));
+                return Err(credential_error(e));
             }
             let started = Instant::now();
             let outcome = self.client.execute(request).await;
@@ -358,7 +356,7 @@ impl RequestExecutor {
                         throttled,
                     };
                     if !(may_retry && (throttled || self.retry.retries(status))) {
-                        return Err(self.fail(source, error));
+                        return Err(error);
                     }
                     (error, retry_after)
                 }
@@ -367,13 +365,13 @@ impl RequestExecutor {
                     // the credential under `auth.api_key.query`.
                     let error = Error::Source(format!("request failed: {}", e.without_url()));
                     if !may_retry {
-                        return Err(self.fail(source, error));
+                        return Err(error);
                     }
                     (error, None)
                 }
             };
             let Some(delay) = backoff.next() else {
-                return Err(self.fail(source, error));
+                return Err(error);
             };
             let delay = retry_after.map_or(delay, |ra| {
                 ra.min(Duration::from_millis(self.retry.max_backoff_ms))
@@ -381,17 +379,6 @@ impl RequestExecutor {
             tracing::debug!(source, error = %error, delay_ms = delay.as_millis(), "retrying request");
             tokio::time::sleep(delay).await;
         }
-    }
-
-    /// Count the final error under its typed code and hand it back.
-    fn fail(&self, source: &str, error: Error) -> Error {
-        metrics::counter!(
-            metric_names::API_ERRORS_TOTAL,
-            "source" => source.to_owned(),
-            "code" => error.api_error_code()
-        )
-        .increment(1);
-        error
     }
 
     fn retry_after(&self, response: &reqwest::Response) -> Option<Duration> {
@@ -446,7 +433,7 @@ impl RequestExecutor {
 
 #[cfg(test)]
 mod tests {
-    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+    use metrics_util::debugging::DebuggingRecorder;
 
     use super::*;
     use crate::auth::{Placed, Secret};
@@ -473,11 +460,10 @@ mod tests {
         );
     }
 
-    /// A credential that does not resolve used to return through `?` before the
-    /// counter was touched, so a source failing on every tick showed no API
-    /// errors at all.
+    /// A failed send is handed back typed and uncounted: the driver counts each
+    /// failed unit once, so a count here would count a REST failure twice.
     #[tokio::test]
-    async fn a_credential_that_does_not_resolve_is_counted_like_any_other_failure() {
+    async fn a_failed_send_is_returned_typed_and_not_counted_here() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         // One recorder per process; nextest runs each test in its own.
@@ -498,7 +484,7 @@ mod tests {
         let err = executor
             .send(
                 Sending {
-                    source: "counted",
+                    source: "uncounted",
                     auth: &auth,
                     ctx: &ctx,
                     origins: &origins,
@@ -515,37 +501,21 @@ mod tests {
             .await
             .expect_err("the spec does not resolve");
         assert!(matches!(err, Error::Credential(_)), "{err:?}");
-
-        let counted = snapshotter
-            .snapshot()
-            .into_vec()
-            .into_iter()
-            .find(|(key, _, _, _)| {
-                key.key().name() == metric_names::API_ERRORS_TOTAL
-                    && key
-                        .key()
-                        .labels()
-                        .any(|l| l.key() == "source" && l.value() == "counted")
-            })
-            .expect("the credential failure reached the counter");
         assert!(
-            matches!(counted.3, DebugValue::Counter(1)),
-            "{:?}",
-            counted.3
+            !snapshotter
+                .snapshot()
+                .into_vec()
+                .iter()
+                .any(|(key, _, _, _)| key.key().name() == metric_names::API_ERRORS_TOTAL),
+            "the executor counts no API error"
         );
     }
 
     /// A URL on a host the unit may not address is refused before the signer
     /// runs: the credential here cannot resolve, so reaching the signer would
-    /// fail as a credential error instead. The refusal is counted under its own
-    /// code, apart from a network failure.
+    /// fail as a credential error instead.
     #[tokio::test]
-    async fn a_refused_host_is_counted_as_a_refusal_before_the_signer_runs() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-        // One recorder per process; nextest runs each test in its own.
-        let _ = recorder.install();
-
+    async fn a_refused_host_fails_before_the_signer_runs() {
         let auth = AuthMode::Bearer(Placed::bearer(Secret::new(
             "env:DFE_FETCHER_TEST_MISSING_SECRET_VAR".into(),
         )));
@@ -581,26 +551,6 @@ mod tests {
             matches!(err, Error::OriginRefused(_)),
             "refused at the gate, never signed: {err:?}"
         );
-
-        let series = snapshotter.snapshot().into_vec();
-        let counted: Vec<_> = series
-            .iter()
-            .filter(|(key, _, _, _)| {
-                key.key().name() == metric_names::API_ERRORS_TOTAL
-                    && key
-                        .key()
-                        .labels()
-                        .any(|l| l.key() == "source" && l.value() == "refused")
-            })
-            .collect();
-        assert_eq!(counted.len(), 1, "one series for the refusal: {counted:?}");
-        let (key, _, _, value) = counted[0];
-        assert!(
-            key.key()
-                .labels()
-                .any(|l| l.key() == "code" && l.value() == "origin_refused"),
-            "labelled a refusal, not a network failure: {key:?}"
-        );
-        assert!(matches!(value, DebugValue::Counter(1)), "{value:?}");
+        assert_eq!(err.api_error_code(), "origin_refused");
     }
 }

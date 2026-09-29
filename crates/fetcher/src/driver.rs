@@ -730,8 +730,9 @@ impl Driver {
     ///
     /// # Errors
     ///
-    /// Every unit is attempted; the first unit's error is returned once the
-    /// rest have run, and [`Error::Shutdown`] returns at once.
+    /// Every unit is attempted, and each failed unit is counted once in
+    /// `dfe_fetcher_api_errors_total`. The first unit's error is returned once
+    /// the rest have run, and [`Error::Shutdown`] returns at once.
     pub async fn run_tick(&self, window: Option<&FetchWindow>) -> Result<TickReport> {
         let config = self.shared_config.get();
         let settings = TickSettings {
@@ -766,6 +767,13 @@ impl Driver {
                 }
                 Err(Error::Shutdown) => return Err(Error::Shutdown),
                 Err(e) => {
+                    // The one count of a failure, whatever shape raised it.
+                    metrics::counter!(
+                        metric_names::API_ERRORS_TOTAL,
+                        "source" => self.connection_id.clone(),
+                        "code" => e.api_error_code()
+                    )
+                    .increment(1);
                     if unit.is_dump() {
                         metrics::counter!(metric_names::SNAPSHOTS_TOTAL, "store" => unit.store(&self.connection_id), "status" => "aborted").increment(1);
                     }

@@ -258,8 +258,9 @@ impl Scheduler {
                         // wider than the width that just failed.
                         retry_span = Some(window.end - window.start);
 
-                        let code = classify_api_error(&e);
-                        metrics.inc_api_error(label, code);
+                        // Per tick, because the throttle ratio's denominator is ticks.
+                        let code = e.api_error_code();
+                        metrics.count_failed_tick(code);
 
                         metrics.inc_fetches_error_for(label);
                         error!(
@@ -396,23 +397,6 @@ fn calculate_jitter(base_secs: u64, jitter_percent: u8) -> u64 {
     }
 
     fastrand::u64(0..max_jitter)
-}
-
-/// Classify a tick failure into a bounded category for metrics: a
-/// framework error carries its TYPED HTTP status (`throttle`, `4xx`, `5xx`,
-/// `timeout`, `oversize_page`), and anything else -- a transport, a
-/// checkpoint write -- is not an HTTP answer, so it is a `timeout` or
-/// `network` by its text.
-///
-/// "throttle" is split out of the generic "4xx" bucket: it is the signal a
-/// producer wants to scale OUT on (spread the upstream quota over more
-/// pods), not a client bug like a 401/404, and feeds the self-normalised
-/// `throttle_ratio` scaling signal.
-fn classify_api_error(error: &Error) -> &'static str {
-    match error {
-        Error::Framework(inner) => inner.api_error_code(),
-        other => dfe_fetcher_core::error::non_http_error_code(&other.to_string()),
-    }
 }
 
 /// The widest span one tick may fetch, floored at the fetch interval: a
@@ -1633,6 +1617,84 @@ mod tests {
         (windows, store)
     }
 
+    /// One scheduled tick of a REST source whose two units both answer 500,
+    /// with the service metrics attached as they are in production, counts one
+    /// API error per failed unit: two, labelled `5xx`.
+    #[tokio::test]
+    async fn each_failed_unit_is_counted_once_in_api_errors() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let profile: dfe_fetcher_rest::profile::RestProfile = serde_yaml_ng::from_str(
+            "profile: counted\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { header: X-Api-Key }\nretry: { max_retries: 0 }\nendpoints:\n  - { unit: a, path: /a, rows: { decoder: json_array } }\n  - { unit: b, path: /b, rows: { decoder: json_array } }\n",
+        )
+        .expect("profile");
+        let instance: dfe_fetcher_rest::profile::RestInstance = serde_yaml_ng::from_str(&format!(
+            "profile: counted\ntopic: t\nauth: {{ mode: api_key, key: the-key }}\nvars: {{ base_url: \"{}\" }}\n",
+            server.uri()
+        ))
+        .expect("instance");
+        let shape = Shape::for_rest_instance(
+            &profile,
+            &instance,
+            "counted",
+            dfe_fetcher_rest::request::http_client().expect("client"),
+            &dfe_fetcher_rest::request::exchange_client().expect("exchange client"),
+        )
+        .expect("shape");
+
+        let manager = scalo::metrics::MetricsManager::new("dfe_fetcher_test_api_errors");
+        let metrics = Arc::new(Metrics::with_dfe(&manager));
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let driver = driver_over(&shared, &metrics, "counted", Box::new(shape));
+        let scheduler = Scheduler::new(
+            &SchedulerConfig {
+                default_interval_secs: 1,
+                max_concurrent_fetches: 10,
+                jitter_percent: 0,
+            },
+            shared.clone(),
+            None,
+            "test".into(),
+        );
+        let shutdown = CancellationToken::new();
+        scheduler.spawn_source_task(
+            driver,
+            Some(1),
+            Arc::clone(&metrics),
+            shutdown.clone(),
+            Arc::new(|| true),
+        );
+
+        // Cancelled as soon as the first tick is recorded failed, a second away.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !metrics
+            .render()
+            .contains("dfe_fetcher_fetches_total{status=\"error\"} 1")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the tick never failed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        shutdown.cancel();
+
+        assert_eq!(
+            recorder.counter(
+                "dfe_fetcher_api_errors_total",
+                &[("source", "counted"), ("code", "5xx")]
+            ),
+            Some(2),
+            "one per failed unit, not one per unit plus one per tick"
+        );
+    }
+
     /// A tick that fails is retried over the window that failed. The cursor
     /// does not move on failure, so the end has to be pinned or the retry is
     /// wider than the attempt that already failed.
@@ -2049,36 +2111,36 @@ mod tests {
         shutdown.cancel();
     }
 
-    // --- classify_api_error tests ---
+    // --- Error::api_error_code tests ---
 
     #[test]
     fn test_classify_timed_out() {
         let err = Error::Source("request timed out".to_string());
-        assert_eq!(classify_api_error(&err), "timeout");
+        assert_eq!(Error::api_error_code(&err), "timeout");
     }
 
     #[test]
     fn test_classify_timeout_keyword() {
         let err = Error::Source("connection timeout reached".to_string());
-        assert_eq!(classify_api_error(&err), "timeout");
+        assert_eq!(Error::api_error_code(&err), "timeout");
     }
 
     #[test]
     fn test_classify_connection_refused() {
         let err = Error::Source("connection refused".to_string());
-        assert_eq!(classify_api_error(&err), "network");
+        assert_eq!(Error::api_error_code(&err), "network");
     }
 
     #[test]
     fn test_classify_dns_failure() {
         let err = Error::Source("DNS resolution failed".to_string());
-        assert_eq!(classify_api_error(&err), "network");
+        assert_eq!(Error::api_error_code(&err), "network");
     }
 
     #[test]
     fn test_classify_empty_message() {
         let err = Error::Source(String::new());
-        assert_eq!(classify_api_error(&err), "network");
+        assert_eq!(Error::api_error_code(&err), "network");
     }
 
     fn api(status: u16, text: &str) -> Error {
@@ -2094,23 +2156,30 @@ mod tests {
     /// upstream one, S3's SlowDown a throttle, and a 408 a timeout.
     #[test]
     fn test_classify_http_answers_by_typed_status() {
-        assert_eq!(classify_api_error(&api(429, "")), "throttle");
-        assert_eq!(classify_api_error(&api(429, "500 mentioned")), "throttle");
+        assert_eq!(Error::api_error_code(&api(429, "")), "throttle");
+        assert_eq!(
+            Error::api_error_code(&api(429, "500 mentioned")),
+            "throttle"
+        );
         for status in [400, 401, 403, 404, 422] {
-            assert_eq!(classify_api_error(&api(status, "429")), "4xx", "{status}");
+            assert_eq!(
+                Error::api_error_code(&api(status, "429")),
+                "4xx",
+                "{status}"
+            );
         }
         for status in [500, 502, 503, 504] {
             assert_eq!(
-                classify_api_error(&api(status, "throttled")),
+                Error::api_error_code(&api(status, "throttled")),
                 "5xx",
                 "{status}"
             );
         }
         assert_eq!(
-            classify_api_error(&api(503, "<Code>SlowDown</Code>")),
+            Error::api_error_code(&api(503, "<Code>SlowDown</Code>")),
             "throttle"
         );
-        assert_eq!(classify_api_error(&api(408, "")), "timeout");
+        assert_eq!(Error::api_error_code(&api(408, "")), "timeout");
     }
 
     /// An error that is not an HTTP answer never reads as one: a transport
@@ -2119,25 +2188,25 @@ mod tests {
     #[test]
     fn test_classify_non_http_errors_never_read_a_status_off_the_text() {
         assert_eq!(
-            classify_api_error(&Error::Transport("broker said 429".into())),
+            Error::api_error_code(&Error::Transport("broker said 429".into())),
             "network"
         );
         assert_eq!(
-            classify_api_error(&Error::Cursor("status: 503 writing".into())),
+            Error::api_error_code(&Error::Cursor("status: 503 writing".into())),
             "network"
         );
         assert_eq!(
-            classify_api_error(&Error::Backpressured("kafka timed out".into())),
+            Error::api_error_code(&Error::Backpressured("kafka timed out".into())),
             "timeout"
         );
         assert_eq!(
-            classify_api_error(&Error::Framework(dfe_fetcher_core::Error::Source(
+            Error::api_error_code(&Error::Framework(dfe_fetcher_core::Error::Source(
                 "AWS SlowDown: reduce request rate".into()
             ))),
             "network"
         );
         assert_eq!(
-            classify_api_error(&Error::Framework(dfe_fetcher_core::Error::OversizePage {
+            Error::api_error_code(&Error::Framework(dfe_fetcher_core::Error::OversizePage {
                 max: 1,
             })),
             "oversize_page"

@@ -292,7 +292,7 @@
       }
     },
     "scaling": {
-      "description": "Scaling pressure configuration for KEDA autoscaling.",
+      "description": "Scaling pressure served at `/scaling/pressure` for an external autoscaler\nto read. The chart declares no KEDA trigger against it.",
       "$ref": "#/$defs/ScalingPressureConfig",
       "default": {
         "enabled": true,
@@ -1535,7 +1535,7 @@
           "default": false
         },
         "tenant_url": {
-          "description": "Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).\nThe OAuth-style preview API uses `oktapreview.com`; either is accepted\nhere verbatim. Override per environment.",
+          "description": "Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).\nThe OAuth-style preview API uses `oktapreview.com`; either is accepted\nhere verbatim. Override per environment.",
           "type": [
             "string",
             "null"
@@ -1636,7 +1636,7 @@
           "type": "string"
         },
         "tenant_url": {
-          "description": "Tenant URL, e.g. `https://hyperi.okta.com` (no trailing slash).",
+          "description": "Tenant URL, e.g. `https://your-tenant.okta.com` (no trailing slash).",
           "type": [
             "string",
             "null"
@@ -3388,7 +3388,9 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
         },
         "private_key_secret": {
           "description": "Secret source spec resolving to the RSA private key PEM\n(e.g. `vault:kv/data/salesforce:private_key`). Takes precedence over\n`private_key` when set. JWT-bearer flow only.",
@@ -3519,7 +3521,9 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "x-dfe-secret": true,
+          "writeOnly": true
         },
         "private_key_secret": {
           "description": "Secret source spec resolving to the RSA private key PEM.",
@@ -6991,14 +6995,14 @@
           "default": 10485760
         },
         "auth_token": {
-          "description": "Bearer token for authentication (credential resolver format).\nEmpty or absent = no auth (backward compatible, logs warning).",
+          "description": "Bearer token for authentication (credential resolver format).\nEmpty or absent = no auth (backward compatible, logs warning).\n\nSensitive because this one is resolved at load and then held: the\nresolved token sits in the config for the life of the process, so a\n`Debug`, a `Serialize` or the published schema would otherwise show it.",
           "type": [
             "string",
             "null"
           ],
-          "default": null,
           "x-dfe-secret": true,
-          "writeOnly": true
+          "writeOnly": true,
+          "default": null
         },
         "acknowledgements": {
           "description": "When a POST is answered. Enabled (the default), only once its record\nis delivered to the outputs or confirmed in the DLQ, and `503` with\n`Retry-After` otherwise so the client re-sends. Disabled, a POST is\nanswered `200` as soon as it is accepted and delivered after, so a\nfailed delivery or a crash loses it.",
