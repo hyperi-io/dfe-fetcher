@@ -52,9 +52,9 @@ podSecurityContext:
     type: RuntimeDefault
 
 # -- Container-level security context. readOnlyRootFilesystem stays
-# false because the spool and DLQ write to disk and the only volume
-# mounted here is the read-only config map; set it true only for an
-# app that spools nowhere.
+# false because the spool and DLQ write to disk and every volume
+# mounted here is read-only; set it true only for an app that spools
+# nowhere.
 securityContext:
   allowPrivilegeEscalation: false
   privileged: false

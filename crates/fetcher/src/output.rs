@@ -18,6 +18,7 @@
 //! record, and the emitter acts on the two error variants without reading any
 //! error text of its own.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -75,9 +76,9 @@ fn classify_fatal(what: &str, e: &TransportError) -> Error {
 /// delegates to the concrete transport implementation.
 pub enum OutputTransport {
     /// Kafka transport (scalo).
-    Kafka(KafkaTransport),
+    Kafka(Box<KafkaTransport>),
     /// gRPC transport (scalo).
-    Grpc(GrpcTransport),
+    Grpc(Box<GrpcTransport>),
     /// In-process transport (scalo), shared so the owner can read back what
     /// landed: the framework's own tests and tooling, never a deployment.
     Memory(Arc<MemoryTransport>),
@@ -197,7 +198,28 @@ impl OutputTransport {
 pub struct OutputManager {
     transports: Vec<OutputTransport>,
     /// Named destinations, keyed by name. `None` when none are declared.
-    destinations: Option<RoutedSender>,
+    destinations: Option<Destinations>,
+}
+
+/// The named destination set and the topic each bus destination names.
+struct Destinations {
+    sender: RoutedSender,
+    /// A bus destination's own topic, before the suffix, keyed by destination.
+    topics: std::collections::HashMap<String, Box<str>>,
+}
+
+/// The wire key a record carries to one named destination: the destination's
+/// own topic with the output's suffix when it names one, else the record's
+/// own (already suffixed) topic.
+fn destination_key<'a>(
+    own_topic: Option<&str>,
+    record_topic: &'a str,
+    suffix: &str,
+) -> Cow<'a, str> {
+    match own_topic {
+        Some(topic) => Cow::Owned(format!("{topic}{suffix}")),
+        None => Cow::Borrowed(record_topic),
+    }
 }
 
 impl OutputManager {
@@ -217,7 +239,7 @@ impl OutputManager {
                 .map_err(|e| Error::Transport(format!("kafka init failed: {e}")))?;
 
             info!(brokers = ?kafka_config.brokers, "Kafka output transport initialised");
-            transports.push(OutputTransport::Kafka(transport));
+            transports.push(OutputTransport::Kafka(Box::new(transport)));
         }
 
         if output.includes_grpc() {
@@ -230,7 +252,7 @@ impl OutputManager {
                 .map_err(|e| Error::Transport(format!("grpc init failed: {e}")))?;
 
             info!("gRPC output transport initialised");
-            transports.push(OutputTransport::Grpc(transport));
+            transports.push(OutputTransport::Grpc(Box::new(transport)));
         }
 
         if transports.is_empty() {
@@ -241,7 +263,9 @@ impl OutputManager {
 
         debug!(
             count = transports.len(),
-            named = destinations.as_ref().map_or(0, |d| d.route_keys().len()),
+            named = destinations
+                .as_ref()
+                .map_or(0, |d| d.sender.route_keys().len()),
             "Output manager ready"
         );
         Ok(Self {
@@ -282,15 +306,23 @@ impl OutputManager {
 
     /// Send a record to named destinations instead of the default transports.
     ///
-    /// `key` is the wire key for a bus destination (the record's topic); a gRPC
-    /// listener ignores it. Delivered only when every named destination has
-    /// accepted. A backpressured or transport-wide failure stops the fan-out
-    /// and is returned, so the caller re-sends it whole (at-least-once). A
-    /// destination that refuses the record itself -- an outbound `dlq` filter,
-    /// an over-size or malformed record -- does not stop the others: the
-    /// fan-out finishes and ONE [`Error::TransportRecord`] naming every refusal
-    /// comes back, so the record is dead-lettered once.
-    pub async fn send_to(&self, destinations: &[&str], key: &str, payload: Bytes) -> Result<()> {
+    /// A bus destination that names a `topic` receives the record on that
+    /// topic plus `suffix`, the way a source's own topic is suffixed; one that
+    /// names none receives it on `record_topic`, the record's own suffixed
+    /// topic. A gRPC listener ignores the key. Delivered only when every named
+    /// destination has accepted. A backpressured or transport-wide failure
+    /// stops the fan-out and is returned, so the caller re-sends it whole
+    /// (at-least-once). A destination that refuses the record itself -- an
+    /// outbound `dlq` filter, an over-size or malformed record -- does not stop
+    /// the others: the fan-out finishes and ONE [`Error::TransportRecord`]
+    /// naming every refusal comes back, so the record is dead-lettered once.
+    pub async fn send_to(
+        &self,
+        destinations: &[&str],
+        record_topic: &str,
+        suffix: &str,
+        payload: Bytes,
+    ) -> Result<()> {
         let Some(ref set) = self.destinations else {
             return Err(Error::Config(
                 "output.routes names a destination but none are declared".into(),
@@ -300,8 +332,10 @@ impl OutputManager {
         // `Ok` for a destination's `FilteredDlq` and so loses the record.
         let mut refused: Vec<String> = Vec::new();
         for destination in destinations {
+            let own_topic = set.topics.get(*destination).map(AsRef::as_ref);
+            let key = destination_key(own_topic, record_topic, suffix);
             // Cheap ref-counted clone per destination (no buffer copy).
-            match set.send_to(destination, key, payload.clone()).await {
+            match set.sender.send_to(destination, &key, payload.clone()).await {
                 SendResult::Ok => {}
                 SendResult::FilteredDlq => {
                     refused.push(format!("destination {destination}: filtered to DLQ"));
@@ -330,7 +364,7 @@ impl OutputManager {
     pub fn has_destination(&self, name: &str) -> bool {
         self.destinations
             .as_ref()
-            .is_some_and(|set| set.has_route(name))
+            .is_some_and(|set| set.sender.has_route(name))
     }
 
     /// Send a message to all configured transports.
@@ -374,7 +408,7 @@ impl OutputManager {
             && self
                 .destinations
                 .as_ref()
-                .is_none_or(scalo::transport::RoutedSender::is_healthy)
+                .is_none_or(|set| set.sender.is_healthy())
     }
 
     /// Check if any transport is healthy.
@@ -397,7 +431,7 @@ impl OutputManager {
             }
         }
         if let Some(ref set) = self.destinations
-            && let Err(e) = set.close().await
+            && let Err(e) = set.sender.close().await
         {
             error!(error = %e, "Failed to close named destinations");
         }
@@ -407,16 +441,18 @@ impl OutputManager {
 /// Build the named destination set from `output.destinations`.
 ///
 /// Each declared destination becomes one route in a scalo [`RoutedSender`];
-/// a bus destination without its own broker settings reuses the output's.
+/// a bus destination without its own broker settings reuses the output's, and
+/// one that names a `topic` is sent there instead of the record's own topic.
 async fn build_destinations(
     output: &OutputConfig,
     legacy_kafka: &LegacyKafkaConfig,
-) -> Result<Option<RoutedSender>> {
+) -> Result<Option<Destinations>> {
     if output.destinations.is_empty() {
         return Ok(None);
     }
 
     let mut routes = std::collections::HashMap::with_capacity(output.destinations.len());
+    let mut topics = std::collections::HashMap::new();
     for (name, spec) in &output.destinations {
         let config = match (&spec.grpc, &spec.kafka) {
             (Some(grpc), None) => TransportConfig {
@@ -424,15 +460,20 @@ async fn build_destinations(
                 grpc: Some(grpc.clone()),
                 ..TransportConfig::default()
             },
-            (None, Some(bus)) => TransportConfig {
-                transport_type: TransportType::Kafka,
-                kafka: Some(
-                    bus.config
-                        .clone()
-                        .unwrap_or_else(|| resolve_kafka_config(output, legacy_kafka)),
-                ),
-                ..TransportConfig::default()
-            },
+            (None, Some(bus)) => {
+                if let Some(topic) = &bus.topic {
+                    topics.insert(name.clone(), Box::from(topic.as_str()));
+                }
+                TransportConfig {
+                    transport_type: TransportType::Kafka,
+                    kafka: Some(
+                        bus.config
+                            .clone()
+                            .unwrap_or_else(|| resolve_kafka_config(output, legacy_kafka)),
+                    ),
+                    ..TransportConfig::default()
+                }
+            }
             _ => {
                 return Err(Error::Config(format!(
                     "output.destinations.{name} needs exactly one of grpc or kafka"
@@ -449,7 +490,7 @@ async fn build_destinations(
         destinations = ?sender.route_keys(),
         "Named output destinations initialised"
     );
-    Ok(Some(sender))
+    Ok(Some(Destinations { sender, topics }))
 }
 
 /// Resolve the effective scalo Kafka config: `output.kafka` when set, else
@@ -601,6 +642,67 @@ mod tests {
                 "{transport_wide}"
             );
         }
+    }
+
+    /// A bus destination that names a topic takes that topic with the suffix
+    /// in force, as the source's own topic took it; one that names none keeps
+    /// the record's own topic, which is already suffixed.
+    #[test]
+    fn a_destination_topic_is_suffixed_and_replaces_the_records_topic() {
+        assert_eq!(
+            destination_key(Some("okta"), "github_land", "_land"),
+            "okta_land"
+        );
+        assert_eq!(destination_key(Some("okta"), "github", ""), "okta");
+        assert_eq!(destination_key(None, "github_land", "_land"), "github_land");
+        assert!(matches!(
+            destination_key(None, "github_land", "_land"),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    /// Only a bus destination's own topic is recorded: a gRPC destination and
+    /// a bus destination that names none keep the record's topic.
+    #[tokio::test]
+    async fn only_a_bus_destination_naming_a_topic_overrides_the_key() {
+        use scalo::transport::GrpcConfig;
+
+        let (_rx, endpoint) = grpc_listener().await;
+        let bus = |topic: Option<&str>| DestinationSpec {
+            grpc: None,
+            kafka: Some(KafkaDestination {
+                config: Some(ScaloKafkaConfig {
+                    // Nothing listens here: construction does not dial.
+                    brokers: vec!["127.0.0.1:1".into()],
+                    group: String::new(),
+                    ..ScaloKafkaConfig::default()
+                }),
+                topic: topic.map(str::to_owned),
+            }),
+        };
+        let config = grpc_output(
+            &endpoint,
+            vec![
+                ("okta", bus(Some("okta"))),
+                ("own", bus(None)),
+                (
+                    "loader",
+                    DestinationSpec {
+                        grpc: Some(GrpcConfig::client(&endpoint)),
+                        kafka: None,
+                    },
+                ),
+            ],
+        );
+        let output = OutputManager::new(&config.output, &config.kafka)
+            .await
+            .unwrap();
+        let set = output.destinations.as_ref().unwrap();
+
+        assert_eq!(set.topics.get("okta").map(AsRef::as_ref), Some("okta"));
+        assert!(!set.topics.contains_key("own"));
+        assert!(!set.topics.contains_key("loader"));
+        output.close_all().await;
     }
 
     #[test]

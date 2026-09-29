@@ -242,14 +242,14 @@ cursor:
   default_window_hours: 1
 
 output:
-  output_type: "kafka"
+  type: "kafka"
   topic_suffix: ""
   kafka:
     brokers: ["localhost:19092"]
     client_id: "dfe-fetcher-pgo"
     librdkafka_overrides:
       linger.ms: "10"
-      compression.type: "lz4"
+      compression.type: "zstd"
 
 sources:
   azure:
@@ -301,11 +301,13 @@ sources:
     topic: "gcp"
     services:
       - name: cloud_logging
-        filter: "logName:cloudaudit.googleapis.com"
+        config:
+          filter: "logName:cloudaudit.googleapis.com"
     api_url_override: "http://127.0.0.1:19090/gcp"
     token_url_override: "http://127.0.0.1:19090/oauth/token"
 
-metrics_address: "127.0.0.1:9090"
+metrics:
+  address: "127.0.0.1:9090"
 
 dlq:
   enabled: false

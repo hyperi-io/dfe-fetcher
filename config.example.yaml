@@ -856,6 +856,9 @@ ingest:
 #     archiver:
 #       grpc:
 #         endpoint: "http://dfe-archiver:6000"
+#     okta_landing:
+#       kafka:
+#         topic: "okta"    # suffixed on delivery like a source's topic: okta_land
 #   routes:
 #     - match_field: "_source"
 #       match_value: "orders"

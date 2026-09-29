@@ -1094,10 +1094,10 @@ impl<'a> Tick<'a> {
     /// stage's ceiling, or `None` when the sequence ends.
     ///
     /// A ceiling with more to fetch is counted. A unit that reads the
-    /// window fails on it: the scheduler advances the window only on a
-    /// successful tick, and the rows past the ceiling belong to THIS window,
-    /// so the next tick reads the same window again rather than skipping
-    /// them. A dump or a unit that reads no window is cut short and says so.
+    /// window fails on it: the rows past the ceiling belong to THIS window,
+    /// so the driver reads it again in narrower halves rather than skipping
+    /// them, and the scheduler advances the window only on a successful
+    /// tick. A dump or a unit that reads no window is cut short and says so.
     fn advance(&self, stage: Stage<'a>, page: &Page<'a>) -> Result<Option<PageState>> {
         if page.ignored {
             return Ok(None);
@@ -1117,7 +1117,7 @@ impl<'a> Tick<'a> {
                         source,
                         unit = %unit,
                         max_pages = stage.max_pages,
-                        "page ceiling reached with rows of the window unfetched; the tick fails so the window is not advanced past them"
+                        "page ceiling reached with rows of the window unfetched; the unit fails so the window is not advanced past them"
                     );
                     return Err(Error::PageCeiling {
                         unit: unit.to_string(),

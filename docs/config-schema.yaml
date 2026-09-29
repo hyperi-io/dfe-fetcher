@@ -5865,7 +5865,10 @@ $defs:
         format: uint64
         minimum: 0
       env:
-        description: Environment variables passed to the container.
+        description: |-
+          Environment variables passed to the container. A value may be an
+          `env:`, `vault:` or `file:` spec, resolved at each launch; values reach
+          the runtime through its environment, never its argument list.
         type: object
         additionalProperties:
           type: string
@@ -6562,32 +6565,21 @@ $defs:
         default: null
       consumer_protocol:
         description: |-
-          Consumer-group rebalance protocol to join with (default: `consumer`,
-          KIP-848).
+          Consumer-group rebalance protocol to join with (default: `classic`).
 
-          Not every broker speaks it, so the resolved value is
+          `consumer` opts in to KIP-848. The resolved value is
           [`effective_consumer_protocol`](Self::effective_consumer_protocol) --
-          a provider known not to implement KIP-848 is forced to `classic`, and
-          a broker that refuses it at join time drops the transport back to
-          `classic` once, with a warning. Set `classic` to opt out entirely.
+          a provider known not to implement KIP-848 is forced to `classic` -- and
+          a KIP-848 consumer the broker refuses is rebuilt as `classic` by the
+          receive that meets the refusal, with a warning.
         $ref: '#/$defs/ConsumerProtocol'
-        default: consumer
+        default: classic
       consumer_protocol_probe_ms:
         description: |-
-          How long construction waits for the broker to accept
-          `group.protocol=consumer` before rebuilding the consumer as `classic`,
-          in milliseconds.
+          No longer read: nothing waits on a KIP-848 join, because librdkafka
+          reports no join for a member that holds no partitions.
 
-          The wait ends as soon as librdkafka's statistics report the group `up`,
-          so on a broker that does speak KIP-848 it costs one
-          `statistics.interval.ms` (1 s on the shipped profiles) rather than the
-          whole window. A broker that is simply unreachable at startup also
-          exhausts the window and falls back -- classic works everywhere, so the
-          cost of that misfire is a warning line.
-
-          `0` disables the probe: the requested protocol is used as-is with no
-          fallback. Only a subscribing consumer probes at all, since a
-          producer-only transport joins no group.
+          Kept so configs that set it still parse; it has no effect.
         type: integer
         format: uint64
         minimum: 0
@@ -6868,19 +6860,25 @@ $defs:
       type: string
       const: devtest
   ConsumerProtocol:
-    description: Which consumer-group rebalance protocol the consumer joins with.
+    description: |-
+      Which consumer-group rebalance protocol the consumer joins with.
+
+      `classic` is the default. A KIP-848 member is refused outright by a group
+      still holding classic members, and librdkafka reports no join for a KIP-848
+      member that holds no partitions, so the transport cannot tell a working
+      KIP-848 consumer from a stuck one. KIP-848 is therefore opt-in.
     oneOf:
     - description: |-
         KIP-848: the broker's group coordinator computes the assignment and
         pushes it on the heartbeat, so adding or removing a member costs no
         stop-the-world rebalance -- the difference a KEDA scale event feels.
-        Requires a Kafka 4.0+ broker, and the transport falls back to
-        [`Classic`](Self::Classic) when the broker will not speak it.
+        Requires a Kafka 4.0+ broker. A consumer the broker refuses is rebuilt
+        as [`Classic`](Self::Classic).
       type: string
       const: consumer
     - description: |-
         The pre-4.0 protocol: the group leader computes the assignment and
-        every member stops consuming while it does.
+        every member stops consuming while it does. Every broker speaks it.
       type: string
       const: classic
   SuppressionRule:
@@ -7393,7 +7391,9 @@ $defs:
         - type: 'null'
         default: null
       topic:
-        description: Fixed topic. Unset means the record's own source topic.
+        description: |-
+          Topic label, suffixed on delivery like a source's own topic. Unset
+          means the record's own source topic.
         type:
         - string
         - 'null'

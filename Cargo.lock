@@ -4531,9 +4531,9 @@ dependencies = [
 
 [[package]]
 name = "odbc-api"
-version = "29.0.0"
+version = "29.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efbf786f321712df749f34b99279334e45383b50d40c173ba5597894c21d1d34"
+checksum = "d910867d0b21bd65150719b26b273ff0c193d3232ea98e370aa58b9f69f004ad"
 dependencies = [
  "atoi 3.1.0",
  "log",
@@ -6255,9 +6255,9 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.13.0"
+version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cce445668f2f9ca2d64ec96f3b16aa901ceba43560a6753b3babed02295aa1ba"
+checksum = "0a68d8a227000e5d6a42866c54b042ce593553607655057fba7c564510c4619f"
 dependencies = [
  "aes-gcm",
  "arc-swap",

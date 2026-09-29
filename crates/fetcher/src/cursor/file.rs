@@ -19,13 +19,14 @@
 //! ```
 //!
 //! In-memory cache serves reads without file I/O. Writes update the
-//! cache then atomically persist the individual file (write `.tmp`,
-//! rename). If the directory is not writable, the store operates in
+//! cache then atomically and durably persist the individual file (write
+//! and sync `.tmp`, rename, sync the directory). If the directory is not
+//! writable, the store operates in
 //! degraded mode -- cache works for the current process but state is
 //! lost on restart.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -158,7 +159,15 @@ impl FileCursorStore {
             .join(format!("{normalised_key}.{CURSOR_EXTENSION}.tmp"))
     }
 
-    /// Persist a single cursor to its file atomically (write `.tmp`, rename).
+    /// Persist a single cursor to its file atomically and durably: write
+    /// `.tmp` and sync it, rename it over the cursor file, then sync the
+    /// directory, so a crash leaves either the old cursor or the new one and
+    /// never an empty file that reads as a cold start.
+    ///
+    /// SHORTCUT: the two syncs block the calling runtime worker for a disk
+    /// flush each, on every commit (a tick per connection, an item per
+    /// per-item dump); move the write onto `spawn_blocking` when commits
+    /// show in a tick's duration.
     fn persist_one(&self, normalised_key: &str, value: &CursorValue) -> Result<()> {
         let path = self.cursor_path(normalised_key);
         let tmp_path = self.tmp_path(normalised_key);
@@ -166,23 +175,7 @@ impl FileCursorStore {
         let json = serde_json::to_string_pretty(value)
             .map_err(|e| Error::Cursor(format!("failed to serialise cursor: {e}")))?;
 
-        std::fs::write(&tmp_path, json.as_bytes()).map_err(|e| {
-            Error::Cursor(format!(
-                "failed to write cursor temp file '{}': {e}",
-                tmp_path.display()
-            ))
-        })?;
-
-        std::fs::rename(&tmp_path, &path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            Error::Cursor(format!(
-                "failed to rename '{}' -> '{}': {e}",
-                tmp_path.display(),
-                path.display()
-            ))
-        })?;
-
-        Ok(())
+        persist_durably(&tmp_path, &path, &self.directory, &json)
     }
 
     /// Remove a cursor file from disk.
@@ -198,6 +191,55 @@ impl FileCursorStore {
             );
         }
     }
+}
+
+/// Write `json` to `tmp` and sync it, rename `tmp` over `path`, then sync
+/// `directory` so the rename itself survives a crash.
+fn persist_durably(tmp: &Path, path: &Path, directory: &Path, json: &str) -> Result<()> {
+    write_synced(tmp, json.as_bytes()).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        Error::Cursor(format!(
+            "failed to write cursor temp file '{}': {e}",
+            tmp.display()
+        ))
+    })?;
+
+    std::fs::rename(tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        Error::Cursor(format!(
+            "failed to rename '{}' -> '{}': {e}",
+            tmp.display(),
+            path.display()
+        ))
+    })?;
+
+    sync_directory(directory).map_err(|e| {
+        Error::Cursor(format!(
+            "failed to sync cursor directory '{}': {e}",
+            directory.display()
+        ))
+    })
+}
+
+/// Create `path`, write `bytes` and sync them to disk before returning.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Sync a directory's entries, so a rename inside it is durable.
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> std::io::Result<()> {
+    std::fs::File::open(directory)?.sync_all()
+}
+
+/// `File::open` refuses a directory on Windows, which is not a deployment target.
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[async_trait]
@@ -443,6 +485,38 @@ mod tests {
         assert!(
             !tmp.path().join("gcp.audit.cursor.json").exists(),
             "a failed temp write must not produce a cursor file"
+        );
+    }
+
+    /// After the rename, the write opens and syncs the cursor directory, and a
+    /// sync it cannot make fails the write rather than reporting a cursor
+    /// durable that a crash could still lose. A directory the store can write
+    /// and enter but not read is the one way to fail only that step.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cursor_directory_that_cannot_be_synced_fails_the_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let mode = |bits| std::fs::Permissions::from_mode(bits);
+        std::fs::set_permissions(tmp.path(), mode(0o300)).unwrap();
+        if std::fs::File::open(tmp.path()).is_ok() {
+            std::fs::set_permissions(tmp.path(), mode(0o700)).unwrap();
+            eprintln!("skipping: this user opens an unreadable directory (root)");
+            return;
+        }
+
+        let outcome = store.set("gcp.audit", &make_cursor("gcp.audit")).await;
+        std::fs::set_permissions(tmp.path(), mode(0o700)).unwrap();
+
+        let err = outcome
+            .expect_err("a directory that cannot be synced fails the write")
+            .to_string();
+        assert!(err.contains("failed to sync cursor directory"), "{err}");
+        assert!(
+            tmp.path().join("gcp.audit.cursor.json").exists(),
+            "the synced temp file was renamed into place before the directory sync"
         );
     }
 

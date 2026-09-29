@@ -532,7 +532,9 @@ impl PipelineState {
         output.send_all(topic, payload).await
     }
 
-    /// Send one record to named destinations; see [`Self::send_all`].
+    /// Send one record to named destinations; see [`Self::send_all`]. A bus
+    /// destination naming its own topic gets the suffix in force appended, as
+    /// a source's topic does.
     ///
     /// # Errors
     ///
@@ -542,7 +544,8 @@ impl PipelineState {
         let Some(ref output) = self.output else {
             return Err(Error::Config("Output transport not configured".into()));
         };
-        output.send_to(destinations, topic, payload).await
+        let suffix = self.topic_suffix();
+        output.send_to(destinations, topic, &suffix, payload).await
     }
 
     /// Write `letters` to the dead-letter queue and wait until a backend holds

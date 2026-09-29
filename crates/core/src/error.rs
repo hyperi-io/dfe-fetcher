@@ -61,8 +61,8 @@ pub enum Error {
     },
 
     /// An event-window unit hit its page ceiling with rows of the window
-    /// still unfetched; the tick fails so the window is not advanced past
-    /// them.
+    /// still unfetched; the unit's run fails so the window is not advanced
+    /// past them, and the driver reads the window again in narrower halves.
     #[error(
         "unit `{unit}` hit max_pages ({max_pages}) with rows of the window still unfetched; raise max_pages or shorten the window"
     )]
