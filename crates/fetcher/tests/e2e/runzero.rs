@@ -461,9 +461,9 @@ endpoints:
         1,
         "a refusal is sent once and never retried"
     );
-    let errors = series(&seen, metric_names::API_ERRORS_TOTAL, "runzero_cloud");
+    // The driver counts a failed unit; a shape read on its own counts nothing.
     assert!(
-        matches!(errors.as_slice(), [DebugValue::Counter(1)]),
-        "one 4xx counted: {errors:?}"
+        series(&seen, metric_names::API_ERRORS_TOTAL, "runzero_cloud").is_empty(),
+        "the shape leaves the count to the driver"
     );
 }

@@ -359,10 +359,6 @@ impl Metrics {
             "Seconds since cursor last_fetch_end (data staleness)"
         );
         metrics::describe_counter!(
-            "dfe_fetcher_api_errors_total",
-            "Cloud API errors by source and category"
-        );
-        metrics::describe_counter!(
             "dfe_fetcher_ingest_requests_total",
             "Ingest HTTP requests by status"
         );
@@ -449,26 +445,17 @@ impl Metrics {
         self.inc_fetches_error_for("unknown");
     }
 
-    /// Record a cloud API error.
+    /// Count a failed tick toward the `throttle_ratio` scaling signal when its
+    /// `code` is "throttle" (HTTP 429, AWS SlowDown, a declared rate limit).
     ///
-    /// `code` is one of: "throttle", "4xx", "5xx", "timeout", "network",
-    /// "origin_refused", "oversize_page", "page_ceiling".
-    /// The "throttle" category (HTTP 429 / AWS SlowDown / rate-limit) is split
-    /// out of the generic "4xx" bucket so it also drives the self-normalised
-    /// `throttle_ratio` scaling signal (rate-limiting => spread quota over more
-    /// pods, NOT a client bug like a 401/404).
+    /// Throttling is the signal to scale OUT on, spreading the upstream quota
+    /// over more pods, so it is kept apart from a client error like a 401. The
+    /// `dfe_fetcher_api_errors_total` series is counted by the driver, once per
+    /// failed unit.
     #[inline]
-    pub fn inc_api_error(&self, source: &str, code: &str) {
+    pub fn count_failed_tick(&self, code: &str) {
         if code == "throttle" {
             self.throttle_errors_total.fetch_add(1, Ordering::Relaxed);
-        }
-        if self.dfe.is_some() {
-            metrics::counter!(
-                "dfe_fetcher_api_errors_total",
-                "source" => source.to_string(),
-                "code" => code.to_string()
-            )
-            .increment(1);
         }
     }
 
@@ -1886,16 +1873,6 @@ mod tests {
     }
 
     #[test]
-    fn test_inc_api_error_without_dfe_is_noop() {
-        let metrics = Metrics::new();
-        metrics.inc_api_error("aws", "5xx");
-        metrics.inc_api_error("azure", "timeout");
-        metrics.inc_api_error("m365", "4xx");
-        metrics.inc_api_error("gcp", "network");
-        metrics.inc_api_error("salesforce", "throttle");
-    }
-
-    #[test]
     fn test_fetch_pressure_ratio_zero_when_cap_unset() {
         let metrics = Metrics::new();
         metrics.inc_active_fetches();
@@ -1938,8 +1915,8 @@ mod tests {
         metrics.inc_fetches_success_for("aws");
         metrics.inc_fetches_error_for("aws");
         metrics.inc_fetches_error_for("aws");
-        metrics.inc_api_error("aws", "throttle");
-        metrics.inc_api_error("aws", "4xx"); // NOT a throttle -> not counted.
+        metrics.count_failed_tick("throttle");
+        metrics.count_failed_tick("4xx"); // NOT a throttle -> not counted.
         // 1 throttle / 4 attempts = 0.25.
         assert!((metrics.throttle_ratio() - 0.25).abs() < f64::EPSILON);
     }
@@ -2046,7 +2023,7 @@ mod tests {
         // Fetch counters (source-labelled)
         metrics.inc_fetches_success_for("aws");
         metrics.inc_fetches_error_for("azure");
-        metrics.inc_api_error("aws", "5xx");
+        metrics.count_failed_tick("5xx");
 
         // Bytes / records
         metrics.add_records_fetched(17);
