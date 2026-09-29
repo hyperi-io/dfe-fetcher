@@ -176,6 +176,22 @@ fn oauth2_identity(
     })
 }
 
+/// The JWT-bearer identity a block's `service_account_key` names: the key JSON
+/// itself when the value opens with `{`, else the path of the key file.
+fn service_account_identity(key: &SensitiveString) -> InstanceAuth {
+    let mut auth = InstanceAuth {
+        mode: AuthKind::JwtBearer,
+        ..InstanceAuth::default()
+    };
+    // A key JSON is an object and no file path opens with a brace.
+    if key.expose().trim_start().starts_with('{') {
+        auth.service_account_key = Some(key.clone());
+    } else {
+        auth.service_account_key_file = Some(key.clone());
+    }
+    auth
+}
+
 impl GithubSourceConfig {
     /// One instance of the shipped `github` profile per resolved connection.
     ///
@@ -921,8 +937,8 @@ impl SalesforceSourceConfig {
 impl GcpPubsubSourceConfig {
     /// The one instance of the shipped `gcp_pubsub` profile the block maps
     /// onto: `credential_secret` is the service-account key JSON, else
-    /// `service_account_key` is its file, else the workload's token comes
-    /// from the GCE metadata server; the API and token overrides are vars;
+    /// `service_account_key` is the key or its file, else the workload's
+    /// token comes from the GCE metadata server; the API and token overrides are vars;
     /// every subscription is a unit of its own, instantiated from `pull`
     /// under its subscription id with the project, id and pull knobs as
     /// its vars.
@@ -937,11 +953,7 @@ impl GcpPubsubSourceConfig {
                 service_account_key: Some(SensitiveString::from(key_json.as_str())),
                 ..InstanceAuth::default()
             },
-            (None, Some(key_file)) => InstanceAuth {
-                mode: AuthKind::JwtBearer,
-                service_account_key_file: Some(SensitiveString::from(key_file.as_str())),
-                ..InstanceAuth::default()
-            },
+            (None, Some(key)) => service_account_identity(key),
             (None, None) => InstanceAuth {
                 mode: AuthKind::GceMetadata,
                 ..InstanceAuth::default()
@@ -1415,7 +1427,7 @@ const GCP_LOGGING_UNITS: &[&str] = &[
 impl GcpSourceConfig {
     /// One instance of the shipped `gcp` profile per resolved connection:
     /// `credential_secret` is a resolved bearer, else `service_account_key`
-    /// is the key file of a JWT-bearer exchange, else the workload's token
+    /// is the key, or its file, of a JWT-bearer exchange, else the workload's token
     /// comes from the GCE metadata server; the project, the hosts, the SCC
     /// organisation and the `cloud_logging` clause become vars.
     ///
@@ -1438,13 +1450,7 @@ impl GcpSourceConfig {
                             token: Some(SensitiveString::from(token.as_str())),
                             ..InstanceAuth::default()
                         },
-                        (None, Some(key_file)) => InstanceAuth {
-                            mode: AuthKind::JwtBearer,
-                            service_account_key_file: Some(SensitiveString::from(
-                                key_file.as_str(),
-                            )),
-                            ..InstanceAuth::default()
-                        },
+                        (None, Some(key)) => service_account_identity(key),
                         (None, None) => InstanceAuth {
                             mode: AuthKind::GceMetadata,
                             ..InstanceAuth::default()
@@ -1515,7 +1521,7 @@ impl GcpSourceConfig {
 impl GoogleWorkspaceSourceConfig {
     /// One instance of the shipped `google_workspace` profile per resolved
     /// connection: `credential_secret` is the key JSON, else
-    /// `service_account_key` its file; the admin, customer and hosts become
+    /// `service_account_key` the key or its file; the admin, customer and hosts become
     /// vars and each application's `event_name` its unit's var.
     ///
     /// # Errors
@@ -1537,11 +1543,7 @@ impl GoogleWorkspaceSourceConfig {
                             service_account_key: Some(SensitiveString::from(key_json.as_str())),
                             ..InstanceAuth::default()
                         },
-                        (None, Some(key_file)) => InstanceAuth {
-                            mode: AuthKind::JwtBearer,
-                            service_account_key_file: Some(SensitiveString::from(key_file.as_str())),
-                            ..InstanceAuth::default()
-                        },
+                        (None, Some(key)) => service_account_identity(key),
                         (None, None) => {
                             return Err(Error::Config(
                                 "sources.google_workspace: `service_account_key` or `credential_secret` is required"
@@ -3436,6 +3438,49 @@ mod tests {
             .config
             .insert("organization_id".into(), json!("123"));
         assert!(cfg.instances().is_ok(), "scc needs no project");
+    }
+
+    /// The chart's GCP Secret carries the key JSON itself, and every block reads
+    /// a `service_account_key` that opens with `{` as the key, not as a path.
+    #[test]
+    fn a_service_account_key_holding_the_key_json_is_the_key_not_its_path() {
+        let key = "\n  {\"type\":\"service_account\",\"client_email\":\"sa@proj.iam.gserviceaccount.com\"}";
+
+        let mut gcp = gcp();
+        gcp.service_account_key = Some(key.into());
+        let pubsub = GcpPubsubSourceConfig {
+            enabled: true,
+            service_account_key: Some(key.into()),
+            ..GcpPubsubSourceConfig::default()
+        };
+        let mut workspace = workspace();
+        workspace.credential_secret = None;
+        workspace.service_account_key = Some(key.into());
+
+        for (block, auth) in [
+            ("gcp", only(gcp.instances().unwrap()).instance.auth),
+            (
+                "gcp_pubsub",
+                only(pubsub.instances().unwrap()).instance.auth,
+            ),
+            (
+                "google_workspace",
+                only(workspace.instances().unwrap()).instance.auth,
+            ),
+        ] {
+            assert_eq!(auth.mode, AuthKind::JwtBearer, "{block}");
+            assert_eq!(
+                auth.service_account_key
+                    .as_ref()
+                    .map(SensitiveString::expose),
+                Some(key),
+                "{block}: the value is the key"
+            );
+            assert!(
+                auth.service_account_key_file.is_none(),
+                "{block}: the key JSON is not a path"
+            );
+        }
     }
 
     fn aws() -> AwsSourceConfig {

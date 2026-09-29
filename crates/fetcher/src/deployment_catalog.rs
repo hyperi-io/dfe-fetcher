@@ -298,8 +298,8 @@ pub(crate) fn gcp() -> Capability {
         .fields(vec![
             conn_id(),
             FieldSpec::string("project_id").description("GCP project ID."),
-            FieldSpec::string("service_account_key")
-                .description("Path to the service-account JSON key file."),
+            FieldSpec::secret("service_account_key")
+                .description("The service-account key JSON, or the path of its file."),
             credential_secret(),
         ])
         .children(vec![
@@ -506,7 +506,7 @@ pub(crate) fn google_workspace() -> Capability {
         .description("Google Workspace Reports API per-application activity (domain-wide-delegation SA).")
         .fields(vec![
             conn_id(),
-            FieldSpec::string("service_account_key").description("Path to the SA JSON key (domain-wide delegation)."),
+            FieldSpec::secret("service_account_key").description("The SA key JSON, or the path of its file (domain-wide delegation)."),
             FieldSpec::string("admin_email").description("Workspace admin the SA impersonates (JWT sub)."),
             FieldSpec::string("customer_id").default_value("my_customer").description("Customer ID."),
             credential_secret(),
@@ -530,7 +530,7 @@ pub(crate) fn salesforce() -> Capability {
             FieldSpec::string("client_id").description("Connected-app consumer key."),
             FieldSpec::string("username")
                 .description("Integration username (JWT sub; JWT-bearer flow)."),
-            FieldSpec::string("private_key").description("RSA private key PEM (JWT-bearer flow)."),
+            FieldSpec::secret("private_key").description("RSA private key PEM (JWT-bearer flow)."),
             FieldSpec::string("private_key_secret")
                 .description("Secret ref for the RSA private key PEM."),
             FieldSpec::secret("client_secret")
@@ -608,8 +608,8 @@ pub(crate) fn gcp_pubsub() -> Capability {
     Capability::source("gcp_pubsub")
         .description("GCP Pub/Sub pull source (Log Sink delivery). Single-connection.")
         .fields(vec![
-            FieldSpec::string("service_account_key")
-                .description("Path to the SA JSON key (roles/pubsub.subscriber)."),
+            FieldSpec::secret("service_account_key")
+                .description("The SA key JSON, or the path of its file (roles/pubsub.subscriber)."),
             credential_secret(),
         ])
         .child(

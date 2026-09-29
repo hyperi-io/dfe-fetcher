@@ -185,6 +185,8 @@ DFE_FETCHER_SOURCES__GCP_PUBSUB__ENABLED="true"
 DFE_FETCHER_SOURCES__GCP_PUBSUB__SERVICE_ACCOUNT_KEY="/etc/gcp/pubsub-sa.json"
 ```
 
+`service_account_key` also takes the key JSON itself: a value that opens with `{` is the key, anything else the path of its file.
+
 The `subscriptions` list is a structured array - set it in the config file (or a
 vault-backed config), not via individual environment variables.
 

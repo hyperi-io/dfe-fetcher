@@ -141,6 +141,60 @@ fn committed_chart_injects_every_contract_secret_env_var() {
     }
 }
 
+/// The GCP secret the contract ships is the key JSON itself, so the block must
+/// read that value as the key. Read as a key file path, every exchange fails on
+/// a file named after the key.
+#[test]
+fn the_gcp_key_the_contract_ships_is_read_as_the_key() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let contract = dfe_fetcher::deployment::contract();
+    let secret = contract
+        .secrets
+        .iter()
+        .find(|group| group.group_name == "gcp")
+        .and_then(|group| {
+            group
+                .env_vars
+                .iter()
+                .find(|e| e.secret_key == "gcp-service-account-key")
+        })
+        .expect("the contract ships the GCP service-account key");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(
+        &dir,
+        "kafka:\n  brokers: [broker:9092]\nsources:\n  gcp:\n    enabled: true\n    \
+         project_id: proj\n    services: [{name: admin_activity}]\n",
+    );
+    let key = r#"{"type":"service_account","client_email":"sa@proj.iam.gserviceaccount.com"}"#;
+
+    // SAFETY: test-only; set and removed inside this one locked test.
+    unsafe { std::env::set_var(&secret.env_var, key) };
+    let loaded = Config::load_from_file(&path);
+    unsafe { std::env::remove_var(&secret.env_var) };
+
+    let built = loaded
+        .expect("config loads")
+        .sources
+        .gcp
+        .instances()
+        .expect("the gcp block builds");
+    let auth = &built.first().expect("one connection").instance.auth;
+    assert_eq!(
+        auth.service_account_key
+            .as_ref()
+            .map(scalo::config::sensitive::SensitiveString::expose),
+        Some(key),
+        "{} delivers the key JSON, so the block has to use it as the key",
+        secret.env_var,
+    );
+    assert!(
+        auth.service_account_key_file.is_none(),
+        "the key JSON was read as a key file path"
+    );
+}
+
 /// The chart's `config:` block must be the contract's `default_config`.
 ///
 /// The chart is generated from the contract and then committed by hand, so a

@@ -582,7 +582,7 @@ async fn a_service_account_key_is_exchanged_for_the_bearer() {
     mount_entries(&server, vec![entry("e")]).await;
     let mut cfg = project_config(&server, &["admin_activity", "system_event"]);
     cfg.credential_secret = None;
-    cfg.service_account_key = Some(sa.key_path.clone());
+    cfg.service_account_key = Some(sa.key_path.clone().into());
 
     let (outcome, rows) = run(config(cfg.clone()), None).await;
     outcome.expect("fetch");
@@ -624,6 +624,29 @@ async fn a_service_account_key_is_exchanged_for_the_bearer() {
         ),
         Some("Bearer other-token")
     );
+}
+
+/// The key JSON itself, as the chart's Secret hands it to
+/// `service_account_key`, is exchanged for the bearer just as its file is.
+#[tokio::test]
+async fn the_key_json_in_place_of_its_file_is_exchanged_for_the_bearer() {
+    let server = MockServer::start().await;
+    let sa = service_account(&server).await;
+    mount_entries(&server, vec![entry("e")]).await;
+    let key_json = std::fs::read_to_string(&sa.key_path).expect("read key");
+    let mut cfg = project_config(&server, &["admin_activity"]);
+    cfg.credential_secret = None;
+    cfg.service_account_key = Some(key_json.into());
+
+    let (outcome, rows) = run(config(cfg), None).await;
+    outcome.expect("fetch");
+    assert_eq!(rows.len(), 1);
+    let claims = sa.claims.lock().unwrap().clone();
+    assert_eq!(claims.len(), 1, "one exchange for the tick");
+    assert_eq!(claims[0]["iss"], CLIENT_EMAIL);
+    for request in requests_to(&server, ENTRIES).await {
+        assert_eq!(header(&request, "authorization"), Some("Bearer sa-token"));
+    }
 }
 
 /// No token and no key: the workload's token comes from the GCE metadata
@@ -697,7 +720,7 @@ async fn a_refused_exchange_fails_the_tick_and_requests_no_data() {
     .expect("rewrite key");
     let mut cfg = project_config(&server, &["admin_activity"]);
     cfg.credential_secret = None;
-    cfg.service_account_key = Some(sa.key_path.clone());
+    cfg.service_account_key = Some(sa.key_path.clone().into());
     let (outcome, rows) = run(config(cfg), None).await;
     assert!(rows.is_empty());
     assert!(requests_to(&server, ENTRIES).await.is_empty());

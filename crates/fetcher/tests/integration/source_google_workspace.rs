@@ -441,7 +441,7 @@ async fn a_service_account_key_file_is_read_for_the_exchange() {
     std::fs::write(&key_path, &tenant.key_json).expect("write key");
     let mut cfg = workspace_config(&server, &tenant, &["login"]);
     cfg.credential_secret = None;
-    cfg.service_account_key = Some(key_path.to_string_lossy().into_owned());
+    cfg.service_account_key = Some(key_path.to_string_lossy().into_owned().into());
     let (outcome, rows) = run(config(cfg), None).await;
     outcome.expect("fetch");
     assert_eq!(rows.len(), 1);

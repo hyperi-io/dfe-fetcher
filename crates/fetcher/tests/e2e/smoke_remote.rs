@@ -335,7 +335,7 @@ fn gcp_base() -> GcpSourceConfig {
     GcpSourceConfig {
         enabled: true,
         project_id: Some(require("GCP_PROJECT_ID")),
-        service_account_key: Some(key_path),
+        service_account_key: Some(key_path.into()),
         credential_secret: None,
         api_url_override: None,
         token_url_override: None,
@@ -1279,7 +1279,7 @@ async fn go_modules_fetch_known_module() {
 fn google_workspace_base() -> GoogleWorkspaceSourceConfig {
     GoogleWorkspaceSourceConfig {
         enabled: true,
-        service_account_key: optional("GOOGLE_WORKSPACE_SA_KEY"),
+        service_account_key: optional("GOOGLE_WORKSPACE_SA_KEY").map(Into::into),
         credential_secret: optional("GOOGLE_WORKSPACE_CREDENTIAL_SECRET"),
         admin_email: optional("GOOGLE_WORKSPACE_ADMIN_EMAIL"),
         customer_id: optional("GOOGLE_WORKSPACE_CUSTOMER_ID"),
@@ -1357,7 +1357,7 @@ async fn google_workspace_login_activity_fetch() {
 fn gcp_pubsub_base() -> GcpPubsubSourceConfig {
     GcpPubsubSourceConfig {
         enabled: true,
-        service_account_key: optional("GCP_PUBSUB_SA_KEY"),
+        service_account_key: optional("GCP_PUBSUB_SA_KEY").map(Into::into),
         credential_secret: optional("GCP_PUBSUB_CREDENTIAL_SECRET"),
         api_url_override: optional("GCP_PUBSUB_API_URL"),
         token_url_override: optional("GCP_PUBSUB_TOKEN_URL"),
