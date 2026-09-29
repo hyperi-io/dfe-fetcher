@@ -779,35 +779,125 @@ pub fn require_kafka_path_in_ci() {
 // Framework snapshot round-trip helpers
 // =============================================================================
 
-/// Read raw frames from `topic` until `want` have arrived or the deadline
-/// passes. The consumer group must be unique per call: two callers sharing one
-/// would split the partitions and read each other's frames.
+/// How long each step of a [`consume_until`] read may take.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsumeCeilings {
+    /// From creating the consumer to its group holding an assignment.
+    pub assigned: std::time::Duration,
+    /// From the assignment to the frames meeting the read's condition.
+    pub frames: std::time::Duration,
+}
+
+impl Default for ConsumeCeilings {
+    // A loaded runner stretches the group join several-fold, and a read that
+    // meets its condition returns at once, so only a failure pays these.
+    fn default() -> Self {
+        Self {
+            assigned: std::time::Duration::from_secs(120),
+            frames: std::time::Duration::from_secs(60),
+        }
+    }
+}
+
+/// Read raw frames from `topic` until `done` holds for everything read so far.
+///
+/// The read has two steps, each with its own ceiling: the consumer group joins
+/// and is assigned the topic, then the frames arrive. Running out of time
+/// panics naming the step, so a slow join never reads as missing frames.
+/// `wanted` names the condition in that message. The consumer group must be
+/// unique per call: two callers sharing one would split the partitions and
+/// read each other's frames.
+pub async fn consume_until(
+    kf: &KafkaTestConfig,
+    topic: &str,
+    group: &str,
+    ceilings: ConsumeCeilings,
+    wanted: &str,
+    done: impl Fn(&[Vec<u8>]) -> bool,
+) -> Vec<Vec<u8>> {
+    use scalo::transport::{TransportBase, TransportReceiver};
+    use std::time::{Duration, Instant};
+
+    // The group state comes from librdkafka's statistics, so a short interval
+    // sees the join soon after it happens.
+    let mut consumer_config = kf
+        .to_scalo_config()
+        .with_override("statistics.interval.ms", "250");
+    consumer_config.topics = vec![topic.to_owned()];
+    consumer_config.group = group.to_owned();
+    consumer_config.auto_offset_reset = "earliest".to_string();
+    consumer_config.enable_auto_commit = true;
+    let started = Instant::now();
+    let consumer = scalo::transport::KafkaTransport::new(&consumer_config)
+        .await
+        .unwrap_or_else(|e| panic!("consumer init against {}: {e}", kf.brokers));
+    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut assigned: Option<Duration> = None;
+    let mut last_error: Option<String> = None;
+    while !done(&frames) {
+        match consumer.recv(100).await {
+            Ok(batch) => frames.extend(batch.records.into_iter().map(|r| r.payload.to_vec())),
+            Err(e) => last_error = Some(e.to_string()),
+        }
+        let stats = consumer.stats();
+        // `up` is only the coordinator link and the first rebalance is the
+        // assignment. A frame read proves one the statistics may not show yet.
+        let joined =
+            stats.consumer_group_state.as_deref() == Some("up") && stats.rebalance_count > 0;
+        if assigned.is_none() && (joined || !frames.is_empty()) {
+            assigned = Some(started.elapsed());
+        }
+        let failure = match assigned {
+            None if started.elapsed() > ceilings.assigned => Some(format!(
+                "consumer group `{group}` was not assigned `{topic}` within {:?}: \
+                 group state {:?}, {} rebalance(s), last receive error {last_error:?}",
+                ceilings.assigned, stats.consumer_group_state, stats.rebalance_count,
+            )),
+            Some(at)
+                if started.elapsed().saturating_sub(at) > ceilings.frames && !done(&frames) =>
+            {
+                let ends: std::collections::BTreeMap<i32, i64> = stats
+                    .partition_high_watermark
+                    .iter()
+                    .filter(|((t, _), _)| t == topic)
+                    .map(|((_, partition), end)| (*partition, *end))
+                    .collect();
+                Some(format!(
+                    "consumer group `{group}` was assigned `{topic}` after {at:.1?}, then {} \
+                     frame(s) arrived in {:?}, still waiting for {wanted}: partition ends \
+                     {ends:?}, last receive error {last_error:?}",
+                    frames.len(),
+                    ceilings.frames,
+                ))
+            }
+            _ => None,
+        };
+        if let Some(message) = failure {
+            let _ = consumer.close().await;
+            panic!("{message}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = consumer.close().await;
+    frames
+}
+
+/// Read `want` raw frames from `topic`; see [`consume_until`].
 pub async fn consume_frames(
     kf: &KafkaTestConfig,
     topic: &str,
     group: &str,
     want: usize,
 ) -> Vec<Vec<u8>> {
-    use scalo::transport::{TransportBase, TransportReceiver};
-
-    let mut consumer_config = kf.to_scalo_config();
-    consumer_config.topics = vec![topic.to_owned()];
-    consumer_config.group = group.to_owned();
-    consumer_config.auto_offset_reset = "earliest".to_string();
-    consumer_config.enable_auto_commit = true;
-    let consumer = scalo::transport::KafkaTransport::new(&consumer_config)
-        .await
-        .unwrap_or_else(|e| panic!("consumer init against {}: {e}", kf.brokers));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut frames = Vec::new();
-    while frames.len() < want && tokio::time::Instant::now() < deadline {
-        if let Ok(batch) = consumer.recv(100).await {
-            frames.extend(batch.records.into_iter().map(|r| r.payload.to_vec()));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    let _ = consumer.close().await;
-    frames
+    consume_until(
+        kf,
+        topic,
+        group,
+        ConsumeCeilings::default(),
+        &format!("{want} frames"),
+        |frames| frames.len() >= want,
+    )
+    .await
 }
 
 /// Pull one unit's rows straight off a REST shape, as the driver would, with
