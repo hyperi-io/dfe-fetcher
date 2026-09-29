@@ -24,9 +24,12 @@ pub const API_ERRORS_TOTAL: &str = "dfe_fetcher_api_errors_total";
 /// Pages requested, labelled `source`.
 pub const PAGES_FETCHED_TOTAL: &str = "dfe_fetcher_pages_fetched_total";
 /// Page sequences cut at `max_pages` with more to fetch, by `source` and
-/// `unit`: an event-window unit fails its tick on it, a dump or a listing is
-/// cut short.
+/// `unit`: an event-window unit is fetched again over narrower windows, a
+/// dump or a listing is cut short.
 pub const PAGES_TRUNCATED_TOTAL: &str = "dfe_fetcher_pages_truncated_total";
+/// Event windows split in two because a unit hit `max_pages` inside them, by
+/// `source` and `unit`.
+pub const WINDOWS_NARROWED_TOTAL: &str = "dfe_fetcher_windows_narrowed_total";
 /// Tail pages that came back full (`limit` rows), by `source` and `unit`;
 /// a tick ends after `max_pages_per_tick` of them.
 pub const TAIL_PAGES_FULL_TOTAL: &str = "dfe_fetcher_tail_pages_full_total";
@@ -60,6 +63,7 @@ pub const ALL: &[&str] = &[
     API_ERRORS_TOTAL,
     PAGES_FETCHED_TOTAL,
     PAGES_TRUNCATED_TOTAL,
+    WINDOWS_NARROWED_TOTAL,
     TAIL_PAGES_FULL_TOTAL,
     RECORDS_FETCHED_TOTAL,
     BYTES_FETCHED_TOTAL,

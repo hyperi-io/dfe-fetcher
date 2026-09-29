@@ -4137,7 +4137,9 @@ pub struct ContainerExtractorConfig {
     /// Fetch interval for scheduled mode (seconds).
     pub interval_secs: Option<u64>,
 
-    /// Environment variables passed to the container.
+    /// Environment variables passed to the container. A value may be an
+    /// `env:`, `vault:` or `file:` spec, resolved at each launch; values reach
+    /// the runtime through its environment, never its argument list.
     #[serde(default)]
     pub env: HashMap<String, String>,
 
@@ -4676,7 +4678,8 @@ pub struct KafkaDestination {
     /// Broker settings for this destination. Unset reuses the output's own.
     pub config: Option<scalo::transport::KafkaConfig>,
 
-    /// Fixed topic. Unset means the record's own source topic.
+    /// Topic label, suffixed on delivery like a source's own topic. Unset
+    /// means the record's own source topic.
     pub topic: Option<String>,
 }
 
@@ -4760,12 +4763,20 @@ impl OutputConfig {
     /// Validate the named destinations and the routes over them.
     ///
     /// # Errors
-    /// A destination without exactly one transport block, or a route naming a
-    /// destination that was never declared.
+    /// A destination without exactly one transport block, a bus destination
+    /// whose topic is empty, or a route naming a destination that was never
+    /// declared.
     pub fn validate_routes(&self) -> Result<()> {
         for (name, spec) in &self.destinations {
             match (&spec.grpc, &spec.kafka) {
-                (Some(_), None) | (None, Some(_)) => {}
+                (Some(_), None) => {}
+                (None, Some(bus)) => {
+                    if bus.topic.as_deref().is_some_and(str::is_empty) {
+                        return Err(Error::Config(format!(
+                            "output.destinations.{name}.kafka.topic is empty; name a topic or leave it unset"
+                        )));
+                    }
+                }
                 _ => {
                     return Err(Error::Config(format!(
                         "output.destinations.{name} needs exactly one of grpc or kafka"
@@ -4984,6 +4995,43 @@ mod tests {
         let mut config = Config::default();
         config.output.topic_suffix = Some(String::new());
         assert_eq!(config.topic_suffix(), "");
+    }
+
+    /// A bus destination naming an empty topic would deliver to the suffix
+    /// alone, so it is refused at load; naming none keeps the record's topic.
+    #[test]
+    fn a_bus_destination_with_an_empty_topic_is_refused() {
+        let bus = |topic: Option<&str>| DestinationSpec {
+            grpc: None,
+            kafka: Some(KafkaDestination {
+                config: None,
+                topic: topic.map(str::to_owned),
+            }),
+        };
+        let mut config = Config::default();
+        config
+            .output
+            .destinations
+            .insert("okta".to_string(), bus(Some("")));
+
+        let err = config
+            .output
+            .validate_routes()
+            .expect_err("an empty topic is refused");
+        assert!(
+            err.to_string()
+                .contains("output.destinations.okta.kafka.topic is empty"),
+            "{err}"
+        );
+
+        config
+            .output
+            .destinations
+            .insert("okta".to_string(), bus(None));
+        config
+            .output
+            .validate_routes()
+            .expect("an unset topic is valid");
     }
 
     #[test]

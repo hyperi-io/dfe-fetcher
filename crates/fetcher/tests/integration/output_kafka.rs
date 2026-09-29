@@ -159,6 +159,97 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
     assert!(enriched["_timestamp_received"].is_number());
 }
 
+/// A record routed to a bus destination that names a topic lands on that
+/// topic with the output's suffix, not on the topic of the source that
+/// fetched it. The engine composes a route as exactly this: a destination
+/// naming the target source's bare landing label.
+#[tokio::test]
+async fn a_routed_record_lands_on_the_destinations_topic() {
+    use dfe_fetcher::config::{DestinationSpec, KafkaDestination};
+    use dfe_fetcher_core::batch::Outbound;
+
+    let Some((kf, _holder)) = common::acquire_kafka("output-kafka-routed-destination-topic").await
+    else {
+        eprintln!("Skipping: no live Kafka and Docker unavailable for testcontainer");
+        return;
+    };
+    let origin = common::test_topic("route-origin");
+    let target = common::test_topic("route-target");
+    let suffix = "_land";
+    let origin_topic = format!("{origin}{suffix}");
+    let target_topic = format!("{target}{suffix}");
+
+    let mut config = Config::default();
+    config.output = OutputConfig {
+        output_type: "kafka".to_string(),
+        kafka: Some(kf.to_scalo_config()),
+        topic_suffix: Some(suffix.to_string()),
+        ..Default::default()
+    };
+    config.output.destinations.insert(
+        "okta".to_string(),
+        DestinationSpec {
+            grpc: None,
+            kafka: Some(KafkaDestination {
+                config: None,
+                topic: Some(target.clone()),
+            }),
+        },
+    );
+
+    let shared = SharedConfig::new(config);
+    let metrics = Arc::new(Metrics::new());
+    let output = dfe_fetcher::output::OutputManager::new(&shared.get().output, &shared.get().kafka)
+        .await
+        .unwrap_or_else(|e| panic!("OutputManager init against {}: {e}", kf.brokers));
+    let state = Arc::new(
+        PipelineState::new(
+            shared,
+            Arc::clone(&metrics),
+            Some(output),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .expect("pipeline state"),
+    );
+    let sink = dfe_fetcher::extractor::ExtractorSink::new(Arc::clone(&state), metrics);
+
+    // The routed record first, then an unrouted marker on the origin's topic:
+    // once the marker is read there, the routed record would have been too.
+    let route: Arc<[Arc<str>]> = Arc::from([Arc::from("okta")]);
+    let report = sink
+        .emit(vec![
+            Outbound::new(&origin_topic, r#"{"id":"routed"}"#).with_route(route),
+            Outbound::new(&origin_topic, r#"{"id":"marker"}"#),
+        ])
+        .await
+        .unwrap_or_else(|e| panic!("emit on {}: {e}", kf.brokers));
+    assert_eq!(report.sent, 2, "{report:?}");
+
+    let stamp = Utc::now().timestamp_millis();
+    common::consume_until(
+        &kf,
+        &target_topic,
+        &format!("integration-route-target-{stamp}"),
+        ConsumeCeilings::default(),
+        "the routed record on the destination's topic",
+        |frames| records(frames).any(|r| r["id"] == "routed"),
+    )
+    .await;
+    let on_origin = common::consume_until(
+        &kf,
+        &origin_topic,
+        &format!("integration-route-origin-{stamp}"),
+        ConsumeCeilings::default(),
+        "the unrouted marker on the origin's topic",
+        |frames| records(frames).any(|r| r["id"] == "marker"),
+    )
+    .await;
+    assert!(
+        !records(&on_origin).any(|r| r["id"] == "routed"),
+        "the routed record also landed on the origin's topic {origin_topic}"
+    );
+}
+
 /// Multiple messages: produce N, consume N, all distinct.
 #[tokio::test]
 async fn test_output_kafka_batch_roundtrip() {

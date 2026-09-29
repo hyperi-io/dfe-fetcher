@@ -279,6 +279,29 @@ impl ContainerExtractor {
         self.config.runtime.as_deref().unwrap_or("docker")
     }
 
+    /// The runtime's `run` command: its arguments, and each container
+    /// variable resolved through the config's spec resolver and set in the
+    /// runtime process's own environment. `--env` names the variable only, so
+    /// a resolved secret never appears in the host's process table.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Credential`] naming the variable whose spec does not resolve.
+    async fn run_command(&self) -> Result<Command> {
+        let mut command = Command::new(self.runtime_cmd());
+        command.args(self.build_run_args());
+        for (key, spec) in &self.config.env {
+            let value = crate::credential::resolve(spec).await.map_err(|e| {
+                Error::Credential(format!(
+                    "container extractor '{}' env {key}: {e}",
+                    self.config.name
+                ))
+            })?;
+            command.env(key, value);
+        }
+        Ok(command)
+    }
+
     fn build_run_args(&self) -> Vec<String> {
         let mut args = vec![
             "run".to_string(),
@@ -287,9 +310,9 @@ impl ContainerExtractor {
             self.container_name(),
         ];
 
-        for (key, value) in &self.config.env {
+        for key in self.config.env.keys() {
             args.push("--env".to_string());
-            args.push(format!("{key}={value}"));
+            args.push(key.clone());
         }
         for mount in &self.config.volumes {
             args.push("-v".to_string());
@@ -389,13 +412,11 @@ impl ContainerExtractor {
 
     async fn run_scheduled(&self) -> Result<()> {
         self.pull_image().await?;
-        let runtime = self.runtime_cmd().to_string();
-        let args = self.build_run_args();
+        let mut command = self.run_command().await?;
 
         debug!(name = %self.config.name, "Running scheduled container extraction");
 
-        let mut child = Command::new(&runtime)
-            .args(&args)
+        let mut child = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -453,13 +474,11 @@ impl ContainerExtractor {
 
     async fn run_continuous(&self) -> Result<()> {
         self.pull_image().await?;
-        let runtime = self.runtime_cmd().to_string();
-        let args = self.build_run_args();
+        let mut command = self.run_command().await?;
 
         info!(name = %self.config.name, "Starting continuous container extractor");
 
-        let mut child = Command::new(&runtime)
-            .args(&args)
+        let mut child = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -797,6 +816,148 @@ mod tests {
         assert!(args.contains(&"1.5".to_string()));
         assert!(args.contains(&"--network".to_string()));
         assert!(args.contains(&"dfe-net".to_string()));
+    }
+
+    /// The run arguments name each container variable and carry no value, so
+    /// nothing configured under `env` reaches the host's process table.
+    #[test]
+    fn run_args_name_each_variable_and_carry_no_value() {
+        let config = ContainerExtractorConfig {
+            name: "test".to_string(),
+            image: "alpine:latest".to_string(),
+            env: HashMap::from([
+                ("API_TOKEN".to_string(), "literal-secret".to_string()),
+                (
+                    "DB_PASSWORD".to_string(),
+                    "vault:kv/data/db:password".to_string(),
+                ),
+            ]),
+            ..default_container_config()
+        };
+        let (_, metrics) = extractor_over(None, CancellationToken::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let ext = ContainerExtractor::new(config, state, metrics, CancellationToken::new());
+        let args = ext.build_run_args();
+
+        for key in ["API_TOKEN", "DB_PASSWORD"] {
+            let at = args
+                .iter()
+                .position(|a| a == key)
+                .unwrap_or_else(|| panic!("{key} is named: {args:?}"));
+            assert_eq!(args[at - 1], "--env", "{args:?}");
+        }
+        for arg in &args {
+            assert!(
+                !arg.contains("literal-secret")
+                    && !arg.contains("vault:")
+                    && !arg.starts_with("API_TOKEN=")
+                    && !arg.starts_with("DB_PASSWORD="),
+                "a value reached the argument list: {arg}"
+            );
+        }
+    }
+
+    /// A launched container gets each variable's resolved value through the
+    /// runtime's environment: the stand-in runtime echoes the value it was
+    /// handed and its own argument list, and only the variable's name is in
+    /// the arguments.
+    #[tokio::test]
+    #[allow(unsafe_code)]
+    async fn a_launched_container_gets_resolved_values_through_the_environment() {
+        // SAFETY: test-only; a variable name no other test sets.
+        unsafe { std::env::set_var("DFE_FETCHER_TEST_CONTAINER_TOKEN", "s3cret") };
+        let output = Arc::new(
+            scalo::transport::MemoryTransport::new(&scalo::transport::MemoryConfig::default())
+                .expect("memory transport"),
+        );
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            Some(crate::output::OutputManager::memory(Arc::clone(&output))),
+        ));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = crate::extractor::fake_runtime::write(
+            dir.path(),
+            "case \"$1\" in\n  run) printf '{\"token\":\"%s\",\"argv\":\"%s\"}\\n' \"$API_TOKEN\" \"$*\" ;;\nesac\n",
+        );
+        let config = ContainerExtractorConfig {
+            name: "envy".to_string(),
+            image: "unused".to_string(),
+            runtime: Some(runtime),
+            pull_policy: "never".to_string(),
+            timeout_secs: Some(10),
+            env: HashMap::from([(
+                "API_TOKEN".to_string(),
+                "env:DFE_FETCHER_TEST_CONTAINER_TOKEN".to_string(),
+            )]),
+            ..default_container_config()
+        };
+        let ext = ContainerExtractor::new(config, state, metrics, CancellationToken::new());
+
+        let run = ext.run_scheduled().await;
+        unsafe { std::env::remove_var("DFE_FETCHER_TEST_CONTAINER_TOKEN") };
+        run.expect("the run completes");
+
+        let batch = scalo::transport::TransportReceiver::recv(&*output, 10)
+            .await
+            .expect("recv");
+        assert_eq!(batch.records.len(), 1);
+        let row: serde_json::Value =
+            serde_json::from_slice(&batch.records[0].payload).expect("json");
+        assert_eq!(
+            row["token"], "s3cret",
+            "the value is resolved and in the environment"
+        );
+        let argv = row["argv"].as_str().expect("argv");
+        assert!(argv.contains("--env API_TOKEN "), "{argv}");
+        assert!(
+            !argv.contains("s3cret") && !argv.contains("env:"),
+            "neither the value nor its spec is in the argument list: {argv}"
+        );
+    }
+
+    /// A variable whose spec does not resolve fails the launch, naming the
+    /// variable, before any container is started.
+    #[tokio::test]
+    async fn an_unresolvable_container_variable_fails_the_launch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let started = dir.path().join("started");
+        let runtime = crate::extractor::fake_runtime::write(
+            dir.path(),
+            &format!(
+                "case \"$1\" in\n  run) touch '{}' ;;\nesac\n",
+                started.display()
+            ),
+        );
+        let (_, metrics) = extractor_over(None, CancellationToken::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let config = ContainerExtractorConfig {
+            name: "unresolved".to_string(),
+            image: "unused".to_string(),
+            runtime: Some(runtime),
+            pull_policy: "never".to_string(),
+            env: HashMap::from([(
+                "API_TOKEN".to_string(),
+                "env:DFE_FETCHER_TEST_CONTAINER_TOKEN_NEVER_SET".to_string(),
+            )]),
+            ..default_container_config()
+        };
+        let ext = ContainerExtractor::new(config, state, metrics, CancellationToken::new());
+
+        let err = ext.run_scheduled().await.expect_err("the launch fails");
+
+        assert!(matches!(err, Error::Credential(_)), "{err:?}");
+        assert!(err.to_string().contains("API_TOKEN"), "{err}");
+        assert!(!started.exists(), "no container was started");
     }
 
     /// An extractor over a pipeline whose only output is `output` (or none).

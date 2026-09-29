@@ -6786,7 +6786,7 @@
           "minimum": 0
         },
         "env": {
-          "description": "Environment variables passed to the container.",
+          "description": "Environment variables passed to the container. A value may be an\n`env:`, `vault:` or `file:` spec, resolved at each launch; values reach\nthe runtime through its environment, never its argument list.",
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -7510,12 +7510,12 @@
           "default": null
         },
         "consumer_protocol": {
-          "description": "Consumer-group rebalance protocol to join with (default: `consumer`,\nKIP-848).\n\nNot every broker speaks it, so the resolved value is\n[`effective_consumer_protocol`](Self::effective_consumer_protocol) --\na provider known not to implement KIP-848 is forced to `classic`, and\na broker that refuses it at join time drops the transport back to\n`classic` once, with a warning. Set `classic` to opt out entirely.",
+          "description": "Consumer-group rebalance protocol to join with (default: `classic`).\n\n`consumer` opts in to KIP-848. The resolved value is\n[`effective_consumer_protocol`](Self::effective_consumer_protocol) --\na provider known not to implement KIP-848 is forced to `classic` -- and\na KIP-848 consumer the broker refuses is rebuilt as `classic` by the\nreceive that meets the refusal, with a warning.",
           "$ref": "#/$defs/ConsumerProtocol",
-          "default": "consumer"
+          "default": "classic"
         },
         "consumer_protocol_probe_ms": {
-          "description": "How long construction waits for the broker to accept\n`group.protocol=consumer` before rebuilding the consumer as `classic`,\nin milliseconds.\n\nThe wait ends as soon as librdkafka's statistics report the group `up`,\nso on a broker that does speak KIP-848 it costs one\n`statistics.interval.ms` (1 s on the shipped profiles) rather than the\nwhole window. A broker that is simply unreachable at startup also\nexhausts the window and falls back -- classic works everywhere, so the\ncost of that misfire is a warning line.\n\n`0` disables the probe: the requested protocol is used as-is with no\nfallback. Only a subscribing consumer probes at all, since a\nproducer-only transport joins no group.",
+          "description": "No longer read: nothing waits on a KIP-848 join, because librdkafka\nreports no join for a member that holds no partitions.\n\nKept so configs that set it still parse; it has no effect.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
@@ -7783,15 +7783,15 @@
       ]
     },
     "ConsumerProtocol": {
-      "description": "Which consumer-group rebalance protocol the consumer joins with.",
+      "description": "Which consumer-group rebalance protocol the consumer joins with.\n\n`classic` is the default. A KIP-848 member is refused outright by a group\nstill holding classic members, and librdkafka reports no join for a KIP-848\nmember that holds no partitions, so the transport cannot tell a working\nKIP-848 consumer from a stuck one. KIP-848 is therefore opt-in.",
       "oneOf": [
         {
-          "description": "KIP-848: the broker's group coordinator computes the assignment and\npushes it on the heartbeat, so adding or removing a member costs no\nstop-the-world rebalance -- the difference a KEDA scale event feels.\nRequires a Kafka 4.0+ broker, and the transport falls back to\n[`Classic`](Self::Classic) when the broker will not speak it.",
+          "description": "KIP-848: the broker's group coordinator computes the assignment and\npushes it on the heartbeat, so adding or removing a member costs no\nstop-the-world rebalance -- the difference a KEDA scale event feels.\nRequires a Kafka 4.0+ broker. A consumer the broker refuses is rebuilt\nas [`Classic`](Self::Classic).",
           "type": "string",
           "const": "consumer"
         },
         {
-          "description": "The pre-4.0 protocol: the group leader computes the assignment and\nevery member stops consuming while it does.",
+          "description": "The pre-4.0 protocol: the group leader computes the assignment and\nevery member stops consuming while it does. Every broker speaks it.",
           "type": "string",
           "const": "classic"
         }
@@ -8202,7 +8202,7 @@
           "default": null
         },
         "topic": {
-          "description": "Fixed topic. Unset means the record's own source topic.",
+          "description": "Topic label, suffixed on delivery like a source's own topic. Unset\nmeans the record's own source topic.",
           "type": [
             "string",
             "null"

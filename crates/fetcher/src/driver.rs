@@ -62,6 +62,31 @@ use crate::pipeline::{DeadLetter, DeadLettered, SourceNames};
 /// How long the driver waits between admission checks while held.
 const HOLD_POLL: Duration = Duration::from_millis(250);
 
+/// Least time between two warnings of a window halved under a page ceiling.
+const NARROWED_WARN_EVERY_MS: u64 = 10_000;
+/// When a window halved under a page ceiling was last warned of.
+static NARROWED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `window` split at a whole second into its earlier and later halves, or
+/// `None` when a half would be under one second.
+fn halve(window: &FetchWindow) -> Option<(FetchWindow, FetchWindow)> {
+    let half = chrono::Duration::seconds((window.end - window.start).num_seconds() / 2);
+    if half < chrono::Duration::seconds(1) {
+        return None;
+    }
+    let mid = window.start + half;
+    Some((
+        FetchWindow {
+            start: window.start,
+            end: mid,
+        },
+        FetchWindow {
+            start: mid,
+            end: window.end,
+        },
+    ))
+}
+
 /// The runtime-selected shape of a connection.
 pub enum Shape {
     /// A declarative REST profile bound to an instance.
@@ -744,15 +769,8 @@ impl Driver {
         let mut total = TickReport::default();
         let mut first_error: Option<Error> = None;
         for unit in self.shape.units() {
-            let checkpoint = self.load_checkpoint(unit).await;
-            let tick = TickCtx {
-                window: if unit.is_dump() { None } else { window },
-                connection_id: &self.connection_id,
-                unit,
-                checkpoint: checkpoint.as_ref(),
-            };
-            let rows = self.shape.rows(tick);
-            match self.run_rows(rows, unit, &settings).await {
+            let unit_window = if unit.is_dump() { None } else { window };
+            match self.run_unit(unit, unit_window, &settings).await {
                 Ok(report) => {
                     info!(
                         source = self.name,
@@ -786,6 +804,69 @@ impl Driver {
             Some(e) => Err(e),
             None => Ok(total),
         }
+    }
+
+    /// Run one unit over `window`, loading its checkpoint afresh for each run.
+    ///
+    /// A windowed run that stops at the unit's page ceiling is run again over
+    /// the earlier half of its window and then the later half, halving down
+    /// to one second, so the unit covers the whole window inside this tick
+    /// and the connection's other units never fetch it twice. A window that
+    /// cannot be halved further returns the ceiling, which fails the tick and
+    /// holds the cursor where it is.
+    ///
+    /// # Errors
+    ///
+    /// The first error of any run that is not a ceiling the window can be
+    /// halved under.
+    async fn run_unit(
+        &self,
+        unit: &UnitSpec,
+        window: Option<&FetchWindow>,
+        settings: &TickSettings,
+    ) -> Result<TickReport> {
+        let mut spans = vec![window.cloned()];
+        let mut total = TickReport::default();
+        while let Some(span) = spans.pop() {
+            let checkpoint = self.load_checkpoint(unit).await;
+            let tick = TickCtx {
+                window: span.as_ref(),
+                connection_id: &self.connection_id,
+                unit,
+                checkpoint: checkpoint.as_ref(),
+            };
+            let rows = self.shape.rows(tick);
+            let report = match self.run_rows(rows, unit, settings).await {
+                Ok(report) => report,
+                Err(e) => {
+                    let ceiling = matches!(
+                        e,
+                        Error::Framework(dfe_fetcher_core::Error::PageCeiling { .. })
+                    );
+                    let Some((earlier, later)) = span.as_ref().filter(|_| ceiling).and_then(halve)
+                    else {
+                        return Err(e);
+                    };
+                    metrics::counter!(metric_names::WINDOWS_NARROWED_TOTAL, "source" => self.name, "unit" => unit.name.to_string())
+                        .increment(1);
+                    if scalo::logger::log_debounced(&NARROWED_WARNED_AT, NARROWED_WARN_EVERY_MS) {
+                        warn!(
+                            source = self.name,
+                            unit = %unit.name,
+                            window_start = %earlier.start,
+                            window_end = %later.end,
+                            "page ceiling reached; fetching the window again in two halves. \
+                             Counted in dfe_fetcher_windows_narrowed_total"
+                        );
+                    }
+                    spans.push(Some(later));
+                    spans.push(Some(earlier));
+                    continue;
+                }
+            };
+            total.absorb(report);
+        }
+        Ok(total)
     }
 
     /// Health check: the credential resolves and the provider answers.

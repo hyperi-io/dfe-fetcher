@@ -734,6 +734,81 @@ mod tests {
         }
     }
 
+    /// A shape with a dense unit whose window holds more rows than its page
+    /// ceiling allows whenever the window is wider than `fits`, and a sibling
+    /// unit that only counts how often it is asked for the window.
+    struct OverCeiling {
+        units: Vec<UnitSpec>,
+        fits: chrono::Duration,
+        seen_by_dense: Arc<Mutex<Vec<FetchWindow>>>,
+        seen_by_sibling: Arc<Mutex<Vec<FetchWindow>>>,
+    }
+
+    impl RowSource for OverCeiling {
+        fn name(&self) -> &'static str {
+            "dense"
+        }
+        fn maturity(&self) -> SourceMaturity {
+            SourceMaturity::Alpha
+        }
+        fn units(&self) -> &[UnitSpec] {
+            &self.units
+        }
+        fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a> {
+            let Some(window) = tick.window.cloned() else {
+                return futures::stream::empty().boxed();
+            };
+            if &*tick.unit.name == "sibling" {
+                self.seen_by_sibling.lock().unwrap().push(window);
+                return futures::stream::empty().boxed();
+            }
+            self.seen_by_dense.lock().unwrap().push(window.clone());
+            if window.end - window.start > self.fits {
+                return futures::stream::once(async {
+                    Err(dfe_fetcher_core::Error::PageCeiling {
+                        unit: "dense".into(),
+                        max_pages: 200,
+                    })
+                })
+                .boxed();
+            }
+            futures::stream::empty().boxed()
+        }
+        fn probe(&self) -> BoxFuture<'_, dfe_fetcher_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// The windows an [`OverCeiling`] shape's dense and sibling units were
+    /// asked for.
+    type DenseSeen = (Arc<Mutex<Vec<FetchWindow>>>, Arc<Mutex<Vec<FetchWindow>>>);
+
+    /// A driver over an [`OverCeiling`] shape whose dense unit fits a window no wider
+    /// than `fits`.
+    fn dense_driver(
+        shared: &SharedConfig,
+        metrics: &Arc<Metrics>,
+        fits: chrono::Duration,
+    ) -> (Arc<Driver>, DenseSeen) {
+        let dense_seen = Arc::new(Mutex::new(Vec::new()));
+        let sibling_seen = Arc::new(Mutex::new(Vec::new()));
+        let driver = driver_over(
+            shared,
+            metrics,
+            "dense",
+            Box::new(OverCeiling {
+                units: vec![
+                    UnitSpec::new("dense", UnitShape::Incremental, "t"),
+                    UnitSpec::new("sibling", UnitShape::Incremental, "t"),
+                ],
+                fits,
+                seen_by_dense: Arc::clone(&dense_seen),
+                seen_by_sibling: Arc::clone(&sibling_seen),
+            }),
+        );
+        (driver, (dense_seen, sibling_seen))
+    }
+
     /// A driver over `source` under `connection_id`, emitting through a
     /// pipeline with no output (nothing is ever emitted).
     fn driver_over(
@@ -1715,6 +1790,149 @@ mod tests {
             seen[0].end - seen[0].start,
             chrono::Duration::hours(1),
             "six hours behind, the first window still spans one hour"
+        );
+    }
+
+    /// A window holding more rows than the page ceiling allows is fetched in
+    /// halves inside the one tick: the tick succeeds, the halves that fit tile
+    /// the whole window with no gap and no overlap, the split is counted, and
+    /// the sibling unit is asked for the window once.
+    #[tokio::test]
+    async fn a_window_over_the_page_ceiling_is_fetched_in_halves_within_the_tick() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let metrics = Arc::new(Metrics::new());
+        let fits = chrono::Duration::minutes(10);
+        let (driver, (dense_seen, sibling_seen)) = dense_driver(&shared, &metrics, fits);
+        let start = Utc::now() - chrono::Duration::hours(6);
+        let window = FetchWindow {
+            start,
+            end: start + chrono::Duration::hours(1),
+        };
+
+        driver
+            .run_tick(Some(&window))
+            .await
+            .expect("the tick covers the window in halves");
+
+        let mut fetched: Vec<FetchWindow> = dense_seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|w| w.end - w.start <= fits)
+            .cloned()
+            .collect();
+        fetched.sort_by_key(|w| w.start);
+        assert_eq!(fetched.first().map(|w| w.start), Some(window.start));
+        assert_eq!(fetched.last().map(|w| w.end), Some(window.end));
+        for pair in fetched.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "no gap and no overlap");
+        }
+        assert_eq!(
+            *sibling_seen.lock().unwrap(),
+            std::slice::from_ref(&window),
+            "the sibling unit fetches the window once"
+        );
+        assert_eq!(
+            recorder.counter(
+                "dfe_fetcher_windows_narrowed_total",
+                &[("source", "dense"), ("unit", "dense")]
+            ),
+            Some(7),
+            "one hour down to 7.5-minute halves is seven splits"
+        );
+    }
+
+    /// A window that is still over the ceiling at one second cannot be split
+    /// further, so the tick fails and the cursor stays put rather than skip it.
+    #[tokio::test]
+    async fn a_ceiling_at_the_narrowest_window_fails_the_tick() {
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let metrics = Arc::new(Metrics::new());
+        let (driver, (dense_seen, _)) =
+            dense_driver(&shared, &metrics, chrono::Duration::milliseconds(500));
+        let start = Utc::now() - chrono::Duration::hours(1);
+        let window = FetchWindow {
+            start,
+            end: start + chrono::Duration::seconds(8),
+        };
+
+        let err = driver
+            .run_tick(Some(&window))
+            .await
+            .expect_err("a one-second window over the ceiling fails");
+
+        assert!(
+            matches!(
+                err,
+                Error::Framework(dfe_fetcher_core::Error::PageCeiling { .. })
+            ),
+            "{err:?}"
+        );
+        assert!(
+            dense_seen
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|w| w.end - w.start >= chrono::Duration::seconds(1)),
+            "no window narrower than one second is asked for"
+        );
+    }
+
+    /// A source whose window holds more rows than the page ceiling allows
+    /// still advances its cursor, a whole window per tick, instead of failing
+    /// the same window for ever.
+    #[tokio::test]
+    async fn a_source_whose_window_exceeds_the_page_ceiling_still_advances() {
+        tokio::time::pause();
+
+        let mut cfg = test_config_no_jitter();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.cursor.default_window_hours = 1;
+        let shared = SharedConfig::new(cfg);
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            crate::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap(),
+        );
+        let last_end = Utc::now() - chrono::Duration::hours(30);
+        seed_cursor(&store, "test.dense", last_end).await;
+        let scheduler = Scheduler::new(
+            &SchedulerConfig {
+                default_interval_secs: 1,
+                max_concurrent_fetches: 10,
+                jitter_percent: 0,
+            },
+            shared.clone(),
+            Some(Arc::clone(&store) as Arc<dyn CursorStore>),
+            "test".into(),
+        );
+        let metrics = Arc::new(Metrics::new());
+        let (driver, _) = dense_driver(&shared, &metrics, chrono::Duration::minutes(10));
+        let shutdown = CancellationToken::new();
+        scheduler.spawn_source_task(
+            driver,
+            Some(1),
+            Arc::clone(&metrics),
+            shutdown.clone(),
+            Arc::new(|| true),
+        );
+
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        shutdown.cancel();
+
+        let cursor = store
+            .get("test.dense")
+            .await
+            .unwrap()
+            .expect("a cursor is stored");
+        assert!(
+            cursor.last_fetch_end - last_end >= chrono::Duration::hours(2),
+            "the cursor advanced whole windows, got {}",
+            cursor.last_fetch_end - last_end
         );
     }
 
