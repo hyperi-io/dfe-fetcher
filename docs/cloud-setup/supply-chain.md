@@ -207,14 +207,14 @@ For very large watch lists, consider an internal mirror via
 ## References
 
 - PyPI API docs - rate limits, caching, ETag, User-Agent guidance:
-  https://docs.pypi.org/api/
+  <https://docs.pypi.org/api/>
 - crates.io data access policy - required User-Agent, 1 req/sec, dumps:
-  https://crates.io/data-access
+  <https://crates.io/data-access>
 - crates.io policies:
-  https://crates.io/policies
+  <https://crates.io/policies>
 - Go module mirror and proxy protocol (`@v/list`, `@v/<version>.info`):
-  https://proxy.golang.org/
+  <https://proxy.golang.org/>
 - Go module services privacy (what the proxy receives, GOPRIVATE):
-  https://proxy.golang.org/privacy
+  <https://proxy.golang.org/privacy>
 - Go module mirror launch / protocol overview:
-  https://go.dev/blog/module-mirror-launch
+  <https://go.dev/blog/module-mirror-launch>

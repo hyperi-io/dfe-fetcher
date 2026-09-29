@@ -249,9 +249,9 @@ agreement.
 
 ## References
 
-- Route logs to supported destinations: https://docs.cloud.google.com/logging/docs/export/configure_export_v2
-- View logs routed to Pub/Sub: https://docs.cloud.google.com/logging/docs/export/pubsub
-- gcloud logging sinks create / CLI reference: https://cloud.google.com/logging/docs/reference/tools/gcloud-logging
-- Create pull subscriptions: https://docs.cloud.google.com/pubsub/docs/create-subscription
-- gcloud pubsub subscriptions create: https://cloud.google.com/sdk/gcloud/reference/pubsub/subscriptions/create
-- Pub/Sub access control (roles): https://docs.cloud.google.com/pubsub/docs/access-control
+- Route logs to supported destinations: <https://docs.cloud.google.com/logging/docs/export/configure_export_v2>
+- View logs routed to Pub/Sub: <https://docs.cloud.google.com/logging/docs/export/pubsub>
+- gcloud logging sinks create / CLI reference: <https://cloud.google.com/logging/docs/reference/tools/gcloud-logging>
+- Create pull subscriptions: <https://docs.cloud.google.com/pubsub/docs/create-subscription>
+- gcloud pubsub subscriptions create: <https://cloud.google.com/sdk/gcloud/reference/pubsub/subscriptions/create>
+- Pub/Sub access control (roles): <https://docs.cloud.google.com/pubsub/docs/access-control>

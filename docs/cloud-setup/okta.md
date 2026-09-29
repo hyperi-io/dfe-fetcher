@@ -228,16 +228,16 @@ your Okta org. Confirm any cost implications against your own Okta plan.
 ## References
 
 - Create an API token (Okta Developer):
-  https://developer.okta.com/docs/guides/create-an-api-token/main/
+  <https://developer.okta.com/docs/guides/create-an-api-token/main/>
 - Manage Okta API tokens (Help Center):
-  https://help.okta.com/oie/en-us/content/topics/security/api.htm
+  <https://help.okta.com/oie/en-us/content/topics/security/api.htm>
 - System Log API reference:
-  https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog
+  <https://developer.okta.com/docs/api/openapi/okta-management/management/tags/systemlog>
 - System Log query parameters:
-  https://developer.okta.com/docs/reference/system-log-query/
+  <https://developer.okta.com/docs/reference/system-log-query/>
 - OAuth 2.0 scopes (incl. okta.logs.read):
-  https://developer.okta.com/docs/api/oauth2
+  <https://developer.okta.com/docs/api/oauth2>
 - Implement OAuth for Okta with a service app:
-  https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/
+  <https://developer.okta.com/docs/guides/implement-oauth-for-okta-serviceapp/main/>
 - Read-only administrators role:
-  https://help.okta.com/en-us/content/topics/security/administrators-read-only-admin.htm
+  <https://help.okta.com/en-us/content/topics/security/administrators-read-only-admin.htm>

@@ -116,20 +116,20 @@ prefix at it.
 1. Confirm (or enable) log delivery to the bucket. Common producers:
 
    - CloudTrail to S3: create a trail with an S3 destination. See
-     https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-a-trail-using-the-console-first-time.html
+     <https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-a-trail-using-the-console-first-time.html>
      Objects land under
      `AWSLogs/<account-id>/CloudTrail/<region>/...` as gzipped JSON.
    - VPC Flow Logs to S3: publish flow logs to an S3 bucket. See
-     https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3.html
+     <https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3.html>
    - AWS WAF logs to S3: enable logging on the web ACL with an S3
      destination. See
-     https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html
+     <https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html>
    - GCP Cloud Logging to GCS (backend not implemented): create a log
      sink with a Cloud Storage bucket destination. See
-     https://cloud.google.com/logging/docs/export/configure_export_v2
+     <https://cloud.google.com/logging/docs/export/configure_export_v2>
    - Azure diagnostic settings to Blob (backend not implemented): route
      resource logs to a storage account. See
-     https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings
+     <https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings>
 
 2. Note the exact key prefix each producer writes under. The prefix is
    what dfe-fetcher polls; getting it wrong yields zero records.
@@ -353,22 +353,22 @@ your own cloud agreement.
 ## References
 
 - S3 read-only IAM policy (two-ARN pattern):
-  https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-bucket-policies.html
+  <https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-bucket-policies.html>
 - AWS IAM example - read access to an S3 bucket:
-  https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_s3_rw-bucket.html
+  <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_s3_rw-bucket.html>
 - CloudTrail trail to S3:
-  https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-a-trail-using-the-console-first-time.html
+  <https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-a-trail-using-the-console-first-time.html>
 - VPC Flow Logs to S3:
-  https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3.html
+  <https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3.html>
 - AWS WAF logging to S3:
-  https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html
+  <https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html>
 - GCP Cloud Storage IAM roles:
-  https://cloud.google.com/storage/docs/access-control/iam-roles
+  <https://cloud.google.com/storage/docs/access-control/iam-roles>
 - GCP log sink to Cloud Storage:
-  https://cloud.google.com/logging/docs/export/configure_export_v2
+  <https://cloud.google.com/logging/docs/export/configure_export_v2>
 - Azure built-in Storage roles, Storage Blob Data Reader:
-  https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage
+  <https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage>
 - Azure assign a role for blob data access:
-  https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access
+  <https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access>
 - Azure diagnostic settings:
-  https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings
+  <https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings>

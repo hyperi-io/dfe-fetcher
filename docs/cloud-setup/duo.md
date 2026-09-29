@@ -226,9 +226,9 @@ Admin API access. Confirm any cost implications against your own Duo plan.
 ## References
 
 - Cisco Duo - Admin API (application creation, signing, permissions):
-  https://duo.com/docs/adminapi
+  <https://duo.com/docs/adminapi>
 - Cisco Duo - Admin API v2 authentication logs
   (`/admin/v2/logs/authentication`, mintime/maxtime in ms, next_offset):
-  https://duo.com/docs/adminapi#authentication-logs
+  <https://duo.com/docs/adminapi#authentication-logs>
 - Cisco Duo - Protecting applications (Application Catalog / Protect an
-  Application): https://duo.com/docs/protecting-applications
+  Application): <https://duo.com/docs/protecting-applications>

@@ -93,7 +93,7 @@ to be mounted into the image; the spec mechanism does not fetch it.
 These are unsupported today, and the reason is the same in each case: the
 credential is a token valid for minutes to an hour, and `connection_string`
 resolves once. Supporting them means re-resolving the string per connect, which
-#111 also asks for.
+issue #111 also asks for.
 
 - **Azure Database for PostgreSQL** with Entra. The user name is the Entra
   principal and the PASSWORD is an access token, obtained out of band and valid

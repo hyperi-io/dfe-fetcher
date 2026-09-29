@@ -178,16 +178,16 @@ plan.
 ## References
 
 - Cloudflare API - Get Account Audit Logs (v1 list method):
-  https://developers.cloudflare.com/api/resources/audit_logs/methods/list/
+  <https://developers.cloudflare.com/api/resources/audit_logs/methods/list/>
 - Review audit logs - v1 (Fundamentals):
-  https://developers.cloudflare.com/fundamentals/account/account-security/review-audit-logs/
+  <https://developers.cloudflare.com/fundamentals/account/account-security/review-audit-logs/>
 - Audit Logs - version 2 (Fundamentals):
-  https://developers.cloudflare.com/fundamentals/account/account-security/audit-logs/
+  <https://developers.cloudflare.com/fundamentals/account/account-security/audit-logs/>
 - Audit logs (version 2) - General Availability changelog:
-  https://developers.cloudflare.com/changelog/post/2026-03-10-audit-logs-v2-ga/
+  <https://developers.cloudflare.com/changelog/post/2026-03-10-audit-logs-v2-ga/>
 - API token permissions reference:
-  https://developers.cloudflare.com/fundamentals/api/reference/permissions/
+  <https://developers.cloudflare.com/fundamentals/api/reference/permissions/>
 - Create API token:
-  https://developers.cloudflare.com/fundamentals/api/get-started/create-token/
+  <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/>
 - Find account and zone IDs:
-  https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/
+  <https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>

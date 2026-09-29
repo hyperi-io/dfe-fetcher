@@ -205,10 +205,10 @@ Confirm any cost implications against your own CrowdStrike agreement.
 ## References
 
 - CrowdStrike - Falcon console API clients and keys (Support and resources):
-  https://www.crowdstrike.com/blog/tech-center/get-access-falcon-apis/
+  <https://www.crowdstrike.com/blog/tech-center/get-access-falcon-apis/>
 - CrowdStrike Developer Center - OpenAPI docs and scopes:
-  https://developer.crowdstrike.com/docs/openapi/
+  <https://developer.crowdstrike.com/docs/openapi/>
 - CrowdStrike Detects API decommission and migration to Alerts API:
-  https://cloud.google.com/chronicle/docs/detection/migrate-detects-api-to-alerts-api
+  <https://cloud.google.com/chronicle/docs/detection/migrate-detects-api-to-alerts-api>
 - FalconPy - environment configuration / regional base URLs:
-  https://www.falconpy.io/Usage/Environment-Configuration.html
+  <https://www.falconpy.io/Usage/Environment-Configuration.html>

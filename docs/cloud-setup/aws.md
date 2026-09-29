@@ -383,12 +383,12 @@ agreement.
 
 ## References
 
-- AWS managed policy AWSCloudTrail_ReadOnlyAccess: https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSCloudTrail_ReadOnlyAccess.html
-- CloudTrail LookupEvents (90-day window): https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/API_LookupEvents.html
-- AWS Config SelectResourceConfig: https://docs.aws.amazon.com/config/latest/APIReference/API_SelectResourceConfig.html
-- AWS Config query limitations (`SELECT *` returns scalar properties only): https://docs.aws.amazon.com/config/latest/developerguide/querying-AWS-resources.html
-- GuardDuty ListFindings / GetFindings: https://docs.aws.amazon.com/guardduty/latest/APIReference/API_ListFindings.html
-- Amazon Inspector2 IAM actions: https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazoninspector2.html
-- Amazon Inspector managed policies: https://docs.aws.amazon.com/inspector/latest/user/security-iam-awsmanpol.html
-- AWS Health IAM policy examples: https://docs.aws.amazon.com/health/latest/ug/security_iam_id-based-policy-examples.html
-- AWS Health DescribeEvents API: https://docs.aws.amazon.com/health/latest/APIReference/API_DescribeEvents.html
+- AWS managed policy AWSCloudTrail_ReadOnlyAccess: <https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSCloudTrail_ReadOnlyAccess.html>
+- CloudTrail LookupEvents (90-day window): <https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/API_LookupEvents.html>
+- AWS Config SelectResourceConfig: <https://docs.aws.amazon.com/config/latest/APIReference/API_SelectResourceConfig.html>
+- AWS Config query limitations (`SELECT *` returns scalar properties only): <https://docs.aws.amazon.com/config/latest/developerguide/querying-AWS-resources.html>
+- GuardDuty ListFindings / GetFindings: <https://docs.aws.amazon.com/guardduty/latest/APIReference/API_ListFindings.html>
+- Amazon Inspector2 IAM actions: <https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazoninspector2.html>
+- Amazon Inspector managed policies: <https://docs.aws.amazon.com/inspector/latest/user/security-iam-awsmanpol.html>
+- AWS Health IAM policy examples: <https://docs.aws.amazon.com/health/latest/ug/security_iam_id-based-policy-examples.html>
+- AWS Health DescribeEvents API: <https://docs.aws.amazon.com/health/latest/APIReference/API_DescribeEvents.html>

@@ -195,14 +195,14 @@ plan.
 ## References
 
 - Reviewing the audit log for your organization (Enterprise Cloud):
-  https://docs.github.com/en/enterprise-cloud@latest/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization/reviewing-the-audit-log-for-your-organization
+  <https://docs.github.com/en/enterprise-cloud@latest/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization/reviewing-the-audit-log-for-your-organization>
 - Using the audit log API for your enterprise:
-  https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/using-the-audit-log-api-for-your-enterprise
+  <https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/using-the-audit-log-api-for-your-enterprise>
 - REST API endpoints for enterprise audit logs:
-  https://docs.github.com/en/enterprise-cloud@latest/rest/enterprise-admin/audit-log
+  <https://docs.github.com/en/enterprise-cloud@latest/rest/enterprise-admin/audit-log>
 - Access the Audit Log REST API using scoped tokens (read:audit_log):
-  https://github.blog/changelog/2022-12-19-access-the-audit-log-rest-api-using-scoped-tokens/
+  <https://github.blog/changelog/2022-12-19-access-the-audit-log-rest-api-using-scoped-tokens/>
 - Managing your personal access tokens:
-  https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+  <https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens>
 - Permissions required for fine-grained personal access tokens:
-  https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens
+  <https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens>

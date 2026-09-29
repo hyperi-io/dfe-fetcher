@@ -1,0 +1,28 @@
+# Project:   dfe-fetcher
+# File:      .markdownlint-cli2.yaml
+# Purpose:   markdownlint rules and the files kept out of the lint
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# A repo config replaces hyperi-ci's bundled default rather than merging with
+# it, so the default's rules are carried here.
+config:
+  default: true
+  # Markdown has no width limit: a paragraph is one line and the editor wraps it.
+  MD013: false
+  # Table pipe spacing renders the same either way.
+  MD060: false
+  # Docs embed raw HTML on purpose.
+  MD033: false
+  # A heading may repeat under different parents.
+  MD024:
+    siblings_only: true
+  # A doc may open with a header comment or badges rather than its title.
+  MD041: false
+
+# Licence and contribution terms are published as written, not reformatted for a linter.
+ignores:
+  - AI-TRAINING-POLICY.md
+  - COMMERCIAL.md
+  - CONTRIBUTING.md

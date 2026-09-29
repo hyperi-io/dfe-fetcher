@@ -301,10 +301,10 @@ agreement.
 
 ## References
 
-- Microsoft Graph permissions reference (AuditLog.Read.All): https://learn.microsoft.com/en-us/graph/permissions-reference
-- Microsoft Entra audit logs API overview: https://learn.microsoft.com/en-us/graph/api/resources/azure-ad-auditlog-overview?view=graph-rest-1.0
-- List provisioningObjectSummary (v1.0): https://learn.microsoft.com/en-us/graph/api/provisioningobjectsummary-list?view=graph-rest-1.0
-- Defender for Cloud Alerts - List (api-version 2022-01-01): https://learn.microsoft.com/en-us/rest/api/defenderforcloud/alerts/list
-- Azure built-in roles for Security (Reader / Security Reader): https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security
-- Azure built-in roles for Monitor (Log Analytics Reader): https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/monitor
-- az ad app permission CLI reference: https://learn.microsoft.com/en-us/cli/azure/ad/app/permission?view=azure-cli-latest
+- Microsoft Graph permissions reference (AuditLog.Read.All): <https://learn.microsoft.com/en-us/graph/permissions-reference>
+- Microsoft Entra audit logs API overview: <https://learn.microsoft.com/en-us/graph/api/resources/azure-ad-auditlog-overview?view=graph-rest-1.0>
+- List provisioningObjectSummary (v1.0): <https://learn.microsoft.com/en-us/graph/api/provisioningobjectsummary-list?view=graph-rest-1.0>
+- Defender for Cloud Alerts - List (api-version 2022-01-01): <https://learn.microsoft.com/en-us/rest/api/defenderforcloud/alerts/list>
+- Azure built-in roles for Security (Reader / Security Reader): <https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security>
+- Azure built-in roles for Monitor (Log Analytics Reader): <https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/monitor>
+- az ad app permission CLI reference: <https://learn.microsoft.com/en-us/cli/azure/ad/app/permission?view=azure-cli-latest>

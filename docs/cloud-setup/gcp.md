@@ -80,7 +80,7 @@ Grant only what you need. All roles are read-only.
 
 If the predefined logging roles are too broad, a custom role needs at least:
 
-```
+```text
 logging.logEntries.list
 logging.logs.list
 logging.views.access      # required to read Data Access (private) logs

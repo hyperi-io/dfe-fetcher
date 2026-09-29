@@ -180,7 +180,7 @@ plan.
 
 ## References
 
-- Bitwarden Public API (auth, regional endpoints): https://bitwarden.com/help/public-api/
-- Public API overview (contributing docs): https://contributing.bitwarden.com/getting-started/server/public-api/
-- Password Manager APIs index: https://bitwarden.com/help/bitwarden-apis/
-- Bitwarden Labs events Public API client (reference tool): https://github.com/bitwarden-labs/events-public-api-client
+- Bitwarden Public API (auth, regional endpoints): <https://bitwarden.com/help/public-api/>
+- Public API overview (contributing docs): <https://contributing.bitwarden.com/getting-started/server/public-api/>
+- Password Manager APIs index: <https://bitwarden.com/help/bitwarden-apis/>
+- Bitwarden Labs events Public API client (reference tool): <https://github.com/bitwarden-labs/events-public-api-client>
