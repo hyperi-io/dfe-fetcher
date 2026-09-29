@@ -100,6 +100,11 @@ dfe-fetcher emit-chart ./chart
 dfe-fetcher emit-compose > docker-compose.yaml
 ```
 
+Set `image.tag` (or pin a digest) when you install the chart in `chart/`. Its
+`appVersion` is the generator's fixed `1.0.0`, not this release's `VERSION`, and
+an empty `image.tag` falls back to it -- so a default `helm install` pulls the
+first release.
+
 ## Configuration
 
 [config.example.yaml](config.example.yaml) is the annotated reference for
