@@ -95,6 +95,8 @@ futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
+# Names each config key serde drops, so a misspelt key is reported, not silently ignored.
+serde_ignored = { workspace = true }
 
 # Env-var layering over an explicit --config file (scalo's cascade only merges
 # env for files it discovers itself). Same range scalo pins, so cargo unifies to
