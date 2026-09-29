@@ -13,7 +13,7 @@
 //!
 //! All Kafka access via scalo's `KafkaTransport` -- no direct rdkafka dependency.
 //!
-//! A failed send is classified HERE and nowhere else: [`classify_fatal`]
+//! A failed send is classified HERE and nowhere else: `classify_fatal`
 //! decides whether the transport refused one record or is unusable for every
 //! record, and the emitter acts on the two error variants without reading any
 //! error text of its own.
