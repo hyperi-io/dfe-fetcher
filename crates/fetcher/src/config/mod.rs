@@ -352,11 +352,34 @@ impl Config {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
 
-        let mut config: Config = serde_yaml_ng::from_str(&content)?;
+        let (mut config, unknown) = Self::parse_yaml(&content)?;
+        for key in &unknown {
+            // A top-level section the fetcher does not own may be the scalo runtime's.
+            if key.contains('.') {
+                tracing::warn!(
+                    key,
+                    path,
+                    "unknown config key ignored -- check its spelling; it does nothing"
+                );
+            } else {
+                tracing::info!(key, path, "top-level config key left to the runtime");
+            }
+        }
         config.config_path = Some(path.to_string());
         apply_nested_env(&mut config)?;
         config.apply_flat_env("DFE_FETCHER");
         Ok(config)
+    }
+
+    /// Parse a YAML config, returning it with the dotted path of every key
+    /// serde ignored because no field names it.
+    pub fn parse_yaml(content: &str) -> Result<(Self, Vec<String>)> {
+        let mut unknown = Vec::new();
+        let config = serde_ignored::deserialize(
+            serde_yaml_ng::Deserializer::from_str(content),
+            |path| unknown.push(path.to_string()),
+        )?;
+        Ok((config, unknown))
     }
 
     /// Register all config sections in the global config registry.
@@ -5819,6 +5842,33 @@ kafka:
         assert_eq!(cfg.kafka.client_id, "test-client");
         assert_eq!(cfg.kafka.topic_suffix, "_raw");
         assert!(cfg.config_path.is_some());
+    }
+
+    /// A misspelt key is reported by its dotted path, at the top level and
+    /// nested, while the keys it sits beside still load.
+    #[test]
+    fn a_misspelt_config_key_is_reported_by_path() {
+        let yaml = "scheduler:\n  default_interval_secs: 120\n  intervals_secs: 300\n\
+                    ingest:\n  enabeld: true\nsourcess: {}\n";
+        let (cfg, unknown) = Config::parse_yaml(yaml).unwrap();
+        assert_eq!(cfg.scheduler.default_interval_secs, 120);
+        assert!(!cfg.ingest.enabled);
+        for key in ["scheduler.intervals_secs", "ingest.enabeld", "sourcess"] {
+            assert!(unknown.iter().any(|k| k == key), "{key} not in {unknown:?}");
+        }
+        assert_eq!(unknown.len(), 3, "{unknown:?}");
+    }
+
+    /// Inside the fetcher's own sections, the shipped example config names only
+    /// keys the fetcher reads. Top-level `version_check` is the runtime's.
+    #[test]
+    fn the_example_config_has_no_unknown_keys() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.example.yaml");
+        let content = std::fs::read_to_string(&path).unwrap();
+        let (_, unknown) = Config::parse_yaml(&content).unwrap();
+        let nested: Vec<_> = unknown.iter().filter(|k| k.contains('.')).collect();
+        assert!(nested.is_empty(), "config.example.yaml: {nested:?}");
     }
 
     #[test]
