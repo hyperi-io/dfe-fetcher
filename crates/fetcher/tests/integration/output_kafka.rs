@@ -22,20 +22,23 @@
 //! a consumer that cannot subscribe are all defects in what these tests cover,
 //! not environment gaps, so none of them may be downgraded to a skip.
 
-use crate::common;
+use crate::common::{self, ConsumeCeilings};
 
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::Utc;
-use serde_json::json;
-
-use scalo::transport::{TransportBase, TransportReceiver};
+use serde_json::{Value, json};
 
 use dfe_fetcher::config::{Config, OutputConfig, SharedConfig};
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::PipelineState;
+
+/// The frames that parse as JSON records.
+fn records(frames: &[Vec<u8>]) -> impl Iterator<Item = Value> + '_ {
+    frames.iter().filter_map(|f| serde_json::from_slice(f).ok())
+}
 
 /// Round-trip a single message: produce via OutputManager, consume via raw KafkaTransport.
 #[tokio::test]
@@ -71,43 +74,19 @@ async fn test_output_kafka_single_message_roundtrip() {
         output.close_all().await;
         panic!("produce to {topic} on {}: {e}", kf.brokers);
     }
-
-    // Consume back
-    let mut consumer_config = kf.to_scalo_config();
-    consumer_config.topics = vec![topic.clone()];
-    consumer_config.group = format!("integration-single-{}", Utc::now().timestamp_millis());
-    consumer_config.auto_offset_reset = "earliest".to_string();
-    consumer_config.enable_auto_commit = true;
-
-    let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
-        Ok(c) => c,
-        Err(e) => {
-            output.close_all().await;
-            panic!("consumer init against {}: {e}", kf.brokers);
-        }
-    };
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let mut found = false;
-
-    while !found && tokio::time::Instant::now() < deadline {
-        if let Ok(batch) = consumer.recv(10).await {
-            for record in batch.records {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
-                    && parsed["test"] == "single-roundtrip"
-                {
-                    found = true;
-                    break;
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
     output.close_all().await;
-    let _ = consumer.close().await;
 
-    assert!(found, "should receive the produced message back from Kafka");
+    // The read panics, naming the step, unless the record comes back.
+    let group = format!("integration-single-{}", Utc::now().timestamp_millis());
+    common::consume_until(
+        &kf,
+        &topic,
+        &group,
+        ConsumeCeilings::default(),
+        "the single-roundtrip record",
+        |frames| records(frames).any(|r| r["test"] == "single-roundtrip"),
+    )
+    .await;
 }
 
 /// Pipeline-level round-trip: enrichment fields appear in delivered payload.
@@ -156,45 +135,28 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
         .await
         .unwrap_or_else(|e| panic!("pipeline deliver to {topic} on {}: {e}", kf.brokers));
 
-    // Consume and verify enrichment
-    let mut consumer_config = kf.to_scalo_config();
-    consumer_config.topics = vec![topic.clone()];
-    consumer_config.group = format!("integration-enrich-{}", Utc::now().timestamp_millis());
-    consumer_config.auto_offset_reset = "earliest".to_string();
-    consumer_config.enable_auto_commit = true;
+    let is_enriched = |r: &Value| {
+        r.get("_timestamp_fetcher").is_some()
+            && r["_source"] == topic.as_str()
+            && r["_source_fetcher"] == "aws.cloudtrail"
+            && r["eventName"] == "CreateUser"
+    };
+    let group = format!("integration-enrich-{}", Utc::now().timestamp_millis());
+    let frames = common::consume_until(
+        &kf,
+        &topic,
+        &group,
+        ConsumeCeilings::default(),
+        "the record enriched with _timestamp_fetcher and _source_fetcher",
+        |frames| records(frames).any(|r| is_enriched(&r)),
+    )
+    .await;
 
-    let consumer = scalo::transport::KafkaTransport::new(&consumer_config)
-        .await
-        .unwrap_or_else(|e| panic!("consumer init against {}: {e}", kf.brokers));
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let mut enriched_found = false;
-
-    while !enriched_found && tokio::time::Instant::now() < deadline {
-        if let Ok(batch) = consumer.recv(10).await {
-            for record in batch.records {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
-                    && parsed.get("_timestamp_fetcher").is_some()
-                    && parsed["_source"] == topic.as_str()
-                    && parsed["_source_fetcher"] == "aws.cloudtrail"
-                    && parsed["eventName"] == "CreateUser"
-                {
-                    assert!(parsed["_timestamp_fetcher"].is_number());
-                    assert!(parsed["_timestamp_received"].is_number());
-                    enriched_found = true;
-                    break;
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    let _ = consumer.close().await;
-
-    assert!(
-        enriched_found,
-        "enriched record with _timestamp_fetcher and _source_fetcher must arrive at Kafka"
-    );
+    let enriched = records(&frames)
+        .find(is_enriched)
+        .expect("the read returns only once the enriched record is in");
+    assert!(enriched["_timestamp_fetcher"].is_number());
+    assert!(enriched["_timestamp_received"].is_number());
 }
 
 /// Multiple messages: produce N, consume N, all distinct.
@@ -228,45 +190,29 @@ async fn test_output_kafka_batch_roundtrip() {
         }
     }
 
-    let mut consumer_config = kf.to_scalo_config();
-    consumer_config.topics = vec![topic.clone()];
-    consumer_config.group = format!("integration-batch-{}", Utc::now().timestamp_millis());
-    consumer_config.auto_offset_reset = "earliest".to_string();
-    consumer_config.enable_auto_commit = true;
-
-    let consumer = match scalo::transport::KafkaTransport::new(&consumer_config).await {
-        Ok(c) => c,
-        Err(e) => {
-            output.close_all().await;
-            panic!("consumer init against {}: {e}", kf.brokers);
-        }
-    };
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    let mut seqs: std::collections::HashSet<u64> = std::collections::HashSet::new();
-
-    while seqs.len() < N as usize && tokio::time::Instant::now() < deadline {
-        if let Ok(batch) = consumer.recv(N as usize).await {
-            for record in batch.records {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&record.payload)
-                    && parsed["tag"] == "batch-test"
-                    && let Some(seq) = parsed["seq"].as_u64()
-                {
-                    seqs.insert(seq);
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
     output.close_all().await;
-    let _ = consumer.close().await;
+
+    let seqs = |frames: &[Vec<u8>]| -> HashSet<u64> {
+        records(frames)
+            .filter(|r| r["tag"] == "batch-test")
+            .filter_map(|r| r["seq"].as_u64())
+            .collect()
+    };
+    let group = format!("integration-batch-{}", Utc::now().timestamp_millis());
+    let frames = common::consume_until(
+        &kf,
+        &topic,
+        &group,
+        ConsumeCeilings::default(),
+        &format!("{N} distinct batch-test records"),
+        |frames| seqs(frames).len() >= N as usize,
+    )
+    .await;
 
     assert_eq!(
-        seqs.len(),
-        N as usize,
-        "should receive all {N} distinct messages, got {}",
-        seqs.len()
+        seqs(&frames),
+        (0..N).collect::<HashSet<u64>>(),
+        "every sequence number arrives"
     );
 }
 
