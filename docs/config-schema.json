@@ -292,7 +292,7 @@
       }
     },
     "scaling": {
-      "description": "Scaling pressure configuration for KEDA autoscaling.",
+      "description": "Scaling pressure served at `/scaling/pressure` for an external autoscaler\nto read. The chart declares no KEDA trigger against it.",
       "$ref": "#/$defs/ScalingPressureConfig",
       "default": {
         "enabled": true,

@@ -130,7 +130,8 @@ pub struct Config {
     #[serde(default)]
     pub cursor: CursorConfig,
 
-    /// Scaling pressure configuration for KEDA autoscaling.
+    /// Scaling pressure served at `/scaling/pressure` for an external autoscaler
+    /// to read. The chart declares no KEDA trigger against it.
     #[serde(default)]
     pub scaling: scalo::scaling::ScalingPressureConfig,
 

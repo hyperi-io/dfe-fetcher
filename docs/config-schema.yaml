@@ -273,7 +273,9 @@ properties:
       default_window_hours: 1
       on_missing_cursor: lookback
   scaling:
-    description: Scaling pressure configuration for KEDA autoscaling.
+    description: |-
+      Scaling pressure served at `/scaling/pressure` for an external autoscaler
+      to read. The chart declares no KEDA trigger against it.
     $ref: '#/$defs/ScalingPressureConfig'
     default:
       enabled: true
