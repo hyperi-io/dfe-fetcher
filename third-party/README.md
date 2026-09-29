@@ -8,5 +8,5 @@ with a `dfe-fetcher:` comment; re-sync by diffing against the recorded commit.
 
 | directory | upstream | path | commit | licence |
 |---|---|---|---|---|
-| `vector-file-source/` | https://github.com/vectordotdev/vector | `lib/file-source` | `0141894cb40218aff7fcb308dd32847dd875bf74` | MIT |
-| `vector-file-source-common/` | https://github.com/vectordotdev/vector | `lib/file-source-common` | `0141894cb40218aff7fcb308dd32847dd875bf74` | MIT |
+| `vector-file-source/` | <https://github.com/vectordotdev/vector> | `lib/file-source` | `0141894cb40218aff7fcb308dd32847dd875bf74` | MIT |
+| `vector-file-source-common/` | <https://github.com/vectordotdev/vector> | `lib/file-source-common` | `0141894cb40218aff7fcb308dd32847dd875bf74` | MIT |

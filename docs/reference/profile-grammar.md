@@ -112,7 +112,7 @@ instance, never here.
 
 | Mode shape | Fields |
 |------------|--------|
-| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `SSWS `; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
+| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `"SSWS "`; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
 | `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
 | `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
@@ -567,7 +567,7 @@ counted as an API error.
 | Field | Meaning |
 |-------|---------|
 | `window.format` | How `window.start` and `window.end` render: `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis` or `strftime:<pattern>`. |
-| `window.step` | Split the window into steps of at most this length (`<n>s|m|h|d`), one page sequence each. |
+| `window.step` | Split the window into steps of at most this length (`<n>s\|m\|h\|d`), one page sequence each. |
 | `window.lookback` | Window used when the scheduler passes none. |
 | `endpoints[].window.format` | A unit's own rendering when its API differs from the profile's. |
 

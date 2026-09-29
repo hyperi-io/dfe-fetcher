@@ -177,8 +177,8 @@ cost implications against your own 1Password plan.
 
 ## References
 
-- 1Password Events Reporting setup: https://support.1password.com/events-reporting/
-- About the Events API: https://developer.1password.com/docs/events-api/introduction/
-- Servers and base URLs (regional hosts): https://developer.1password.com/docs/events-api/servers/
-- Events API reference (endpoints, rate limits): https://developer.1password.com/docs/events-api/reference/
-- 1Password CLI events-api command: https://developer.1password.com/docs/cli/reference/management-commands/events-api/
+- 1Password Events Reporting setup: <https://support.1password.com/events-reporting/>
+- About the Events API: <https://developer.1password.com/docs/events-api/introduction/>
+- Servers and base URLs (regional hosts): <https://developer.1password.com/docs/events-api/servers/>
+- Events API reference (endpoints, rate limits): <https://developer.1password.com/docs/events-api/reference/>
+- 1Password CLI events-api command: <https://developer.1password.com/docs/cli/reference/management-commands/events-api/>

@@ -122,6 +122,7 @@ delegation -> Manage Domain Wide Delegation -> Add new.
 - Click Authorize.
 
 Notes:
+
 - The scope string must match what dfe-fetcher requests EXACTLY, or token
   exchange fails with "Client is unauthorized" / "not authorized for any of the
   scopes requested".
@@ -238,8 +239,8 @@ against your own Google Workspace and Google Cloud agreements.
 
 ## References
 
-- Reports API overview: https://developers.google.com/workspace/admin/reports/v1/overview
-- activities.list (applicationName values): https://developers.google.com/workspace/admin/reports/reference/rest/v1/activities/list
-- Control API access with domain-wide delegation: https://knowledge.workspace.google.com/admin/apps/control-api-access-with-domain-wide-delegation
-- Perform Google Workspace domain-wide delegation of authority: https://developers.google.com/workspace/cloud-search/docs/guides/delegation
-- Create access credentials (service account): https://developers.google.com/workspace/guides/create-credentials
+- Reports API overview: <https://developers.google.com/workspace/admin/reports/v1/overview>
+- activities.list (applicationName values): <https://developers.google.com/workspace/admin/reports/reference/rest/v1/activities/list>
+- Control API access with domain-wide delegation: <https://knowledge.workspace.google.com/admin/apps/control-api-access-with-domain-wide-delegation>
+- Perform Google Workspace domain-wide delegation of authority: <https://developers.google.com/workspace/cloud-search/docs/guides/delegation>
+- Create access credentials (service account): <https://developers.google.com/workspace/guides/create-credentials>

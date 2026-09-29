@@ -278,13 +278,13 @@ rather than polling aggressively, and watch the quota gauges.
 
 ## References
 
-- API and Application Keys (creating each, scopes, revocation): https://docs.datadoghq.com/account_management/api-app-keys/
-- Datadog sites (the site table): https://docs.datadoghq.com/getting_started/site/
-- Datadog Role Permissions: https://docs.datadoghq.com/account_management/rbac/permissions/
-- Datadog Audit Trail (enabling it, retention, permissions): https://docs.datadoghq.com/account_management/audit_trail/
-- Audit API: https://docs.datadoghq.com/api/latest/audit/
-- Security Monitoring API: https://docs.datadoghq.com/api/latest/security-monitoring/
-- API rate limits and their headers: https://docs.datadoghq.com/api/latest/rate-limits/
-- Cloud SIEM: https://docs.datadoghq.com/security/cloud_siem/
-- Datadog pricing (products and billing units): https://docs.datadoghq.com/account_management/billing/pricing/
-- Datadog v2 OpenAPI specification (the permission each endpoint requires, its parameters and its paging): https://raw.githubusercontent.com/DataDog/datadog-api-client-go/master/.generator/schemas/v2/openapi.yaml
+- API and Application Keys (creating each, scopes, revocation): <https://docs.datadoghq.com/account_management/api-app-keys/>
+- Datadog sites (the site table): <https://docs.datadoghq.com/getting_started/site/>
+- Datadog Role Permissions: <https://docs.datadoghq.com/account_management/rbac/permissions/>
+- Datadog Audit Trail (enabling it, retention, permissions): <https://docs.datadoghq.com/account_management/audit_trail/>
+- Audit API: <https://docs.datadoghq.com/api/latest/audit/>
+- Security Monitoring API: <https://docs.datadoghq.com/api/latest/security-monitoring/>
+- API rate limits and their headers: <https://docs.datadoghq.com/api/latest/rate-limits/>
+- Cloud SIEM: <https://docs.datadoghq.com/security/cloud_siem/>
+- Datadog pricing (products and billing units): <https://docs.datadoghq.com/account_management/billing/pricing/>
+- Datadog v2 OpenAPI specification (the permission each endpoint requires, its parameters and its paging): <https://raw.githubusercontent.com/DataDog/datadog-api-client-go/master/.generator/schemas/v2/openapi.yaml>

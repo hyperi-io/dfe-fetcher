@@ -53,7 +53,7 @@ API calls.
 
 1. **Create the app**
 
-   Sign in as an Org Owner and open https://api.slack.com/apps. Select
+   Sign in as an Org Owner and open <https://api.slack.com/apps>. Select
    **Create New App** -> **From scratch**. Name it `dfe-fetcher`, pick any
    workspace in the org as the development workspace, and select **Create
    App**.
@@ -173,7 +173,7 @@ plan.
 
 ## References
 
-- Using the Audit Logs API: https://docs.slack.dev/admins/audit-logs-api/
-- `auditlogs:read` scope: https://api.slack.com/scopes/auditlogs:read
-- Audit logs overview (admin help): https://slack.com/help/articles/360000394286-Audit-logs-in-Slack
-- Slack rate limits: https://docs.slack.dev/apis/web-api/rate-limits/
+- Using the Audit Logs API: <https://docs.slack.dev/admins/audit-logs-api/>
+- `auditlogs:read` scope: <https://api.slack.com/scopes/auditlogs:read>
+- Audit logs overview (admin help): <https://slack.com/help/articles/360000394286-Audit-logs-in-Slack>
+- Slack rate limits: <https://docs.slack.dev/apis/web-api/rate-limits/>
