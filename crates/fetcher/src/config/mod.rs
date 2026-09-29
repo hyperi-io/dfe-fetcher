@@ -505,7 +505,9 @@ impl Config {
                 self.ingest.bind_address
             )));
         }
-        if self.ingest.enabled && !self.ingest.has_auth_token() && !self.ingest.allow_unauthenticated
+        if self.ingest.enabled
+            && !self.ingest.has_auth_token()
+            && !self.ingest.allow_unauthenticated
         {
             return Err(Error::Config(
                 "ingest is enabled with no auth_token, so anything that can reach the port could \
@@ -5699,7 +5701,10 @@ mod tests {
 
         cfg.ingest.auth_token = Some(SensitiveString::from(String::new()));
         let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("allow_unauthenticated"), "empty token, got: {err}");
+        assert!(
+            err.contains("allow_unauthenticated"),
+            "empty token, got: {err}"
+        );
 
         cfg.ingest.auth_token = Some(SensitiveString::from("env:DFE_FETCHER_INGEST_TOKEN"));
         cfg.validate()
