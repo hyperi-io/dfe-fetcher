@@ -21,6 +21,8 @@ language: rust
 # packages. Never ask a runner for `--all-features`.
 quality:
   enabled: true
+  # The docs lint clean, so a new warning fails the run rather than piling up.
+  markdownlint: blocking
   # GHSA-w9wp-h8wv-79jx / CVE-2026-48504: opentelemetry_sdk 0.31.0 is in the
   # lock through scalo, in the affected range (<= 0.32.0, fixed in 0.32.1). The
   # flaw is in BaggagePropagator::extract_with_context, which parses an inbound
