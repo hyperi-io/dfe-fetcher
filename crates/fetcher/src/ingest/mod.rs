@@ -24,8 +24,9 @@
 //!
 //! ## Authentication
 //!
-//! When `ingest.auth_token` is configured, all `/ingest` endpoints require
-//! a `Authorization: Bearer <token>` header. The `/health` endpoint is
+//! All `/ingest` endpoints require an `Authorization: Bearer <token>` header
+//! matching `ingest.auth_token`. With no token the listener refuses to start
+//! unless `ingest.allow_unauthenticated` is set. The probe endpoints are
 //! always exempt (K8s probes need unauthenticated access).
 
 use std::sync::Arc;
@@ -255,13 +256,18 @@ pub async fn run_ingest_server(
             info!("Ingest server authentication enabled");
             Some(token.to_string())
         }
-        Some(_) => {
-            warn!("Ingest auth_token is empty -- running without authentication");
+        _ if config.allow_unauthenticated => {
+            warn!(
+                "Ingest server running without authentication (ingest.allow_unauthenticated) \
+                 -- anything that can reach the port can write to any topic"
+            );
             None
         }
-        None => {
-            warn!("No ingest auth_token configured -- running without authentication");
-            None
+        _ => {
+            anyhow::bail!(
+                "ingest auth_token resolved empty -- refusing to run the listener open; set \
+                 ingest.allow_unauthenticated: true to allow it"
+            );
         }
     };
 
@@ -863,6 +869,33 @@ mod tests {
         let result = run_ingest_server(&config, pipeline, metrics, shutdown).await;
 
         assert!(result.is_ok(), "disabled server should return Ok");
+    }
+
+    /// A token that resolves empty refuses to start the listener, rather than
+    /// running it open, unless the config opts in.
+    #[tokio::test]
+    async fn an_empty_resolved_token_refuses_to_run_the_listener_open() {
+        let config = IngestConfig {
+            enabled: true,
+            bind_address: "127.0.0.1:0".to_string(),
+            auth_token: Some(SensitiveString::from(String::new())),
+            ..Default::default()
+        };
+
+        let shared = SharedConfig::new(Config::default());
+        let metrics = Arc::new(Metrics::new());
+        let pipeline = Arc::new(
+            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
+                .expect("default config should work"),
+        );
+
+        let err = run_ingest_server(&config, pipeline, metrics, CancellationToken::new())
+            .await
+            .expect_err("an empty token must not run the listener open");
+        assert!(
+            err.to_string().contains("allow_unauthenticated"),
+            "the error names the opt-in: {err}"
+        );
     }
 
     /// `Authorization: Bearer ` (with trailing space, empty token) must be
