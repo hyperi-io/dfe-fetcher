@@ -134,7 +134,14 @@ pub(crate) fn aws() -> Capability {
                 "CloudTrail management + data events via LookupEvents.",
             ),
             service("guardduty", "GuardDuty findings."),
-            service("securityhub", "Security Hub findings."),
+            service(
+                "securityhub",
+                "Security Hub findings whose record changed in the window, in any workflow status.",
+            )
+            .field(FieldSpec::list("workflow_status").description(
+                "Workflow statuses to keep, from NEW, NOTIFIED, RESOLVED and SUPPRESSED. Every \
+                 status unless set.",
+            )),
             service(
                 "config",
                 "AWS Config resource configurations via an advanced query.",

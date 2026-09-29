@@ -2478,3 +2478,219 @@ async fn a_queue_unit_marks_each_message_with_its_ack_id_and_acks_when_told() {
     );
     assert!(QueueShape::new(not_a_queue).is_err());
 }
+
+/// A manifest item is provider data that renders a whole URL, so it decides
+/// the host the item request goes to: one naming another host fails the tick
+/// before the request is built, names that host without the URL, and never
+/// carries the key.
+#[tokio::test]
+async fn a_manifest_item_on_another_host_is_refused() {
+    let fx = common::start().await;
+    let p = "profile: omap\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { header: X-Api-Key }\nendpoints:\n  - unit: content\n    path: /manifest/list\n    query: { item_host: localhost }\n    rows: { decoder: json_array }\n    construct:\n      manifest:\n        item_request: { path: \"{{ item.uri }}\" }\n        rows: { decoder: json_array }\n";
+    let s = shape(
+        &fx,
+        p,
+        "profile: x\ntopic: t\nauth: { mode: api_key, key: the-key }\n",
+    );
+    let err = fetch_rows(&s, "content", None)
+        .await
+        .expect_err("the item names a host the unit was never configured for");
+    assert!(
+        matches!(err, Error::OriginRefused(_)),
+        "the provider chose the host, so the tick fails as a refusal: {err:?}"
+    );
+    assert!(
+        err.to_string().contains("localhost"),
+        "the refusal names the host: {err}"
+    );
+    assert!(
+        !err.to_string().contains("/manifest/blob"),
+        "and not the URL, which an api_key query would put the key in: {err}"
+    );
+    assert!(
+        fx.requests_to("/manifest/blob/a").is_empty(),
+        "no request was built, so the key never left: {:?}",
+        fx.paths()
+    );
+}
+
+/// `allow_hosts` is the declared widening, for a sovereign cloud whose API
+/// answers on a second host: the operator names that origin and the item on it
+/// is fetched. An entry that renders anything but an absolute URL is refused at
+/// bind, so it never silently permits nothing.
+#[tokio::test]
+async fn an_allow_hosts_entry_widens_the_unit_to_the_host_it_names() {
+    let fx = common::start().await;
+    let p = "profile: omap\nbase_url: \"{{ vars.base_url }}\"\nallow_hosts: [\"{{ vars.blob_url }}\"]\nauth:\n  accepts: [api_key]\n  api_key: { header: X-Api-Key }\nendpoints:\n  - unit: content\n    path: /manifest/list\n    query: { item_host: localhost }\n    rows: { decoder: json_array }\n    construct:\n      manifest:\n        item_request: { path: \"{{ item.uri }}\" }\n        rows: { decoder: json_array }\n";
+    let mut inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: api_key, key: the-key }\n",
+    );
+    inst.vars.insert(
+        "blob_url".into(),
+        Value::String(format!("http://localhost:{}", fx.addr.port())),
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let rows = fetch(&s, "content", None)
+        .await
+        .expect("the declared host is permitted");
+    assert_eq!(rows.len(), 4, "both items of the page, off the base host");
+    assert_eq!(fx.requests_to("/manifest/blob/a").len(), 1);
+
+    inst.vars
+        .insert("blob_url".into(), Value::String("localhost".into()));
+    let err = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .expect_err("a bare host names no origin");
+    assert!(matches!(err, Error::Config(_)), "{err:?}");
+    assert!(err.to_string().contains("allow_hosts[0]"), "{err}");
+}
+
+/// The lister's listing path is rendered the same way, and the gate sits in
+/// front of the signer, so a bucket var that renders a whole URL on another
+/// host is refused before a SigV4 signature exists to send.
+#[tokio::test]
+async fn a_lister_listing_path_on_another_host_is_refused() {
+    let fx = common::start().await;
+    let p = "profile: s3\nbase_url: \"{{ vars.base_url }}/s3\"\nauth:\n  accepts: [sigv4]\n  sigv4: { service: s3, region: \"{{ vars.region }}\" }\nwindow: { lookback: 3650d }\nvars: { region: ap-southeast-2 }\nendpoints:\n  - unit: objects\n    lister: s3\n    path: \"{{ vars.bucket }}\"\n    query: { list-type: 2 }\n    construct:\n      manifest:\n        item_request: { path: \"{{ vars.bucket }}/{{ item.path }}\" }\n        rows: { decoder: ndjson }\n";
+    let mut inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIATEST, secret_access_key: sekrit }\n",
+    );
+    inst.vars.insert(
+        "bucket".into(),
+        Value::String(format!("http://localhost:{}/s3/logs", fx.addr.port())),
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let err = fetch_rows(&s, "objects", None)
+        .await
+        .expect_err("the listing URL is off the unit's origin");
+    assert!(matches!(err, Error::OriginRefused(_)), "{err:?}");
+    assert!(
+        err.to_string().contains("localhost"),
+        "the refusal names the host: {err}"
+    );
+    assert!(
+        !err.to_string().contains("/s3/logs"),
+        "and not the URL: {err}"
+    );
+    assert!(
+        fx.paths().is_empty(),
+        "nothing was signed and nothing was sent: {:?}",
+        fx.paths()
+    );
+}
+
+/// The Link header is one of the four pagers that hand back a whole URL, and
+/// all four meet at the same parse, so a next page off the unit's origin is
+/// not followed.
+#[tokio::test]
+async fn a_link_header_pointing_off_host_is_not_followed() {
+    let fx = common::start().await;
+    let p = format!(
+        "{PLAIN}endpoints:\n  - unit: pages\n    path: /offhost/page\n    rows: {{ decoder: json_at, at: /records }}\n    paginate: {{ strategy: link_header }}\n"
+    );
+    assert_off_host_page_is_refused(&fx, &p, "pages").await;
+}
+
+/// A `cursor` pager whose `into` is `path` makes the cursor the next URL,
+/// which is the same widening by another name.
+#[tokio::test]
+async fn a_cursor_into_path_pointing_off_host_is_not_followed() {
+    let fx = common::start().await;
+    let p = format!(
+        "{PLAIN}endpoints:\n  - unit: pages\n    path: /offhost/page\n    rows: {{ decoder: json_at, at: /records }}\n    paginate: {{ strategy: cursor, from: \"body:/next\", into: path }}\n"
+    );
+    assert_off_host_page_is_refused(&fx, &p, "pages").await;
+}
+
+/// `request_path` takes the URL from the body, and its absolute branch is
+/// the one a provider controls outright.
+#[tokio::test]
+async fn a_request_path_pointing_off_host_is_not_followed() {
+    let fx = common::start().await;
+    let p = format!(
+        "{PLAIN}endpoints:\n  - unit: pages\n    path: /offhost/page\n    rows: {{ decoder: json_at, at: /records }}\n    paginate: {{ strategy: request_path, from: \"body:/next\" }}\n"
+    );
+    assert_off_host_page_is_refused(&fx, &p, "pages").await;
+}
+
+/// The first page lands, the next-page URL names another host, and the tick
+/// fails there with nothing sent to that host.
+async fn assert_off_host_page_is_refused(fx: &common::Fixture, profile_yaml: &str, unit: &str) {
+    let s = shape(fx, profile_yaml, BEARER_INSTANCE);
+    let err = fetch(&s, unit, None)
+        .await
+        .expect_err("the next page is on another host");
+    assert!(matches!(err, Error::OriginRefused(_)), "{err:?}");
+    assert!(
+        err.to_string().contains("localhost"),
+        "the refusal names the host: {err}"
+    );
+    assert!(
+        !err.to_string().contains("/offhost/next"),
+        "and not the URL: {err}"
+    );
+    assert_eq!(fx.requests_to("/offhost/page").len(), 1, "one page fetched");
+    assert!(
+        fx.requests_to("/offhost/next").is_empty(),
+        "the off-host page was never asked for: {:?}",
+        fx.paths()
+    );
+}
+
+/// A token exchange that names the org's own host is the one off-host case
+/// the design keeps: the host arrives with the token, so a unit addressing
+/// `auth.instance_url` reaches it even though it is not the base URL's.
+#[tokio::test]
+async fn an_exposed_credential_field_permits_the_host_it_names() {
+    let fx = common::start().await;
+    let p = "profile: sf\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials: { token_url: \"{{ vars.alias_url }}/token\", expose: [instance_url] }\nendpoints:\n  - unit: query\n    path: \"{{ auth.instance_url }}/query\"\n    rows: { decoder: json_at, at: /records }\n";
+    let mut inst = instance(
+        &fx,
+        "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: client-a, client_secret: secret-a }\n",
+    );
+    // The exchange is posted to `localhost`, so the `instance_url` it answers
+    // names a host the unit's own base URL does not.
+    inst.vars.insert(
+        "alias_url".into(),
+        Value::String(format!("http://localhost:{}", fx.addr.port())),
+    );
+    let s = RestShape::from_instance(
+        &profile(p),
+        &inst,
+        "conn",
+        reqwest::Client::new(),
+        &exchange(),
+    )
+    .unwrap();
+    let rows = fetch(&s, "query", None)
+        .await
+        .expect("the host the exchange named is permitted");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(fx.requests_to("/instance/query").len(), 1);
+    assert_eq!(
+        fx.token_hosts(),
+        [format!("localhost:{}", fx.addr.port())],
+        "the exchange really did go to the other host string"
+    );
+}

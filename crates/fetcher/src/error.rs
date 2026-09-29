@@ -151,7 +151,9 @@ impl IntoResponse for Error {
                 dfe_fetcher_core::Error::Credential(_) => {
                     (StatusCode::UNAUTHORIZED, inner.to_string())
                 }
-                dfe_fetcher_core::Error::Api { .. } | dfe_fetcher_core::Error::Source(_) => {
+                dfe_fetcher_core::Error::Api { .. }
+                | dfe_fetcher_core::Error::Source(_)
+                | dfe_fetcher_core::Error::OriginRefused(_) => {
                     (StatusCode::BAD_GATEWAY, inner.to_string())
                 }
                 _ => (StatusCode::INTERNAL_SERVER_ERROR, inner.to_string()),

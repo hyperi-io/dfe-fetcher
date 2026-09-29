@@ -18,8 +18,9 @@
 # POST to the service root with `X-Amz-Target`; GuardDuty, Security Hub
 # and Inspector v2 are REST-JSON APIs with their own paths. Every list
 # pages to the end on the body token the API documents. The window is
-# epoch seconds (milliseconds for CloudWatch Logs) as typed numbers, and
-# defaults to the last hour. The health check is STS `GetCallerIdentity`,
+# epoch seconds (milliseconds for CloudWatch Logs) as typed numbers, RFC
+# 3339 strings for Security Hub's `UpdatedAt`, and defaults to the last
+# hour. The health check is STS `GetCallerIdentity`,
 # the one call every key may make.
 #
 # CloudWatch metrics are a two-request synthesis: the keyset is the list
@@ -62,6 +63,7 @@ vars:
   output_format: json
   filter_pattern: ""
   max_results: 100
+  workflow_status_filter: []
 probe:
   path: /
   query: { Action: GetCallerIdentity, Version: "2011-06-15" }
@@ -107,14 +109,26 @@ endpoints:
           headers: { Content-Type: application/json }
           body: { findingIds: "{{ ids }}" }
         rows: { decoder: json_at, at: "/findings" }
+  # Security Hub: every finding whose record changed in the window, whatever
+  # its workflow status, because a resolution is an update and a NEW-only
+  # filter never sees one. `workflow_status_filter` is the `WorkflowStatus`
+  # filter list the instance builds from its `workflow_status` knob.
   - unit: securityhub
     vars: { service: securityhub }
+    window: { format: rfc3339_millis }
     path: /findings
     headers: { Content-Type: application/json }
     body:
-      Filters: { WorkflowStatus: [{ Value: NEW, Comparison: EQUALS }] }
+      Filters:
+        UpdatedAt: [{ Start: "{{ window.start }}", End: "{{ window.end }}" }]
+        WorkflowStatus: "{{ size(vars.workflow_status_filter) == 0 ? null : vars.workflow_status_filter }}"
       MaxResults: 100
     rows: { decoder: json_at, at: "/Findings" }
+    # GetFindings allows 3 requests a second with a burst of 6.
+    rate: { requests_per_sec: 3 }
+    # 200 pages of 100 is 20,000 changed findings a window, against the
+    # profile's 50 pages.
+    max_pages: 200
   - unit: config
     vars: { service: config }
     headers:

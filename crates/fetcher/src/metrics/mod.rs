@@ -451,7 +451,8 @@ impl Metrics {
 
     /// Record a cloud API error.
     ///
-    /// `code` should be one of: "throttle", "4xx", "5xx", "timeout", "network".
+    /// `code` is one of: "throttle", "4xx", "5xx", "timeout", "network",
+    /// "origin_refused", "oversize_page", "page_ceiling".
     /// The "throttle" category (HTTP 429 / AWS SlowDown / rate-limit) is split
     /// out of the generic "4xx" bucket so it also drives the self-normalised
     /// `throttle_ratio` scaling signal (rate-limiting => spread quota over more

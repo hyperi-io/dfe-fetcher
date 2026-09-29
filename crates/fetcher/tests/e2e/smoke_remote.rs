@@ -171,7 +171,8 @@ async fn aws_fetch_guardduty() {
     aws_fetch("guardduty", HashMap::new()).await;
 }
 
-/// `securityhub` -- every NEW finding in the region.
+/// `securityhub` -- every finding in the region updated in the window, in any
+/// workflow status.
 #[tokio::test]
 #[ignore = "requires live AWS credentials AND Security Hub enabled"]
 async fn aws_fetch_securityhub() {

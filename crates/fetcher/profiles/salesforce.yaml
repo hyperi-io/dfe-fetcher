@@ -29,6 +29,9 @@
 profile: salesforce
 maturity: alpha
 base_url: "{{ vars.login_url }}"
+# An operator may pin the org host with `instance_url`, which is a different
+# host from the login host the base URL names.
+allow_hosts: ["{{ vars.instance_url }}"]
 shape: incremental
 auth:
   accepts: [jwt_bearer, oauth2_client_credentials]

@@ -14,9 +14,9 @@
 //! paging with totals, a windowed endpoint that records the bounds it was
 //! asked for, NDJSON with and without a trailing newline, a 0-byte body, gzip
 //! bodies, three auth modes with an OAuth2 token endpoint, the retry and
-//! error-text cases, a manifest listing blobs by URL, and a subscription
-//! start that answers 400 once enabled. Every request is recorded so a test
-//! can assert what the shape actually sent.
+//! error-text cases, a manifest listing blobs by URL, a next-page pointer on
+//! another host, and a subscription start that answers 400 once enabled. Every
+//! request is recorded so a test can assert what the shape actually sent.
 
 #![allow(dead_code)]
 
@@ -1355,6 +1355,45 @@ async fn sigv4_scope(
     axum::Json(json!([{"scope": scope}])).into_response()
 }
 
+/// The port of a `Host` header, for building a URL that names another host
+/// on this same socket.
+fn port_of(host: &str) -> &str {
+    host.rsplit_once(':').map_or("80", |(_, port)| port)
+}
+
+/// A page whose next-page pointer names `localhost` instead of the address
+/// the request arrived on: one socket, two host strings, which is a foreign
+/// origin with no second server to run. The pointer sits in the Link header
+/// and in the body, so one route serves every URL-producing pager.
+async fn offhost_page(
+    State(state): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    record(&state, "/offhost/page", &query, &headers, None);
+    let port = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(|| "80".to_owned(), |host| port_of(host).to_owned());
+    let next = format!("http://localhost:{port}/offhost/next");
+    (
+        [(header::LINK, format!("<{next}>; rel=\"next\""))],
+        axum::Json(json!({"records": rows(0, 2), "next": next})),
+    )
+        .into_response()
+}
+
+/// The page an off-host pointer names; a request recorded here is one the
+/// origin gate let through.
+async fn offhost_next(
+    State(state): State<Shared>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    record(&state, "/offhost/next", &query, &headers, None);
+    axum::Json(json!({"records": rows(2, 1)})).into_response()
+}
+
 /// The OMAP shape, the manifest: a content list whose items point at
 /// blobs on this server, paged by a `NextPageUri` header; the second page
 /// names one blob that does not exist.
@@ -1369,7 +1408,13 @@ async fn manifest_list(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("127.0.0.1")
         .to_owned();
-    let item = |id: &str, created: &str| json!({"uri": format!("http://{host}/manifest/blob/{id}"), "id": id, "created": created});
+    // `item_host` names another host on this same socket, so a test can make
+    // the provider point an item off the host the unit was configured for.
+    let item_host = match query.get("item_host") {
+        Some(name) => format!("{name}:{}", port_of(&host)),
+        None => host.clone(),
+    };
+    let item = |id: &str, created: &str| json!({"uri": format!("http://{item_host}/manifest/blob/{id}"), "id": id, "created": created});
     if query.get("page").is_some_and(|p| p == "2") {
         axum::Json(vec![
             item("missing", "2026-01-01T00:20:00Z"),
@@ -1505,6 +1550,8 @@ pub async fn start() -> Fixture {
         .route("/metrics/list", post(metrics_list))
         .route("/metrics/data", post(metrics_data))
         .route("/sigv4/scope", get(sigv4_scope))
+        .route("/offhost/page", get(offhost_page))
+        .route("/offhost/next", get(offhost_next))
         .route("/manifest/list", get(manifest_list))
         .route("/manifest/blob/{id}", get(manifest_blob))
         .route("/prelude/start", post(prelude_start))

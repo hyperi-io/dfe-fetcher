@@ -90,6 +90,40 @@ mod tests {
         assert_eq!(shipped().len(), SHIPPED.len());
     }
 
+    /// `allow_hosts` widens the hosts a source may send its credential to, so
+    /// every declaration is pinned here and a new one is a deliberate review
+    /// rather than a quiet edit.
+    ///
+    /// Only salesforce declares one: an operator may pin the org host with
+    /// `instance_url`, and that is a different host from the login host its
+    /// `base_url` names. Every other shipped API answers on the host its own
+    /// `base_url` names, or on one a token exchange names.
+    #[test]
+    fn only_salesforce_widens_its_hosts_and_only_to_the_pinned_org() {
+        let mut declared: Vec<(&str, Vec<String>)> = shipped()
+            .iter()
+            .filter(|(_, p)| !p.allow_hosts.is_empty())
+            .map(|(name, p)| (name.as_str(), p.allow_hosts.clone()))
+            .collect();
+        declared.sort_unstable_by_key(|(name, _)| *name);
+        assert_eq!(
+            declared,
+            vec![("salesforce", vec!["{{ vars.instance_url }}".to_owned()])],
+            "a shipped profile widening its hosts needs a review, not a green test"
+        );
+
+        for (name, profile) in shipped() {
+            for endpoint in &profile.endpoints {
+                assert!(
+                    endpoint.allow_hosts.is_empty(),
+                    "shipped profile `{name}` unit `{}` widens its hosts: {:?}",
+                    endpoint.unit,
+                    endpoint.allow_hosts
+                );
+            }
+        }
+    }
+
     /// The runZero profile is the contract RECON s18 measured live: NDJSON
     /// exports with no paging, a refusal terminal for the tick, the error text
     /// under `error`, the daily usage counter as a gauge, and a row key that
@@ -1772,9 +1806,23 @@ mod tests {
         assert_eq!(
             profile.body_of(securityhub),
             Some(&serde_json::json!({
-                "Filters": {"WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]},
+                "Filters": {
+                    "UpdatedAt": [{"Start": "{{ window.start }}", "End": "{{ window.end }}"}],
+                    "WorkflowStatus": "{{ size(vars.workflow_status_filter) == 0 ? null : vars.workflow_status_filter }}"
+                },
                 "MaxResults": 100
             }))
+        );
+        assert_eq!(
+            profile.vars["workflow_status_filter"],
+            serde_json::json!([]),
+            "every workflow status unless the instance narrows it"
+        );
+        assert_eq!(profile.max_pages_of(securityhub), 200);
+        assert_eq!(
+            profile.rate_of(securityhub).map(|r| r.requests_per_sec),
+            Some(3.0),
+            "GetFindings allows 3 requests a second"
         );
 
         let config = unit("config");

@@ -52,6 +52,8 @@ sources:
       - name: cloudtrail
       - name: guardduty
       - name: securityhub
+        # config:
+        #   workflow_status: ["NEW", "RESOLVED"]   # every status unless set
       - name: config
       # Inspector v2 must be enabled tenant-side; returns empty otherwise.
       # - name: inspector

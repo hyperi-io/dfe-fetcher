@@ -59,7 +59,7 @@ permission.
 |---------|-------------|-------|
 | CloudTrail | `cloudtrail:LookupEvents` (or managed policy `AWSCloudTrail_ReadOnlyAccess`) | `LookupEvents` covers the last 90 days of management events |
 | GuardDuty | `guardduty:ListDetectors`, `guardduty:ListFindings`, `guardduty:GetFindings` | One detector per region; fetcher walks all detectors and looks findings up under the detector that listed them |
-| SecurityHub | `securityhub:GetFindings` | Requires SecurityHub enabled in the account; only `NEW` workflow-status findings are fetched |
+| SecurityHub | `securityhub:GetFindings` | Requires SecurityHub enabled in the account; fetches every finding whose record changed in the window, in any workflow status, so a finding's resolution arrives as an update. The `workflow_status` knob narrows it |
 | Config | `config:SelectResourceConfig` | Requires AWS Config recording in the account; the `expression` knob replaces the default query |
 | CloudWatch Logs | `logs:FilterLogEvents`, `logs:DescribeLogGroups`, `logs:DescribeLogStreams`, `logs:GetLogEvents` | Per-service config must set `log_group_name` |
 | CloudWatch Metrics | `cloudwatch:ListMetrics`, `cloudwatch:GetMetricData`, `cloudwatch:GetMetricStatistics`, `cloudwatch:DescribeAlarms` | Per-service config must set `namespaces` |
@@ -238,9 +238,10 @@ The AWS source config fields are: `enabled`, `region`, `access_key_id`,
 `filter`. Each service entry is `{ name, config }`.
 Valid `name` values are `cloudtrail`, `guardduty`, `securityhub`, `config`,
 `cloudwatch_logs`, `cloudwatch_metrics`, `inspector`, `health`. A missing
-key, an unknown service, `cloudwatch_logs` without `log_group_name` or
-`cloudwatch_metrics` without `namespaces` is refused at load, naming
-`sources.aws`.
+key, an unknown service, `cloudwatch_logs` without `log_group_name`,
+`cloudwatch_metrics` without `namespaces`, or a `securityhub`
+`workflow_status` other than `NEW`, `NOTIFIED`, `RESOLVED` or `SUPPRESSED` is
+refused at load, naming `sources.aws`.
 
 ### Config File
 
@@ -256,6 +257,8 @@ sources:
       - name: cloudtrail
       - name: guardduty
       - name: securityhub
+        # config:
+        #   workflow_status: ["NEW", "RESOLVED"]   # every status unless set
       - name: config
         # config:
         #   expression: "SELECT resourceId, resourceType, configuration"   # replaces the default SELECT

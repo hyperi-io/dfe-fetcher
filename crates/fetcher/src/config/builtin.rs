@@ -1604,6 +1604,9 @@ impl GoogleWorkspaceSourceConfig {
 /// `max_results` is sent as the cap.
 const AWS_MAX_RESULTS: u64 = 100;
 
+/// The workflow statuses Security Hub's `GetFindings` filter accepts.
+const SECURITYHUB_WORKFLOW_STATUSES: [&str; 4] = ["NEW", "NOTIFIED", "RESOLVED", "SUPPRESSED"];
+
 impl AwsSourceConfig {
     /// One instance of the shipped `aws` profile per resolved connection:
     /// `credential_secret` is the credentials document, else the key pair,
@@ -1616,8 +1619,9 @@ impl AwsSourceConfig {
     /// # Errors
     ///
     /// Returns [`Error::Config`] when a connection has no credential,
-    /// `cloudwatch_logs` is listed without `log_group_name`, or
-    /// `cloudwatch_metrics` without `namespaces`.
+    /// `cloudwatch_logs` is listed without `log_group_name`,
+    /// `cloudwatch_metrics` without `namespaces`, or `securityhub` with a
+    /// `workflow_status` Security Hub does not define.
     pub fn instances(&self) -> Result<Vec<BuiltinInstance>> {
         self.resolved("aws")
             .into_iter()
@@ -1730,6 +1734,25 @@ impl AwsSourceConfig {
                             "inspector" | "health" => {
                                 if let Some(max) = knobs.int("max_results", AWS_MAX_RESULTS) {
                                     unit.vars.insert("max_results".into(), Value::from(max));
+                                }
+                            }
+                            "securityhub" => {
+                                let statuses = knobs.texts("workflow_status");
+                                if let Some(unknown) = statuses
+                                    .iter()
+                                    .find(|s| !SECURITYHUB_WORKFLOW_STATUSES.contains(s))
+                                {
+                                    return Err(Error::Config(format!(
+                                        "sources.aws: securityhub `workflow_status` `{unknown}` is not one of {}",
+                                        SECURITYHUB_WORKFLOW_STATUSES.join(", ")
+                                    )));
+                                }
+                                if !statuses.is_empty() {
+                                    let filters = statuses
+                                        .into_iter()
+                                        .map(|s| serde_json::json!({ "Value": s, "Comparison": "EQUALS" }))
+                                        .collect();
+                                    unit.vars.insert("workflow_status_filter".into(), Value::Array(filters));
                                 }
                             }
                             _ => {}
@@ -3590,6 +3613,55 @@ mod tests {
                 .unwrap()
                 .expose(),
             "AKIA456"
+        );
+    }
+
+    /// Security Hub's unit carries the listed workflow statuses, carries none
+    /// when the knob is absent so every status is fetched, and refuses at load a
+    /// status the API would refuse on every tick.
+    #[test]
+    fn securityhub_workflow_status_reaches_its_unit_and_an_unknown_one_is_refused() {
+        let with = |statuses: Value| {
+            let mut cfg = aws();
+            cfg.services.push(AwsService {
+                name: "securityhub".into(),
+                config: [("workflow_status".to_string(), statuses)]
+                    .into_iter()
+                    .collect(),
+            });
+            cfg
+        };
+
+        let i = only(with(json!(["RESOLVED", "NOTIFIED"])).instances().unwrap()).instance;
+        assert!(i.units["securityhub"].enabled);
+        assert_eq!(
+            i.units["securityhub"].vars["workflow_status_filter"],
+            json!([
+                {"Value": "RESOLVED", "Comparison": "EQUALS"},
+                {"Value": "NOTIFIED", "Comparison": "EQUALS"}
+            ])
+        );
+
+        let mut cfg = aws();
+        cfg.services.push(AwsService {
+            name: "securityhub".into(),
+            config: HashMap::new(),
+        });
+        let i = only(cfg.instances().unwrap()).instance;
+        assert!(
+            !i.units["securityhub"]
+                .vars
+                .contains_key("workflow_status_filter"),
+            "no knob leaves the profile's empty list: every status"
+        );
+
+        let err = with(json!(["NEW", "CLOSED"]))
+            .instances()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("workflow_status") && err.contains("CLOSED"),
+            "{err}"
         );
     }
 

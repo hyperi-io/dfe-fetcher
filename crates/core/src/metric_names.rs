@@ -16,7 +16,10 @@
 
 /// Per-API-call latency, labelled `source`.
 pub const API_DURATION_SECONDS: &str = "dfe_fetcher_api_duration_seconds";
-/// API errors by `source` and `code` (`throttle|4xx|5xx|timeout|network`).
+/// API errors by `source` and `code`
+/// (`throttle|4xx|5xx|timeout|network|origin_refused|oversize_page|page_ceiling`).
+/// `origin_refused` is a request whose URL named a host the unit may not
+/// address. The host is not a label, because the provider chose it.
 pub const API_ERRORS_TOTAL: &str = "dfe_fetcher_api_errors_total";
 /// Pages requested, labelled `source`.
 pub const PAGES_FETCHED_TOTAL: &str = "dfe_fetcher_pages_fetched_total";

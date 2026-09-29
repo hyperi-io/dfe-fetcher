@@ -821,27 +821,74 @@ impl Respond for FindingsForIds {
 }
 
 // =============================================================================
-// Security Hub: GetFindings filtered to NEW, paged
+// Security Hub: GetFindings over the window on UpdatedAt, paged
 // =============================================================================
 
-/// The documented REST-JSON `POST /findings` filtered to NEW findings, 100
-/// a page, signed for `securityhub`. (The legacy sent a JSON-1.1 target to
-/// the service root, which Security Hub refuses with a 403.)
+/// One finding in each workflow status, as ASFF records it under
+/// `Workflow.Status`.
+fn findings_in_every_status() -> Vec<Value> {
+    ["NEW", "NOTIFIED", "RESOLVED", "SUPPRESSED"]
+        .into_iter()
+        .map(|status| {
+            json!({
+                "Id": format!("finding-{}", status.to_ascii_lowercase()),
+                "Title": "S3 bucket public",
+                "Workflow": {"Status": status}
+            })
+        })
+        .collect()
+}
+
+/// `GetFindings` as far as its workflow filter goes: the findings whose
+/// `Workflow.Status` the request's `WorkflowStatus` filter lists, or every one
+/// when the request sends no such filter.
+struct FindingsByStatus(Vec<Value>);
+
+impl Respond for FindingsByStatus {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body = body_of(request);
+        let wanted: Option<Vec<&str>> = body["Filters"]["WorkflowStatus"]
+            .as_array()
+            .map(|filters| filters.iter().filter_map(|f| f["Value"].as_str()).collect());
+        let findings: Vec<&Value> = self
+            .0
+            .iter()
+            .filter(|f| {
+                wanted.as_ref().is_none_or(|statuses| {
+                    statuses.contains(&f["Workflow"]["Status"].as_str().unwrap_or_default())
+                })
+            })
+            .collect();
+        ok(json!({ "Findings": findings }))
+    }
+}
+
+/// The documented REST-JSON `POST /findings`, 100 a page, signed for
+/// `securityhub`, asking for every finding whose record changed in the window
+/// and naming no workflow status. A resolved, suppressed or notified finding
+/// lands beside a new one, where a NEW-only filter lost all three.
 #[tokio::test]
 async fn test_aws_fetch_securityhub_success() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/findings"))
-        .respond_with(ok(json!({"Findings": [
-            {"Id": "finding-1", "Title": "S3 bucket public", "Severity": {"Label": "HIGH"}},
-            {"Id": "finding-2", "Title": "IAM key not rotated", "Severity": {"Label": "MEDIUM"}}
-        ]})))
+        .respond_with(FindingsByStatus(findings_in_every_status()))
         .mount(&server)
         .await;
+    let w = fetch_window("2026-05-21T13:30:00.987Z", "2026-05-21T14:30:00Z");
 
-    let (outcome, rows) = run(one(&server, "securityhub"), None).await;
+    let (outcome, rows) = run(one(&server, "securityhub"), Some(&w)).await;
     outcome.expect("fetch");
-    assert_eq!(ids(&rows, "Id"), ["finding-1", "finding-2"]);
+    assert_eq!(
+        ids(&rows, "Id"),
+        [
+            "finding-new",
+            "finding-notified",
+            "finding-resolved",
+            "finding-suppressed"
+        ],
+        "a finding in every workflow status arrives"
+    );
     for row in &rows {
         assert_eq!(enriched(row).source_fetcher, "aws.securityhub");
     }
@@ -854,9 +901,48 @@ async fn test_aws_fetch_securityhub_success() {
     assert!(header_of(&seen[0], "x-amz-target").is_none());
     assert_eq!(
         body_of(&seen[0]),
-        json!({"Filters": {"WorkflowStatus": [{"Value": "NEW", "Comparison": "EQUALS"}]}, "MaxResults": 100})
+        json!({
+            "Filters": {"UpdatedAt": [{"Start": "2026-05-21T13:30:00.987Z", "End": "2026-05-21T14:30:00.000Z"}]},
+            "MaxResults": 100
+        }),
+        "the window on UpdatedAt, and no workflow filter"
     );
     assert_signed(&seen[0], ACCESS_KEY, "us-east-1", "securityhub");
+}
+
+/// `workflow_status` narrows the unit to the statuses listed, sent as
+/// `WorkflowStatus` beside the window.
+#[tokio::test]
+async fn test_aws_securityhub_workflow_status_narrows_the_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/findings"))
+        .respond_with(FindingsByStatus(findings_in_every_status()))
+        .mount(&server)
+        .await;
+    let w = fetch_window("2026-05-21T13:30:00Z", "2026-05-21T14:30:00Z");
+    let cfg = account_config(
+        &server,
+        vec![service(
+            "securityhub",
+            &[("workflow_status", json!(["RESOLVED", "SUPPRESSED"]))],
+        )],
+    );
+
+    let (outcome, rows) = run(config(cfg), Some(&w)).await;
+    outcome.expect("fetch");
+    assert_eq!(ids(&rows, "Id"), ["finding-resolved", "finding-suppressed"]);
+    let seen = requests_to(&server, "/findings").await;
+    assert_eq!(
+        body_of(&seen[0])["Filters"],
+        json!({
+            "UpdatedAt": [{"Start": "2026-05-21T13:30:00.000Z", "End": "2026-05-21T14:30:00.000Z"}],
+            "WorkflowStatus": [
+                {"Value": "RESOLVED", "Comparison": "EQUALS"},
+                {"Value": "SUPPRESSED", "Comparison": "EQUALS"}
+            ]
+        })
+    );
 }
 
 /// GetFindings pages by `NextToken` (the legacy never followed it): the
@@ -877,8 +963,9 @@ async fn test_aws_fetch_securityhub_pagination() {
         .respond_with(ok(json!({"Findings": [{"Id": "finding-2"}]})))
         .mount(&server)
         .await;
+    let w = fetch_window("2026-05-21T13:30:00Z", "2026-05-21T14:30:00Z");
 
-    let (outcome, rows) = run(one(&server, "securityhub"), None).await;
+    let (outcome, rows) = run(one(&server, "securityhub"), Some(&w)).await;
     outcome.expect("fetch");
     let seen = requests_to(&server, "/findings").await;
     assert_eq!(seen.len(), 2, "the NextToken is followed");
@@ -886,8 +973,13 @@ async fn test_aws_fetch_securityhub_pagination() {
     assert_eq!(second["NextToken"], "page-2");
     assert_eq!(second["MaxResults"], 100);
     assert_eq!(
-        second["Filters"]["WorkflowStatus"][0]["Value"], "NEW",
+        second["Filters"],
+        body_of(&seen[0])["Filters"],
         "the filter rides along"
+    );
+    assert_eq!(
+        second["Filters"]["UpdatedAt"][0]["Start"],
+        "2026-05-21T13:30:00.000Z"
     );
     assert_eq!(ids(&rows, "Id"), ["finding-1", "finding-2"]);
 }
