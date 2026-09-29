@@ -5619,10 +5619,7 @@ mod tests {
         ] {
             let mut cfg = valid_config();
             cfg.extractors.containers = vec![container(key)];
-            let err = cfg
-                .validate()
-                .unwrap_err()
-                .to_string();
+            let err = cfg.validate().unwrap_err().to_string();
             assert!(
                 err.contains("env-name-test") && err.contains(key),
                 "{key}: {err}"
