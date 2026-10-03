@@ -4217,9 +4217,9 @@ endpoints:
             instance.validate(&profile)
         };
 
-        assert!(
-            instance("{ api_key: \"env:DD_API_KEY\", application_key: \"env:DD_APP_KEY\" }")
-                .is_empty()
+        assert_eq!(
+            instance("{ api_key: \"env:DD_API_KEY\", application_key: \"env:DD_APP_KEY\" }"),
+            [] as [Issue; 0]
         );
 
         let issues = instance("{ api_key: \"env:DD_API_KEY\" }");
@@ -4311,7 +4311,7 @@ endpoints:
             issues.into_iter().next().expect("one issue")
         };
 
-        assert!(one(placed("DD-API-KEY", "api_key")).is_empty());
+        assert_eq!(one(placed("DD-API-KEY", "api_key")), [] as [Issue; 0]);
         assert_eq!(
             credential_placement_issues(&[])[0].field,
             "auth.credentials",
@@ -4965,12 +4965,12 @@ endpoints:
         );
         let no_key: RestInstance =
             serde_yaml_ng::from_str("profile: x\ntopic: t\nauth: { mode: jwt_bearer }\n").unwrap();
-        assert!(!no_key.validate(&profile).is_empty());
+        assert_ne!(no_key.validate(&profile), [] as [Issue; 0]);
         let file_key: RestInstance = serde_yaml_ng::from_str(
             "profile: x\ntopic: t\nauth: { mode: jwt_bearer, service_account_key_file: \"env:K\" }\n",
         )
         .unwrap();
-        assert!(file_key.validate(&profile).is_empty());
+        assert_eq!(file_key.validate(&profile), [] as [Issue; 0]);
         let metadata: RestInstance =
             serde_yaml_ng::from_str("profile: x\ntopic: t\nauth: { mode: gce_metadata }\n")
                 .unwrap();
@@ -4992,7 +4992,7 @@ endpoints:
             profile.rows_of(&profile.endpoints[0]).builder,
             Some(RowBuilderKind::ColumnarTable)
         );
-        assert!(profile.validate().is_empty());
+        assert_eq!(profile.validate(), [] as [Issue; 0]);
         let err = serde_yaml_ng::from_str::<RestProfile>(&yaml.replace("columnar_table", "magic"))
             .unwrap_err()
             .to_string();
@@ -5316,7 +5316,7 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
         assert!(profile.validate().is_empty(), "{:?}", profile.validate());
 
         let templated = format!("{GITHUB}probe: {{ path: \"/orgs/{{{{ vars.org }}}}\" }}\n");
-        assert!(parse(&templated).validate().is_empty());
+        assert_eq!(parse(&templated).validate(), [] as [Issue; 0]);
 
         let mut bad = parse(GITHUB);
         bad.probe = Some(ProbeSpec {
@@ -5408,12 +5408,12 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: \"env:K\" }\n",
         )
         .unwrap();
-        assert!(pair.validate(&profile).is_empty());
+        assert_eq!(pair.validate(&profile), [] as [Issue; 0]);
         let document: RestInstance = serde_yaml_ng::from_str(
             "profile: x\ntopic: t\nauth: { mode: sigv4, credentials_json: \"vault:kv/data/aws:credentials\" }\n",
         )
         .unwrap();
-        assert!(document.validate(&profile).is_empty());
+        assert_eq!(document.validate(&profile), [] as [Issue; 0]);
         let half: RestInstance = serde_yaml_ng::from_str(
             "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA }\n",
         )
@@ -5963,11 +5963,9 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
         let secret = parse(
             "profile: idp\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [oauth2_client_credentials]\n  oauth2_client_credentials: { token_url: \"{{ base_url }}/token\", expose: [instance_url] }\nendpoints:\n  - { unit: logs, path: /logs, rows: { decoder: json_array } }\n",
         );
-        assert!(
-            secret
-                .auth
-                .exposed_names(AuthKind::Oauth2ClientCredentials)
-                .is_empty()
+        assert_eq!(
+            secret.auth.exposed_names(AuthKind::Oauth2ClientCredentials),
+            [] as [&str; 0]
         );
     }
 

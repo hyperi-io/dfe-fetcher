@@ -1022,7 +1022,7 @@ mod tailer_tests {
             "the unacknowledged line is read again, the acknowledged ones are not"
         );
         let (rows, _) = tick(&again, cp.as_ref()).await;
-        assert!(rows.is_empty());
+        assert_eq!(rows, [] as [dfe_fetcher_core::Row; 0]);
         again.stop().await;
 
         // The checkpoint file is the tailer's own format.

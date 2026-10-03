@@ -144,7 +144,7 @@ mod tests {
             profile.auth.oauth2_client_credentials.token_url,
             "{{ base_url }}/account/api/token"
         );
-        assert!(profile.auth.oauth2_client_credentials.scope.is_empty());
+        assert_eq!(profile.auth.oauth2_client_credentials.scope, "");
         assert!(
             !profile.retry.retries(401) && !profile.retry.retries(403),
             "a refusal ticks the console's throttle; never retried"

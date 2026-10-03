@@ -210,7 +210,10 @@ units:
     #[test]
     fn a_complete_instance_has_no_issues_beyond_the_build_gate() {
         let inst = instance(GOOD);
-        assert!(without_build_gate(inst.validate()).is_empty());
+        assert_eq!(
+            without_build_gate(inst.validate()),
+            [] as [std::string::String; 0]
+        );
         assert_eq!(inst.units[0].unit_shape(), UnitShape::Dump);
         assert_eq!(inst.units[1].unit_shape(), UnitShape::Incremental);
         assert_eq!(inst.interval_secs, Some(300));
@@ -248,7 +251,10 @@ accumulate: { max_rows: 1000, max_bytes: 8388608, window_ms: 1000, in_flight: 10
     #[test]
     fn the_documented_stanza_parses_and_every_spelled_out_value_is_the_default() {
         let inst = instance(DOCUMENTED);
-        assert!(without_build_gate(inst.validate()).is_empty());
+        assert_eq!(
+            without_build_gate(inst.validate()),
+            [] as [std::string::String; 0]
+        );
         let dump = inst.units[0].dump.as_ref().unwrap();
         assert_eq!(dump.decoder, DumpSpec::default().decoder);
         assert_eq!(dump.chunk_bytes, DumpSpec::default().chunk_bytes);

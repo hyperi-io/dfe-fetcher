@@ -1138,7 +1138,10 @@ async fn a_keyset_unit_whose_rows_are_all_filtered_still_commits_the_last_key() 
     assert_eq!(report.rows, 0);
     assert_eq!(report.filtered, 3);
     assert_eq!(report.flushes, 0, "nothing was emitted");
-    assert!(landed(&h.transport).await.is_empty());
+    assert_eq!(
+        landed(&h.transport).await,
+        [] as [(std::string::String, serde_json::Value); 0]
+    );
     let cursor = store
         .get("inst.conn.events")
         .await

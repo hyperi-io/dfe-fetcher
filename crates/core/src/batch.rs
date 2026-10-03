@@ -502,7 +502,7 @@ mod tests {
             batch.marks,
             vec![Mark::Ack("a".into()), Mark::Ack("b".into())]
         );
-        assert!(b.take().marks.is_empty());
+        assert_eq!(b.take().marks, [] as [Mark; 0]);
     }
 
     /// A consumed row's mark keeps its place among the buffered rows' marks,

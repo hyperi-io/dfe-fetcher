@@ -246,7 +246,7 @@ mod tests {
         // DEFAULT_BASE_IMAGE. In CI / local-dev with no overrides the
         // default applies. Just assert the value is non-empty and well-formed.
         let c = contract();
-        assert!(!c.base_image.is_empty());
+        assert_ne!(c.base_image, "");
         assert!(
             c.base_image.contains(':'),
             "base_image must include an explicit tag: {}",

@@ -160,6 +160,6 @@ mod tests {
             Dialect::Mysql.session_prelude(),
             ["SET time_zone = '+00:00'"]
         );
-        assert!(Dialect::Oracle.session_prelude().is_empty());
+        assert_eq!(Dialect::Oracle.session_prelude(), [] as [&str; 0]);
     }
 }

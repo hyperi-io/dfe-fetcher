@@ -123,7 +123,6 @@ impl RowBuilder {
     }
 
     /// Every row of a framed stream, expanded in order against `ctx`.
-    #[must_use]
     pub fn expand_stream(self, rows: RowBytes<'_>, ctx: TemplateCtx) -> RowBytes<'_> {
         rows.map(move |row| row.and_then(|row| self.expand(&row, &ctx)))
             .flat_map(|expanded| match expanded {

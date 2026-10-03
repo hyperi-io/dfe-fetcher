@@ -344,10 +344,9 @@ mod tests {
             expand(b"not json", &ctx(json!({}), vec![])).is_err(),
             "not a response"
         );
-        assert!(
-            expand(br#"{"MetricDataResults": []}"#, &ctx(json!({}), vec![]))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            expand(br#"{"MetricDataResults": []}"#, &ctx(json!({}), vec![])).unwrap(),
+            [] as [bytes::Bytes; 0]
         );
     }
 

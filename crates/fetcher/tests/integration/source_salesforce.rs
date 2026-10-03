@@ -711,7 +711,7 @@ async fn an_unknown_service_is_refused_at_validation() {
     let err = outcome.expect_err("refused");
     assert!(err.contains("real_time_events"), "{err}");
     assert!(rows.is_empty());
-    assert!(paths(&server).await.is_empty());
+    assert_eq!(paths(&server).await, [] as [std::string::String; 0]);
 }
 
 /// A refused exchange fails the tick with no query sent.
@@ -821,7 +821,7 @@ async fn no_services_requests_nothing() {
     let (outcome, rows) = run(config(jwt_config(&server, &app, &[])), Some(&window())).await;
     outcome.expect("nothing to do is not a failure");
     assert!(rows.is_empty());
-    assert!(paths(&server).await.is_empty());
+    assert_eq!(paths(&server).await, [] as [std::string::String; 0]);
 }
 
 /// The health check is the token exchange.

@@ -574,7 +574,7 @@ mod tests {
         );
         let mut tail = Vec::new();
         framer.finish(&mut tail).unwrap();
-        assert!(tail.is_empty());
+        assert_eq!(tail, [] as [bytes::Bytes; 0]);
     }
 
     #[test]
@@ -584,7 +584,7 @@ mod tests {
         framer
             .feed(&Bytes::from_static(b"{\"a\":"), &mut out)
             .unwrap();
-        assert!(out.is_empty());
+        assert_eq!(out, [] as [bytes::Bytes; 0]);
         framer
             .feed(&Bytes::from_static(b"1}\n{\"b\""), &mut out)
             .unwrap();
@@ -609,13 +609,14 @@ mod tests {
                 .unwrap(),
             ["{\"a\":1}", "{\"a\":2}"]
         );
-        assert!(
-            rows(LineFramer::new(false), &[b""])
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            rows(LineFramer::new(false), &[b""]).await.unwrap(),
+            [] as [std::string::String; 0]
         );
-        assert!(rows(LineFramer::new(false), &[]).await.unwrap().is_empty());
+        assert_eq!(
+            rows(LineFramer::new(false), &[]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
     }
 
     /// An open line past the bound fails after the rows before it, and the
@@ -703,11 +704,9 @@ mod tests {
             .unwrap(),
             ["{\"a\":1}", "{\"a\":2}"]
         );
-        assert!(
-            rows(ArrayFramer::default(), &[b"[", b"]"])
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            rows(ArrayFramer::default(), &[b"[", b"]"]).await.unwrap(),
+            [] as [std::string::String; 0]
         );
         assert!(
             rows(ArrayFramer::default(), &[b"[{\"a\":1}"])
@@ -757,13 +756,16 @@ mod tests {
         let row: serde_json::Value = serde_json::from_str(&got[0]).unwrap();
         assert_eq!(row["col_0"], "a");
         assert_eq!(row["col_1"], "b");
-        assert!(
+        assert_eq!(
             rows(CsvFramer::new(true), &[b"only,header\n"])
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [std::string::String; 0]
         );
-        assert!(rows(CsvFramer::new(true), &[b""]).await.unwrap().is_empty());
+        assert_eq!(
+            rows(CsvFramer::new(true), &[b""]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]

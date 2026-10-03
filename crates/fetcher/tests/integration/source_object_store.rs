@@ -952,7 +952,7 @@ async fn no_backends_requests_nothing_and_health_resolves_the_credentials() {
             .is_empty(),
         "no S3 backend, no instance"
     );
-    assert!(paths(&server).await.is_empty());
+    assert_eq!(paths(&server).await, [] as [std::string::String; 0]);
 
     let healthy = health(config(logs_config(&server))).await.expect("health");
     assert!(healthy);

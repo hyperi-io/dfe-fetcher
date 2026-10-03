@@ -560,7 +560,7 @@ async fn no_subscriptions_requests_nothing() {
     let (outcome, rows) = run(config(pubsub_config(&server, &account, vec![])), None).await;
     outcome.expect("nothing to do is not a failure");
     assert!(rows.is_empty());
-    assert!(paths(&server).await.is_empty());
+    assert_eq!(paths(&server).await, [] as [std::string::String; 0]);
 }
 
 /// The health check is the token exchange for the Pub/Sub scope.

@@ -519,7 +519,10 @@ async fn the_health_check_signs_the_check_endpoint() {
     let seen = provider.requests_to("/admin/v1/check");
     assert_eq!(seen.len(), 1);
     assert_signed(&seen[0], SHA512_HEX);
-    assert!(seen[0].query.is_empty());
+    assert_eq!(
+        seen[0].query,
+        [] as [(std::string::String, std::string::String); 0]
+    );
 
     let mut cfg = tenant_config(&provider);
     cfg.secret_key = Some("wrong".to_string().into());

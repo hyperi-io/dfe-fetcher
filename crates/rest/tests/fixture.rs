@@ -972,7 +972,10 @@ async fn a_keyset_unit_requests_each_key_and_stamps_it_on_the_document() {
     );
 
     let none = shape(&fx, &p, BEARER_INSTANCE);
-    assert!(fetch(&none, "metadata", None).await.unwrap().is_empty());
+    assert_eq!(
+        fetch(&none, "metadata", None).await.unwrap(),
+        [] as [serde_json::Value; 0]
+    );
 
     let not_a_list = shape(
         &fx,

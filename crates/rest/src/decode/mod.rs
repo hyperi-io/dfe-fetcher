@@ -106,7 +106,6 @@ impl Decoder {
     /// Frame a body as it arrives. Streaming decoders yield rows per chunk,
     /// with one open row bounded by `max_page_bytes`; page-bounded ones read
     /// the body whole under the same bound first.
-    #[must_use]
     pub fn frame<'a>(&'a self, body: ByteStream<'a>, max_page_bytes: usize) -> RowBytes<'a> {
         match self {
             Decoder::Ndjson => stream_framed(body, LineFramer::new(false).bounded(max_page_bytes)),
@@ -307,8 +306,11 @@ mod tests {
     #[tokio::test]
     async fn ndjson_zero_byte_body_is_an_empty_store_and_a_bare_object_is_one_row() {
         let d = Decoder::Ndjson;
-        assert!(rows(&d, &[b""]).await.unwrap().is_empty());
-        assert!(rows(&d, &[]).await.unwrap().is_empty());
+        assert_eq!(
+            rows(&d, &[b""]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
+        assert_eq!(rows(&d, &[]).await.unwrap(), [] as [std::string::String; 0]);
         assert_eq!(
             rows(&d, &[b"{\"only\":true}"]).await.unwrap(),
             ["{\"only\":true}"]
@@ -345,8 +347,14 @@ mod tests {
             rows(&d, &[b" \n[\n  {\"a\":1}\n]\n"]).await.unwrap(),
             ["{\"a\":1}"]
         );
-        assert!(rows(&d, &[b"[]"]).await.unwrap().is_empty());
-        assert!(rows(&d, &[b"[", b"]"]).await.unwrap().is_empty());
+        assert_eq!(
+            rows(&d, &[b"[]"]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
+        assert_eq!(
+            rows(&d, &[b"[", b"]"]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[tokio::test]
@@ -400,15 +408,15 @@ mod tests {
     #[tokio::test]
     async fn json_at_with_an_absent_or_null_pointer_is_an_empty_page() {
         let d = Decoder::JsonAt("/users".into());
-        assert!(
+        assert_eq!(
             d.frame_page(&Bytes::from_static(br#"{"next_key":""}"#))
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [bytes::Bytes; 0]
         );
-        assert!(
+        assert_eq!(
             d.frame_page(&Bytes::from_static(br#"{"users":null}"#))
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [bytes::Bytes; 0]
         );
         assert!(
             d.frame_page(&Bytes::from_static(br#"{"users":{}}"#))
@@ -424,7 +432,10 @@ mod tests {
             rows(&d, &[b"{\"info\":", b"{}}"]).await.unwrap(),
             ["{\"info\":{}}"]
         );
-        assert!(rows(&d, &[b""]).await.unwrap().is_empty());
+        assert_eq!(
+            rows(&d, &[b""]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
     }
 
     /// An object-store `.json` export is either a top-level array or one
@@ -444,7 +455,10 @@ mod tests {
             "an object is one row, the page as it came"
         );
         assert_eq!(rows(&d, &[b"42"]).await.unwrap(), ["42"]);
-        assert!(rows(&d, &[b" \n"]).await.unwrap().is_empty());
+        assert_eq!(
+            rows(&d, &[b" \n"]).await.unwrap(),
+            [] as [std::string::String; 0]
+        );
         assert!(rows(&d, &[b"[1,"]).await.is_err(), "a truncated array");
     }
 
