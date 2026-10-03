@@ -852,7 +852,7 @@ impl Metrics {
     pub fn dec_active_fetches(&self) {
         let _ = self
             .active_fetches
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
         if self.dfe.is_some() {
@@ -875,7 +875,7 @@ impl Metrics {
     pub fn dec_active_extractors(&self) {
         let _ = self
             .active_extractors
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
         if self.dfe.is_some() {

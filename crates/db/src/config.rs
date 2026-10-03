@@ -566,7 +566,10 @@ stores:
     #[test]
     fn a_complete_instance_has_no_issues_beyond_the_build_gate() {
         let inst = instance(GOOD);
-        assert!(without_build_gate(inst.validate()).is_empty());
+        assert_eq!(
+            without_build_gate(inst.validate()),
+            [] as [std::string::String; 0]
+        );
         assert_eq!(inst.stores[0].shape.unit_shape(), UnitShape::Dump);
         assert_eq!(inst.stores[1].shape.unit_shape(), UnitShape::Incremental);
         assert_eq!(inst.stores[1].limit, 100);
@@ -625,7 +628,10 @@ stores:
         let ok = instance(
             "engine: odbc\ndialect: postgres\nconnection_string: \"Driver=PostgreSQL Unicode;Server=db;UseDeclareFetch=1\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
         );
-        assert!(without_build_gate(ok.validate()).is_empty());
+        assert_eq!(
+            without_build_gate(ok.validate()),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
@@ -633,7 +639,10 @@ stores:
         let inst = instance(
             "engine: odbc\ndialect: mysql\nconnection_string: \"env:INVENTORY_DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1' }]\n",
         );
-        assert!(without_build_gate(inst.validate()).is_empty());
+        assert_eq!(
+            without_build_gate(inst.validate()),
+            [] as [std::string::String; 0]
+        );
     }
 
     /// Both halves of the prefix contract, so the accepted list and the

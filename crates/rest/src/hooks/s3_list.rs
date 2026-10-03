@@ -430,7 +430,7 @@ mod tests {
             answer: |_| None,
         };
         let listing = Lister::S3.list(None, None, 5, &mut ignored).await.unwrap();
-        assert!(listing.items.is_empty());
+        assert_eq!(listing.items, [] as [bytes::Bytes; 0]);
         assert!(!listing.truncated);
     }
 

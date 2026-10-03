@@ -436,7 +436,7 @@ async fn no_modules_requests_nothing() {
     let (outcome, rows) = run(config(modules_config(&server, &[])), None).await;
     outcome.expect("nothing to do is not a failure");
     assert!(rows.is_empty());
-    assert!(paths(&server).await.is_empty());
+    assert_eq!(paths(&server).await, [] as [std::string::String; 0]);
 }
 
 /// The health check asks the proxy's root and any answer but a 5xx is

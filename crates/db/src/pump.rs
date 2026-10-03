@@ -30,7 +30,6 @@ use dfe_fetcher_core::error::{Error, Result};
 ///
 /// SHORTCUT: one blocking-pool thread per active DB store; odbc-api's async
 /// statement polling lifts that once active stores number in the hundreds.
-#[must_use]
 pub fn pump<T, F>(capacity: usize, produce: F) -> BoxStream<'static, Result<T>>
 where
     T: Send + 'static,

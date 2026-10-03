@@ -51,7 +51,6 @@ pub fn keyset_mark(row: &[u8], keys: &[String]) -> Result<Mark> {
 }
 
 /// Rows from a block stream; each row carries a keyset mark when `keys` is set.
-#[must_use]
 pub fn rows_of_blocks(
     blocks: BoxStream<'_, Result<LeasedBlock>>,
     keys: Option<Arc<[String]>>,

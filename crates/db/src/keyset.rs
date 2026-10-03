@@ -321,7 +321,7 @@ mod tests {
             "(id) > (?) ORDER BY id"
         );
         assert!(predicate(Dialect::Postgres, &[], &question_mark).is_none());
-        assert!(bind_order(Dialect::Postgres, 0).is_empty());
+        assert_eq!(bind_order(Dialect::Postgres, 0), [] as [usize; 0]);
     }
 
     #[test]

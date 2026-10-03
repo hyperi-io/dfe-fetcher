@@ -77,10 +77,9 @@ mod tests {
             ],
             "a nameless column is skipped and a short row keeps what it has"
         );
-        assert!(
-            expand(br#"{"columns": [], "rows": []}"#)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            expand(br#"{"columns": [], "rows": []}"#).unwrap(),
+            [] as [bytes::Bytes; 0]
         );
         assert_eq!(expand(br#"{"rows": [[1]]}"#).unwrap()[0].as_ref(), b"{}");
         assert!(expand(b"[1, 2]").is_err(), "not a table");

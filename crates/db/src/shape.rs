@@ -537,7 +537,7 @@ stores:
     #[tokio::test]
     async fn a_tail_with_nothing_new_asks_once() {
         let store = Paged::new(vec![vec![]]);
-        assert!(tailed(&store, 2, 10).await.is_empty());
+        assert_eq!(tailed(&store, 2, 10).await, [] as [i64; 0]);
         assert_eq!(store.asked.lock().unwrap().len(), 1);
     }
 

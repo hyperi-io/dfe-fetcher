@@ -105,7 +105,10 @@ async fn each_package_is_one_request_and_one_stamped_document() {
     for request in &seen {
         assert_eq!(request.header("accept"), Some("application/json"));
         assert!(request.header("authorization").is_none(), "no credential");
-        assert!(request.query.is_empty());
+        assert_eq!(
+            request.query,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     assert_eq!(rows.len(), 2);
@@ -141,7 +144,10 @@ async fn the_window_does_not_reach_the_request() {
     .await;
     outcome.expect("fetch");
     assert_eq!(rows.len(), 1);
-    assert!(provider.requests()[0].query.is_empty());
+    assert_eq!(
+        provider.requests()[0].query,
+        [] as [(std::string::String, std::string::String); 0]
+    );
 }
 
 /// A package the registry does not know (404): skipped, the others still

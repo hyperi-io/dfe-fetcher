@@ -711,7 +711,7 @@ mod tests {
         let result = build_scalo_kafka_config(&legacy);
 
         assert_eq!(result.client_id, "dfe-fetcher");
-        assert!(result.brokers.is_empty());
+        assert_eq!(result.brokers, [] as [std::string::String; 0]);
         // No SASL configured, no TLS -> security_protocol stays at scalo default
         assert_eq!(result.security_protocol, "plaintext");
         assert!(result.sasl_mechanism.is_none());
@@ -1494,7 +1494,10 @@ mod tests {
             }
         );
         assert_eq!(received_ids(&loader_rx).await, ["big"]);
-        assert!(received_ids(&default_rx).await.is_empty());
+        assert_eq!(
+            received_ids(&default_rx).await,
+            [] as [std::string::String; 0]
+        );
         let entries = dead_letters(dlq.path()).await;
         assert_eq!(entries.len(), 1);
         let parked: serde_json::Value = serde_json::from_slice(&entries[0].payload).unwrap();
