@@ -1974,11 +1974,11 @@ async fn a_lookup_batch_follows_its_own_pages_and_the_builder_joins_them() {
     assert_eq!(rows[0]["metric_name"], "CPUUtilization");
     assert_eq!(rows[0]["namespace"], "AWS/EC2");
     assert_eq!(rows[0]["unit"], "Percent");
-    assert_eq!(rows[0]["timestamp"], 1_709_424_000.0);
+    assert_eq!(rows[0]["timestamp"], 1_709_424_000_000_i64);
     assert_eq!(rows[3]["namespace"], "AWS/RDS");
     assert_eq!(rows[3]["unit"], "None");
     assert_eq!(
-        rows[4]["timestamp"], 1_709_424_300.0,
+        rows[4]["timestamp"], 1_709_424_300_000_i64,
         "the second page's datapoints"
     );
     assert_eq!(rows[7]["stat"], "Maximum");

@@ -1,0 +1,13 @@
+# Project:   dfe-fetcher
+# File:      config/defaults.yaml
+# Purpose:   Cascade defaults for `dfe-fetcher generate-artefacts`
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+# generate-artefacts writes no ArgoCD Application without a repo URL, and
+# deploys into a namespace named after the app unless one is set here.
+deployment:
+  argocd:
+    repo_url: https://github.com/hyperi-io/dfe-fetcher
+    dest_namespace: dfe

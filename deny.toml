@@ -17,9 +17,11 @@ all-features = true
 # in the affected range (<= 0.32.0, fixed in 0.32.1). The flaw is in
 # `BaggagePropagator::extract_with_context`, which parses an inbound W3C
 # Baggage header before enforcing its size limits. Nothing here reaches it:
-# neither this workspace nor scalo names `baggage`, and neither installs a text
-# map propagator, so the function is never called. Raising the floor needs
-# scalo to move first.
+# neither this workspace nor scalo registers a Baggage or any other text map
+# propagator, so the function is never called. It is an accepted risk in
+# dfe-infra docs/THREAT-MODEL.md, and the osv-scanner ignore in .hyperi-ci.yaml
+# records it. scalo leaves the 0.31 line once metrics-exporter-opentelemetry,
+# at 0.2.1 requiring opentelemetry ^0.31, moves: hyperi-io/scalo-rs#281.
 ignore = []
 
 [licenses]

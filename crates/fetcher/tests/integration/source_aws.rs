@@ -1290,13 +1290,13 @@ async fn test_aws_fetch_cloudwatch_metrics_success() {
             "metric_name": "CPUUtilization",
             "dimensions": [{"Name": "InstanceId", "Value": "i-1234"}],
             "unit": "Percent",
-            "timestamp": 1_709_424_000.0,
+            "timestamp": 1_709_424_000_000_i64,
             "value": 45.2,
             "stat": "Average"
         }),
         "cloudwatch_metrics",
     );
-    assert_eq!(rows[1].record["timestamp"], 1_709_424_300.0);
+    assert_eq!(rows[1].record["timestamp"], 1_709_424_300_000_i64);
     assert_eq!(rows[1].record["value"], 62.1);
 }
 

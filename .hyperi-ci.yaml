@@ -27,14 +27,16 @@ quality:
   # lock through scalo, in the affected range (<= 0.32.0, fixed in 0.32.1). The
   # flaw is in BaggagePropagator::extract_with_context, which parses an inbound
   # W3C Baggage header before enforcing its size limits. Nothing here reaches
-  # it: neither this workspace nor scalo names `baggage` or installs a text map
-  # propagator. Recorded as not reachable in the DFE threat model (dfe-infra
-  # docs/THREAT-MODEL.md, accepted risks). deny.toml carries no ignore because
-  # it is a GitHub advisory with no RustSec entry, so only osv-scanner sees it.
+  # it: neither this workspace nor scalo registers a Baggage or any other text
+  # map propagator. Accepted as unreachable in the DFE threat model (dfe-infra
+  # docs/THREAT-MODEL.md, accepted risks). scalo stays on the 0.31 line until
+  # metrics-exporter-opentelemetry, at 0.2.1 requiring opentelemetry ^0.31,
+  # moves: hyperi-io/scalo-rs#281. deny.toml carries no ignore because it is a
+  # GitHub advisory with no RustSec entry, so only osv-scanner sees it.
   ignore:
     - tool: osv-scanner
       id: GHSA-w9wp-h8wv-79jx
-      reason: "CVE-2026-48504, opentelemetry_sdk 0.31.0 via scalo: BaggagePropagator::extract_with_context is unreachable (no text map propagator, no baggage in dfe-fetcher or scalo). Not reachable per dfe-infra docs/THREAT-MODEL.md accepted risks. Drop when scalo allows opentelemetry_sdk >= 0.32.1."
+      reason: "CVE-2026-48504, opentelemetry_sdk 0.31.0 via scalo: unreachable, no Baggage propagator registered in dfe-fetcher or scalo. Accepted risk per dfe-infra docs/THREAT-MODEL.md. Drop when hyperi-io/scalo-rs#281 moves scalo off opentelemetry 0.31, blocked on metrics-exporter-opentelemetry 0.2.1 requiring opentelemetry ^0.31."
   rust:
     features:
       - "default"
@@ -52,12 +54,6 @@ test:
 
 build:
   enabled: true
-  # PGO and BOLT are off for the rc.14 workstream: each adds 30-60 min per arch
-  # and the workstream needs fast turnaround on everything else first. Tier 1
-  # (allocator + LTO) still applies. Turning this back off is the LAST rc.14
-  # task. A STABLE release meanwhile needs `release-unoptimized: true` at
-  # dispatch; a prerelease (rc) is never refused.
-  skip_optimize: true
   type: app
   strategies:
     - native

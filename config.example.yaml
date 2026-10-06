@@ -957,9 +957,11 @@ version_check:
 # logs a WARN (later ones log at DEBUG). An empty store cannot
 # tell a new source from a lost cursor (a directory with no volume behind it
 # loses every cursor on restart), so alert on cold starts of sources that have
-# run before. A cursor read that fails counts in
-# dfe_fetcher_cursor_read_failures_total{source} and warns every time.
-# on_missing_cursor (hot-reloaded) decides what either does:
+# run before. A cursor read that fails is not a cold start: the tick is
+# refused whatever on_missing_cursor says, so the window stays at the stored
+# cursor, and it counts in dfe_fetcher_cursor_read_failures_total{source} and
+# logs an ERROR.
+# on_missing_cursor (hot-reloaded) decides what a cold start does:
 #   lookback (default) -- fetch the last default_window_hours: a new source
 #                         starts on its own, a lost cursor skips older data
 #   refuse             -- fetch nothing and fail the tick until a cursor exists:

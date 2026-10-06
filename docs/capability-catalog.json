@@ -41,7 +41,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       },
       {
         "name": "endpoint_override",
@@ -212,7 +212,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -316,7 +316,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       },
       {
         "name": "publisher_identifier",
@@ -385,7 +385,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -488,7 +488,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -549,7 +549,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -603,7 +603,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -657,7 +657,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -737,7 +737,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -785,7 +785,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -845,7 +845,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -902,7 +902,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -1020,7 +1020,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -1056,7 +1056,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [
@@ -1137,7 +1137,7 @@
             "name": "credential_secret",
             "type": "string",
             "required": false,
-            "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+            "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
           }
         ]
       },
@@ -1210,7 +1210,7 @@
         "name": "credential_secret",
         "type": "string",
         "required": false,
-        "description": "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 mount) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+        "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
       }
     ],
     "children": [

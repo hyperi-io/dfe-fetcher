@@ -222,7 +222,7 @@ warning naming the key.
 
 A tick with no window cursor stored, or no cursor store at all, is a cold start. Every one counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart. The first cold start of a source logs a WARN and later ones log at DEBUG, since with no store at all every tick is one.
 
-A cursor read that fails is a fault, not a cold start. It counts in `dfe_fetcher_cursor_read_failures_total{source}` and logs a WARN every time, at most one every 10 s per source, and the tick falls back the same way.
+A cursor read that fails is a fault, not a cold start. The cursor may still be stored further back than the lookback, so the tick is refused under either `on_missing_cursor` setting and the next tick reads again. The window stays where the stored cursor left it, rather than sliding forward and skipping what sat behind it. Each refusal counts in `dfe_fetcher_cursor_read_failures_total{source}` and as a failed fetch, and logs an ERROR at most once every 10 s per source.
 
 `cursor.on_missing_cursor` decides what the tick does. `lookback` (the default) fetches the last `default_window_hours`, so a new source starts on its own and a lost cursor skips anything older. `refuse` fetches nothing and fails the tick until a cursor exists, so a lost cursor never skips data and a new source never starts on its own. Each refused tick counts as a failed fetch, and the refusal logs an ERROR at most once every 10 s per source.
 

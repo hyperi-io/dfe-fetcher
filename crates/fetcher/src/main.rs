@@ -299,9 +299,8 @@ async fn run_fetcher_service(
     // and shutdown token (signal handler already installed with K8s pre-stop delay).
     let shutdown_token = runtime.shutdown.clone();
 
-    // Initialise fetcher metrics (with ServiceMetrics dual-emit for standard DFE metric names).
-    // runtime.dfe is the ServiceMetrics already registered by ServiceRuntime; we also register
-    // fetcher-specific metric descriptions by constructing Metrics::with_dfe().
+    // The fetcher's own metric descriptions go to the global recorder, and the
+    // service metric set to the runtime's manager.
     let metrics = Arc::new(Metrics::with_dfe(&runtime.metrics));
 
     // Seed the self-normalised fetch-pressure denominator (scheduler semaphore

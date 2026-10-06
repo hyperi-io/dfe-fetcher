@@ -591,16 +591,15 @@ fn every_committed_config_file_loads_and_validates() {
     assert!(checked >= 1, "expected at least config.example.yaml");
 }
 
-/// Every `vault:` spec in the shipped examples names the KV v2 `data` segment:
-/// `vault:<mount>/data/<path>:<key>`.
+/// Every `vault:` spec in the shipped examples names its mount and a path:
+/// `vault:<mount>/<path>:<key>`, with an optional `data` segment after the mount.
 ///
-/// scalo's OpenBao path parser only recognises a mount when a literal `data`
-/// segment follows it, and otherwise files the whole path under the default
-/// `secret` mount -- so `vault:secret/aws:credentials` reads
-/// `secret/data/secret/aws`, a path nobody wrote to. An operator copying that
-/// example gets a not-found at fetch time, not at config load.
+/// scalo's OpenBao path parser reads the first segment as the mount and drops a
+/// `data` segment after it, but files a spec with one segment under the default
+/// `secret` mount. An operator copying such an example reads a mount the spec
+/// never names, and gets a not-found at fetch time, not at config load.
 #[test]
-fn every_documented_vault_spec_names_the_kv_data_segment() {
+fn every_documented_vault_spec_names_a_mount_and_a_path() {
     let root = dfe_fetcher::deployment::repo_root();
     let mut files = vec![root.join("config.example.yaml"), root.join("README.md")];
     collect_docs(&root.join("docs"), &mut files);
@@ -614,7 +613,7 @@ fn every_documented_vault_spec_names_the_kv_data_segment() {
         for (i, line) in text.lines().enumerate() {
             for spec in vault_specs(line) {
                 seen += 1;
-                if !names_data_segment(spec) {
+                if !names_mount_and_path(spec) {
                     bad.push(format!("{shown}:{}: {spec}", i + 1));
                 }
             }
@@ -627,8 +626,8 @@ fn every_documented_vault_spec_names_the_kv_data_segment() {
     );
     assert!(
         bad.is_empty(),
-        "vault: specs that resolve under `secret/data/<whole path>` instead of the mount \
-         they name -- write them as vault:<mount>/data/<path>:<key>:\n{}",
+        "vault: specs that name no mount, so they resolve under the default `secret` \
+         mount -- write them as vault:<mount>/<path>:<key>:\n{}",
         bad.join("\n")
     );
 }
@@ -672,17 +671,45 @@ fn vault_specs(line: &str) -> Vec<&str> {
         .collect()
 }
 
-/// scalo's rule: the first path segment is the mount only when the second is
-/// `data`.
-fn names_data_segment(spec: &str) -> bool {
+/// scalo's rule: the first path segment is the mount, and a `data` segment
+/// after it is the KV v2 prefix, not part of the path.
+fn names_mount_and_path(spec: &str) -> bool {
     let Some(path_key) = spec.strip_prefix("vault:") else {
         return false;
     };
     let Some((path, _key)) = path_key.split_once(':') else {
         return false;
     };
-    let mut segments = path.split('/');
-    segments.next().is_some_and(|mount| !mount.is_empty())
-        && segments.next() == Some("data")
-        && segments.next().is_some_and(|rest| !rest.is_empty())
+    let Some((mount, rest)) = path.split_once('/') else {
+        return false;
+    };
+    let rest = rest.strip_prefix("data/").unwrap_or(rest);
+    !mount.is_empty() && !rest.is_empty() && !rest.ends_with('/')
+}
+
+/// The rule above agrees with scalo's parser on the shapes it documents.
+#[test]
+fn vault_spec_rule_matches_the_scalo_parser() {
+    for good in [
+        "vault:kv/aws/prod:credentials",
+        "vault:kv/data/aws/prod:credentials",
+        "vault:secret/dfe/okta:token",
+        "vault:data/foo/bar:key",
+    ] {
+        assert!(
+            names_mount_and_path(good),
+            "{good} names a mount and a path"
+        );
+    }
+    for bad in [
+        "vault:aws:credentials",
+        "vault:/aws/prod:credentials",
+        "vault:kv/:credentials",
+        "vault:kv/data/:credentials",
+    ] {
+        assert!(
+            !names_mount_and_path(bad),
+            "{bad} names no mount or no path"
+        );
+    }
 }

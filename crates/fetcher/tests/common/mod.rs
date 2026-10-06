@@ -313,15 +313,18 @@ impl VaultTestConfig {
 // sees the image. Hoisting the tags out is what puts them back under review,
 // hence the annotations.
 
-/// The version the fleet deploys, not the newest published. Strimzi 0.51 is
-/// held back deliberately (1.0 drops the CRD versions the charts use) and its
-/// ceiling is Kafka 4.2.0, so a test proving broker behaviour above that proves
-/// it against something nobody runs. Raise this only with the operator.
+/// The Kafka DFE deploys, held equal to dfe-infra `versions.yaml` `kafka-version`
+/// for the current stack: a test proving broker behaviour on another version
+/// proves it against something nobody runs.
 ///
 /// The JVM image: `apache/kafka-native` before 4.4.0 segfaults in `getpwuid` on ~2% of starts.
 ///
-/// renovate: datasource=docker depName=apache/kafka allowedVersions=<=4.2.0
-const KAFKA_TAG: &str = "4.2.0";
+/// renovate: datasource=docker depName=apache/kafka
+const KAFKA_TAG: &str = "4.3.1";
+
+/// Digest of `KAFKA_TAG`, apart from it because the Renovate regex stops at a colon.
+const KAFKA_DIGEST: &str =
+    "sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837";
 
 /// A JVM broker takes 5-12 s to become ready, longer on a busy runner, so 60 s is too tight.
 const KAFKA_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
@@ -354,7 +357,11 @@ const MARIADB_TAG: &str = "11.8.9";
 /// passwordless `default` user unless `CLICKHOUSE_SKIP_USER_SETUP` says so.
 ///
 /// renovate: datasource=docker depName=clickhouse/clickhouse-server
-const CLICKHOUSE_TAG: &str = "26.3.32.14";
+const CLICKHOUSE_TAG: &str = "26.3.42.3";
+
+/// Digest of `CLICKHOUSE_TAG`, apart from it because the Renovate regex stops at a colon.
+const CLICKHOUSE_DIGEST: &str =
+    "sha256:21d572843e59539c7d100286b6f5a6053c341fe4b33c2d7b74b1ff7cb24c5399";
 
 /// The current 8.x line; the image carries `mongosh`, which the replica-set
 /// start runs `rs.initiate()` through.
@@ -706,7 +713,7 @@ pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<Testco
         reap_stale(&name);
         match Kafka::default()
             .with_jvm_image()
-            .with_tag(KAFKA_TAG)
+            .with_tag(format!("{KAFKA_TAG}@{KAFKA_DIGEST}"))
             .with_container_name(&name)
             .with_labels(test_labels("kafka"))
             .with_startup_timeout(KAFKA_STARTUP_TIMEOUT)
@@ -1072,7 +1079,7 @@ pub async fn acquire_clickhouse(test: &str) -> Option<DatabaseTestConfig> {
     let name = container_name(Some(test), "clickhouse");
     reap_stale(&name);
     let container = match ClickHouse::default()
-        .with_tag(CLICKHOUSE_TAG)
+        .with_tag(format!("{CLICKHOUSE_TAG}@{CLICKHOUSE_DIGEST}"))
         .with_env_var("CLICKHOUSE_SKIP_USER_SETUP", "1")
         .with_container_name(&name)
         .with_labels(test_labels("clickhouse"))

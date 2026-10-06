@@ -61,6 +61,12 @@ struct Point<'a> {
     value: f64,
 }
 
+/// CloudWatch's float epoch seconds as whole epoch milliseconds, which is what
+/// a bare-number timestamp means to the loader and to a `DateTime64(3)` column.
+fn epoch_millis(seconds: f64) -> i64 {
+    (seconds * 1000.0).round() as i64
+}
+
 /// A string var of the unit, or `fallback`.
 fn var<'a>(ctx: &'a TemplateCtx, name: &str, fallback: &'a str) -> &'a str {
     ctx.get("vars")
@@ -143,7 +149,7 @@ pub(super) fn expand(response: &[u8], ctx: &TemplateCtx) -> Result<Vec<Bytes>> {
                 "metric_name": p.descriptor["MetricName"],
                 "dimensions": p.descriptor.get("Dimensions").cloned().unwrap_or_else(|| json!([])),
                 "unit": p.descriptor.get("Unit").and_then(Value::as_str).unwrap_or("None"),
-                "timestamp": p.timestamp,
+                "timestamp": epoch_millis(p.timestamp),
                 "value": p.value,
                 "stat": stat
             }))
@@ -330,9 +336,9 @@ mod tests {
         assert_eq!(
             rows,
             [
-                json!({"namespace": "AWS/EC2", "metric_name": "NetworkIn", "dimensions": [{"Name": "InstanceId", "Value": "i-1"}], "unit": "None", "timestamp": 1_709_424_300.0, "value": 7.0, "stat": "Average"}),
-                json!({"namespace": "AWS/EC2", "metric_name": "CPUUtilization", "dimensions": [{"Name": "InstanceId", "Value": "i-1"}], "unit": "Percent", "timestamp": 1_709_424_000.0, "value": 45.2, "stat": "Average"}),
-                json!({"namespace": "AWS/EC2", "metric_name": "CPUUtilization", "dimensions": [{"Name": "InstanceId", "Value": "i-1"}], "unit": "Percent", "timestamp": 1_709_424_300.0, "value": 62.1, "stat": "Average"}),
+                json!({"namespace": "AWS/EC2", "metric_name": "NetworkIn", "dimensions": [{"Name": "InstanceId", "Value": "i-1"}], "unit": "None", "timestamp": 1_709_424_300_000_i64, "value": 7.0, "stat": "Average"}),
+                json!({"namespace": "AWS/EC2", "metric_name": "CPUUtilization", "dimensions": [{"Name": "InstanceId", "Value": "i-1"}], "unit": "Percent", "timestamp": 1_709_424_000_000_i64, "value": 45.2, "stat": "Average"}),
+                json!({"namespace": "AWS/EC2", "metric_name": "CPUUtilization", "dimensions": [{"Name": "InstanceId", "Value": "i-1"}], "unit": "Percent", "timestamp": 1_709_424_300_000_i64, "value": 62.1, "stat": "Average"}),
             ],
             "joined by query position, whatever order the results come back in"
         );
@@ -347,6 +353,56 @@ mod tests {
         assert_eq!(
             expand(br#"{"MetricDataResults": []}"#, &ctx(json!({}), vec![])).unwrap(),
             [] as [bytes::Bytes; 0]
+        );
+    }
+
+    /// A `GetMetricData` answer as AWS sends it, fractional epoch seconds and
+    /// newest first, stamps each row in whole epoch milliseconds at the same
+    /// instant, so a `DateTime64(3)` column reads it as that instant.
+    #[test]
+    fn a_get_metric_data_answer_stamps_rows_in_integer_epoch_milliseconds() {
+        let response = br#"{
+            "MetricDataResults": [
+                {
+                    "Id": "q0",
+                    "Label": "CPUUtilization",
+                    "Timestamps": [1709424600.123, 1709424300.5, 1709424000.5],
+                    "Values": [71.4, 62.1, 45.2],
+                    "StatusCode": "Complete"
+                }
+            ],
+            "Messages": []
+        }"#;
+        let ids = vec![descriptor("CPUUtilization", Some("Percent"))];
+        let rows = expand(response, &ctx(json!({}), ids)).unwrap();
+        let stamps: Vec<i64> = rows
+            .iter()
+            .map(|r| {
+                let row: Value = serde_json::from_slice(r).unwrap();
+                row["timestamp"]
+                    .as_i64()
+                    .unwrap_or_else(|| panic!("not an integer: {}", row["timestamp"]))
+            })
+            .collect();
+        assert_eq!(
+            stamps,
+            [1_709_424_600_123, 1_709_424_300_500, 1_709_424_000_500]
+        );
+        let instants: Vec<String> = stamps
+            .iter()
+            .map(|ms| {
+                chrono::DateTime::from_timestamp_millis(*ms)
+                    .unwrap()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            })
+            .collect();
+        assert_eq!(
+            instants,
+            [
+                "2024-03-03T00:10:00.123Z",
+                "2024-03-03T00:05:00.500Z",
+                "2024-03-03T00:00:00.500Z"
+            ]
         );
     }
 
