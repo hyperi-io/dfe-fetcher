@@ -17,19 +17,21 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      from-head:
-        type: boolean
-        default: true
-        description: "Release/retry from HEAD (CI creates the tag). Uncheck to publish an existing tag."
-      bump:
-        type: choice
-        default: auto
-        options: [auto, patch, minor]
-        description: "Version bump for from-head dispatch"
       tag:
         type: string
         required: false
-        description: "Existing tag to publish (only when from-head is unchecked)"
+        default: ""
+        description: "Tag to publish (e.g. v1.14.5)"
+      from-head:
+        type: string
+        required: false
+        default: ""
+        description: "'true' to release/retry the current HEAD."
+      bump:
+        type: string
+        required: false
+        default: "auto"
+        description: "from-head version: auto | patch | minor | X.Y.Z (exact)."
       skip-optimize:
         type: string
         required: false
@@ -40,6 +42,11 @@ on:
         required: false
         default: ""
         description: "'true' to consent, for this run only, to shipping a skipped-optimisation build under a release tag."
+      optimize-tier:
+        type: string
+        required: false
+        default: ""
+        description: "'release' to build the release optimisation tier on a run that publishes nothing (Rust: PGO + BOLT)."
 
 permissions:
   contents: write
@@ -52,8 +59,9 @@ jobs:
     uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@main
     with:
       tag: ${{ inputs.tag || '' }}
-      from-head: ${{ inputs.from-head && 'true' || '' }}
+      from-head: ${{ inputs.from-head || '' }}
       bump: ${{ inputs.bump || 'auto' }}
       skip-optimize: ${{ inputs.skip-optimize || '' }}
       release-unoptimized: ${{ inputs.release-unoptimized || '' }}
+      optimize-tier: ${{ inputs.optimize-tier || '' }}
     secrets: inherit

@@ -44,8 +44,8 @@ tracing = { workspace = true }
 # odbc: one wire crate for every engine with an ODBC driver. `prompt` (the
 # Windows connection dialog, pulls winit) is off; the driver manager is
 # unixODBC, linked dynamically (LGPL-2.1, dynamic linking only).
-odbc-api = { version = "29.1.1", default-features = false, features = ["odbc_version_3_80"], optional = true }
-arrow-odbc = { version = "25.3.0", optional = true }
+odbc-api = { version = "29.2.0", default-features = false, features = ["odbc_version_3_80"], optional = true }
+arrow-odbc = { version = "26.0.0", optional = true }
 # The arrow umbrella arrow-odbc already depends on, with its JSON writer turned
 # on, so one arrow version serves both the reader and the writer.
 arrow = { version = "59.3.0", default-features = false, features = ["json"], optional = true }
