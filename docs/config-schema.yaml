@@ -238,9 +238,9 @@ properties:
         compress_rotated: true
       kafka:
         enabled: true
-        routing: per_table
+        routing: common
         topic_suffix: .dlq
-        common_topic: dfe.dlq
+        common_topic: dfe_fetcher_dlq
         send_timeout_ms: 5000
   config_reload_secs:
     description: Periodic config reload interval in seconds (0 = disabled, SIGHUP only).
@@ -604,6 +604,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -696,6 +697,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       assume_role_arn:
@@ -747,6 +749,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -850,6 +853,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -911,6 +915,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -1014,6 +1019,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1066,6 +1072,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -1155,6 +1162,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1219,6 +1227,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1302,6 +1311,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1350,6 +1360,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       use_ssws_header:
@@ -1436,6 +1447,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       use_ssws_header:
@@ -1492,6 +1504,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1572,6 +1585,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1613,6 +1627,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1693,6 +1708,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1749,6 +1765,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1833,6 +1850,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1869,6 +1887,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1946,6 +1965,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -1996,6 +2016,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2084,6 +2105,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2144,6 +2166,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2253,6 +2276,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2440,6 +2464,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2543,6 +2568,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2619,6 +2645,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2863,6 +2890,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2889,6 +2917,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -2919,6 +2948,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       sas_token:
@@ -2928,6 +2958,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       tenant_id:
@@ -2945,6 +2976,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -3030,6 +3062,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       private_key_secret:
@@ -3045,6 +3078,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -3146,6 +3180,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       private_key_secret:
@@ -3158,6 +3193,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
       credential_secret:
@@ -5063,6 +5099,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5071,6 +5108,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5085,6 +5123,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5099,6 +5138,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5122,6 +5162,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5140,6 +5181,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5150,6 +5192,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5160,6 +5203,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5181,6 +5225,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5189,6 +5234,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5200,6 +5246,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -5220,6 +5267,7 @@ $defs:
         type: object
         additionalProperties:
           type: string
+          x-scalo-secret: true
           x-dfe-secret: true
           writeOnly: true
         default: {}
@@ -5329,6 +5377,7 @@ $defs:
           spelled `bao:` or `openbao:`, `env:VAR`, `file:<path>`, or a literal),
           resolved on first use and never logged.
         type: string
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: '***REDACTED***'
@@ -6094,6 +6143,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -6202,6 +6252,7 @@ $defs:
           pre-filled a password box with `***REDACTED***` would send that as the
           password.
         type: string
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: ''
@@ -6338,7 +6389,7 @@ $defs:
         $ref: '#/$defs/FileDlqConfig'
         default:
           enabled: true
-          path: /var/spool/dfe/dlq
+          path: /var/spool/scalo/dlq
           rotation: hourly
           max_age_days: 30
           compress_rotated: true
@@ -6349,7 +6400,7 @@ $defs:
           enabled: true
           routing: per_table
           topic_suffix: .dlq
-          common_topic: dfe.dlq
+          common_topic: null
           send_timeout_ms: 5000
   DlqMode:
     description: How backends are used when multiple are enabled.
@@ -6367,7 +6418,7 @@ $defs:
     - description: File backend only (no Kafka dependency).
       type: string
       const: file_only
-    - description: Kafka backend only (current dfe-loader behaviour).
+    - description: Kafka backend only (matches a typical consumer's current behaviour).
       type: string
       const: kafka_only
   FileDlqConfig:
@@ -6384,9 +6435,9 @@ $defs:
       path:
         description: |-
           Base directory for DLQ files.
-          Service name is appended as a subdirectory.
+          Service name is appended as a subdirectory. Default `/var/spool/scalo/dlq`.
         type: string
-        default: /var/spool/dfe/dlq
+        default: /var/spool/scalo/dlq
       rotation:
         description: File rotation period.
         $ref: '#/$defs/RotationPeriod'
@@ -6427,9 +6478,15 @@ $defs:
         type: string
         default: .dlq
       common_topic:
-        description: Common topic when routing is `Common` or destination is unknown.
-        type: string
-        default: dfe.dlq
+        description: |-
+          Common topic when routing is `Common` or destination is unknown. Unset
+          by default, which names it after the service the DLQ is spawned for:
+          `<service>.dlq`, like the per-table `<destination>.dlq`, or `dlq` when
+          the service has no name. A value that is set is used as it is.
+        type:
+        - string
+        - 'null'
+        default: null
       send_timeout_ms:
         description: |-
           How long a `flush` or the shutdown waits for the broker to ack the
@@ -6618,8 +6675,8 @@ $defs:
         description: |-
           Regex patterns for topic exclude filtering.
           Topics matching any pattern are excluded. Exclude wins over include.
-          Default: `["^__", "_dlq$"]` -- Kafka internal topics and the DFE
-          standard's dead-letter topics (a DLQ consumer sets its own include).
+          Default: `["^__", "_dlq$"]` -- Kafka internal topics and a downstream
+          dead-letter-topic convention (a DLQ consumer sets its own include).
         type: array
         items:
           type: string
@@ -6677,6 +6734,7 @@ $defs:
         type:
         - string
         - 'null'
+        x-scalo-secret: true
         x-dfe-secret: true
         writeOnly: true
         default: null
@@ -6814,8 +6872,10 @@ $defs:
 
           These settings override the profile defaults, the explicit config
           fields and the whole sizing surface: every producer and consumer path
-          applies them after all three. Use this to customize any librdkafka
-          setting not exposed as an explicit field.
+          applies them after all three, except that the consumer sets its
+          security, TLS, `client_id` and `client_rack` fields after them. Use this
+          to customize any librdkafka setting not exposed as an explicit field.
+          [`validate`](Self::validate) judges the security keys set here.
 
           Example:
           ```yaml
@@ -6999,7 +7059,7 @@ $defs:
     - description: |-
         Maximum throughput: generous byte budgets, tolerates batching delay.
 
-        Consumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,
+        Consumer: 1 MiB fetch.min.bytes, 50 ms wait, 1 MiB per-partition,
         50 MiB total, 2000 poll-safety cap.
         Producer: 128 KiB batch, 20 ms linger, zstd level 3, 64 MiB buffer,
         5 in-flight, 16 MiB record ceiling.
@@ -7008,7 +7068,7 @@ $defs:
     - description: |-
         Balanced: moderate batching, 5 ms linger, smaller per-partition budget.
 
-        Consumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,
+        Consumer: 256 KiB fetch.min.bytes, 25 ms wait, 1 MiB per-partition,
         50 MiB total, 1000 poll-safety cap.
         Producer: 64 KiB batch, 5 ms linger, zstd level 3, 32 MiB buffer,
         5 in-flight, 16 MiB record ceiling.
@@ -7017,7 +7077,7 @@ $defs:
     - description: |-
         Low latency: minimal batching delay, smaller buffers.
 
-        Consumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,
+        Consumer: 1 byte fetch.min.bytes, 5 ms wait, 1 MiB per-partition,
         16 MiB total, 500 poll-safety cap.
         Producer: 16 KiB batch, 0 ms linger, zstd level 3, 16 MiB buffer,
         5 in-flight, 16 MiB record ceiling.
@@ -7058,13 +7118,13 @@ $defs:
         default: null
       max_partition_fetch_bytes:
         description: |-
-          Maximum bytes returned per partition per Fetch request.
+          Bytes requested per partition per Fetch request.
 
           librdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,
-          default 1 MiB). Must be >= the topic's `max.message.bytes`, so every
-          profile sets it to [`MESSAGE_MAX_BYTES`]. librdkafka does grow it on
-          sight of a larger record, but the explicit value keeps the consumer's
-          memory envelope predictable instead of discovered.
+          default 1 MiB). It bounds memory, not record size: librdkafka grows the
+          fetch for a record larger than it until the whole record arrives, and
+          decompresses everything a fetch returns before the application reads it.
+          Every profile sets [`PARTITION_FETCH_BYTES`].
         type:
         - integer
         - 'null'
@@ -7075,9 +7135,10 @@ $defs:
           Maximum total bytes returned by the broker for a single Fetch request
           across all partitions.
 
-          librdkafka: `fetch.max.bytes` (default 50 MiB). Keep it at or under
-          50 MiB: MSK Express holds the broker's own 55 MiB fetch ceiling
-          read-only, so asking for more is a number that can never be honoured.
+          librdkafka: `fetch.max.bytes` (default 50 MiB). A first batch larger
+          than it is still returned whole. Keep it at or under 50 MiB: MSK
+          Express holds the broker's own 55 MiB fetch ceiling read-only, so
+          asking for more is a number that can never be honoured.
         type:
         - integer
         - 'null'
@@ -7473,8 +7534,10 @@ $defs:
           counts in `dfe_fetcher_cursor_cold_start_total{source}`, and the first
           one per source logs a warning, because an empty store cannot tell a new
           source from a lost cursor (a cursor directory with no volume behind it
-          loses every cursor on a restart). A read that fails counts in
-          `dfe_fetcher_cursor_read_failures_total{source}` and warns every time.
+          loses every cursor on a restart). A read that fails is not a missing
+          cursor and this setting does not apply to it: the tick is refused, so
+          the window stays at the stored cursor, and it counts in
+          `dfe_fetcher_cursor_read_failures_total{source}` and logs an error.
         $ref: '#/$defs/MissingCursor'
         default: lookback
   MissingCursor:

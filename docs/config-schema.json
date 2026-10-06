@@ -249,9 +249,9 @@
         },
         "kafka": {
           "enabled": true,
-          "routing": "per_table",
+          "routing": "common",
           "topic_suffix": ".dlq",
-          "common_topic": "dfe.dlq",
+          "common_topic": "dfe_fetcher_dlq",
           "send_timeout_ms": 5000
         }
       }
@@ -634,6 +634,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -748,6 +749,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -817,6 +819,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -945,6 +948,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1028,6 +1032,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -1155,6 +1160,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1223,6 +1229,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -1329,6 +1336,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1396,6 +1404,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1499,6 +1508,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1552,6 +1562,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1653,6 +1664,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1713,6 +1725,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1809,6 +1822,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1855,6 +1869,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -1944,6 +1959,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2004,6 +2020,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2100,6 +2117,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2139,6 +2157,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2228,6 +2247,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2281,6 +2301,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2384,6 +2405,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2451,6 +2473,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2574,6 +2597,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2775,6 +2799,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2885,6 +2910,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -2952,6 +2978,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3235,6 +3262,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3268,6 +3296,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3304,6 +3333,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3313,6 +3343,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3336,6 +3367,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3402,6 +3434,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3418,6 +3451,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3535,6 +3569,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -3551,6 +3586,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true
         },
@@ -5811,6 +5847,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5821,6 +5858,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5839,6 +5877,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5857,6 +5896,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5883,6 +5923,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5905,6 +5946,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5915,6 +5957,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5925,6 +5968,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5943,6 +5987,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5953,6 +5998,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5963,6 +6009,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -5980,6 +6027,7 @@
           "type": "object",
           "additionalProperties": {
             "type": "string",
+            "x-scalo-secret": true,
             "x-dfe-secret": true,
             "writeOnly": true
           },
@@ -6102,6 +6150,7 @@
         "connection_string": {
           "description": "The connection string or URL as a credential spec (`vault:...`, also\nspelled `bao:` or `openbao:`, `env:VAR`, `file:<path>`, or a literal),\nresolved on first use and never logged.",
           "type": "string",
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": "***REDACTED***"
@@ -7013,6 +7062,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -7111,6 +7161,7 @@
         "password": {
           "description": "Password (always redacted in serialisation/debug output).\n\nThe schema default is pinned to the empty string: serialising the real\ndefault outside an expose window yields the mask, and a UI that\npre-filled a password box with `***REDACTED***` would send that as the\npassword.",
           "type": "string",
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": ""
@@ -7271,7 +7322,7 @@
           "$ref": "#/$defs/FileDlqConfig",
           "default": {
             "enabled": true,
-            "path": "/var/spool/dfe/dlq",
+            "path": "/var/spool/scalo/dlq",
             "rotation": "hourly",
             "max_age_days": 30,
             "compress_rotated": true
@@ -7284,7 +7335,7 @@
             "enabled": true,
             "routing": "per_table",
             "topic_suffix": ".dlq",
-            "common_topic": "dfe.dlq",
+            "common_topic": null,
             "send_timeout_ms": 5000
           }
         }
@@ -7309,7 +7360,7 @@
           "const": "file_only"
         },
         {
-          "description": "Kafka backend only (current dfe-loader behaviour).",
+          "description": "Kafka backend only (matches a typical consumer's current behaviour).",
           "type": "string",
           "const": "kafka_only"
         }
@@ -7325,9 +7376,9 @@
           "default": true
         },
         "path": {
-          "description": "Base directory for DLQ files.\nService name is appended as a subdirectory.",
+          "description": "Base directory for DLQ files.\nService name is appended as a subdirectory. Default `/var/spool/scalo/dlq`.",
           "type": "string",
-          "default": "/var/spool/dfe/dlq"
+          "default": "/var/spool/scalo/dlq"
         },
         "rotation": {
           "description": "File rotation period.",
@@ -7383,9 +7434,12 @@
           "default": ".dlq"
         },
         "common_topic": {
-          "description": "Common topic when routing is `Common` or destination is unknown.",
-          "type": "string",
-          "default": "dfe.dlq"
+          "description": "Common topic when routing is `Common` or destination is unknown. Unset\nby default, which names it after the service the DLQ is spawned for:\n`<service>.dlq`, like the per-table `<destination>.dlq`, or `dlq` when\nthe service has no name. A value that is set is used as it is.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "send_timeout_ms": {
           "description": "How long a `flush` or the shutdown waits for the broker to ack the\nentries queued to Kafka, in milliseconds. Entries still unacked then\nare purged and counted as dropped. The purge adds a wait of up to 5 s\nfor the purged entries' delivery reports, so `0` skips the ack wait\nbut not that one. Default 5000.",
@@ -7549,7 +7603,7 @@
           "default": []
         },
         "topic_exclude": {
-          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: `[\"^__\", \"_dlq$\"]` -- Kafka internal topics and the DFE\nstandard's dead-letter topics (a DLQ consumer sets its own include).",
+          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: `[\"^__\", \"_dlq$\"]` -- Kafka internal topics and a downstream\ndead-letter-topic convention (a DLQ consumer sets its own include).",
           "type": "array",
           "items": {
             "type": "string"
@@ -7614,6 +7668,7 @@
             "string",
             "null"
           ],
+          "x-scalo-secret": true,
           "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
@@ -7739,7 +7794,7 @@
           }
         },
         "librdkafka_overrides": {
-          "description": "Librdkafka configuration overrides.\n\nThese settings override the profile defaults, the explicit config\nfields and the whole sizing surface: every producer and consumer path\napplies them after all three. Use this to customize any librdkafka\nsetting not exposed as an explicit field.\n\nExample:\n```yaml\nlibrdkafka_overrides:\n  statistics.interval.ms: \"5000\"\n  fetch.min.bytes: \"2097152\"\n```",
+          "description": "Librdkafka configuration overrides.\n\nThese settings override the profile defaults, the explicit config\nfields and the whole sizing surface: every producer and consumer path\napplies them after all three, except that the consumer sets its\nsecurity, TLS, `client_id` and `client_rack` fields after them. Use this\nto customize any librdkafka setting not exposed as an explicit field.\n[`validate`](Self::validate) judges the security keys set here.\n\nExample:\n```yaml\nlibrdkafka_overrides:\n  statistics.interval.ms: \"5000\"\n  fetch.min.bytes: \"2097152\"\n```",
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -7876,17 +7931,17 @@
       "description": "Opinionated sizing profile for the Kafka GET/SEND surface.\n\nThe profile sets default values for all named knobs below. An explicit\nper-knob value in [`KafkaSizingConfig`] always wins over the profile\ndefault. The raw librdkafka maps win over both, and\n[`KafkaConfig::librdkafka_overrides`] is applied after all of them.\n\nProfiles target the BYTE-level throughput budget and latency envelope.\nThey differ in batching and latency only: every profile produces with\n`zstd` at `compression.level` 3.\n\n| Profile | Use case |\n|---|---|\n| `throughput` (default) | PB/day batch ingest, large fanout topics |\n| `balanced` | Mixed OLTP + analytics, moderate batch size |\n| `low_latency` | Near-real-time, event-driven, small messages |",
       "oneOf": [
         {
-          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 16 MiB per-partition,\n50 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, zstd level 3, 64 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
+          "description": "Maximum throughput: generous byte budgets, tolerates batching delay.\n\nConsumer: 1 MiB fetch.min.bytes, 50 ms wait, 1 MiB per-partition,\n50 MiB total, 2000 poll-safety cap.\nProducer: 128 KiB batch, 20 ms linger, zstd level 3, 64 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
           "type": "string",
           "const": "throughput"
         },
         {
-          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 16 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, zstd level 3, 32 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
+          "description": "Balanced: moderate batching, 5 ms linger, smaller per-partition budget.\n\nConsumer: 256 KiB fetch.min.bytes, 25 ms wait, 1 MiB per-partition,\n50 MiB total, 1000 poll-safety cap.\nProducer: 64 KiB batch, 5 ms linger, zstd level 3, 32 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
           "type": "string",
           "const": "balanced"
         },
         {
-          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 16 MiB per-partition,\n16 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, zstd level 3, 16 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
+          "description": "Low latency: minimal batching delay, smaller buffers.\n\nConsumer: 1 byte fetch.min.bytes, 5 ms wait, 1 MiB per-partition,\n16 MiB total, 500 poll-safety cap.\nProducer: 16 KiB batch, 0 ms linger, zstd level 3, 16 MiB buffer,\n5 in-flight, 16 MiB record ceiling.",
           "type": "string",
           "const": "low_latency"
         }
@@ -7916,7 +7971,7 @@
           "default": null
         },
         "max_partition_fetch_bytes": {
-          "description": "Maximum bytes returned per partition per Fetch request.\n\nlibrdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,\ndefault 1 MiB). Must be >= the topic's `max.message.bytes`, so every\nprofile sets it to [`MESSAGE_MAX_BYTES`]. librdkafka does grow it on\nsight of a larger record, but the explicit value keeps the consumer's\nmemory envelope predictable instead of discovered.",
+          "description": "Bytes requested per partition per Fetch request.\n\nlibrdkafka: `max.partition.fetch.bytes` (alias `fetch.message.max.bytes`,\ndefault 1 MiB). It bounds memory, not record size: librdkafka grows the\nfetch for a record larger than it until the whole record arrives, and\ndecompresses everything a fetch returns before the application reads it.\nEvery profile sets [`PARTITION_FETCH_BYTES`].",
           "type": [
             "integer",
             "null"
@@ -7925,7 +7980,7 @@
           "default": null
         },
         "fetch_max_bytes": {
-          "description": "Maximum total bytes returned by the broker for a single Fetch request\nacross all partitions.\n\nlibrdkafka: `fetch.max.bytes` (default 50 MiB). Keep it at or under\n50 MiB: MSK Express holds the broker's own 55 MiB fetch ceiling\nread-only, so asking for more is a number that can never be honoured.",
+          "description": "Maximum total bytes returned by the broker for a single Fetch request\nacross all partitions.\n\nlibrdkafka: `fetch.max.bytes` (default 50 MiB). A first batch larger\nthan it is still returned whole. Keep it at or under 50 MiB: MSK\nExpress holds the broker's own 55 MiB fetch ceiling read-only, so\nasking for more is a number that can never be honoured.",
           "type": [
             "integer",
             "null"
@@ -8273,7 +8328,7 @@
           "default": 1
         },
         "on_missing_cursor": {
-          "description": "What a tick does when its source has no cursor. A cursor never stored\ncounts in `dfe_fetcher_cursor_cold_start_total{source}`, and the first\none per source logs a warning, because an empty store cannot tell a new\nsource from a lost cursor (a cursor directory with no volume behind it\nloses every cursor on a restart). A read that fails counts in\n`dfe_fetcher_cursor_read_failures_total{source}` and warns every time.",
+          "description": "What a tick does when its source has no cursor. A cursor never stored\ncounts in `dfe_fetcher_cursor_cold_start_total{source}`, and the first\none per source logs a warning, because an empty store cannot tell a new\nsource from a lost cursor (a cursor directory with no volume behind it\nloses every cursor on a restart). A read that fails is not a missing\ncursor and this setting does not apply to it: the tick is refused, so\nthe window stays at the stored cursor, and it counts in\n`dfe_fetcher_cursor_read_failures_total{source}` and logs an error.",
           "$ref": "#/$defs/MissingCursor",
           "default": "lookback"
         }

@@ -45,10 +45,11 @@ fn conn_id() -> FieldSpec {
 /// materialises and the app resolves at fetch time via `scalo::secrets::resolve`.
 fn credential_secret() -> FieldSpec {
     FieldSpec::string("credential_secret").description(
-        "Secret reference ('vault:<mount>/data/<path>:<key>', e.g. \
-         vault:kv/data/aws/prod:credentials -- the literal data segment names the KV v2 \
-         mount) for this connection's credentials. ESO materialises it; the app resolves \
-         it at fetch time. Prefer this over inline credential fields in production.",
+        "Secret reference ('vault:<mount>/<path>:<key>', e.g. \
+         vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a \
+         'data/' segment after it is accepted and ignored) for this connection's \
+         credentials. ESO materialises it; the app resolves it at fetch time. Prefer this \
+         over inline credential fields in production.",
     )
 }
 

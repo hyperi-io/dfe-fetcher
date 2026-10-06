@@ -52,12 +52,6 @@ test:
 
 build:
   enabled: true
-  # PGO and BOLT are off for the rc.14 workstream: each adds 30-60 min per arch
-  # and the workstream needs fast turnaround on everything else first. Tier 1
-  # (allocator + LTO) still applies. Turning this back off is the LAST rc.14
-  # task. A STABLE release meanwhile needs `release-unoptimized: true` at
-  # dispatch; a prerelease (rc) is never refused.
-  skip_optimize: true
   type: app
   strategies:
     - native

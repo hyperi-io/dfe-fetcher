@@ -39,11 +39,11 @@ pub fn repo_root() -> PathBuf {
 /// (`generate_dockerfile`, `generate_chart`, `generate_compose_fragment`)
 /// use this contract as their single source of truth.
 pub fn contract() -> DeploymentContract {
-    // Resolve base image + registry via the scalo cascade helpers so
-    // org-wide overrides in deployment.* config keys (or env) win
-    // before we fall back to scalo's DEFAULT_BASE_IMAGE / DEFAULT_IMAGE_REGISTRY.
+    // A deployment.* cascade key (or env) wins over the base image and registry
+    // defaults; scalo names no default registry, so the published one is ours.
     let base_image = base_image_from_cascade();
-    let image_registry = image_registry_from_cascade();
+    let image_registry =
+        image_registry_from_cascade().unwrap_or_else(|| "ghcr.io/hyperi-io".into());
     DeploymentContract {
         app_name: "dfe-fetcher".into(),
         binary_name: "dfe-fetcher".into(),
@@ -207,15 +207,17 @@ pub fn contract() -> DeploymentContract {
         // never scales out and the chart carries no ScaledObject.
         keda: None,
         schema_version: 3,
-        // dfe-fetcher is BUSL-1.1 (scalo itself is Apache-2.0). Drive the OCI
-        // licenses label + the generated Dockerfile's `# License` header from the
-        // contract so a regen never stamps Apache into this BUSL repo.
+        // scalo writes no vendor, licence or copyright of its own, so the
+        // labels and the generated Dockerfile header carry exactly these.
         oci_labels: scalo::deployment::OciLabels {
+            vendor: "HYPERI PTY LIMITED".into(),
+            label_namespace: "io.hyperi".into(),
             licenses: "BUSL-1.1".into(),
+            copyright: "(c) 2026 HYPERI PTY LIMITED".into(),
             ..Default::default()
         },
         // Reflectable config (scalo-rs#6): the derived JSON Schema of the full
-        // multi-endpoint `Config` (secret fields carry `x-dfe-secret`) plus the
+        // multi-endpoint `Config` (secret fields carry `x-scalo-secret`) plus the
         // hand-authored capability catalog schemars cannot derive (service names
         // + their knobs). Emitted to docs/config-schema.* + docs/capability-catalog.*.
         config_schema: Some(scalo::deployment::config_schema_json::<crate::config::Config>()),
@@ -521,7 +523,7 @@ mod tests {
     ];
 
     /// Every property declared in `schema` at any depth, as its name and whether
-    /// its own object carries `x-dfe-secret`.
+    /// its own object carries `x-scalo-secret`.
     fn declared_properties(schema: &serde_json::Value) -> Vec<(String, bool)> {
         let mut found = Vec::new();
         let mut stack = vec![schema];
@@ -531,7 +533,7 @@ mod tests {
                     if let Some(serde_json::Value::Object(props)) = map.get("properties") {
                         for (name, prop) in props {
                             let marked =
-                                prop.get("x-dfe-secret") == Some(&serde_json::Value::Bool(true));
+                                prop.get("x-scalo-secret") == Some(&serde_json::Value::Bool(true));
                             found.push((name.clone(), marked));
                         }
                     }

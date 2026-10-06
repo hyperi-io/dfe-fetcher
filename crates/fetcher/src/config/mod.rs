@@ -110,7 +110,7 @@ pub struct Config {
     pub metrics: MetricsConfig,
 
     /// Dead letter queue configuration.
-    #[serde(default)]
+    #[serde(default = "default_dlq")]
     pub dlq: DlqConfig,
 
     /// Periodic config reload interval in seconds (0 = disabled, SIGHUP only).
@@ -232,6 +232,20 @@ const fn default_unwrap_nested_json() -> bool {
     true
 }
 
+/// The fleet DLQ standard: one fixed per-app topic and the shared spool path.
+///
+/// Fetcher entries carry topic destinations, so scalo's per-table routing would
+/// target `{topic}.dlq` names nothing creates. A config file with no `dlq:` key
+/// takes this; a partial `dlq:` block reverts its unset fields to scalo's own
+/// defaults.
+fn default_dlq() -> DlqConfig {
+    let mut dlq = DlqConfig::default();
+    dlq.kafka.routing = scalo::dlq::DlqRouting::Common;
+    dlq.kafka.common_topic = Some("dfe_fetcher_dlq".to_string());
+    dlq.file.path = "/var/spool/dfe/dlq".into();
+    dlq
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -242,17 +256,7 @@ impl Default for Config {
             kafka: KafkaConfig::default(),
             buffer: BufferConfig::default(),
             metrics: MetricsConfig::default(),
-            // Fleet DLQ standard defaults: fixed per-app topic, routing=common.
-            // Fetcher entries carry topic destinations, so scalo's per-table
-            // default would target `{topic}.dlq` names nothing creates.
-            // Applies when the config file has no `dlq:` key; a partial `dlq:`
-            // block reverts nested fields to scalo's own defaults.
-            dlq: {
-                let mut dlq = DlqConfig::default();
-                dlq.kafka.routing = scalo::dlq::DlqRouting::Common;
-                dlq.kafka.common_topic = "dfe_fetcher_dlq".to_string();
-                dlq
-            },
+            dlq: default_dlq(),
             config_reload_secs: 0,
             instance_id: None,
             output: OutputConfig::default(),
@@ -1044,7 +1048,7 @@ impl ApplyFlatEnv for Config {
         }
         if let Some(v) = flat_env::flat_env_string(prefix, "DLQ_TOPIC") {
             self.dlq.kafka.routing = scalo::dlq::DlqRouting::Common;
-            self.dlq.kafka.common_topic = v;
+            self.dlq.kafka.common_topic = Some(v);
         }
         if let Some(v) = flat_env::flat_env_string(prefix, "DLQ_MODE") {
             use scalo::dlq::DlqMode;
@@ -4915,8 +4919,10 @@ pub struct CursorConfig {
     /// counts in `dfe_fetcher_cursor_cold_start_total{source}`, and the first
     /// one per source logs a warning, because an empty store cannot tell a new
     /// source from a lost cursor (a cursor directory with no volume behind it
-    /// loses every cursor on a restart). A read that fails counts in
-    /// `dfe_fetcher_cursor_read_failures_total{source}` and warns every time.
+    /// loses every cursor on a restart). A read that fails is not a missing
+    /// cursor and this setting does not apply to it: the tick is refused, so
+    /// the window stays at the stored cursor, and it counts in
+    /// `dfe_fetcher_cursor_read_failures_total{source}` and logs an error.
     pub on_missing_cursor: MissingCursor,
 }
 
@@ -6319,7 +6325,30 @@ sources:
     fn test_default_dlq_routes_common_to_standard_topic() {
         let cfg = Config::default();
         assert_eq!(cfg.dlq.kafka.routing, scalo::dlq::DlqRouting::Common);
-        assert_eq!(cfg.dlq.kafka.common_topic, "dfe_fetcher_dlq");
+        assert_eq!(
+            cfg.dlq.kafka.common_topic.as_deref(),
+            Some("dfe_fetcher_dlq")
+        );
+        assert_eq!(
+            cfg.dlq.file.path,
+            std::path::Path::new("/var/spool/dfe/dlq")
+        );
+    }
+
+    /// A config file with no `dlq:` key takes the fleet standard, as
+    /// `Config::default()` does, not scalo's per-table defaults.
+    #[test]
+    fn test_file_without_dlq_key_takes_the_fleet_dlq_standard() {
+        let cfg: Config = serde_yaml_ng::from_str("config_reload_secs: 0\n").expect("parses");
+        assert_eq!(cfg.dlq.kafka.routing, scalo::dlq::DlqRouting::Common);
+        assert_eq!(
+            cfg.dlq.kafka.common_topic.as_deref(),
+            Some("dfe_fetcher_dlq")
+        );
+        assert_eq!(
+            cfg.dlq.file.path,
+            std::path::Path::new("/var/spool/dfe/dlq")
+        );
     }
 
     #[test]
@@ -6341,7 +6370,10 @@ sources:
             || {
                 let mut cfg = Config::default();
                 cfg.apply_flat_env("DFE_FETCHER");
-                assert_eq!(cfg.dlq.kafka.common_topic, "dfe_fetcher_dlq");
+                assert_eq!(
+                    cfg.dlq.kafka.common_topic.as_deref(),
+                    Some("dfe_fetcher_dlq")
+                );
                 assert_eq!(cfg.dlq.kafka.routing, scalo::dlq::DlqRouting::Common);
                 assert_eq!(cfg.dlq.mode, scalo::dlq::DlqMode::KafkaOnly);
             },

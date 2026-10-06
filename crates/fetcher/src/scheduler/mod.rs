@@ -422,12 +422,11 @@ struct SourceLog<'a> {
     name: &'a str,
     /// Set once the source's first cold start is logged at WARN.
     cold_start_warned: std::sync::atomic::AtomicBool,
-    /// When a cursor read failure was last logged, for `log_debounced`.
+    /// When a fetch refused for a failed cursor read was last logged, for
+    /// `log_debounced`.
     read_failure_logged_at: std::sync::atomic::AtomicU64,
     /// When a fetch refused for a cold start was last logged.
     refused_cold_start_logged_at: std::sync::atomic::AtomicU64,
-    /// When a fetch refused for a failed cursor read was last logged.
-    refused_read_failure_logged_at: std::sync::atomic::AtomicU64,
 }
 
 impl<'a> SourceLog<'a> {
@@ -437,7 +436,6 @@ impl<'a> SourceLog<'a> {
             cold_start_warned: std::sync::atomic::AtomicBool::new(false),
             read_failure_logged_at: std::sync::atomic::AtomicU64::new(0),
             refused_cold_start_logged_at: std::sync::atomic::AtomicU64::new(0),
-            refused_read_failure_logged_at: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -458,9 +456,11 @@ enum NoCursor {
 /// A missing cursor is told apart by why. None stored, or no store at all, is
 /// a cold start: counted in `dfe_fetcher_cursor_cold_start_total{source}` and
 /// logged at WARN the first time per source, since with no store every tick is
-/// one. A failed read is a fault: counted in
-/// `dfe_fetcher_cursor_read_failures_total{source}` and logged at WARN every
-/// time, debounced to one log per `REPEAT_LOG_EVERY_MS`.
+/// one. A failed read is a fault, not a missing cursor: the cursor may still be
+/// stored further back, so the tick is refused under either setting and the
+/// next tick reads again. It is counted in
+/// `dfe_fetcher_cursor_read_failures_total{source}` and logged at ERROR,
+/// debounced to one log per `REPEAT_LOG_EVERY_MS`.
 ///
 /// A window running on from a cursor is at most `max_span` wide, or
 /// `retry_span` wide when the last attempt failed, so a tick that fails is
@@ -474,8 +474,8 @@ enum NoCursor {
 /// # Errors
 ///
 /// Returns [`Error::Cursor`], logged at ERROR at most once per
-/// `REPEAT_LOG_EVERY_MS` for each cause, when there is no cursor and
-/// `on_missing` is [`MissingCursor::Refuse`].
+/// `REPEAT_LOG_EVERY_MS` for each cause, when the cursor read fails, or when
+/// there is no cursor and `on_missing` is [`MissingCursor::Refuse`].
 async fn build_fetch_window(
     store: Option<&dyn CursorStore>,
     cursor_key: &str,
@@ -533,15 +533,31 @@ async fn build_fetch_window(
         },
     };
 
-    let lookback = on_missing == MissingCursor::Lookback;
-    let (cause, refused_logged_at) = match missing {
-        NoCursor::ColdStart(cause) => {
-            metrics.inc_cursor_cold_start(source_prefix);
+    // Refused ticks repeat until the cause clears, each one counted in
+    // dfe_fetcher_fetches_total, so each cause is logged on its own debounce: a
+    // new cause is not held back behind an old one.
+    let cause = match missing {
+        NoCursor::ColdStart(cause) => cause,
+        NoCursor::ReadFailed(error) => {
+            metrics.inc_cursor_read_failure(source_prefix);
+            let refused = Error::Cursor(format!(
+                "the cursor read failed for {cursor_key}: {error}. Nothing is fetched until \
+                 the cursor reads again, so the window stays where the stored cursor left it"
+            ));
+            if scalo::logger::log_debounced(&source.read_failure_logged_at, REPEAT_LOG_EVERY_MS) {
+                error!(source = source_prefix, error = %refused, "Fetch refused");
+            }
+            return Err(refused);
+        }
+    };
+
+    metrics.inc_cursor_cold_start(source_prefix);
+    match on_missing {
+        MissingCursor::Lookback => {
             // Taken only under lookback, so a reload from refuse still warns.
-            let first = lookback
-                && !source
-                    .cold_start_warned
-                    .swap(true, std::sync::atomic::Ordering::Relaxed);
+            let first = !source
+                .cold_start_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed);
             if first {
                 warn!(
                     source = source_prefix,
@@ -553,49 +569,26 @@ async fn build_fetch_window(
                      skipped. Later cold starts of this source log at DEBUG and count in \
                      dfe_fetcher_cursor_cold_start_total"
                 );
-            } else if lookback {
+            } else {
                 debug!(
                     source = source_prefix,
                     cursor_key, cause, "Cursor cold start: fetching the default lookback window"
                 );
             }
-            (cause.to_owned(), &source.refused_cold_start_logged_at)
+            Ok(FetchWindow {
+                start: now - max_span,
+                end: now,
+            })
         }
-        NoCursor::ReadFailed(error) => {
-            metrics.inc_cursor_read_failure(source_prefix);
-            if lookback
-                && scalo::logger::log_debounced(&source.read_failure_logged_at, REPEAT_LOG_EVERY_MS)
-            {
-                warn!(
-                    source = source_prefix,
-                    cursor_key,
-                    error = %error,
-                    lookback_secs = max_span.num_seconds(),
-                    "Cursor read failed: fetching the default lookback window, so anything \
-                     before it is skipped. Counted in dfe_fetcher_cursor_read_failures_total"
-                );
-            }
-            (
-                format!("the cursor read failed: {error}"),
-                &source.refused_read_failure_logged_at,
-            )
-        }
-    };
-
-    match on_missing {
-        MissingCursor::Lookback => Ok(FetchWindow {
-            start: now - max_span,
-            end: now,
-        }),
         MissingCursor::Refuse => {
             let refused = Error::Cursor(format!(
                 "{cause} for {cursor_key} and cursor.on_missing_cursor is refuse: nothing is \
                  fetched until a cursor exists or the setting is lookback"
             ));
-            // Refused every tick until a cursor exists, each one counted in
-            // dfe_fetcher_fetches_total, so each cause is logged on its own
-            // debounce: a new cause is not held back behind an old one.
-            if scalo::logger::log_debounced(refused_logged_at, REPEAT_LOG_EVERY_MS) {
+            if scalo::logger::log_debounced(
+                &source.refused_cold_start_logged_at,
+                REPEAT_LOG_EVERY_MS,
+            ) {
                 error!(source = source_prefix, error = %refused, "Fetch refused");
             }
             Err(refused)
@@ -1121,42 +1114,139 @@ mod tests {
         }
     }
 
-    /// A source that cold-started still warns when a later read of its cursor
-    /// fails: a store fault is not the startup message repeating. It counts in
-    /// its own series, not as a cold start, and a failure that repeats at once
-    /// is debounced.
+    /// A failed read refuses the tick even under `lookback` and after a cold
+    /// start, because the cursor may still be stored further back than the
+    /// lookback window. The refusal logs at ERROR, counts in its own series and
+    /// not as a cold start, and a failure that repeats at once is debounced.
     #[tokio::test]
-    async fn a_read_failure_after_a_cold_start_still_warns() {
-        let warnings = scheduler_events(tracing::Level::WARN);
-        let _guard = tracing::subscriber::set_default(warnings.clone());
+    async fn a_read_failure_refuses_the_tick_even_under_lookback() {
+        let errors = scheduler_events(tracing::Level::ERROR);
+        let _guard = tracing::subscriber::set_default(errors.clone());
         let metrics = Metrics::new();
         let store = FlakyReads::default();
         let flaky = SourceLog::new("flaky");
 
         logged_tick(Some(&store), &metrics, &flaky).await;
-        logged_tick(Some(&store), &metrics, &flaky).await;
-        assert_eq!(warnings.count(), 1, "one cold-start WARN");
-        assert_eq!(metrics.cursor_cold_starts(), 2);
+        assert_eq!(metrics.cursor_cold_starts(), 1);
 
         store.failing.store(true, Ordering::Relaxed);
-        logged_tick(Some(&store), &metrics, &flaky).await;
-        assert_eq!(
-            warnings.count(),
-            2,
-            "the read failure warns after the cold start"
-        );
-        logged_tick(Some(&store), &metrics, &flaky).await;
-        assert_eq!(
-            warnings.count(),
-            2,
-            "a repeat within the window is debounced"
-        );
+        let tick = || {
+            build_fetch_window(
+                Some(&store),
+                "inst.flaky",
+                chrono::Duration::hours(1),
+                None,
+                MissingCursor::Lookback,
+                &metrics,
+                &flaky,
+            )
+        };
+        let err = tick()
+            .await
+            .expect_err("a failed read is refused, not looked back over");
+        assert!(matches!(err, Error::Cursor(_)), "{err:?}");
+        assert!(err.to_string().contains("the cursor read failed"), "{err}");
+        assert_eq!(errors.count(), 1, "the refusal logs at ERROR");
+        tick()
+            .await
+            .expect_err("refused while the read keeps failing");
+        assert_eq!(errors.count(), 1, "a repeat within the window is debounced");
         assert_eq!(
             metrics.cursor_read_failures(),
             2,
             "every failed read counts"
         );
-        assert_eq!(metrics.cursor_cold_starts(), 2, "and none as a cold start");
+        assert_eq!(metrics.cursor_cold_starts(), 1, "and none as a cold start");
+    }
+
+    /// A store holding one cursor whose next read fails while `fail_next` is set.
+    struct FailsOneRead {
+        cursor: Mutex<CursorValue>,
+        fail_next: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl CursorStore for FailsOneRead {
+        async fn get(&self, _: &str) -> dfe_fetcher_core::error::Result<Option<CursorValue>> {
+            if self.fail_next.swap(false, Ordering::Relaxed) {
+                return Err(dfe_fetcher_core::Error::Cursor(
+                    "the cursor volume did not answer".into(),
+                ));
+            }
+            Ok(Some(self.cursor.lock().unwrap().clone()))
+        }
+        async fn set(&self, _: &str, value: &CursorValue) -> dfe_fetcher_core::error::Result<()> {
+            *self.cursor.lock().unwrap() = value.clone();
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> dfe_fetcher_core::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// One failed cursor read fetches nothing on that tick, and the next tick
+    /// resumes from the stored cursor, so the window stays where the cursor
+    /// left it rather than sliding forward to the default lookback.
+    #[tokio::test]
+    async fn a_failed_cursor_read_leaves_the_window_at_the_stored_cursor() {
+        tokio::time::pause();
+
+        let mut cfg = test_config_no_jitter();
+        cfg.scheduler.default_interval_secs = 1;
+        cfg.cursor.default_window_hours = 1;
+        let shared = SharedConfig::new(cfg);
+        let last_end = Utc::now() - chrono::Duration::hours(6);
+        let store = Arc::new(FailsOneRead {
+            cursor: Mutex::new(CursorValue {
+                cursor_key: "test.recording".to_string(),
+                last_fetch_end: last_end,
+                last_fetch_records: 0,
+                updated_at: Utc::now(),
+                api_cursor: None,
+                version: 1,
+            }),
+            fail_next: AtomicBool::new(true),
+        });
+        let scheduler = Scheduler::new(
+            &SchedulerConfig {
+                default_interval_secs: 1,
+                max_concurrent_fetches: 10,
+                jitter_percent: 0,
+            },
+            shared.clone(),
+            Some(Arc::clone(&store) as Arc<dyn CursorStore>),
+            "test".into(),
+        );
+
+        let metrics = Arc::new(Metrics::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let driver = recording_driver(&shared, &metrics, "recording", &seen, 0);
+        let shutdown = CancellationToken::new();
+        scheduler.spawn_source_task(
+            driver,
+            Some(1),
+            Arc::clone(&metrics),
+            shutdown.clone(),
+            Arc::new(|| true),
+        );
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tokio::task::yield_now().await;
+        }
+        shutdown.cancel();
+        tokio::task::yield_now().await;
+
+        assert_eq!(metrics.cursor_read_failures(), 1, "the one read failed");
+        assert_eq!(metrics.cursor_cold_starts(), 0, "and was not a cold start");
+        let seen = seen.lock().unwrap().clone();
+        let first = seen
+            .first()
+            .expect("the source ticked once the read recovered");
+        assert_eq!(
+            first.start, last_end,
+            "the first window fetched starts at the stored cursor"
+        );
+        assert_eq!(first.end, last_end + chrono::Duration::hours(1));
     }
 
     /// Under refuse each cause of a refused tick is logged on its own
