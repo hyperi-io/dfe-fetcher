@@ -158,7 +158,7 @@ criterion = { version = "0.8.2", features = ["html_reports"] }
 # name their fixtures by uuid. Neither reaches the binary.
 tokio-stream = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-tokio-test = "0.4.5"
+tokio-test = "0.4.6"
 dotenvy = "0.15.7"
 wiremock = "0.6.5"
 # The suites talk to wiremock and the live providers directly; the app itself
