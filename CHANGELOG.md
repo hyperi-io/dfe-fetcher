@@ -3,6 +3,27 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.32](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.31...v1.4.32) (2026-10-06)
+
+### Bug Fixes
+
+* **ci:** make markdownlint blocking ([#211](https://github.com/hyperi-io/dfe-fetcher/issues/211)) ([8ab9126](https://github.com/hyperi-io/dfe-fetcher/commit/8ab9126cd1fe1327e333f5e3b789eedd4e47cc0f)), closes [#210](https://github.com/hyperi-io/dfe-fetcher/issues/210)
+* clear clippy 1.99 lints and rename fetch_update ([#217](https://github.com/hyperi-io/dfe-fetcher/issues/217)) ([762f6e5](https://github.com/hyperi-io/dfe-fetcher/commit/762f6e5a295d29e2fd341af8713ad9fae0f7d3f3))
+* **docs:** clear the markdownlint warnings ([#210](https://github.com/hyperi-io/dfe-fetcher/issues/210)) ([0a742d7](https://github.com/hyperi-io/dfe-fetcher/commit/0a742d765634028729e1c77f376868bb23a08bc6))
+* GA public tree, secret types, dump tie, one API-error count ([#207](https://github.com/hyperi-io/dfe-fetcher/issues/207)) ([ae9046d](https://github.com/hyperi-io/dfe-fetcher/commit/ae9046ddfc53deed74a38cdd097357dc0e50ce18))
+* **gcp:** take the key JSON the chart ships ([#209](https://github.com/hyperi-io/dfe-fetcher/issues/209)) ([782053b](https://github.com/hyperi-io/dfe-fetcher/commit/782053b90c714c3d8ebc2c0051a89bfc74a3aa41))
+* honour the version-check opt-out ([#201](https://github.com/hyperi-io/dfe-fetcher/issues/201)) ([9a8d98a](https://github.com/hyperi-io/dfe-fetcher/commit/9a8d98a66a271adc35bca43735cbb285fa804f4c)), closes [#200](https://github.com/hyperi-io/dfe-fetcher/issues/200)
+* move to scalo 2.14.0 and turn PGO and BOLT on for GA ([#220](https://github.com/hyperi-io/dfe-fetcher/issues/220)) ([0ae4a16](https://github.com/hyperi-io/dfe-fetcher/commit/0ae4a163be2449ccaf148e1c666bf2df5d693624)), closes [#138](https://github.com/hyperi-io/dfe-fetcher/issues/138) [#218](https://github.com/hyperi-io/dfe-fetcher/issues/218) [#183](https://github.com/hyperi-io/dfe-fetcher/issues/183) [hyperi-io/scalo-rs#281](https://github.com/hyperi-io/scalo-rs/issues/281)
+* name config keys the fetcher ignores ([#216](https://github.com/hyperi-io/dfe-fetcher/issues/216)) ([3f1b5ce](https://github.com/hyperi-io/dfe-fetcher/commit/3f1b5ce6a8c26495a36eec86549131089fca503c)), closes [#179](https://github.com/hyperi-io/dfe-fetcher/issues/179) [#168](https://github.com/hyperi-io/dfe-fetcher/issues/168)
+* refuse container env names that reach the CLI itself ([#213](https://github.com/hyperi-io/dfe-fetcher/issues/213)) ([656bf80](https://github.com/hyperi-io/dfe-fetcher/commit/656bf800ea8a3c8b0500bd0ca53d0224382e8d87))
+* refuse off-host request URLs, fetch every Security Hub status ([#203](https://github.com/hyperi-io/dfe-fetcher/issues/203)) ([1bd8026](https://github.com/hyperi-io/dfe-fetcher/commit/1bd8026911630956d1717b71c8ce4193efec0de9))
+* refuse to run the ingest listener with no token ([#215](https://github.com/hyperi-io/dfe-fetcher/issues/215)) ([b0a4822](https://github.com/hyperi-io/dfe-fetcher/commit/b0a482225913211e901ac27704fdaea42ff78f15))
+* replace private issue refs with setup requirements ([#195](https://github.com/hyperi-io/dfe-fetcher/issues/195)) ([f18d6e9](https://github.com/hyperi-io/dfe-fetcher/commit/f18d6e91b5adc1ed9aa7bf05fcdaaef467a24cf5))
+* route topics, unstall windows, fsync cursors ([#212](https://github.com/hyperi-io/dfe-fetcher/issues/212)) ([3245fb9](https://github.com/hyperi-io/dfe-fetcher/commit/3245fb9d0adb4e51053b86aab3cdac48a289c216))
+* tell chart users to set image.tag ([#214](https://github.com/hyperi-io/dfe-fetcher/issues/214)) ([84fc1b3](https://github.com/hyperi-io/dfe-fetcher/commit/84fc1b32fb17c3840ecc65e05de3f4db6c0cee7c)), closes [#174](https://github.com/hyperi-io/dfe-fetcher/issues/174)
+* **test:** run the Kafka test broker on the JVM image ([#202](https://github.com/hyperi-io/dfe-fetcher/issues/202)) ([a7e34d7](https://github.com/hyperi-io/dfe-fetcher/commit/a7e34d7a8084a454ab4aa02637ef23c99e791e21))
+* **test:** wait for the group join, then frames ([#208](https://github.com/hyperi-io/dfe-fetcher/issues/208)) ([ee35787](https://github.com/hyperi-io/dfe-fetcher/commit/ee35787d6e27f1197c04411771d69d708a46e99c))
+
 ## [1.4.31](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.30...v1.4.31) (2026-09-27)
 
 ### Bug Fixes
