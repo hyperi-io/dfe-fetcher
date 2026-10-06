@@ -949,9 +949,9 @@ dependencies = [
 
 [[package]]
 name = "cel"
-version = "0.13.0"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47a40f338a8c3505921000b609279775792c07cc21f97a3011578c0c5e1738ae"
+checksum = "2ae7daebcd4d032c9a5288790c2facde6fab3f9a9ff8d5028765e8b48a36eeb2"
 dependencies = [
  "antlr4rust",
  "base64 0.22.1",
@@ -962,7 +962,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -6243,15 +6243,15 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.14.0"
+version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a91fbe77be949c3d85576653573a6bf8c0320afcbdc222c4167ff54a9a4f40e4"
+checksum = "c91d0d04345fda3e6508b44d8478add090f8699946d13d16b31bd778cb1dc1e1"
 dependencies = [
  "aes-gcm",
  "arc-swap",
  "axum",
  "backon",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "cel",
  "chrono",

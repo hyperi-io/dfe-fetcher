@@ -38,12 +38,12 @@ dfe-fetcher-db = { path = "crates/db" }
 dfe-fetcher-file = { path = "crates/file" }
 
 # scalo shared library (crates.io). Features are chosen per member; the core
-# takes `expression` only. The floor is the first release whose contract
-# carries no vendor defaults, so the app names its own.
-scalo = { version = "2.14.0", default-features = false }
+# takes `expression` only. The floor is the first release on cel 0.14; its
+# contract carries no vendor defaults, so the app names its own.
+scalo = { version = "2.14.1", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
-cel = { version = ">=0.13, <0.14", features = ["json"] }
+cel = { version = ">=0.14.5, <0.15", features = ["json"] }
 # Same range as scalo so cargo unifies to ONE schemars in the graph -- scalo's
 # `SensitiveString` x-scalo-secret impl and our derives resolve against the same
 # `JsonSchema` trait.

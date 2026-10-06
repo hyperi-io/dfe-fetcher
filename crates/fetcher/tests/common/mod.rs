@@ -357,11 +357,11 @@ const MARIADB_TAG: &str = "11.8.9";
 /// passwordless `default` user unless `CLICKHOUSE_SKIP_USER_SETUP` says so.
 ///
 /// renovate: datasource=docker depName=clickhouse/clickhouse-server
-const CLICKHOUSE_TAG: &str = "26.3.32.14";
+const CLICKHOUSE_TAG: &str = "26.3.42.3";
 
 /// Digest of `CLICKHOUSE_TAG`, apart from it because the Renovate regex stops at a colon.
 const CLICKHOUSE_DIGEST: &str =
-    "sha256:456063a689194186633bb3db0862283068f4c2ee538852d3aaffa7eb66f1f841";
+    "sha256:21d572843e59539c7d100286b6f5a6053c341fe4b33c2d7b74b1ff7cb24c5399";
 
 /// The current 8.x line; the image carries `mongosh`, which the replica-set
 /// start runs `rs.initiate()` through.
