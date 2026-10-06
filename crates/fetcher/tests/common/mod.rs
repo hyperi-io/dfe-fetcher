@@ -338,6 +338,10 @@ const KAFKA_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// renovate: datasource=docker depName=localstack/localstack versioning=semver
 const LOCALSTACK_TAG: &str = "4.14";
 
+/// Digest of `LOCALSTACK_TAG`, apart from it because the Renovate regex stops at a colon.
+const LOCALSTACK_DIGEST: &str =
+    "sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a";
+
 /// A floating `latest` was worse than a stale pin: the harness silently
 /// retargeted on every image refresh, so a break landed with nothing in the
 /// diff to explain it.
@@ -345,13 +349,25 @@ const LOCALSTACK_TAG: &str = "4.14";
 /// renovate: datasource=docker depName=openbao/openbao
 const OPENBAO_TAG: &str = "2.6.1";
 
+/// Digest of `OPENBAO_TAG`, apart from it because the Renovate regex stops at a colon.
+const OPENBAO_DIGEST: &str =
+    "sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0";
+
 /// renovate: datasource=docker depName=postgres
 const POSTGRES_TAG: &str = "18.6-alpine";
+
+/// Digest of `POSTGRES_TAG`, apart from it because the Renovate regex stops at a colon.
+const POSTGRES_DIGEST: &str =
+    "sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873";
 
 /// The current LTS line.
 ///
 /// renovate: datasource=docker depName=mariadb
 const MARIADB_TAG: &str = "11.8.9";
+
+/// Digest of `MARIADB_TAG`, apart from it because the Renovate regex stops at a colon.
+const MARIADB_DIGEST: &str =
+    "sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15";
 
 /// The line the DFE stack runs; from 25.x the entrypoint refuses a
 /// passwordless `default` user unless `CLICKHOUSE_SKIP_USER_SETUP` says so.
@@ -369,6 +385,10 @@ const CLICKHOUSE_DIGEST: &str =
 /// renovate: datasource=docker depName=mongo
 const MONGO_TAG: &str = "8.3.9";
 
+/// Digest of `MONGO_TAG`, apart from it because the Renovate regex stops at a colon.
+const MONGO_DIGEST: &str =
+    "sha256:81a1c8842a09589fc8d5f285266f3340bf4abdf66700ba22988f14cc9b2b3118";
+
 /// MongoDB 8.x refuses to start on Linux 6.19 through 7.0.13 (SERVER-121912:
 /// its vendored TCMalloc and the kernel disagree over `rseq`); with glibc
 /// owning `rseq` the allocator takes its fallback path and the server runs,
@@ -382,11 +402,20 @@ const MONGO_KERNEL_WORKAROUND: (&str, &str) = ("GLIBC_TUNABLES", "glibc.pthread.
 /// renovate: datasource=docker depName=mcr.microsoft.com/mssql/server
 const MSSQL_TAG: &str = "2025-CU8-ubuntu-24.04";
 
+/// Digest of `MSSQL_TAG`, apart from it because the Renovate regex stops at a colon.
+/// This tag is a single amd64 manifest, not a multi-arch index.
+const MSSQL_DIGEST: &str =
+    "sha256:4bab24f36c1ecd48e85f7d37df26e6bf301641d84c3fe652f9a0dcc947d512e1";
+
 /// Oracle Database Free 23ai, the community image with a fast start; same
 /// operator-supplied-driver gate as SQL Server.
 ///
 /// renovate: datasource=docker depName=gvenzl/oracle-free
 const ORACLE_TAG: &str = "23.26.3-slim-faststart";
+
+/// Digest of `ORACLE_TAG`, apart from it because the Renovate regex stops at a colon.
+const ORACLE_DIGEST: &str =
+    "sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093";
 
 /// Holder for any auto-managed testcontainer. Drop stops the container.
 pub enum TestcontainerHolder {
@@ -551,14 +580,17 @@ impl VaultTestConfig {
         // out. Neither failure names OpenBao as the cause.
         let name = container_name(Some(test), "openbao");
         reap_stale(&name);
-        let image = GenericImage::new("openbao/openbao", OPENBAO_TAG)
-            .with_exposed_port(8200u16.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("OpenBao server started"))
-            .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "root")
-            .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
-            .with_cmd(["server", "-dev"])
-            .with_container_name(&name)
-            .with_labels(test_labels("openbao"));
+        let image = GenericImage::new(
+            "openbao/openbao".to_string(),
+            format!("{OPENBAO_TAG}@{OPENBAO_DIGEST}"),
+        )
+        .with_exposed_port(8200u16.tcp())
+        .with_wait_for(WaitFor::message_on_stdout("OpenBao server started"))
+        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "root")
+        .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
+        .with_cmd(["server", "-dev"])
+        .with_container_name(&name)
+        .with_labels(test_labels("openbao"));
 
         let container = match image.start().await {
             Ok(c) => c,
@@ -643,7 +675,7 @@ impl LocalStackConfig {
         let name = container_name(Some(test), "localstack");
         reap_stale(&name);
         let container = match LocalStack::default()
-            .with_tag(LOCALSTACK_TAG)
+            .with_tag(format!("{LOCALSTACK_TAG}@{LOCALSTACK_DIGEST}"))
             .with_container_name(&name)
             .with_labels(test_labels("localstack"))
             .start()
@@ -1016,7 +1048,7 @@ pub async fn acquire_postgres(test: &str, init_sql: &str) -> Option<DatabaseTest
     reap_stale(&name);
     let container = match Postgres::default()
         .with_init_sql(init_sql.to_owned().into_bytes())
-        .with_tag(POSTGRES_TAG)
+        .with_tag(format!("{POSTGRES_TAG}@{POSTGRES_DIGEST}"))
         .with_container_name(&name)
         .with_labels(test_labels("postgres"))
         .start()
@@ -1048,7 +1080,7 @@ pub async fn acquire_mariadb(test: &str, init_sql: &str) -> Option<DatabaseTestC
     reap_stale(&name);
     let container = match Mariadb::default()
         .with_init_sql(init_sql.to_owned().into_bytes())
-        .with_tag(MARIADB_TAG)
+        .with_tag(format!("{MARIADB_TAG}@{MARIADB_DIGEST}"))
         .with_container_name(&name)
         .with_labels(test_labels("mariadb"))
         .start()
@@ -1116,7 +1148,7 @@ pub async fn acquire_mongo(test: &str, replica_set: bool) -> Option<DatabaseTest
 
     let name = container_name(Some(test), "mongo");
     reap_stale(&name);
-    let mut image = GenericImage::new("mongo", MONGO_TAG)
+    let mut image = GenericImage::new("mongo".to_string(), format!("{MONGO_TAG}@{MONGO_DIGEST}"))
         .with_wait_for(WaitFor::message_on_stdout("Waiting for connections"))
         .with_env_var(MONGO_KERNEL_WORKAROUND.0, MONGO_KERNEL_WORKAROUND.1)
         .with_container_name(&name)
@@ -1174,15 +1206,18 @@ pub async fn acquire_mssql(test: &str, sa_password: &str) -> Option<DatabaseTest
 
     let name = container_name(Some(test), "mssql");
     reap_stale(&name);
-    let image = GenericImage::new("mcr.microsoft.com/mssql/server", MSSQL_TAG)
-        .with_wait_for(WaitFor::message_on_stdout(
-            "SQL Server is now ready for client connections",
-        ))
-        .with_env_var("ACCEPT_EULA", "Y")
-        .with_env_var("MSSQL_SA_PASSWORD", sa_password)
-        .with_container_name(&name)
-        .with_labels(test_labels("mssql"))
-        .with_startup_timeout(std::time::Duration::from_secs(180));
+    let image = GenericImage::new(
+        "mcr.microsoft.com/mssql/server".to_string(),
+        format!("{MSSQL_TAG}@{MSSQL_DIGEST}"),
+    )
+    .with_wait_for(WaitFor::message_on_stdout(
+        "SQL Server is now ready for client connections",
+    ))
+    .with_env_var("ACCEPT_EULA", "Y")
+    .with_env_var("MSSQL_SA_PASSWORD", sa_password)
+    .with_container_name(&name)
+    .with_labels(test_labels("mssql"))
+    .with_startup_timeout(std::time::Duration::from_secs(180));
     let container = match image.start().await {
         Ok(c) => c,
         Err(e) => {
@@ -1208,14 +1243,17 @@ pub async fn acquire_oracle(test: &str, password: &str) -> Option<DatabaseTestCo
 
     let name = container_name(Some(test), "oracle");
     reap_stale(&name);
-    let image = GenericImage::new("gvenzl/oracle-free", ORACLE_TAG)
-        .with_wait_for(WaitFor::message_on_stdout("DATABASE IS READY TO USE!"))
-        .with_env_var("ORACLE_PASSWORD", password)
-        .with_env_var("APP_USER", "dfe")
-        .with_env_var("APP_USER_PASSWORD", password)
-        .with_container_name(&name)
-        .with_labels(test_labels("oracle"))
-        .with_startup_timeout(std::time::Duration::from_secs(300));
+    let image = GenericImage::new(
+        "gvenzl/oracle-free".to_string(),
+        format!("{ORACLE_TAG}@{ORACLE_DIGEST}"),
+    )
+    .with_wait_for(WaitFor::message_on_stdout("DATABASE IS READY TO USE!"))
+    .with_env_var("ORACLE_PASSWORD", password)
+    .with_env_var("APP_USER", "dfe")
+    .with_env_var("APP_USER_PASSWORD", password)
+    .with_container_name(&name)
+    .with_labels(test_labels("oracle"))
+    .with_startup_timeout(std::time::Duration::from_secs(300));
     let container = match image.start().await {
         Ok(c) => c,
         Err(e) => {
