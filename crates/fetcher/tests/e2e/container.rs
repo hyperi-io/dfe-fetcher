@@ -21,6 +21,21 @@ use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::PipelineState;
 
+/// The image the container extractor runs in these tests.
+///
+/// renovate: datasource=docker depName=alpine
+const ALPINE_TAG: &str = "3.24.2";
+
+/// Digest of `ALPINE_TAG`, apart from it because the Renovate regex stops at a colon.
+/// This is the multi-arch index digest, so the pin holds on x64 and arm64 hosts.
+const ALPINE_DIGEST: &str =
+    "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6";
+
+/// The pinned alpine image reference, `alpine:tag@digest`.
+fn alpine_image() -> String {
+    format!("alpine:{ALPINE_TAG}@{ALPINE_DIGEST}")
+}
+
 /// Build a minimal ContainerExtractorConfig for testing.
 fn test_container_config(
     name: &str,
@@ -72,7 +87,7 @@ fn test_pipeline_state() -> Arc<PipelineState> {
 async fn test_scheduled_container_outputs_json_lines() {
     let config = test_container_config(
         "json-echo",
-        "alpine:latest",
+        &alpine_image(),
         Some(vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -117,7 +132,7 @@ async fn test_scheduled_container_outputs_json_lines() {
 async fn test_container_timeout_kills_process() {
     let config = test_container_config(
         "sleepy",
-        "alpine:latest",
+        &alpine_image(),
         Some(vec![
             "sh".to_string(),
             "-c".to_string(),
