@@ -626,7 +626,7 @@ async fn a_service_account_key_is_exchanged_for_the_bearer() {
     );
 }
 
-/// The key JSON itself, as the chart's Secret hands it to
+/// The key JSON itself, as a Secret set as an env var hands it to
 /// `service_account_key`, is exchanged for the bearer just as its file is.
 #[tokio::test]
 async fn the_key_json_in_place_of_its_file_is_exchanged_for_the_bearer() {

@@ -3440,8 +3440,8 @@ mod tests {
         assert!(cfg.instances().is_ok(), "scc needs no project");
     }
 
-    /// The chart's GCP Secret carries the key JSON itself, and every block reads
-    /// a `service_account_key` that opens with `{` as the key, not as a path.
+    /// A Secret set as an env var carries the key JSON itself, and every block
+    /// reads a `service_account_key` that opens with `{` as the key, not as a path.
     #[test]
     fn a_service_account_key_holding_the_key_json_is_the_key_not_its_path() {
         let key = "\n  {\"type\":\"service_account\",\"client_email\":\"sa@proj.iam.gserviceaccount.com\"}";

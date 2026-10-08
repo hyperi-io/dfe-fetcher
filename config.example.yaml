@@ -3,8 +3,10 @@
 #
 # Environment variables: DFE_FETCHER_* prefix, applied over this file
 # Nesting: DFE_FETCHER_SCHEDULER__DEFAULT_INTERVAL_SECS=300
-#   The chart / deployment-contract form DFE_FETCHER__SCHEDULER__DEFAULT_INTERVAL_SECS
+#   The double-separator form DFE_FETCHER__SCHEDULER__DEFAULT_INTERVAL_SECS
 #   reaches the same key. An empty value counts as unset.
+# .env: read from the working directory only, never a parent's, and only when
+#   no --config file is given.
 # Config reload: send SIGHUP to reload
 
 # =============================================================================

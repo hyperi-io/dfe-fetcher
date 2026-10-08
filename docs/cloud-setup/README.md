@@ -19,6 +19,29 @@ the `sources.db` and `sources.file` blocks), see
 [config.example.yaml](../../config.example.yaml); the architecture and the
 profile grammar are in [../DESIGN.md](../DESIGN.md).
 
+## Credentials in Kubernetes
+
+The released chart mounts one Secret, Kafka's: its `username`, `password` and `sasl.mechanism` keys become `DFE_FETCHER_KAFKA_SASL_USER`, `DFE_FETCHER_KAFKA_SASL_PASSWORD` and `DFE_FETCHER_KAFKA_SASL_MECHANISM`. Name an existing Secret with the chart value `secrets.kafka.existingSecret`.
+
+A provider's credentials are yours to supply, through the chart's `extraEnv` (a map of variable name to value or `valueFrom`) or `extraEnvFrom` (a list of `envFrom` sources) values. Two shapes work, and each guide's Environment Variables section names the fields:
+
+- set the field itself, `DFE_FETCHER_SOURCES__<BLOCK>__<FIELD>`, from a Secret key, e.g. `DFE_FETCHER_SOURCES__AWS__SECRET_ACCESS_KEY`
+- write the field as an `env:NAME` spec in the config, and load a Secret whose keys are those names with `extraEnvFrom`
+
+```yaml
+extraEnv:
+  DFE_FETCHER_SOURCES__AZURE__CLIENT_SECRET:
+    valueFrom:
+      secretKeyRef:
+        name: fetcher-azure
+        key: client-secret
+extraEnvFrom:
+  - secretRef:
+      name: fetcher-credentials
+```
+
+An empty value counts as unset, so a Secret key left blank leaves the field unset rather than signing requests with an empty key.
+
 ## Providers
 
 | Provider | Data it pulls | Guide |

@@ -44,23 +44,24 @@ impl std::fmt::Display for TestMode {
     }
 }
 
-/// Load .env file (won't override existing env vars).
+/// Load this repo's own `.env` (won't override existing env vars):
+/// `dotenvy::dotenv()` would load the first `.env` in any parent.
 pub fn load_dotenv() {
-    let _ = dotenvy::dotenv();
+    let _ = dotenvy::from_path(dfe_fetcher::deployment::repo_root().join(".env"));
 }
 
 // =============================================================================
 // Live-credential env: .env-cloud is canonical, .env is fallback
 // =============================================================================
 
-/// Load cloud credentials from `.env-cloud` (preferred) or `.env` (fallback).
-/// `dotenvy::from_filename_override` replaces any existing env vars so stale
-/// values from a previous session can't leak through. Both lookups walk up
-/// from the test's working directory, so the repo-root file is found from a
-/// workspace member.
+/// Load cloud credentials from this repo's `.env-cloud` (preferred) or `.env`
+/// (fallback), replacing any existing env vars so stale values from a previous
+/// session can't leak through. Both are read from the repo root by path, never
+/// found by a search up the tree.
 pub fn load_env() {
-    let _ = dotenvy::from_filename_override(".env-cloud");
-    let _ = dotenvy::dotenv_override();
+    let root = dfe_fetcher::deployment::repo_root();
+    let _ = dotenvy::from_path_override(root.join(".env-cloud"));
+    let _ = dotenvy::from_path_override(root.join(".env"));
 }
 
 /// A required live-test variable; a live test panics rather than skips when

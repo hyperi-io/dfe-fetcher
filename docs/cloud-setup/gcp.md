@@ -236,7 +236,7 @@ DFE_FETCHER_SOURCES__GCP__PROJECT_ID="your-project-id"
 DFE_FETCHER_SOURCES__GCP__SERVICE_ACCOUNT_KEY="/etc/gcp/sa-key.json"
 ```
 
-`service_account_key` takes the key JSON itself as well as the path of its file: a value that opens with `{` is the key. The Helm chart uses this. It sets `DFE_FETCHER__SOURCES__GCP__SERVICE_ACCOUNT_KEY` from the `gcp-service-account-key` entry of its `gcp` Secret, so that entry holds the contents of `sa-key.json`, not a path.
+`service_account_key` takes the key JSON itself as well as the path of its file: a value that opens with `{` is the key. So a Kubernetes Secret entry holding the contents of `sa-key.json`, set as `DFE_FETCHER_SOURCES__GCP__SERVICE_ACCOUNT_KEY` through the chart's `extraEnv`, works without a mounted file. [README.md](README.md#credentials-in-kubernetes) has the chart side.
 
 ### Secrets Manager
 

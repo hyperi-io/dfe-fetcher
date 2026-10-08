@@ -277,18 +277,14 @@ fn test_deployment_contract_structure() {
     assert_eq!(contract.extra_ports[0].port, 8080);
     assert_eq!(contract.extra_ports[1].port, 6000);
 
-    // Secret groups: kafka, aws, azure, m365, gcp
-    assert_eq!(contract.secrets.len(), 5);
+    // Kafka is the one Secret group; cloud credentials come in through the
+    // deployment's own env.
     let group_names: Vec<_> = contract
         .secrets
         .iter()
         .map(|s| s.group_name.as_str())
         .collect();
-    assert!(group_names.contains(&"kafka"));
-    assert!(group_names.contains(&"aws"));
-    assert!(group_names.contains(&"azure"));
-    assert!(group_names.contains(&"m365"));
-    assert!(group_names.contains(&"gcp"));
+    assert_eq!(group_names, ["kafka"]);
 
     // The fetcher polls its upstreams rather than draining a queue, so it never
     // scales out: no ScaledObject, and the Deployment sets its own replicas.

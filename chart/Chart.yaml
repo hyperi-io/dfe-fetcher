@@ -1,9 +1,0 @@
-apiVersion: v2
-name: dfe-fetcher
-description: Data fetcher for external services (AWS, Azure, M365, GCP)
-type: application
-version: 0.1.0
-appVersion: "1.0.0"
-
-keywords:
-  - dfe-fetcher

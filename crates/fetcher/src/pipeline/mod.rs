@@ -189,8 +189,8 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
 
 /// How long shutdown waits for the extractors to deliver what they hold before
 /// the outputs close. After the runtime's 5 s pre-stop delay it fits the 45 s
-/// termination grace the DFE charts give (`dfe-common.terminationGrace`) with
-/// room for the final flush, and Kubernetes' 30 s default too.
+/// termination grace the deployment contract sets (`termination_grace_seconds`)
+/// with room for the final flush, and Kubernetes' 30 s default too.
 pub const INTAKE_DRAIN_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Least time between two logs of a DLQ fault that repeats every write.

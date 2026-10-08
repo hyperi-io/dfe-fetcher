@@ -54,7 +54,6 @@ test:
 
 build:
   enabled: true
-  type: app
   strategies:
     - native
   rust:
@@ -71,5 +70,12 @@ build:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
 
+# Release (where the artefacts go). The thin chart is assembled from the
+# emitted contract and ships beside the image.
 release:
   enabled: true
+  # Keep `library` at the scalo version in Cargo.toml: the library renders only the contract version its scalo release writes.
+  helm:
+    enabled: true
+    contract: emit
+    library: "2.14.3"

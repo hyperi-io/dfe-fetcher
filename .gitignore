@@ -43,6 +43,9 @@ coverage.lcov
 !.cargo/config.toml
 .tmp/
 
+# written by `dfe-fetcher emit-chart chart`; the release assembles the chart from the contract
+/chart/
+
 # AI agent tooling and notes (local-only, never committed)
 .claude/
 .mcp.json
