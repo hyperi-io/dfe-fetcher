@@ -635,7 +635,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -750,7 +749,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "assume_role_arn": {
@@ -820,7 +818,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -949,7 +946,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1033,7 +1029,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -1161,7 +1156,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1224,13 +1218,12 @@
           "default": null
         },
         "service_account_key": {
-          "description": "The service-account key JSON, or the path of its file. A value opening\nwith `{` is the key itself, which is how the chart's Secret delivers it.",
+          "description": "The service-account key JSON, or the path of its file. A value opening\nwith `{` is the key itself, which is how a Secret set as an env var delivers it.",
           "type": [
             "string",
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -1331,13 +1324,12 @@
           ]
         },
         "service_account_key": {
-          "description": "The service-account key JSON, or the path of its file. A value opening\nwith `{` is the key itself, which is how the chart's Secret delivers it.",
+          "description": "The service-account key JSON, or the path of its file. A value opening\nwith `{` is the key itself, which is how a Secret set as an env var delivers it.",
           "type": [
             "string",
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1405,7 +1397,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1509,7 +1500,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1563,7 +1553,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "use_ssws_header": {
@@ -1665,7 +1654,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "use_ssws_header": {
@@ -1726,7 +1714,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1823,7 +1810,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1870,7 +1856,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -1960,7 +1945,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2021,7 +2005,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2118,7 +2101,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2158,7 +2140,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2248,7 +2229,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2302,7 +2282,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2406,7 +2385,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2474,7 +2452,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2598,7 +2575,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2800,7 +2776,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2911,7 +2886,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -2979,7 +2953,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -3263,7 +3236,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -3297,7 +3269,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -3334,7 +3305,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "sas_token": {
@@ -3344,7 +3314,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "tenant_id": {
@@ -3368,7 +3337,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -3435,7 +3403,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "private_key_secret": {
@@ -3452,7 +3419,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -3570,7 +3536,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "private_key_secret": {
@@ -3587,7 +3552,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true
         },
         "credential_secret": {
@@ -5848,7 +5812,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5859,7 +5822,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5878,7 +5840,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5897,7 +5858,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5924,7 +5884,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5947,7 +5906,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5958,7 +5916,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5969,7 +5926,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5988,7 +5944,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -5999,7 +5954,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -6010,7 +5964,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -6028,7 +5981,6 @@
           "additionalProperties": {
             "type": "string",
             "x-scalo-secret": true,
-            "x-dfe-secret": true,
             "writeOnly": true
           },
           "default": {}
@@ -6151,7 +6103,6 @@
           "description": "The connection string or URL as a credential spec (`vault:...`, also\nspelled `bao:` or `openbao:`, `env:VAR`, `file:<path>`, or a literal),\nresolved on first use and never logged.",
           "type": "string",
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": "***REDACTED***"
         },
@@ -7063,7 +7014,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },
@@ -7140,11 +7090,11 @@
       }
     },
     "SaslConfig": {
-      "description": "SASL authentication configuration.\n\nEvery field defaults, so the two secret env vars the chart injects are a\ncomplete SASL block on their own -- which is what the chart claims they are.\nWithout that, a partial block was a startup parse error.",
+      "description": "SASL authentication configuration.\n\nEvery field defaults, so the Kafka Secret's env vars are a complete SASL\nblock on their own. Without that, a partial block was a startup parse error.",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Enable SASL. Defaults to TRUE, because reaching this struct at all means\na `kafka.sasl` block exists -- written by hand or built out of the two\nsecret env vars the chart injects -- and that is a request for SASL.\n`enabled: false` still switches it off and is never inferred away.\n`kafka.sasl` itself defaults to absent, so a config that says nothing\ngets no SASL.",
+          "description": "Enable SASL. Defaults to TRUE, because reaching this struct at all means\na `kafka.sasl` block exists -- written by hand or built out of the Kafka\nSecret's env vars -- and that is a request for SASL.\n`enabled: false` still switches it off and is never inferred away.\n`kafka.sasl` itself defaults to absent, so a config that says nothing\ngets no SASL.",
           "type": "boolean",
           "default": true
         },
@@ -7162,7 +7112,6 @@
           "description": "Password (always redacted in serialisation/debug output).\n\nThe schema default is pinned to the empty string: serialising the real\ndefault outside an expose window yields the mask, and a UI that\npre-filled a password box with `***REDACTED***` would send that as the\npassword.",
           "type": "string",
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": ""
         }
@@ -7669,7 +7618,6 @@
             "null"
           ],
           "x-scalo-secret": true,
-          "x-dfe-secret": true,
           "writeOnly": true,
           "default": null
         },

@@ -75,8 +75,7 @@ field and closed vocabulary of a profile) and
   reference, an environment variable, or a literal.
 - **Observability** -- Prometheus metrics and liveness / readiness probes.
 - **Live config reload** -- via SIGHUP or file watch.
-- **Deployment artefacts** -- generates its own Dockerfile, Helm chart and
-  Compose file from a deployment contract.
+- **Deployment artefacts** -- emits a deployment contract, which a release assembles into a thin Helm chart, and generates its own Dockerfile and Compose file from it.
 
 ## Quick Start
 
@@ -92,18 +91,18 @@ cargo build --release
 ./target/release/dfe-fetcher --config config.example.yaml
 ```
 
-Container and Helm artefacts are generated from the deployment contract:
+Container artefacts are generated from the deployment contract:
 
 ```bash
 dfe-fetcher emit-dockerfile > Dockerfile
-dfe-fetcher emit-chart ./chart
 dfe-fetcher emit-compose > docker-compose.yaml
 ```
 
-Set `image.tag` (or pin a digest) when you install the chart in `chart/`. Its
-`appVersion` is the generator's fixed `1.0.0`, not this release's `VERSION`, and
-an empty `image.tag` falls back to it -- so a default `helm install` pulls the
-first release.
+No chart is committed here. At release, hyperi-ci runs the binary's `generate-artefacts` for the deployment contract and assembles a thin chart from it on the scalo-service library chart, at the version `release.helm.library` names in `.hyperi-ci.yaml`. Keep that version at the scalo version in `Cargo.toml`: a library renders only the contract version its scalo release writes.
+
+To see the chart a release would ship, build the binary and run `hyperi-ci chart assemble --binary target/debug/dfe-fetcher --image ghcr.io/hyperi-io/dfe-fetcher:<tag>@sha256:<digest> --version <version>`. It prints the chart directory it wrote. `dfe-fetcher emit-chart <dir>` still writes scalo's full chart for local use.
+
+The chart keeps the cursor store on a 1Gi claim named `<fullname>-cursor` (`dfe-fetcher-cursor` for a release named `dfe-fetcher`), mounted at `/var/lib/dfe-fetcher`. Point `cursor.directory` in the deployment's `config` at that path: unset, the store falls back to the config file's read-only mount and every restart re-fetches the default window. Set `writablePaths.cursor.persistence.enabled=false` for an `emptyDir` where no StorageClass exists.
 
 ## Configuration
 
@@ -181,6 +180,8 @@ accepted too), which the cascade applies before resolution. The order is the
 file, then an `env:` or `vault:` spec written in the file, then the environment
 variable, which replaces whatever the file says and is itself resolved if it is
 a spec.
+
+The released chart mounts the Kafka Secret only. [Credentials in Kubernetes](docs/cloud-setup/README.md#credentials-in-kubernetes) shows how a deployment supplies a provider's credentials with `extraEnv` or `extraEnvFrom`.
 
 ## Sources
 
@@ -291,8 +292,8 @@ listener with no `auth_token` refuses to start unless
 | `crates/db`, `crates/file` | The database and file shapes. The engines and the tailer are feature-gated; the grammars are always linked. |
 | `crates/fetcher` | The binary: config cascade and hot reload, scheduler, the per-tick `Driver`, pipeline, output transports, cursor store, ingest server, Vector and container extractors. |
 | `crates/fetcher/profiles/*.yaml` | The 21 shipped REST profiles. A new one is registered in `crates/fetcher/src/profiles/mod.rs`. |
-| `crates/fetcher/src/deployment.rs` | The deployment contract, and the drift tests that hold the generated artefacts to it. |
-| `Dockerfile`, `chart/`, `docs/config-schema.*`, `docs/capability-catalog.*` | Generated from that contract and committed. Never hand-edited -- see below. |
+| `crates/fetcher/src/deployment.rs` | The deployment contract, and the drift tests that hold the generated artefacts to it. The released chart is assembled from it, never committed. |
+| `Dockerfile`, `docs/config-schema.*`, `docs/capability-catalog.*` | Generated from that contract and committed. Never hand-edited -- see below. |
 | `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), vendored, depended on by path from `crates/file` only. |
 | `scripts/generics_gates.py` | The generics acceptance gates: one framework site per provider mechanism, the crate dependency direction, per-hook line budgets. |
 | `config.example.yaml` | The annotated reference for every setting. |
@@ -324,11 +325,11 @@ Three ways a green run says more than it proved:
 
 | Don't | Do | Why |
 |---|---|---|
-| Hand-edit `Dockerfile`, `chart/` or the generated files under `docs/` | Change `crates/fetcher/src/deployment.rs` and regenerate | A deploy installs the committed chart, never a freshly generated one, so a template missing from the commit is absent from every deployment. In #71 the KEDA ScaledObject referenced a TriggerAuthentication nothing created and the fetcher never scaled on lag. `checked_in_chart_matches_generated` and `checked_in_dockerfile_matches_generated` now compare file for file and name the regenerate command in the failure. |
-| Bump scalo and stop there | Regenerate the artefacts in the same change | scalo owns the generators -- the Dockerfile banner names `scalo::deployment::generate_dockerfile()` and the schema version it emitted. A release that moves a generator fails those two drift tests until the files are regenerated. That is the guard working, not a spurious failure. |
-| Add a secret env var to the chart by hand | Add it to the contract's `secrets` | figment strips exactly `DFE_FETCHER_`, so the chart's `DFE_FETCHER__KAFKA__SASL__USERNAME` once arrived as the key `_kafka.sasl.username`, matched no field, and serde dropped it without a word. Every Helm deploy ran with no Kafka SASL and no cloud credentials while the chart said otherwise. `contract_secret_env_vars_reach_the_config_they_name` walks the contract, so a secret added there is checked without touching the test. |
+| Hand-edit `Dockerfile` or the generated files under `docs/`, or commit a chart | Change `crates/fetcher/src/deployment.rs` and regenerate | The Dockerfile is generator output and the release assembles the chart from the contract, so a hand edit is reverted or never ships. A committed chart once shipped a KEDA ScaledObject referencing a TriggerAuthentication nothing created, and the fetcher never scaled on lag (#71). `checked_in_dockerfile_matches_generated` names the regenerate command in its failure. |
+| Bump scalo and stop there | Regenerate the artefacts and move `release.helm.library` in `.hyperi-ci.yaml` to the same version, in the same change | scalo owns the generators -- the Dockerfile banner names `scalo::deployment::generate_dockerfile()` and the schema version it emitted -- and a scalo-service release renders only the contract version its scalo release writes. A release that moves a generator fails the drift tests until the files are regenerated. That is the guard working, not a spurious failure. |
+| Add a secret env var to a deployment by hand | Add it to the contract's `secrets` and its field to `SECRET_FIELDS` | figment strips exactly `DFE_FETCHER_`, so the old chart's `DFE_FETCHER__KAFKA__SASL__USERNAME` once arrived as the key `_kafka.sasl.username`, matched no field, and serde dropped it without a word. Every Helm deploy ran with no Kafka SASL while the chart said otherwise. `every_declared_secret_env_var_reaches_the_config` sets each declared name and checks the one field it fills. |
 | Write a secret spec with a path and no mount in front of it | Write `vault:<mount>/<path>:<key>` | scalo reads the first segment as the KV v2 mount, and a `data` segment after it is accepted and ignored. A spec with one segment only is filed under the default `secret` mount, which is not the mount a reader of that spec would guess, and a wrong guess fails at fetch time, not at config load. `every_documented_vault_spec_names_a_mount_and_a_path` scans README.md, config.example.yaml and every doc under `docs/` for this shape, which is why the wrong form is described here rather than spelled out: a counter-example written in full fails that test. |
-| Add a config knob and assume it lands | Add a case to `crates/fetcher/tests/integration/config_reachability.rs` | `metrics.address` shipped in `chart/values.yaml`, the contract default and `config.example.yaml`, and was read by nothing: the runtime resolves it from scalo's cascade, which `--config` did not populate, so the listener bound the hard-coded default. Every failure in this class looks identical from outside -- the process starts, logs a healthy line, and runs on a value the operator did not set. |
+| Add a config knob and assume it lands | Add a case to `crates/fetcher/tests/integration/config_reachability.rs` | `metrics.address` shipped in the old chart's values, the contract default and `config.example.yaml`, and was read by nothing: the runtime resolves it from scalo's cascade, which `--config` did not populate, so the listener bound the hard-coded default. Every failure in this class looks identical from outside -- the process starts, logs a healthy line, and runs on a value the operator did not set. |
 | Sleep to wait for a tick, a tail or a file timestamp | Bound the wait on the thing itself, or cross the boundary | Repeated flakes: `8e205c5` bounded the file-tail and dump-listing races instead of sleeping, `33b53aa` crossed a second boundary instead of polling for a change time, `9dfb307` used a port nothing can bind rather than one just handed back. |
 | Add per-provider Rust | Write a profile, or add a variant on the matching axis in `crates/rest` | The generics gates fail a provider mechanism written twice, and every hook has a line budget. `741e28c` is the gate itself being fixed after it matched the word "sigv4" in a comment instead of a signer. |
 | Reuse an instance id across sources | Keep one per source | `instance_id` keys the cursor store, so a shared or changed id re-fetches the default window instead of resuming. `8a37e11` made a shared id a load-time refusal. |
@@ -341,6 +342,6 @@ this repo in either direction.
 
 | Repo | Direction | How it interacts |
 |---|---|---|
-| scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo = { version = ">=2.13.0, <3", default-features = false }`. A scalo release reaches here: if the range admits it, `cargo update -p scalo` and rebuild, otherwise widen the range first. |
-| scalo-rs | inbound, lockstep | `generated-file`. The committed `Dockerfile` is written by `scalo::deployment::generate_dockerfile()`, and its banner names the generator and the schema version it emitted. A release that changes either needs the file regenerated and committed. |
+| scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo = { version = "2.14.3", default-features = false }`, a caret floor. A scalo release reaches here: if the floor admits it, `cargo update -p scalo` and rebuild, otherwise raise the floor first. |
+| scalo-rs | inbound, lockstep | `generated-file`. The committed `Dockerfile` is written by `scalo::deployment::generate_dockerfile()`, and its banner names the generator and the contract schema version, 4. A release that changes either needs the file regenerated and committed. The released chart is assembled on the scalo-service library chart at `release.helm.library`, which moves with the scalo version in `Cargo.toml`. |
 | dfe-infra | outbound -- it depends on this | `image-pin`, lockstep. `dfe-infra/helm/charts/dfe-fetcher/Chart.yaml` pins this service's image by `appVersion`, drift-checked against that repo's `versions.yaml`. A release here is consumed by bumping the tag and re-resolving the digest. |

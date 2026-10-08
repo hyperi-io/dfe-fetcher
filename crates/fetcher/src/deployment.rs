@@ -8,19 +8,25 @@
 
 //! Deployment contract for dfe-fetcher.
 //!
-//! Builds a [`DeploymentContract`] that drives generation of Dockerfile,
-//! Helm chart, and Docker Compose fragments via `scalo`.
+//! Builds a [`DeploymentContract`] that drives generation of the Dockerfile
+//! and the Docker Compose fragment via `scalo`, and that the release emits for
+//! the thin chart it assembles on the scalo-service library chart.
 
 use std::path::{Path, PathBuf};
 
 use scalo::deployment::{
-    DeploymentContract, HealthContract, ImageProfile, NativeDepsContract, PortContract,
-    SecretEnvContract, SecretGroupContract, base_image_from_cascade, image_registry_from_cascade,
+    CONTRACT_SCHEMA_VERSION, DeploymentContract, HealthContract, ImageProfile, NativeDepsContract,
+    PortContract, ResourceList, ResourcesContract, SecretEnvContract, SecretGroupContract,
+    SecurityContract, WritablePath, base_image_from_cascade, image_registry_from_cascade,
 };
 
+/// Where the cursor store keeps its files, on the contract's persistent
+/// writable path `cursor`.
+const CURSOR_DIR: &str = "/var/lib/dfe-fetcher";
+
 /// The repository root, where the operator-facing files live: the committed
-/// config schema and catalog under `docs/`, `config.example.yaml`, the chart
-/// and the Dockerfile. The app crate sits two directories below it.
+/// config schema and catalog under `docs/`, `config.example.yaml` and the
+/// Dockerfile. The app crate sits two directories below it.
 #[must_use]
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -35,9 +41,10 @@ pub fn repo_root() -> PathBuf {
 /// Build the deployment contract for dfe-fetcher.
 ///
 /// This captures all deployment-facing configuration: ports, health paths,
-/// secrets, KEDA scaling, and default config. Artifact generators
-/// (`generate_dockerfile`, `generate_chart`, `generate_compose_fragment`)
-/// use this contract as their single source of truth.
+/// secrets, writable paths, resources, KEDA scaling, and default config.
+/// Artifact generators (`generate_dockerfile`, `generate_chart`,
+/// `generate_compose_fragment`) and the released thin chart use this contract
+/// as their single source of truth.
 pub fn contract() -> DeploymentContract {
     // A deployment.* cascade key (or env) wins over the base image and registry
     // defaults; scalo names no default registry, so the published one is ours.
@@ -72,9 +79,8 @@ pub fn contract() -> DeploymentContract {
         description: "Data fetcher for external services (AWS, Azure, M365, GCP)".into(),
         metrics_port: 9090,
         health: HealthContract {
-            liveness_path: "/livez".into(),
-            readiness_path: "/readyz".into(),
-            metrics_path: "/metrics".into(),
+            startup_budget_seconds: 120,
+            ..HealthContract::default()
         },
         env_prefix: "DFE_FETCHER".into(),
         metric_prefix: "fetcher".into(),
@@ -86,82 +92,15 @@ pub fn contract() -> DeploymentContract {
             PortContract::tcp("ingest", 8080)
                 .when_enabled("config.ingest.enabled")
                 .bound_from("ingest.bind_address"),
+            // Cleartext gRPC, so a proxy in front of it must speak h2c.
             PortContract::tcp("vector-grpc", 6000)
                 .when_enabled("config.extractors.vector.enabled")
-                .bound_from("extractors.vector.grpc_bind_address"),
+                .bound_from("extractors.vector.grpc_bind_address")
+                .app_protocol("kubernetes.io/h2c"),
         ],
         unbound_listen_paths: vec![],
         entrypoint_args: vec!["--config".into(), "/etc/dfe/fetcher.yaml".into()],
-        secrets: vec![
-            SecretGroupContract {
-                group_name: "kafka".into(),
-                env_vars: vec![
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__KAFKA__SASL__USERNAME".into(),
-                        key_name: "username".into(),
-                        secret_key: "kafka-username".into(),
-                    },
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__KAFKA__SASL__PASSWORD".into(),
-                        key_name: "password".into(),
-                        secret_key: "kafka-password".into(),
-                    },
-                ],
-            },
-            SecretGroupContract {
-                group_name: "aws".into(),
-                env_vars: vec![
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID".into(),
-                        key_name: "access-key-id".into(),
-                        secret_key: "aws-access-key-id".into(),
-                    },
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__SOURCES__AWS__SECRET_ACCESS_KEY".into(),
-                        key_name: "secret-access-key".into(),
-                        secret_key: "aws-secret-access-key".into(),
-                    },
-                ],
-            },
-            SecretGroupContract {
-                group_name: "azure".into(),
-                env_vars: vec![
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__SOURCES__AZURE__CLIENT_ID".into(),
-                        key_name: "client-id".into(),
-                        secret_key: "azure-client-id".into(),
-                    },
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__SOURCES__AZURE__CLIENT_SECRET".into(),
-                        key_name: "client-secret".into(),
-                        secret_key: "azure-client-secret".into(),
-                    },
-                ],
-            },
-            SecretGroupContract {
-                group_name: "m365".into(),
-                env_vars: vec![
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__SOURCES__M365__CLIENT_ID".into(),
-                        key_name: "client-id".into(),
-                        secret_key: "m365-client-id".into(),
-                    },
-                    SecretEnvContract {
-                        env_var: "DFE_FETCHER__SOURCES__M365__CLIENT_SECRET".into(),
-                        key_name: "client-secret".into(),
-                        secret_key: "m365-client-secret".into(),
-                    },
-                ],
-            },
-            SecretGroupContract {
-                group_name: "gcp".into(),
-                env_vars: vec![SecretEnvContract {
-                    env_var: "DFE_FETCHER__SOURCES__GCP__SERVICE_ACCOUNT_KEY".into(),
-                    key_name: "service-account-key".into(),
-                    secret_key: "gcp-service-account-key".into(),
-                }],
-            },
-        ],
+        secrets: secrets(),
         default_config: Some(serde_json::json!({
             "scheduler": {
                 "default_interval_secs": 300,
@@ -200,13 +139,18 @@ pub fn contract() -> DeploymentContract {
             "metrics": {
                 "enabled": true,
                 "address": "0.0.0.0:9090"
+            },
+            // Left empty, the cursor store falls back to the config file's
+            // read-only mount and loses every cursor on a restart.
+            "cursor": {
+                "directory": CURSOR_DIR
             }
         })),
         depends_on: vec!["kafka".into()],
         // The fetcher polls its upstreams rather than draining a queue, so it
         // never scales out and the chart carries no ScaledObject.
         keda: None,
-        schema_version: 3,
+        schema_version: CONTRACT_SCHEMA_VERSION,
         // scalo writes no vendor, licence or copyright of its own, so the
         // labels and the generated Dockerfile header carry exactly these.
         oci_labels: scalo::deployment::OciLabels {
@@ -222,7 +166,48 @@ pub fn contract() -> DeploymentContract {
         // + their knobs). Emitted to docs/config-schema.* + docs/capability-catalog.*.
         config_schema: Some(scalo::deployment::config_schema_json::<crate::config::Config>()),
         capabilities: crate::deployment_catalog::capabilities(),
+        // The cursor store's files outlive the pod, so a restart resumes each
+        // connection's window instead of re-fetching the default one.
+        writable_paths: vec![WritablePath::new("cursor", CURSOR_DIR).persistent("1Gi")],
+        termination_grace_seconds: 45,
+        resources: ResourcesContract {
+            requests: ResourceList {
+                cpu: "100m".into(),
+                memory: "128Mi".into(),
+            },
+            limits: ResourceList {
+                cpu: "500m".into(),
+                memory: "256Mi".into(),
+            },
+        },
+        security: SecurityContract::default(),
+        singleton: false,
     }
+}
+
+/// The Kafka Secret the chart mounts as env vars.
+///
+/// `Config::apply_flat_env` reads these `DFE_FETCHER_KAFKA_SASL_*` names into
+/// `kafka.sasl`. Cloud credentials are no group here: a deployment supplies
+/// them as `DFE_FETCHER_SOURCES__<BLOCK>__<FIELD>` env vars or `env:` specs.
+fn secrets() -> Vec<SecretGroupContract> {
+    let env = |env_var: &str, key_name: &str, secret_key: &str| SecretEnvContract {
+        env_var: env_var.into(),
+        key_name: key_name.into(),
+        secret_key: secret_key.into(),
+    };
+    vec![SecretGroupContract::new(
+        "kafka",
+        vec![
+            env("DFE_FETCHER_KAFKA_SASL_USER", "username", "username"),
+            env("DFE_FETCHER_KAFKA_SASL_PASSWORD", "password", "password"),
+            env(
+                "DFE_FETCHER_KAFKA_SASL_MECHANISM",
+                "mechanism",
+                "sasl.mechanism",
+            ),
+        ],
+    )]
 }
 
 #[cfg(test)]
@@ -280,6 +265,12 @@ mod tests {
         assert_eq!(c.health.metrics_path, "/metrics");
     }
 
+    /// The chart's startup probe allows this long before it restarts the pod.
+    #[test]
+    fn test_contract_startup_budget() {
+        assert_eq!(contract().health.startup_budget_seconds, 120);
+    }
+
     #[test]
     fn test_contract_env_prefix() {
         let c = contract();
@@ -300,10 +291,10 @@ mod tests {
 
     #[test]
     fn the_contract_default_agrees_with_the_code_default_on_ingest() {
-        // Changing IngestConfig::default() alone changes nothing a deployment
-        // sees: the chart's config block and this contract default both
-        // override it. Flipping one and not the others is how a security
-        // default gets fixed on paper and left open in the cluster.
+        // Anything that builds a deployment's config from this contract default
+        // overrides IngestConfig::default(). Flipping one and not the other is
+        // how a security default gets fixed on paper and left open in the
+        // cluster.
         let c = contract();
         let default_config = c
             .default_config
@@ -372,6 +363,8 @@ mod tests {
             vector.bound_from.as_deref(),
             Some("extractors.vector.grpc_bind_address")
         );
+        // The receiver is cleartext gRPC, so a proxy in front of it must speak h2c.
+        assert_eq!(vector.app_protocol, "kubernetes.io/h2c");
     }
 
     /// generate-artefacts refuses a contract whose default config binds a
@@ -381,19 +374,25 @@ mod tests {
         scalo::deployment::assert_listeners_declared(&contract());
     }
 
-    /// A values path the chart reads but the default config never sets renders
-    /// empty, so every one must resolve.
+    /// A values path the `emit-chart` chart reads but the default config never
+    /// sets renders empty, so every one must resolve.
     #[test]
     fn every_values_path_the_chart_reads_resolves() {
         assert_eq!(contract().unresolved_values_paths(), Vec::<String>::new());
     }
 
+    /// Kafka is the one Secret the chart mounts. Cloud credentials reach a
+    /// deployment through its own env, so a group for them would mount a
+    /// Secret every deployment must create whether or not it runs that source.
     #[test]
     fn test_contract_secret_groups_count() {
         let c = contract();
-        assert_eq!(c.secrets.len(), 5);
+        assert_eq!(c.secrets.len(), 1);
+        assert_eq!(c.secrets[0].group_name, "kafka");
     }
 
+    /// The pod cannot produce without its broker credentials, so the group is
+    /// required and carries the three names `apply_flat_env` reads.
     #[test]
     fn test_contract_secret_group_kafka() {
         let c = contract();
@@ -402,62 +401,38 @@ mod tests {
             .iter()
             .find(|g| g.group_name == "kafka")
             .expect("kafka secret group must exist");
+        assert!(!group.optional);
         let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
-        assert!(env_vars.contains(&"DFE_FETCHER__KAFKA__SASL__USERNAME"));
-        assert!(env_vars.contains(&"DFE_FETCHER__KAFKA__SASL__PASSWORD"));
-    }
-
-    #[test]
-    fn test_contract_secret_group_aws() {
-        let c = contract();
-        let group = c
-            .secrets
-            .iter()
-            .find(|g| g.group_name == "aws")
-            .expect("aws secret group must exist");
-        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
-        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID"));
-        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AWS__SECRET_ACCESS_KEY"));
-    }
-
-    #[test]
-    fn test_contract_secret_group_azure() {
-        let c = contract();
-        let group = c
-            .secrets
-            .iter()
-            .find(|g| g.group_name == "azure")
-            .expect("azure secret group must exist");
-        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
-        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AZURE__CLIENT_ID"));
-        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__AZURE__CLIENT_SECRET"));
-    }
-
-    #[test]
-    fn test_contract_secret_group_m365() {
-        let c = contract();
-        let group = c
-            .secrets
-            .iter()
-            .find(|g| g.group_name == "m365")
-            .expect("m365 secret group must exist");
-        let env_vars: Vec<&str> = group.env_vars.iter().map(|e| e.env_var.as_str()).collect();
-        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__M365__CLIENT_ID"));
-        assert!(env_vars.contains(&"DFE_FETCHER__SOURCES__M365__CLIENT_SECRET"));
-    }
-
-    #[test]
-    fn test_contract_secret_group_gcp() {
-        let c = contract();
-        let group = c
-            .secrets
-            .iter()
-            .find(|g| g.group_name == "gcp")
-            .expect("gcp secret group must exist");
-        assert_eq!(group.env_vars.len(), 1);
         assert_eq!(
-            group.env_vars[0].env_var,
-            "DFE_FETCHER__SOURCES__GCP__SERVICE_ACCOUNT_KEY"
+            env_vars,
+            [
+                "DFE_FETCHER_KAFKA_SASL_USER",
+                "DFE_FETCHER_KAFKA_SASL_PASSWORD",
+                "DFE_FETCHER_KAFKA_SASL_MECHANISM",
+            ]
+        );
+    }
+
+    /// The root filesystem is read-only, so the default cursor directory must
+    /// sit under an ungated persistent writable path, or every restart loses
+    /// each connection's window and re-fetches the default one.
+    #[test]
+    fn the_default_cursor_directory_is_a_persistent_writable_path() {
+        let c = contract();
+        let directory = c
+            .default_config
+            .as_ref()
+            .and_then(|config| config.pointer("/cursor/directory"))
+            .and_then(serde_json::Value::as_str)
+            .expect("the contract names a cursor directory");
+
+        assert!(c.security.read_only_root_filesystem);
+        assert!(
+            c.writable_paths.iter().any(|writable| writable.persistent
+                && writable.when.is_none()
+                && std::path::Path::new(directory).starts_with(&writable.path)),
+            "no persistent writable path covers {directory}: {:?}",
+            c.writable_paths
         );
     }
 
@@ -489,7 +464,7 @@ mod tests {
     #[test]
     fn test_contract_schema_version() {
         let c = contract();
-        assert_eq!(c.schema_version, 3);
+        assert_eq!(c.schema_version, CONTRACT_SCHEMA_VERSION);
     }
 
     #[test]
@@ -676,53 +651,6 @@ mod tests {
             c.entrypoint_args.contains(&"/etc/dfe/fetcher.yaml".into()),
             "entrypoint_args must contain the config mount path"
         );
-    }
-
-    /// Map a chart directory to relative path -> file body.
-    fn chart_files(root: &std::path::Path) -> std::collections::BTreeMap<String, String> {
-        let mut files = std::collections::BTreeMap::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).expect("read_dir") {
-                let path = entry.expect("dir entry").path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else {
-                    let rel = path.strip_prefix(root).expect("relative path");
-                    files.insert(
-                        rel.display().to_string(),
-                        std::fs::read_to_string(&path).expect("read chart file"),
-                    );
-                }
-            }
-        }
-        files
-    }
-
-    #[test]
-    fn checked_in_chart_matches_generated() {
-        // A deployment installs the committed chart, not a freshly generated
-        // one, so drift means the cluster gets whatever the stale file says.
-        const REGEN: &str = "regenerate with: `dfe-fetcher emit-chart chart`";
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        scalo::deployment::generate_chart(&contract(), tmp.path(), None).expect("generate_chart");
-        let generated = chart_files(tmp.path());
-        let committed = chart_files(&repo_root().join("chart"));
-
-        let generated_names: Vec<&String> = generated.keys().collect();
-        let committed_names: Vec<&String> = committed.keys().collect();
-        assert_eq!(
-            committed_names, generated_names,
-            "chart/ file list differs from the contract -- {REGEN}"
-        );
-        for (name, want) in &generated {
-            assert_eq!(
-                committed.get(name),
-                Some(want),
-                "chart/{name} differs from the contract -- {REGEN}"
-            );
-        }
     }
 
     use scalo::deployment::generate_dockerfile;

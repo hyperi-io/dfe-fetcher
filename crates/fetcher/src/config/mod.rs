@@ -12,10 +12,11 @@
 //! 1. CLI arguments
 //! 2. Flat env overrides (`DFE_FETCHER_KAFKA_BROKERS`, see [`ApplyFlatEnv`])
 //! 3. Nested env vars, `__` between levels, either separator after the prefix:
-//!    `DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID` (the chart / deployment-contract
-//!    form) and `DFE_FETCHER_SOURCES__AWS__ACCESS_KEY_ID` (the docs form) reach
-//!    the same key
-//! 4. .env file
+//!    `DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID` and
+//!    `DFE_FETCHER_SOURCES__AWS__ACCESS_KEY_ID` (the docs form) reach the same
+//!    key
+//! 4. `./.env` in the working directory, never a parent's, when no `--config`
+//!    is given
 //! 5. The file named by `--config`, else settings.{env}.yaml / settings.yaml /
 //!    defaults.yaml from the scalo cascade
 //! 6. Hard-coded defaults
@@ -335,7 +336,7 @@ impl Config {
         // Store config path for reload support
         config.config_path = config_path.map(String::from);
 
-        // scalo's own merge strips exactly `DFE_FETCHER_`, so the chart's
+        // scalo's own merge strips exactly `DFE_FETCHER_`, so the
         // `DFE_FETCHER__...` form lands on `_sources.aws....` and is dropped.
         // Re-run the merge with the separator trimmed so both forms reach the key.
         apply_nested_env(&mut config)?;
@@ -838,17 +839,17 @@ fn init_cascade(path: &str) -> Result<()> {
 
 /// Merge `DFE_FETCHER...` env vars onto an already-loaded config, `__` nesting.
 ///
-/// figment's `prefixed` strips exactly `DFE_FETCHER_`, so the chart and the
-/// deployment contract's `DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID` arrives as
-/// the key `_sources.aws.access_key_id`, which matches no field and serde drops
+/// figment's `prefixed` strips exactly `DFE_FETCHER_`, so
+/// `DFE_FETCHER__SOURCES__AWS__ACCESS_KEY_ID` arrives as the key
+/// `_sources.aws.access_key_id`, which matches no field and serde drops
 /// without a word. Trimming the separator figment leaves behind is what makes
 /// that form reach the same key as `DFE_FETCHER_SOURCES__AWS__ACCESS_KEY_ID`;
 /// no section starts with `_`.
 ///
-/// An empty value counts as unset, matching `scalo::config::flat_env`. The
-/// chart declares every secret env var whether or not the operator supplied a
-/// value, so without this an unset credential would arrive as `Some("")` and
-/// sign requests with an empty key instead of failing on the missing one.
+/// An empty value counts as unset, matching `scalo::config::flat_env`. A
+/// deployment can declare an env var with no value behind it, so without this
+/// an unset credential would arrive as `Some("")` and sign requests with an
+/// empty key instead of failing on the missing one.
 ///
 /// `config_path` is `#[serde(skip)]`, so the round trip through serde loses it --
 /// it is carried across by hand.
@@ -1936,7 +1937,7 @@ pub struct GcpConnection {
     pub project_id: Option<String>,
 
     /// The service-account key JSON, or the path of its file. A value opening
-    /// with `{` is the key itself, which is how the chart's Secret delivers it.
+    /// with `{` is the key itself, which is how a Secret set as an env var delivers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<SensitiveString>,
 
@@ -1968,7 +1969,7 @@ pub struct GcpSourceConfig {
     pub project_id: Option<String>,
 
     /// The service-account key JSON, or the path of its file. A value opening
-    /// with `{` is the key itself, which is how the chart's Secret delivers it.
+    /// with `{` is the key itself, which is how a Secret set as an env var delivers it.
     pub service_account_key: Option<SensitiveString>,
 
     /// Secret source for credentials.
@@ -4555,15 +4556,14 @@ impl Default for KafkaConfig {
 
 /// SASL authentication configuration.
 ///
-/// Every field defaults, so the two secret env vars the chart injects are a
-/// complete SASL block on their own -- which is what the chart claims they are.
-/// Without that, a partial block was a startup parse error.
+/// Every field defaults, so the Kafka Secret's env vars are a complete SASL
+/// block on their own. Without that, a partial block was a startup parse error.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct SaslConfig {
     /// Enable SASL. Defaults to TRUE, because reaching this struct at all means
-    /// a `kafka.sasl` block exists -- written by hand or built out of the two
-    /// secret env vars the chart injects -- and that is a request for SASL.
+    /// a `kafka.sasl` block exists -- written by hand or built out of the Kafka
+    /// Secret's env vars -- and that is a request for SASL.
     /// `enabled: false` still switches it off and is never inferred away.
     /// `kafka.sasl` itself defaults to absent, so a config that says nothing
     /// gets no SASL.

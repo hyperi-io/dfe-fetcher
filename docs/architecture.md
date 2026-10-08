@@ -18,7 +18,7 @@ codemap, the invariants and the build graph.
 | `crates/file` (`dfe-fetcher-file`) | The `FileSource` contract, the `sources.file` grammar, the dump reader (NDJSON, JSON array, CSV, gzip by magic) and the tail spec; the tailer sits behind the `tail` feature over the vendored crates. |
 | `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), vendored and depended on by path from `crates/file` only; provenance in `third-party/README.md`. |
 | `crates/fetcher` (`dfe-fetcher`, the binary) | The config cascade and hot reload, the typed source blocks, their registry and their mapping onto profile instances (`config/builtin.rs`), the scheduler, `Driver` (the tick the scheduler runs for every framework shape), the emitter, the pipeline (enrichment, DLQ, readiness), the output transports, the cursor file store, the shipped REST profiles (`profiles/*.yaml`), the deployment contract and capability catalog, the ingest server and the container and Vector extractors. |
-| `config.example.yaml`, `docs/`, `chart/` | Operator-facing surface, at the repo root; the app crate's tests reach them through the manifest directory. |
+| `config.example.yaml`, `docs/` | Operator-facing surface, at the repo root; the app crate's tests reach them through the manifest directory. |
 
 Adding a REST source is a profile (YAML) plus an instance in `sources.rest`;
 adding a hook is a variant on an axis enum in `crates/rest`; adding an engine is

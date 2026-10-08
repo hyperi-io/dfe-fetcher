@@ -605,7 +605,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       assume_role_arn:
@@ -698,7 +697,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       assume_role_arn:
         description: Assume role ARN for cross-account access.
@@ -750,7 +748,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       credential_secret:
@@ -854,7 +851,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source for credentials ("provider:path:key").
@@ -916,7 +912,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       credential_secret:
@@ -1020,7 +1015,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source for credentials ("provider:path:key").
@@ -1068,12 +1062,11 @@ $defs:
       service_account_key:
         description: |-
           The service-account key JSON, or the path of its file. A value opening
-          with `{` is the key itself, which is how the chart's Secret delivers it.
+          with `{` is the key itself, which is how a Secret set as an env var delivers it.
         type:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       credential_secret:
@@ -1158,12 +1151,11 @@ $defs:
       service_account_key:
         description: |-
           The service-account key JSON, or the path of its file. A value opening
-          with `{` is the key itself, which is how the chart's Secret delivers it.
+          with `{` is the key itself, which is how a Secret set as an env var delivers it.
         type:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source for credentials ("provider:path:key").
@@ -1228,7 +1220,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the token (e.g. `vault:kv/data/github:token`).
@@ -1312,7 +1303,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the token ("provider:path:key").
@@ -1361,7 +1351,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       use_ssws_header:
         description: |-
@@ -1448,7 +1437,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       use_ssws_header:
         description: |-
@@ -1505,7 +1493,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the token (e.g. `vault:kv/data/cloudflare:token`).
@@ -1586,7 +1573,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the token ("provider:path:key").
@@ -1628,7 +1614,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -1709,7 +1694,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the token ("provider:path:key").
@@ -1766,7 +1750,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -1851,7 +1834,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the client_secret ("provider:path:key").
@@ -1888,7 +1870,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -1966,7 +1947,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the token ("provider:path:key").
@@ -2017,7 +1997,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -2106,7 +2085,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the client_secret ("provider:path:key").
@@ -2167,7 +2145,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -2277,7 +2254,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the secret_key ("provider:path:key").
@@ -2465,7 +2441,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -2569,7 +2544,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec for the SA key ("provider:path:key").
@@ -2646,7 +2620,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -2891,7 +2864,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -2918,7 +2890,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Vault secret spec for the SA key.
@@ -2949,7 +2920,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       sas_token:
         description: |-
@@ -2959,7 +2929,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       tenant_id:
         description: Entra Service-Principal tenant ID (for OAuth2 bearer auth).
@@ -2977,7 +2946,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Vault secret spec for whichever auth method is in use.
@@ -3063,7 +3031,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       private_key_secret:
         description: |-
@@ -3079,7 +3046,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: |-
@@ -3181,7 +3147,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       private_key_secret:
         description: Secret source spec resolving to the RSA private key PEM.
@@ -3194,7 +3159,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
       credential_secret:
         description: Secret source spec resolving to the consumer secret ("provider:path:key").
@@ -5100,7 +5064,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       key:
@@ -5109,7 +5072,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       username:
@@ -5124,7 +5086,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       client_id:
@@ -5139,7 +5100,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       scope:
@@ -5163,7 +5123,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       signature_preset:
@@ -5182,7 +5141,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       service_account_key_file:
@@ -5193,7 +5151,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       private_key:
@@ -5204,7 +5161,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       private_key_id:
@@ -5226,7 +5182,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       secret_access_key:
@@ -5235,7 +5190,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       credentials_json:
@@ -5247,7 +5201,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       assume_role_arn:
@@ -5268,7 +5221,6 @@ $defs:
         additionalProperties:
           type: string
           x-scalo-secret: true
-          x-dfe-secret: true
           writeOnly: true
         default: {}
     additionalProperties: false
@@ -5378,7 +5330,6 @@ $defs:
           resolved on first use and never logged.
         type: string
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: '***REDACTED***'
       interval_secs:
@@ -6144,7 +6095,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       allow_unauthenticated:
@@ -6217,16 +6167,15 @@ $defs:
     description: |-
       SASL authentication configuration.
 
-      Every field defaults, so the two secret env vars the chart injects are a
-      complete SASL block on their own -- which is what the chart claims they are.
-      Without that, a partial block was a startup parse error.
+      Every field defaults, so the Kafka Secret's env vars are a complete SASL
+      block on their own. Without that, a partial block was a startup parse error.
     type: object
     properties:
       enabled:
         description: |-
           Enable SASL. Defaults to TRUE, because reaching this struct at all means
-          a `kafka.sasl` block exists -- written by hand or built out of the two
-          secret env vars the chart injects -- and that is a request for SASL.
+          a `kafka.sasl` block exists -- written by hand or built out of the Kafka
+          Secret's env vars -- and that is a request for SASL.
           `enabled: false` still switches it off and is never inferred away.
           `kafka.sasl` itself defaults to absent, so a config that says nothing
           gets no SASL.
@@ -6253,7 +6202,6 @@ $defs:
           password.
         type: string
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: ''
   KafkaTlsConfig:
@@ -6735,7 +6683,6 @@ $defs:
         - string
         - 'null'
         x-scalo-secret: true
-        x-dfe-secret: true
         writeOnly: true
         default: null
       ssl_ca_location:

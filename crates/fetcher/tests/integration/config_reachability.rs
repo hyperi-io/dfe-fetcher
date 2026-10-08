@@ -13,11 +13,11 @@
 //! look identical from outside: the process starts, logs a healthy line, and
 //! runs on a value the operator did not set.
 //!
-//! The generic ones ([`contract_secret_env_vars_reach_the_config_they_name`] and
-//! [`committed_chart_injects_every_contract_secret_env_var`]) walk the
-//! deployment contract rather than a hand-written list, so a secret added to the
-//! contract later is checked without touching this file.
+//! [`every_declared_secret_env_var_reaches_the_config`] walks the deployment
+//! contract, so a secret added to the contract later fails until its field is
+//! named in [`SECRET_FIELDS`].
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use dfe_fetcher::config::{Config, KafkaConfig, SaslConfig};
@@ -33,16 +33,15 @@ fn at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.').try_fold(root, |node, key| node.get(key))
 }
 
-/// The config key an env var names, by the cascade's own rules: drop the
-/// `DFE_FETCHER` prefix and either separator that follows it, then `__` nests.
-fn config_key_for(env_var: &str, env_prefix: &str) -> String {
-    env_var
-        .strip_prefix(env_prefix)
-        .unwrap_or(env_var)
-        .trim_start_matches('_')
-        .to_lowercase()
-        .replace("__", ".")
-}
+/// The config field each Secret env var the contract declares must fill.
+///
+/// The flat names do not spell their fields (`..._SASL_USER` fills
+/// `kafka.sasl.username`), so the field is named here rather than derived.
+const SECRET_FIELDS: &[(&str, &str)] = &[
+    ("DFE_FETCHER_KAFKA_SASL_USER", "kafka.sasl.username"),
+    ("DFE_FETCHER_KAFKA_SASL_PASSWORD", "kafka.sasl.password"),
+    ("DFE_FETCHER_KAFKA_SASL_MECHANISM", "kafka.sasl.mechanism"),
+];
 
 fn write_config(dir: &tempfile::TempDir, body: &str) -> String {
     let path = dir.path().join("fetcher.yaml");
@@ -59,108 +58,70 @@ fn minimal_config(dir: &tempfile::TempDir) -> String {
 // Deployment contract <-> config reader
 // ============================================================================
 
-/// Every secret the deployment contract declares must land on the config key
-/// its name spells out.
+/// Every Secret env var the deployment contract declares lands on the one
+/// config field it fills, on the `--config` path the container takes.
 ///
-/// The chart injects all nine as `DFE_FETCHER__SECTION__FIELD`. figment strips
-/// exactly `DFE_FETCHER_`, so that form used to arrive as the key
-/// `_sources.aws.access_key_id`, which matches no field and serde drops without
-/// a word -- and on the `--config` path the container takes, no env layer ran at
-/// all. Every Helm deploy ran with no Kafka SASL and no cloud credentials while
-/// the chart said otherwise.
+/// The chart mounts the Secret under every declared name, so a name the config
+/// never reads leaves the credential silently unused, and a name read into
+/// another field connects with the wrong value.
 ///
 /// The whole sweep is one test with set/remove around each case.
 #[test]
-fn contract_secret_env_vars_reach_the_config_they_name() {
+fn every_declared_secret_env_var_reaches_the_config() {
     let _guard = ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let contract = dfe_fetcher::deployment::contract();
-    let prefix = contract.env_prefix.clone();
+    let declared: BTreeSet<&str> = contract
+        .secrets
+        .iter()
+        .flat_map(|group| group.env_vars.iter().map(|env| env.env_var.as_str()))
+        .collect();
+    let named: BTreeSet<&str> = SECRET_FIELDS.iter().map(|(env_var, _)| *env_var).collect();
+    assert_eq!(
+        declared, named,
+        "every env var the contract declares needs its field in SECRET_FIELDS"
+    );
+
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = minimal_config(&dir);
-
-    let mut checked = 0;
     for group in &contract.secrets {
-        for secret in &group.env_vars {
-            let key = config_key_for(&secret.env_var, &prefix);
-            let sentinel = format!("reachability-{}", key.replace('.', "-"));
+        for env in &group.env_vars {
+            let field = SECRET_FIELDS
+                .iter()
+                .find(|(env_var, _)| *env_var == env.env_var)
+                .map(|(_, field)| *field)
+                .expect("checked against SECRET_FIELDS above");
+            let sentinel = format!("sentinel-{}", env.key_name);
 
             // SAFETY: test-only; set and removed inside this one locked test.
-            unsafe { std::env::set_var(&secret.env_var, &sentinel) };
+            unsafe { std::env::set_var(&env.env_var, &sentinel) };
             let loaded = Config::load_from_file(&path).expect("config loads");
-            unsafe { std::env::remove_var(&secret.env_var) };
+            unsafe { std::env::remove_var(&env.env_var) };
 
-            let json = expose_during(|| serde_json::to_value(&loaded)).expect("config serialises");
-            let found = at(&json, &key);
-
-            assert_eq!(
-                found.and_then(Value::as_str),
-                Some(sentinel.as_str()),
-                "deployment contract declares {} for secret '{}', but setting it left \
-                 config key '{}' at {:?}. The contract, the chart and the config reader \
-                 have to agree on the env var name or the secret never reaches the process.",
-                secret.env_var,
-                secret.secret_key,
-                key,
-                found,
-            );
-            checked += 1;
-        }
-    }
-
-    assert!(
-        checked >= 9,
-        "expected the contract to declare kafka + the four cloud sources, checked {checked}"
-    );
-}
-
-/// The committed chart must inject every secret env var the contract declares.
-///
-/// Nothing else compares the two: the chart is generated from the contract but
-/// committed by hand, and only the Dockerfile has a drift test.
-#[test]
-fn committed_chart_injects_every_contract_secret_env_var() {
-    let contract = dfe_fetcher::deployment::contract();
-    let template = std::fs::read_to_string(
-        dfe_fetcher::deployment::repo_root().join("chart/templates/deployment.yaml"),
-    )
-    .expect("read committed deployment template");
-
-    for group in &contract.secrets {
-        for secret in &group.env_vars {
+            // A credential field redacts on every other serialise path.
+            let applied =
+                expose_during(|| serde_json::to_value(&loaded)).expect("config serialises");
+            let reached = at(&applied, field).and_then(Value::as_str) == Some(sentinel.as_str());
+            // The message carries the env var and group names only, never a value.
             assert!(
-                template.contains(&secret.env_var),
-                "chart/templates/deployment.yaml does not inject '{}' ({} / {}), so that \
-                 secret never reaches the pod",
-                secret.env_var,
-                group.group_name,
-                secret.secret_key,
+                reached,
+                "{} ({}) was set and the config field it fills did not read it",
+                env.env_var, group.group_name
             );
         }
     }
 }
 
-/// The GCP secret the contract ships is the key JSON itself, so the block must
+/// A service-account key set by env is the key JSON itself, so the block must
 /// read that value as the key. Read as a key file path, every exchange fails on
 /// a file named after the key.
 #[test]
-fn the_gcp_key_the_contract_ships_is_read_as_the_key() {
+fn a_gcp_key_set_by_env_is_read_as_the_key() {
+    const GCP_VAR: &str = "DFE_FETCHER__SOURCES__GCP__SERVICE_ACCOUNT_KEY";
     let _guard = ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let contract = dfe_fetcher::deployment::contract();
-    let secret = contract
-        .secrets
-        .iter()
-        .find(|group| group.group_name == "gcp")
-        .and_then(|group| {
-            group
-                .env_vars
-                .iter()
-                .find(|e| e.secret_key == "gcp-service-account-key")
-        })
-        .expect("the contract ships the GCP service-account key");
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = write_config(
         &dir,
@@ -170,9 +131,9 @@ fn the_gcp_key_the_contract_ships_is_read_as_the_key() {
     let key = r#"{"type":"service_account","client_email":"sa@proj.iam.gserviceaccount.com"}"#;
 
     // SAFETY: test-only; set and removed inside this one locked test.
-    unsafe { std::env::set_var(&secret.env_var, key) };
+    unsafe { std::env::set_var(GCP_VAR, key) };
     let loaded = Config::load_from_file(&path);
-    unsafe { std::env::remove_var(&secret.env_var) };
+    unsafe { std::env::remove_var(GCP_VAR) };
 
     let built = loaded
         .expect("config loads")
@@ -181,45 +142,19 @@ fn the_gcp_key_the_contract_ships_is_read_as_the_key() {
         .instances()
         .expect("the gcp block builds");
     let auth = &built.first().expect("one connection").instance.auth;
-    assert_eq!(
-        auth.service_account_key
-            .as_ref()
-            .map(scalo::config::sensitive::SensitiveString::expose),
-        Some(key),
-        "{} delivers the key JSON, so the block has to use it as the key",
-        secret.env_var,
+    let read_as_key = auth
+        .service_account_key
+        .as_ref()
+        .map(scalo::config::sensitive::SensitiveString::expose)
+        == Some(key);
+    // The message names no value: assert_eq! would print the key on failure.
+    assert!(
+        read_as_key,
+        "the key JSON set by env was not used as the key"
     );
     assert!(
         auth.service_account_key_file.is_none(),
         "the key JSON was read as a key file path"
-    );
-}
-
-/// The chart's `config:` block must be the contract's `default_config`.
-///
-/// The chart is generated from the contract and then committed by hand, so a
-/// default changed in one and not the other ships a deployment running on a
-/// value the code no longer chooses -- and only the Dockerfile had a drift test.
-#[test]
-fn committed_chart_config_block_matches_the_contract_default() {
-    let contract = dfe_fetcher::deployment::contract();
-    let expected = contract
-        .default_config
-        .as_ref()
-        .expect("contract carries a default config");
-
-    let values: Value = serde_yaml_ng::from_str(
-        &std::fs::read_to_string(dfe_fetcher::deployment::repo_root().join("chart/values.yaml"))
-            .expect("read committed chart values"),
-    )
-    .expect("chart values parse");
-    let actual = values.get("config").expect("chart values carry config:");
-
-    assert_eq!(
-        actual, expected,
-        "chart/values.yaml config: has drifted from the deployment contract's \
-         default_config. Regenerate the chart (`dfe-fetcher emit-chart chart`) or fix \
-         the contract -- whichever one is now wrong."
     );
 }
 
@@ -330,10 +265,9 @@ fn env_overrides_the_file_and_the_file_overrides_the_default() {
 
 /// An env var set to the empty string counts as unset.
 ///
-/// The chart declares each secret env var whether or not the operator supplied
-/// a value, so without this an unconfigured AWS credential would arrive as
-/// `Some("")` and sign requests with an empty key instead of failing on the
-/// missing one.
+/// A deployment can declare an env var with no value behind it, so without
+/// this an unconfigured AWS credential would arrive as `Some("")` and sign
+/// requests with an empty key instead of failing on the missing one.
 #[test]
 fn an_empty_env_value_is_not_a_setting() {
     let _guard = ENV_LOCK
@@ -358,28 +292,39 @@ fn an_empty_env_value_is_not_a_setting() {
 // Kafka SASL
 // ============================================================================
 
-/// The two secret env vars the chart injects must be a complete SASL block on
-/// their own -- which is what the chart's own comment promises.
+/// The Kafka Secret's env vars are a complete SASL block on their own.
 ///
-/// `SaslConfig` had no field defaults, so the two env vars were a partial block
+/// `SaslConfig` had no field defaults, so env vars alone were a partial block
 /// and a partial block was a startup parse error.
 #[test]
-fn the_charts_two_sasl_secrets_are_enough_on_their_own() {
+fn the_kafka_secret_alone_is_a_complete_sasl_block() {
     let _guard = ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = minimal_config(&dir);
+    let contract = dfe_fetcher::deployment::contract();
+    let kafka_secret = contract
+        .secrets
+        .iter()
+        .find(|group| group.group_name == "kafka")
+        .expect("the contract declares the Kafka Secret");
+    // A mechanism off the default, so its arrival is visible.
+    let value_of = |key_name: &str| match key_name {
+        "username" => "kuser",
+        "password" => "kpass",
+        "mechanism" => "SCRAM-SHA-256",
+        other => panic!("no test value for the Kafka Secret key {other}"),
+    };
 
-    // SAFETY: test-only; removed immediately after the load.
-    unsafe {
-        std::env::set_var("DFE_FETCHER__KAFKA__SASL__USERNAME", "kuser");
-        std::env::set_var("DFE_FETCHER__KAFKA__SASL__PASSWORD", "kpass");
+    for env in &kafka_secret.env_vars {
+        // SAFETY: test-only; removed immediately after the load.
+        unsafe { std::env::set_var(&env.env_var, value_of(&env.key_name)) };
     }
     let loaded = Config::load_from_file(&path);
-    unsafe {
-        std::env::remove_var("DFE_FETCHER__KAFKA__SASL__USERNAME");
-        std::env::remove_var("DFE_FETCHER__KAFKA__SASL__PASSWORD");
+    for env in &kafka_secret.env_vars {
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(&env.env_var) };
     }
 
     let sasl = loaded
@@ -388,7 +333,7 @@ fn the_charts_two_sasl_secrets_are_enough_on_their_own() {
         .sasl
         .expect("credentials must produce a sasl block");
     assert!(sasl.enabled, "a sasl block that exists must be on");
-    assert_eq!(sasl.mechanism, "SCRAM-SHA-512");
+    assert_eq!(sasl.mechanism, "SCRAM-SHA-256");
     assert_eq!(sasl.username, "kuser");
 
     // And the block must survive the trip into the transport config.
@@ -396,6 +341,7 @@ fn the_charts_two_sasl_secrets_are_enough_on_their_own() {
     kafka.sasl = Some(sasl);
     let scalo = build_scalo_kafka_config(&kafka);
     assert_eq!(scalo.sasl_username.as_deref(), Some("kuser"));
+    assert_eq!(scalo.sasl_mechanism.as_deref(), Some("SCRAM-SHA-256"));
     assert_eq!(scalo.security_protocol, "sasl_plaintext");
 }
 
@@ -498,10 +444,10 @@ fn tls_without_sasl_selects_the_ssl_protocol() {
 /// `metrics.address` must reach the listener on the `--config` path.
 ///
 /// The runtime resolves it from scalo's cascade, so a `--config` file that does
-/// not reach the cascade leaves the value shipped in chart/values.yaml, in the
-/// contract's default config and in config.example.yaml read by nothing, and
-/// the listener binds the hard-coded default. `config-check` reports the
-/// address the runtime would use, so it is the honest place to assert.
+/// not reach the cascade leaves the value in the contract's default config and
+/// in config.example.yaml read by nothing, and the listener binds the
+/// hard-coded default. `config-check` reports the address the runtime would
+/// use, so it is the honest place to assert.
 #[test]
 fn metrics_address_from_the_config_file_reaches_the_listener() {
     // The child process inherits this process's env at spawn.
@@ -530,6 +476,58 @@ fn metrics_address_from_the_config_file_reaches_the_listener() {
     assert!(
         line.contains("127.0.0.1:9391"),
         "the runtime would bind a metrics address the config did not set: {line:?}"
+    );
+}
+
+/// `config-check` run by the binary from `dir` with no `--config`, returning
+/// what it printed.
+fn config_check_in(dir: &Path) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_dfe-fetcher"))
+        .arg("config-check")
+        .current_dir(dir)
+        .env_remove("DFE_FETCHER_KAFKA_CLIENT_ID")
+        .output()
+        .expect("the binary runs");
+    let printed = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "config-check failed:\n{printed}");
+    printed
+}
+
+/// The binary reads the `.env` in its working directory and no other.
+///
+/// A `.env` in a parent directory belongs to whatever project sits above, so a
+/// search up the tree loads another project's settings and credentials.
+#[test]
+fn a_dotenv_in_a_parent_directory_is_not_loaded() {
+    // The child process inherits this process's env at spawn.
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let project = root.path().join("project");
+    std::fs::create_dir(&project).expect("project dir");
+    std::fs::write(
+        root.path().join(".env"),
+        "DFE_FETCHER_KAFKA_CLIENT_ID=from_parent_dotenv\n",
+    )
+    .expect("parent .env");
+
+    let printed = config_check_in(&project);
+    assert!(
+        !printed.contains("from_parent_dotenv"),
+        "a .env in the parent directory reached the config"
+    );
+
+    // The project's own .env still loads, through the same field.
+    std::fs::write(
+        project.join(".env"),
+        "DFE_FETCHER_KAFKA_CLIENT_ID=from_project_dotenv\n",
+    )
+    .expect("project .env");
+    let printed = config_check_in(&project);
+    assert!(
+        printed.contains("from_project_dotenv"),
+        "the project's own .env did not reach the config"
     );
 }
 
