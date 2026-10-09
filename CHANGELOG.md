@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.33](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.32...v1.4.33) (2026-10-09)
+
+### Bug Fixes
+
+* allow container env specs in credential gate ([#224](https://github.com/hyperi-io/dfe-fetcher/issues/224)) ([5305270](https://github.com/hyperi-io/dfe-fetcher/commit/530527000511fd810c7fd9945a6beea935b3df8f))
+* emit deployment contract v4 ([#223](https://github.com/hyperi-io/dfe-fetcher/issues/223)) ([b7c1865](https://github.com/hyperi-io/dfe-fetcher/commit/b7c18657b82d605b2fbf1fc62210e80cdc58f73a))
+
 ## [1.4.32](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.31...v1.4.32) (2026-10-06)
 
 ### Bug Fixes
