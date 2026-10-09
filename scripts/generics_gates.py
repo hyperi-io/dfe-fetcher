@@ -126,12 +126,15 @@ GATES = (
     ),
     Gate("Source impls", r"impl Source for", expect="nothing: the trait is gone"),
     Gate(
+        # The container launch resolves its env specs on every start, so a rotated
+        # secret reaches the next container. The other sites resolve once.
         "credential resolution",
         r"credential::resolve\(|secrets::resolve\(",
         allowed=(
             "crates/rest/src/auth.rs",
             "crates/db/src/",
             "crates/fetcher/src/config/resolve.rs",
+            "crates/fetcher/src/extractor/container/mod.rs",
         ),
     ),
     Gate("macros in main", r"macro_rules!", paths=("crates/fetcher/src/main.rs",), expect="nothing"),
