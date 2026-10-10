@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.34](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.33...v1.4.34) (2026-10-10)
+
+### Bug Fixes
+
+* set the OCI title and description on the fetcher deployment contract ([#225](https://github.com/hyperi-io/dfe-fetcher/issues/225)) ([40e21a8](https://github.com/hyperi-io/dfe-fetcher/commit/40e21a845a48a49addff5cf7fe02b61c9c27e404))
+
 ## [1.4.33](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.32...v1.4.33) (2026-10-09)
 
 ### Bug Fixes
