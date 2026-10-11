@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.35](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.34...v1.4.35) (2026-10-11)
+
+### Bug Fixes
+
+* move to scalo 2.14.6, drop emit-chart ([0b1c2ac](https://github.com/hyperi-io/dfe-fetcher/commit/0b1c2acc40b15dd220957784e17f5911280a875e))
+
 ## [1.4.34](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.33...v1.4.34) (2026-10-10)
 
 ### Bug Fixes
