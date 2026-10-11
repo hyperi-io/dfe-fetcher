@@ -24,7 +24,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use scalo::cli::{CliError, CommonArgs, ServiceApp, ServiceRuntime, StandardCommand, VersionInfo};
 use scalo::config::reloader::{ConfigReloader, ReloaderConfig};
-use scalo::deployment::{generate_chart, generate_compose_fragment, generate_dockerfile};
+use scalo::deployment::{generate_compose_fragment, generate_dockerfile};
 use scalo::logger::security;
 use scalo::scaling::ScalingComponent;
 use tokio_util::sync::CancellationToken;
@@ -76,13 +76,6 @@ enum AppCommand {
     /// Generate Dockerfile to stdout (legacy shortcut; prefer `generate-artefacts`).
     #[command(name = "emit-dockerfile")]
     EmitDockerfile,
-
-    /// Generate Helm chart to the given directory (legacy shortcut; prefer `generate-artefacts`).
-    #[command(name = "emit-chart")]
-    EmitChart {
-        /// Output directory for the chart.
-        dir: String,
-    },
 
     /// Generate Docker Compose fragment to stdout (legacy shortcut; prefer `generate-artefacts`).
     #[command(name = "emit-compose")]
@@ -208,15 +201,6 @@ async fn main() {
                 // The full ci/ pipeline (`generate-artefacts`) is where
                 // identity gets stamped in once scalo wires it.
                 println!("{}", generate_dockerfile(&contract, None));
-                return;
-            }
-            AppCommand::EmitChart { dir } => {
-                let contract = deployment::contract();
-                if let Err(e) = generate_chart(&contract, dir, None) {
-                    eprintln!("error: failed to generate Helm chart: {e}");
-                    std::process::exit(1);
-                }
-                eprintln!("Helm chart generated in {dir}/");
                 return;
             }
             AppCommand::EmitCompose => {
