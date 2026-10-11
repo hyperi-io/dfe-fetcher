@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use scalo::deployment::{
     CONTRACT_SCHEMA_VERSION, DeploymentContract, HealthContract, ImageProfile, NativeDepsContract,
     PortContract, ResourceList, ResourcesContract, SecretEnvContract, SecretGroupContract,
-    SecurityContract, WritablePath, base_image_from_cascade, image_registry_from_cascade,
+    SecurityContract, ServiceAccount, WritablePath, base_image_from_cascade,
+    image_registry_from_cascade,
 };
 
 /// Where the cursor store keeps its files, on the contract's persistent
@@ -46,9 +47,9 @@ pub fn repo_root() -> PathBuf {
 ///
 /// This captures all deployment-facing configuration: ports, health paths,
 /// secrets, writable paths, resources, KEDA scaling, and default config.
-/// Artifact generators (`generate_dockerfile`, `generate_chart`,
-/// `generate_compose_fragment`) and the released thin chart use this contract
-/// as their single source of truth.
+/// Artifact generators (`generate_dockerfile`, `generate_compose_fragment`)
+/// and the released thin chart use this contract as their single source of
+/// truth.
 pub fn contract() -> DeploymentContract {
     // A deployment.* cascade key (or env) wins over the base image and registry
     // defaults; scalo names no default registry, so the published one is ours.
@@ -187,6 +188,7 @@ pub fn contract() -> DeploymentContract {
         },
         security: SecurityContract::default(),
         singleton: false,
+        service_account: ServiceAccount::Own,
     }
 }
 
@@ -389,7 +391,7 @@ mod tests {
         scalo::deployment::assert_listeners_declared(&contract());
     }
 
-    /// A values path the `emit-chart` chart reads but the default config never
+    /// A values path the released chart reads but the default config never
     /// sets renders empty, so every one must resolve.
     #[test]
     fn every_values_path_the_chart_reads_resolves() {

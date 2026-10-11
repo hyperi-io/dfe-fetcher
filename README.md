@@ -100,7 +100,7 @@ dfe-fetcher emit-compose > docker-compose.yaml
 
 No chart is committed here. At release, hyperi-ci runs the binary's `generate-artefacts` for the deployment contract and assembles a thin chart from it on the scalo-service library chart, at the version `release.helm.library` names in `.hyperi-ci.yaml`. Keep that version at the scalo version in `Cargo.toml`: a library renders only the contract version its scalo release writes.
 
-To see the chart a release would ship, build the binary and run `hyperi-ci chart assemble --binary target/debug/dfe-fetcher --image ghcr.io/hyperi-io/dfe-fetcher:<tag>@sha256:<digest> --version <version>`. It prints the chart directory it wrote. `dfe-fetcher emit-chart <dir>` still writes scalo's full chart for local use.
+To see the chart a release would ship, build the binary and run `hyperi-ci chart assemble --binary target/debug/dfe-fetcher --image ghcr.io/hyperi-io/dfe-fetcher:<tag>@sha256:<digest> --version <version>`. It prints the chart directory it wrote.
 
 The chart keeps the cursor store on a 1Gi claim named `<fullname>-cursor` (`dfe-fetcher-cursor` for a release named `dfe-fetcher`), mounted at `/var/lib/dfe-fetcher`. Point `cursor.directory` in the deployment's `config` at that path: unset, the store falls back to the config file's read-only mount and every restart re-fetches the default window. Set `writablePaths.cursor.persistence.enabled=false` for an `emptyDir` where no StorageClass exists.
 
@@ -344,4 +344,4 @@ this repo in either direction.
 |---|---|---|
 | scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo = { version = "2.14.3", default-features = false }`, a caret floor. A scalo release reaches here: if the floor admits it, `cargo update -p scalo` and rebuild, otherwise raise the floor first. |
 | scalo-rs | inbound, lockstep | `generated-file`. The committed `Dockerfile` is written by `scalo::deployment::generate_dockerfile()`, and its banner names the generator and the contract schema version, 4. A release that changes either needs the file regenerated and committed. The released chart is assembled on the scalo-service library chart at `release.helm.library`, which moves with the scalo version in `Cargo.toml`. |
-| dfe-infra | outbound -- it depends on this | `image-pin`, lockstep. `dfe-infra/helm/charts/dfe-fetcher/Chart.yaml` pins this service's image by `appVersion`, drift-checked against that repo's `versions.yaml`. A release here is consumed by bumping the tag and re-resolving the digest. |
+| dfe-infra | outbound -- it depends on this | `image-pin`, lockstep. `dfe-infra/versions.yaml` pins this service's image and the thin chart released here, and Argo deploys that published chart. A release here is consumed by bumping the tag and re-resolving the digest. |
