@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.36](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.35...v1.4.36) (2026-10-12)
+
+### Bug Fixes
+
+* rebuild on scalo 2.14.9 ([34f0702](https://github.com/hyperi-io/dfe-fetcher/commit/34f07022f3e9d80eaadc5e93776233c9001c1f97))
+
 ## [1.4.35](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.34...v1.4.35) (2026-10-11)
 
 ### Bug Fixes
