@@ -151,6 +151,7 @@ fn test_output_legacy_kafka_config_mapping() {
             acks: "all".into(),
             retries: 3,
         },
+        librdkafka_overrides: std::collections::HashMap::new(),
     };
 
     let scalo = dfe_fetcher::output::build_scalo_kafka_config(&legacy);

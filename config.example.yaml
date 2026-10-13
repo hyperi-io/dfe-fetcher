@@ -890,6 +890,11 @@ kafka:
     compression: "zstd"
     acks: "all"
     retries: 5
+  # Raw librdkafka properties, winning over `producer`. A topic capped below
+  # the 16 MiB default sets the producer's ceiling here, and batch_size is held
+  # under it.
+  # librdkafka_overrides:
+  #   message.max.bytes: "8388608"
 
 # =============================================================================
 # Buffer / Memory -- REQUIRES RESTART
