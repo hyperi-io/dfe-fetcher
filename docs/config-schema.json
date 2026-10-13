@@ -212,7 +212,8 @@
           "compression": "zstd",
           "acks": "all",
           "retries": 5
-        }
+        },
+        "librdkafka_overrides": {}
       }
     },
     "buffer": {
@@ -7086,6 +7087,14 @@
             "acks": "all",
             "retries": 5
           }
+        },
+        "librdkafka_overrides": {
+          "description": "Raw librdkafka properties, winning over `producer` and every setting\nscalo derives, on each producer this section builds: the output, the\nDLQ, and a bus destination with no broker settings of its own.\n`message.max.bytes` here sets the producer's record ceiling, and\n`producer.batch_size` is held under it. Not read when `output.kafka`\nis set, which replaces this section.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
         }
       }
     },

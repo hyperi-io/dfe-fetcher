@@ -20,9 +20,15 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use bytes::Bytes;
 use dfe_fetcher::config::{Config, KafkaConfig, SaslConfig};
-use dfe_fetcher::output::build_scalo_kafka_config;
+use dfe_fetcher::output::{build_scalo_kafka_config, resolve_kafka_config};
 use scalo::config::sensitive::expose_during;
+use scalo::transport::kafka::{MESSAGE_MAX_BYTES, producer_client_config};
+use scalo::transport::{
+    DeadLetterReason, KafkaTransport, PayloadFormat, Record, RecordMeta, TransportBase,
+    TransportSender,
+};
 use serde_json::Value;
 
 /// Env vars are process-global; the integration suite runs tests in parallel.
@@ -435,6 +441,82 @@ fn tls_without_sasl_selects_the_ssl_protocol() {
         "tls.enabled: true must not leave the connection unencrypted"
     );
     assert_eq!(scalo.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
+}
+
+// ============================================================================
+// Kafka producer size
+// ============================================================================
+
+/// The `max.message.bytes` Confluent Basic and Standard cap a topic at.
+const BASIC_TOPIC_CEILING: usize = 8_388_608;
+
+/// `kafka.librdkafka_overrides` reaches the output producer on the `--config`
+/// path, so a deployment on a managed broker can lower the producer's record
+/// ceiling to the topic's.
+///
+/// The producer then refuses a record over the ceiling before any broker is
+/// asked, and the batch it forms stays under it: the 8 MiB
+/// `producer.batch_size` default is exactly the Basic cap.
+#[tokio::test]
+async fn a_librdkafka_override_sets_the_output_producers_record_ceiling() {
+    let config = {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = write_config(
+            &dir,
+            "kafka:\n  brokers: [127.0.0.1:1]\n  librdkafka_overrides:\n    \
+             message.max.bytes: \"8388608\"\n",
+        );
+        Config::load_from_file(&path).expect("config loads")
+    };
+    let kafka = resolve_kafka_config(&config.output, &config.kafka);
+
+    let producer = producer_client_config(&kafka, &[]);
+    assert_eq!(producer.get("message.max.bytes"), Some("8388608"));
+    let batch: usize = producer
+        .get("batch.size")
+        .and_then(|v| v.parse().ok())
+        .expect("the producer carries a batch.size");
+    assert!(
+        batch < BASIC_TOPIC_CEILING,
+        "batch.size {batch} is not under message.max.bytes {BASIC_TOPIC_CEILING}"
+    );
+
+    // Nothing listens on the broker: the size check is the producer's own.
+    let transport = KafkaTransport::new(&kafka).await.expect("producer builds");
+    let record = Record {
+        payload: Bytes::from(vec![b'x'; BASIC_TOPIC_CEILING]),
+        key: None,
+        headers: Vec::new(),
+        metadata: RecordMeta {
+            timestamp_ms: None,
+            format: PayloadFormat::Json,
+        },
+    };
+    let refused = transport.dead_letter_reason(&record);
+    assert!(
+        matches!(refused, Some(DeadLetterReason::TooLarge { limit, .. }) if limit < BASIC_TOPIC_CEILING),
+        "a record at the topic ceiling is not refused by the producer: {refused:?}"
+    );
+    transport.close().await.expect("producer closes");
+}
+
+/// With no override the producer keeps scalo's record ceiling and the
+/// `producer.batch_size` it is given.
+#[test]
+fn without_an_override_the_producer_keeps_its_defaults() {
+    let kafka = KafkaConfig::default();
+    let producer = producer_client_config(&build_scalo_kafka_config(&kafka), &[]);
+    assert_eq!(
+        producer.get("message.max.bytes"),
+        Some(MESSAGE_MAX_BYTES.to_string().as_str())
+    );
+    assert_eq!(
+        producer.get("batch.size"),
+        Some(kafka.producer.batch_size.to_string().as_str())
+    );
 }
 
 // ============================================================================

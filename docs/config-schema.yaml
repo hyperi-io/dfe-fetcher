@@ -209,6 +209,7 @@ properties:
         compression: zstd
         acks: all
         retries: 5
+      librdkafka_overrides: {}
   buffer:
     description: Buffer and memory configuration.
     $ref: '#/$defs/BufferConfig'
@@ -6163,6 +6164,18 @@ $defs:
           compression: zstd
           acks: all
           retries: 5
+      librdkafka_overrides:
+        description: |-
+          Raw librdkafka properties, winning over `producer` and every setting
+          scalo derives, on each producer this section builds: the output, the
+          DLQ, and a bus destination with no broker settings of its own.
+          `message.max.bytes` here sets the producer's record ceiling, and
+          `producer.batch_size` is held under it. Not read when `output.kafka`
+          is set, which replaces this section.
+        type: object
+        additionalProperties:
+          type: string
+        default: {}
   SaslConfig:
     description: |-
       SASL authentication configuration.

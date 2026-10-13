@@ -4539,6 +4539,14 @@ pub struct KafkaConfig {
 
     /// Producer-specific settings.
     pub producer: ProducerConfig,
+
+    /// Raw librdkafka properties, winning over `producer` and every setting
+    /// scalo derives, on each producer this section builds: the output, the
+    /// DLQ, and a bus destination with no broker settings of its own.
+    /// `message.max.bytes` here sets the producer's record ceiling, and
+    /// `producer.batch_size` is held under it. Not read when `output.kafka`
+    /// is set, which replaces this section.
+    pub librdkafka_overrides: HashMap<String, String>,
 }
 
 impl Default for KafkaConfig {
@@ -4550,6 +4558,7 @@ impl Default for KafkaConfig {
             sasl: None,
             tls: KafkaTlsConfig::default(),
             producer: ProducerConfig::default(),
+            librdkafka_overrides: HashMap::new(),
         }
     }
 }
