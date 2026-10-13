@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.37](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.36...v1.4.37) (2026-10-13)
+
+### Bug Fixes
+
+* read kafka.librdkafka_overrides ([#231](https://github.com/hyperi-io/dfe-fetcher/issues/231)) ([4c216a4](https://github.com/hyperi-io/dfe-fetcher/commit/4c216a402fa234ec4643288e13dbf7bb753f2e6a)), closes [#229](https://github.com/hyperi-io/dfe-fetcher/issues/229)
+
 ## [1.4.36](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.35...v1.4.36) (2026-10-12)
 
 ### Bug Fixes
