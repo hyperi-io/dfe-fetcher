@@ -22,10 +22,7 @@ all-features = true
 # dfe-infra docs/THREAT-MODEL.md, and the osv-scanner ignore in .hyperi-ci.yaml
 # records it. scalo leaves the 0.31 line once metrics-exporter-opentelemetry,
 # at 0.2.1 requiring opentelemetry ^0.31, moves: hyperi-io/scalo-rs#281.
-ignore = [
-    # unsafe-libyaml arrives via figment and serde_yaml_ng; tracked in hyperi-io/scalo-rs#341.
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained, not vulnerable; it parses only operator-supplied config YAML via serde_yaml and serde_yaml_ng (figment, scalo), never untrusted input; drop when scalo moves to a maintained YAML parser" },
-]
+ignore = []
 
 [licenses]
 allow = [

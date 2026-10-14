@@ -460,7 +460,8 @@ mod tests {
     use scalo::SensitiveString;
 
     fn store(spec_yaml: &str) -> MongoStore {
-        let spec: StoreSpec = serde_yaml_ng::from_str(spec_yaml).unwrap();
+        let spec: StoreSpec =
+            scalo::yaml::from_str(spec_yaml, "source.yaml", scalo::yaml::Profile::Config).unwrap();
         MongoStore::new(
             &spec,
             Arc::new(Secret::new(SensitiveString::from(
@@ -553,9 +554,7 @@ mod tests {
         let s = store("unit: a\nshape: tail\nmongodb: { database: d, collection: c }\n");
         assert_eq!(s.tail_mode(), TailMode::ChangeStream);
         assert_eq!(s.batch_size, 5000);
-        let spec: StoreSpec = serde_yaml_ng::from_str(
-            "unit: a\nmongodb: { database: d, collection: c, filter: { at: { $date: 'not a date' } } }\n",
-        )
+        let spec: StoreSpec = scalo::yaml::from_str("unit: a\nmongodb: { database: d, collection: c, filter: { at: { $date: 'not a date' } } }\n", "source.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         let Err(err) = MongoStore::new(
             &spec,
@@ -577,8 +576,12 @@ mod tests {
     /// built, so no server is needed to prove it.
     #[tokio::test]
     async fn a_mechanism_this_binary_cannot_perform_is_refused_at_connect() {
-        let spec: StoreSpec =
-            serde_yaml_ng::from_str("unit: a\nmongodb: { database: d, collection: c }\n").unwrap();
+        let spec: StoreSpec = scalo::yaml::from_str(
+            "unit: a\nmongodb: { database: d, collection: c }\n",
+            "source.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap();
         let s = MongoStore::new(
             &spec,
             Arc::new(Secret::new(SensitiveString::from(

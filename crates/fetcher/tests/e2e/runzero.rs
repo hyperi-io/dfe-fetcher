@@ -89,7 +89,8 @@ fn api_base(console_var: &str) -> String {
 /// is switched off so a test exercises one export.
 fn instance(yaml: &str, units: &[&str]) -> RestInstance {
     let mut inst: RestInstance =
-        serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("instance yaml: {e}"));
+        scalo::yaml::from_str(yaml, "config.yaml", scalo::yaml::Profile::Config)
+            .unwrap_or_else(|e| panic!("instance yaml: {e}"));
     for endpoint in &shipped_profile().endpoints {
         if !units.contains(&endpoint.unit.as_str()) {
             inst.units.insert(
@@ -399,8 +400,7 @@ async fn cloud_instance_exchanges_a_token_lists_orgs_and_is_refused_inventory() 
     // object holds the org's export and download tokens, which must never
     // reach a topic), so the probe is a test-only inline profile on the same
     // grammar and the same OAuth2 identity.
-    let account: RestProfile = serde_yaml_ng::from_str(
-        r#"
+    let account: RestProfile = scalo::yaml::from_str(r#"
 profile: runzero_account_probe
 base_url: "{{ vars.base_url }}"
 shape: dump
@@ -411,13 +411,12 @@ retry: { never_retry: [401, 403] }
 error: { at: "/error" }
 endpoints:
   - { unit: orgs, path: /account/orgs, rows: { decoder: json_array }, row_key: "/id" }
-"#,
-    )
+"#, "config.yaml", scalo::yaml::Profile::Config)
     .expect("probe profile parses");
-    let account_instance: RestInstance = serde_yaml_ng::from_str(&format!(
+    let account_instance: RestInstance = scalo::yaml::from_str(&format!(
         "profile: x\ntopic: runzero-cloud\nauth: {{ mode: oauth2_client_credentials, client_id: \"{}\", client_secret: \"env:RUNZERO_CLOUD_CLIENT_SECRET\" }}\nvars: {{ base_url: \"{base}\" }}\n",
         require("RUNZERO_CLOUD_CLIENT_ID"),
-    ))
+    ), "config.yaml", scalo::yaml::Profile::Config)
     .expect("probe instance parses");
     let account_shape = shape(&account, &account_instance, "runzero_cloud_account");
     account_shape

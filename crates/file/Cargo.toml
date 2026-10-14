@@ -47,7 +47,8 @@ file-source-common = { path = "../../third-party/vector-file-source-common", opt
 
 [dev-dependencies]
 flate2 = { workspace = true }
-serde_yaml_ng = { workspace = true }
+# Instance YAML in tests parses with the rules the app loads it by.
+scalo = { workspace = true, features = ["yaml"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

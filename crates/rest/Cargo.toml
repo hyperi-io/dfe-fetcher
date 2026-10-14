@@ -66,7 +66,6 @@ schemars = { workspace = true }
 serde = { workspace = true }
 # raw_value: zero-copy row slices out of a buffered page.
 serde_json = { workspace = true, features = ["raw_value"] }
-serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
 # fs: a JWT-bearer instance may name its service-account key by path.
 tokio = { workspace = true, features = ["fs", "macros", "sync", "time"] }
@@ -84,5 +83,7 @@ aws-lc-rs = { workspace = true }
 flate2 = { workspace = true }
 # A snapshotting recorder so a test can read the executor's `metrics` series.
 metrics-util = { workspace = true }
+# Profile and instance YAML in tests parses with the rules the app loads it by.
+scalo = { workspace = true, features = ["yaml"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

@@ -47,7 +47,7 @@ fn harness(instance_yaml: &str) -> Harness {
     config.accumulate.max_rows = 4;
     config.sources.file.insert(
         "app".into(),
-        serde_yaml_ng::from_str(instance_yaml).unwrap(),
+        scalo::yaml::from_str(instance_yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap(),
     );
     let transport = Arc::new(
         MemoryTransport::new(&MemoryConfig {
@@ -144,7 +144,8 @@ async fn tailed_lines_land_incrementally_and_offsets_are_committed_after_the_ack
     append(&log, &["{\"n\":1}", "{\"n\":2}", "{\"n\":3}"]);
     let yaml = instance_yaml(dir.path());
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let store = cursor_store(&dir.path().join("cursors"));
     let lease: Arc<dyn Lease> = Arc::new(NoLease);
     let shape = FileShape::from_instance(&instance, "app", &lease).unwrap();
@@ -244,7 +245,8 @@ async fn a_failed_tick_loses_no_lines_on_the_next_tick_of_the_same_driver() {
     append(&log, &["{\"n\":1}", "{\"n\":2}"]);
     let yaml = instance_yaml(dir.path());
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let flaky = Arc::new(FailOnce {
         inner: cursor_store(&dir.path().join("cursors")),
         fail_next_set: std::sync::atomic::AtomicBool::new(false),
@@ -296,7 +298,8 @@ async fn a_restart_resumes_from_the_committed_offsets_and_a_rotation_loses_nothi
     append(&log, &["{\"n\":1}", "{\"n\":2}"]);
     let yaml = instance_yaml(dir.path());
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let store = cursor_store(&dir.path().join("cursors"));
     let lease: Arc<dyn Lease> = Arc::new(NoLease);
 

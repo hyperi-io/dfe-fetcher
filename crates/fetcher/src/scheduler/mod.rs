@@ -1795,14 +1795,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        let profile: dfe_fetcher_rest::profile::RestProfile = serde_yaml_ng::from_str(
-            "profile: counted\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { header: X-Api-Key }\nretry: { max_retries: 0 }\nendpoints:\n  - { unit: a, path: /a, rows: { decoder: json_array } }\n  - { unit: b, path: /b, rows: { decoder: json_array } }\n",
-        )
+        let profile: dfe_fetcher_rest::profile::RestProfile = scalo::yaml::from_str("profile: counted\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { header: X-Api-Key }\nretry: { max_retries: 0 }\nendpoints:\n  - { unit: a, path: /a, rows: { decoder: json_array } }\n  - { unit: b, path: /b, rows: { decoder: json_array } }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .expect("profile");
-        let instance: dfe_fetcher_rest::profile::RestInstance = serde_yaml_ng::from_str(&format!(
+        let instance: dfe_fetcher_rest::profile::RestInstance = scalo::yaml::from_str(&format!(
             "profile: counted\ntopic: t\nauth: {{ mode: api_key, key: the-key }}\nvars: {{ base_url: \"{}\" }}\n",
             server.uri()
-        ))
+        ), "profile.yaml", scalo::yaml::Profile::Config)
         .expect("instance");
         let shape = Shape::for_rest_instance(
             &profile,

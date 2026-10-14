@@ -89,7 +89,8 @@ async fn a_clickhouse_dump_streams_server_typed_rows_through_the_driver_into_the
     let yaml = format!(
         "engine: clickhouse\nconnection_string: '{url}/default'\ntopic: ch\nstores:\n  - {{ unit: audit, shape: dump, query: 'SELECT * FROM audit ORDER BY id', row_key: '/id' }}\n"
     );
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let mut config = Config::default();
     config.output.topic_suffix = Some("_land".into());
     config.dlq.enabled = false;
@@ -214,7 +215,8 @@ async fn a_clickhouse_tail_resumes_from_the_committed_keyset_through_typed_place
     let yaml = format!(
         "engine: clickhouse\nconnection_string: '{url}/default'\ntopic: ch\nstores:\n  - {{ unit: events, shape: tail, query: 'SELECT ts, id, body FROM events', key: [ts, id], limit: 2, max_pages_per_tick: 1 }}\n"
     );
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let mut config = Config::default();
     config.output.topic_suffix = Some("_land".into());
     config.dlq.enabled = false;

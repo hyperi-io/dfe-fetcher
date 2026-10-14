@@ -1,6 +1,6 @@
 - kind: source
   name: aws
-  description: 'AWS audit + security sources via SigV4-signed API calls. Accepted auth modes: sigv4.'
+  description: "AWS audit + security sources via SigV4-signed API calls. Accepted auth modes: sigv4."
   maturity: stable
   fields:
   - name: id
@@ -28,7 +28,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   - name: endpoint_override
     type: string
     required: false
@@ -42,12 +47,16 @@
     description: GuardDuty findings.
   - kind: service
     name: securityhub
-    description: Security Hub findings whose record changed in the window, in any workflow status.
+    description: >-
+      Security Hub findings whose record changed in the window, in any workflow
+      status.
     fields:
     - name: workflow_status
       type: list
       required: false
-      description: Workflow statuses to keep, from NEW, NOTIFIED, RESOLVED and SUPPRESSED. Every status unless set.
+      description: >-
+        Workflow statuses to keep, from NEW, NOTIFIED, RESOLVED and SUPPRESSED. Every
+        status unless set.
   - kind: service
     name: config
     description: AWS Config resource configurations via an advanced query.
@@ -110,7 +119,7 @@
       description: Per-page size (default 100, max 100).
 - kind: source
   name: azure
-  description: 'Azure tenant audit + security sources (Management + Graph APIs). Accepted auth modes: oauth2_client_credentials.'
+  description: "Azure tenant audit + security sources (Management + Graph APIs). Accepted auth modes: oauth2_client_credentials."
   maturity: stable
   fields:
   - name: id
@@ -137,7 +146,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: activity_log
@@ -180,7 +194,7 @@
       description: KQL query; the fetch window is applied as the timespan.
 - kind: source
   name: m365
-  description: 'Microsoft 365 tenant audit sources (Management Activity + Graph). Accepted auth modes: oauth2_client_credentials.'
+  description: "Microsoft 365 tenant audit sources (Management Activity + Graph). Accepted auth modes: oauth2_client_credentials."
   maturity: stable
   fields:
   - name: id
@@ -203,11 +217,18 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   - name: publisher_identifier
     type: string
     required: false
-    description: PublisherIdentifier on every Management Activity call, keying this deployment's OMAP rate budget; the shared default unless set.
+    description: >-
+      PublisherIdentifier on every Management Activity call, keying this deployment's
+      OMAP rate budget; the shared default unless set.
   children:
   - kind: service
     name: audit_log
@@ -216,7 +237,9 @@
     - name: content_types
       type: list
       required: false
-      description: Content types to fetch (Audit.AzureActiveDirectory, Audit.Exchange, Audit.SharePoint, Audit.General, DLP.All); every feed unless set.
+      description: >-
+        Content types to fetch (Audit.AzureActiveDirectory, Audit.Exchange,
+        Audit.SharePoint, Audit.General, DLP.All); every feed unless set.
   - kind: service
     name: exchange_audit
     description: Exchange per-message audit records (Management Activity Audit.Exchange).
@@ -228,7 +251,7 @@
     description: Security + compliance alerts.
 - kind: source
   name: gcp
-  description: 'Google Cloud audit + security sources (service-account auth). Accepted auth modes: jwt_bearer, gce_metadata, bearer.'
+  description: "Google Cloud audit + security sources (service-account auth). Accepted auth modes: jwt_bearer, gce_metadata, bearer."
   maturity: stable
   fields:
   - name: id
@@ -247,20 +270,25 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: admin_activity
-    description: 'Cloud Audit Logs: admin activity.'
+    description: "Cloud Audit Logs: admin activity."
   - kind: service
     name: data_access
-    description: 'Cloud Audit Logs: data access (tenant must enable Data Access audit logs).'
+    description: "Cloud Audit Logs: data access (tenant must enable Data Access audit logs)."
   - kind: service
     name: system_event
-    description: 'Cloud Audit Logs: system events.'
+    description: "Cloud Audit Logs: system events."
   - kind: service
     name: policy_denied
-    description: 'Cloud Audit Logs: policy-denied events.'
+    description: "Cloud Audit Logs: policy-denied events."
   - kind: service
     name: vpc_flow_logs
     description: VPC Flow Logs (tenant enables per subnet).
@@ -289,7 +317,7 @@
       description: Logging query-language filter; the fetch window is ANDed on.
 - kind: source
   name: github
-  description: 'GitHub org / Enterprise Cloud audit-log events. Accepted auth modes: bearer.'
+  description: "GitHub org / Enterprise Cloud audit-log events. Accepted auth modes: bearer."
   maturity: alpha
   fields:
   - name: id
@@ -312,7 +340,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: audit_log
@@ -329,7 +362,7 @@
       - git
 - kind: source
   name: okta
-  description: 'Okta System Log events for one tenant. Accepted auth modes: api_key, bearer, oauth2_client_credentials.'
+  description: "Okta System Log events for one tenant. Accepted auth modes: api_key, bearer, oauth2_client_credentials."
   maturity: alpha
   fields:
   - name: id
@@ -349,11 +382,16 @@
     type: bool
     required: false
     default: true
-    description: 'Send `Authorization: SSWS <token>` (true) vs Bearer (false).'
+    description: "Send `Authorization: SSWS <token>` (true) vs Bearer (false)."
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: system_log
@@ -369,7 +407,7 @@
       description: Per-page size (Okta caps at 1000).
 - kind: source
   name: cloudflare
-  description: 'Cloudflare account audit-log events. Accepted auth modes: bearer.'
+  description: "Cloudflare account audit-log events. Accepted auth modes: bearer."
   maturity: alpha
   fields:
   - name: id
@@ -383,12 +421,17 @@
   - name: token
     type: secret
     required: false
-    description: 'Scoped API token (Account Settings: Read).'
+    description: "Scoped API token (Account Settings: Read)."
     secret: true
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: audit_logs
@@ -408,7 +451,7 @@
       description: Page size (default 100, max 1000).
 - kind: source
   name: onepassword
-  description: '1Password Events Reporting API (Business/Enterprise). Accepted auth modes: bearer.'
+  description: "1Password Events Reporting API (Business/Enterprise). Accepted auth modes: bearer."
   maturity: alpha
   fields:
   - name: id
@@ -423,7 +466,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: signin_attempts
@@ -451,7 +499,7 @@
       description: Page size (default 100, max 1000).
 - kind: source
   name: crowdstrike
-  description: 'CrowdStrike Falcon alerts via OAuth2 client-credentials. Accepted auth modes: oauth2_client_credentials.'
+  description: "CrowdStrike Falcon alerts via OAuth2 client-credentials. Accepted auth modes: oauth2_client_credentials."
   maturity: alpha
   fields:
   - name: id
@@ -474,7 +522,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: alerts
@@ -490,7 +543,7 @@
       description: Falcon Query Language clause (ANDed with the time window).
 - kind: source
   name: slack
-  description: 'Slack Enterprise Grid audit-log events. Accepted auth modes: bearer.'
+  description: "Slack Enterprise Grid audit-log events. Accepted auth modes: bearer."
   maturity: alpha
   fields:
   - name: id
@@ -505,7 +558,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: audit_logs
@@ -525,7 +583,7 @@
       description: Page size (default 200, max 1000).
 - kind: source
   name: bitwarden
-  description: 'Bitwarden organisation Events API (OAuth2 client-credentials). Accepted auth modes: oauth2_client_credentials.'
+  description: "Bitwarden organisation Events API (OAuth2 client-credentials). Accepted auth modes: oauth2_client_credentials."
   maturity: alpha
   fields:
   - name: id
@@ -544,14 +602,19 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: events
     description: Organisation event stream (/public/events).
 - kind: source
   name: duo
-  description: 'Duo Admin API authentication events (request-signed). Accepted auth modes: signature.'
+  description: "Duo Admin API authentication events (request-signed). Accepted auth modes: signature."
   maturity: alpha
   fields:
   - name: id
@@ -582,7 +645,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: authentication_logs
@@ -594,7 +662,7 @@
       description: Page size (default 100, max 1000).
 - kind: source
   name: pypi
-  description: 'PyPI package metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none.'
+  description: "PyPI package metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none."
   maturity: alpha
   fields:
   - name: packages
@@ -608,7 +676,7 @@
     description: Output Kafka topic.
 - kind: source
   name: crates_io
-  description: 'crates.io crate metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none.'
+  description: "crates.io crate metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none."
   maturity: alpha
   fields:
   - name: crates
@@ -622,7 +690,7 @@
     description: Output Kafka topic.
 - kind: source
   name: go_modules
-  description: 'Go module-proxy metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none.'
+  description: "Go module-proxy metadata (supply-chain monitoring; no auth). Single-connection. Accepted auth modes: none."
   maturity: alpha
   fields:
   - name: modules
@@ -636,7 +704,7 @@
     description: Output Kafka topic.
 - kind: source
   name: google_workspace
-  description: 'Google Workspace Reports API per-application activity (domain-wide-delegation SA). Accepted auth modes: jwt_bearer.'
+  description: "Google Workspace Reports API per-application activity (domain-wide-delegation SA). Accepted auth modes: jwt_bearer."
   maturity: alpha
   fields:
   - name: id
@@ -660,11 +728,18 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: applications
-    description: Any Reports API applicationName (login/admin/drive/mobile/groups/calendar/chat/meet/token/...); set `name` to the application.
+    description: >-
+      Any Reports API applicationName
+      (login/admin/drive/mobile/groups/calendar/chat/meet/token/...); set `name` to the application.
     fields:
     - name: event_name
       type: string
@@ -672,7 +747,7 @@
       description: Filter to a single event name.
 - kind: source
   name: gcp_pubsub
-  description: 'GCP Pub/Sub pull source (Log Sink delivery). Single-connection. Accepted auth modes: jwt_bearer, gce_metadata.'
+  description: "GCP Pub/Sub pull source (Log Sink delivery). Single-connection. Accepted auth modes: jwt_bearer, gce_metadata."
   maturity: alpha
   fields:
   - name: service_account_key
@@ -683,11 +758,16 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: subscription
-    description: 'One entry per `subscriptions[]`: a subscription to pull from.'
+    description: "One entry per `subscriptions[]`: a subscription to pull from."
     maturity: alpha
     fields:
     - name: project_id
@@ -710,12 +790,12 @@
       description: Single-shot pull vs server-side wait.
 - kind: source
   name: object_store
-  description: 'Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection. Accepted auth modes: sigv4.'
+  description: "Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection. Accepted auth modes: sigv4."
   maturity: alpha
   children:
   - kind: service
     name: s3
-    description: 'Amazon S3 (or S3-compatible: MinIO / R2 / B2 via endpoint_override).'
+    description: "Amazon S3 (or S3-compatible: MinIO / R2 / B2 via endpoint_override)."
     maturity: stable
     fields:
     - name: region
@@ -729,7 +809,7 @@
     - name: access_key_id
       type: string
       required: false
-      description: 'Access key ID (or a vault:/env: spec).'
+      description: "Access key ID (or a vault:/env: spec)."
     - name: secret_access_key
       type: secret
       required: false
@@ -738,7 +818,12 @@
     - name: credential_secret
       type: string
       required: false
-      description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+      description: >-
+        Secret reference ('vault:<mount>/<path>:<key>', e.g.
+        vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+        accepted and ignored) for this connection's credentials. ESO materialises it; the
+        app resolves it at fetch time. Prefer this over inline credential fields in
+        production.
   - kind: service
     name: gcs
     description: Google Cloud Storage (Phase-2 stub).
@@ -749,7 +834,7 @@
     maturity: alpha
 - kind: source
   name: salesforce
-  description: 'Salesforce audit surfaces via REST (JWT-bearer or client-credentials OAuth2). Accepted auth modes: jwt_bearer, oauth2_client_credentials.'
+  description: "Salesforce audit surfaces via REST (JWT-bearer or client-credentials OAuth2). Accepted auth modes: jwt_bearer, oauth2_client_credentials."
   maturity: alpha
   fields:
   - name: id
@@ -786,7 +871,12 @@
   - name: credential_secret
     type: string
     required: false
-    description: Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production.
+    description: >-
+      Secret reference ('vault:<mount>/<path>:<key>', e.g.
+      vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is
+      accepted and ignored) for this connection's credentials. ESO materialises it; the
+      app resolves it at fetch time. Prefer this over inline credential fields in
+      production.
   children:
   - kind: service
     name: setup_audit_trail

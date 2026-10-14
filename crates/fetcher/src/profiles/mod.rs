@@ -60,8 +60,9 @@ static REGISTRY: LazyLock<BTreeMap<String, RestProfile>> = LazyLock::new(|| {
     SHIPPED
         .iter()
         .map(|(name, yaml)| {
-            let profile: RestProfile = serde_yaml_ng::from_str(yaml)
-                .unwrap_or_else(|e| panic!("shipped profile `{name}` does not parse: {e}"));
+            let profile: RestProfile =
+                scalo::yaml::from_str(yaml, name, scalo::yaml::Profile::Trusted)
+                    .unwrap_or_else(|e| panic!("shipped profile `{name}` does not parse: {e}"));
             ((*name).to_owned(), profile)
         })
         .collect()

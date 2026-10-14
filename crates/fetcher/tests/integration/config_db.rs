@@ -154,7 +154,9 @@ fn the_example_config_carries_a_pasteable_db_stanza() {
         .map(|l| l.trim_start_matches('#').strip_prefix(' ').unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\n");
-    let config: Config = serde_yaml_ng::from_str(&stanza).expect("the stanza parses as config");
+    let config: Config =
+        scalo::yaml::from_str(&stanza, "config.yaml", scalo::yaml::Profile::Config)
+            .expect("the stanza parses as config");
     assert_eq!(config.sources.db.len(), 3);
     for (id, engine) in [
         ("inventory", Engine::Odbc),

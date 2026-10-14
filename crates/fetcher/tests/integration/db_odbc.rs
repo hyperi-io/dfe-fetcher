@@ -85,7 +85,7 @@ fn harness(instance_yaml: &str) -> Harness {
     config.accumulate.max_rows = 4;
     config.sources.db.insert(
         "inv".into(),
-        serde_yaml_ng::from_str(instance_yaml).unwrap(),
+        scalo::yaml::from_str(instance_yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap(),
     );
     let transport = Arc::new(
         MemoryTransport::new(&MemoryConfig {
@@ -219,7 +219,8 @@ async fn a_postgres_dump_streams_typed_rows_through_the_driver_into_the_envelope
         "  - { unit: hosts, shape: dump, query: 'SELECT * FROM hosts ORDER BY id', row_key: '/id' }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let lease = Counting::new();
     let shape = DbShape::from_instance(&instance, "inv", &lease.as_lease()).expect("shape");
     let d = driver(&h, shape, None);
@@ -347,7 +348,8 @@ fn tail_resumes_across_a_restart(
 
 async fn tail_restart_proof(yaml: &str, first_checkpoint: CheckpointValue) {
     let h = harness(yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let dir = tempfile::TempDir::new().unwrap();
     let store: Arc<dyn CursorStore> = Arc::new(
         dfe_fetcher::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap(),
@@ -599,7 +601,8 @@ async fn a_mariadb_dump_streams_typed_rows_through_the_driver_into_the_envelope(
         "  - { unit: hosts, shape: dump, query: 'SELECT * FROM hosts ORDER BY id', row_key: '/id' }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let lease = Counting::new();
     let shape = DbShape::from_instance(&instance, "inv", &lease.as_lease()).expect("shape");
     let d = driver(&h, shape, None);
@@ -664,7 +667,8 @@ async fn a_missing_table_aborts_the_tick_with_the_engine_error_and_no_end_marker
         "  - { unit: ghosts, shape: dump, query: 'SELECT * FROM ghosts' }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let shape = DbShape::from_instance(&instance, "inv", &Counting::new().as_lease()).unwrap();
     let d = driver(&h, shape, None);
     let err = d.run_tick(None).await.expect_err("no such table");

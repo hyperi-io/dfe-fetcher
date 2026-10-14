@@ -86,7 +86,7 @@ fn harness(instance_yaml: &str) -> Harness {
     config.accumulate.max_rows = 4;
     config.sources.db.insert(
         "inv".into(),
-        serde_yaml_ng::from_str(instance_yaml).unwrap(),
+        scalo::yaml::from_str(instance_yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap(),
     );
     let transport = Arc::new(
         MemoryTransport::new(&MemoryConfig {
@@ -206,7 +206,8 @@ async fn a_mongodb_dump_streams_relaxed_extended_json_through_the_driver_into_th
         "  - { unit: hosts, shape: dump, row_key: '/_id/$oid', mongodb: { database: inventory, collection: hosts, filter: { alive: true } } }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let lease = Counting::new();
     let shape = DbShape::from_instance(&instance, "inv", &lease.as_lease()).expect("shape");
     let d = driver(&h, shape, None);
@@ -286,7 +287,8 @@ async fn a_mongodb_change_stream_tail_resumes_from_the_committed_token_across_a_
         "  - { unit: changes, shape: tail, limit: 3, max_pages_per_tick: 1, mongodb: { database: inventory, collection: hosts } }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let (_dir, store) = file_store();
     let build = || {
         let shape = DbShape::from_instance(&instance, "inv", &Counting::new().as_lease()).unwrap();
@@ -467,7 +469,8 @@ async fn an_idle_change_stream_tick_commits_a_token_that_still_sees_later_writes
         "  - { unit: changes, shape: tail, limit: 3, max_pages_per_tick: 1, mongodb: { database: inventory, collection: hosts } }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let (_dir, store) = file_store();
     let shape = DbShape::from_instance(&instance, "inv", &Counting::new().as_lease()).unwrap();
     let tail = driver(&h, shape, Some(Arc::clone(&store)));
@@ -520,7 +523,8 @@ async fn a_mongodb_keyset_tail_follows_id_on_a_standalone_server_across_a_restar
         "  - { unit: changes, shape: tail, limit: 2, mongodb: { database: inventory, collection: hosts } }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let shape = DbShape::from_instance(&instance, "inv", &Counting::new().as_lease()).unwrap();
     let err = driver(&h, shape, None)
         .run_tick(None)
@@ -536,7 +540,8 @@ async fn a_mongodb_keyset_tail_follows_id_on_a_standalone_server_across_a_restar
         "  - { unit: rows, shape: tail, limit: 2, max_pages_per_tick: 1, mongodb: { database: inventory, collection: hosts, tail: keyset, filter: { n: { $ne: 3 } } } }\n",
     );
     let h = harness(&yaml);
-    let instance: DbInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: DbInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let (_dir, store) = file_store();
     let build = || {
         let shape = DbShape::from_instance(&instance, "inv", &Counting::new().as_lease()).unwrap();

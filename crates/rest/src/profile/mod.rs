@@ -4031,7 +4031,7 @@ endpoints:
 "#;
 
     fn parse(yaml: &str) -> RestProfile {
-        serde_yaml_ng::from_str(yaml).unwrap()
+        scalo::yaml::from_str(yaml, "profile.yaml", scalo::yaml::Profile::Config).unwrap()
     }
 
     /// The mode's old name still binds, and with no block to read it carries
@@ -4043,9 +4043,7 @@ endpoints:
         assert_eq!(profile.auth.accepts, [AuthKind::Signature]);
         assert!(profile.validate().is_empty(), "{:?}", profile.validate());
 
-        let instance: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: duo_hmac, integration_key: DI, secret_key: env:SKEY }\n",
-        )
+        let instance: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: duo_hmac, integration_key: DI, secret_key: env:SKEY }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert_eq!(instance.auth.mode, AuthKind::Signature);
         assert_eq!(instance.auth.key_id.as_deref(), Some("DI"));
@@ -4062,9 +4060,7 @@ endpoints:
     fn duo_v2_is_refused_on_a_unit_that_posts() {
         let mut profile = parse(LEGACY_DUO);
         profile.endpoints[0].method = Some(Method::Post);
-        let instance: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v2 }\n",
-        )
+        let instance: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v2 }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         let issues = instance.validate(&profile);
         assert!(
@@ -4076,9 +4072,7 @@ endpoints:
 
         // Version 5 hashes the body on a line of its own, so the same unit is
         // fine under it.
-        let v5: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v5 }\n",
-        )
+        let v5: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: signature, key_id: DI, secret_key: env:SKEY, signature_preset: duo_v5 }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             v5.validate(&profile).is_empty(),
@@ -4093,9 +4087,11 @@ endpoints:
     fn a_credential_spec_the_resolver_cannot_read_is_refused_at_load() {
         let profile = parse(RUNZERO);
         let bearer = |spec: &str| {
-            let instance: RestInstance = serde_yaml_ng::from_str(&format!(
-                "profile: x\ntopic: t\nauth: {{ mode: bearer, token: \"{spec}\" }}\n"
-            ))
+            let instance: RestInstance = scalo::yaml::from_str(
+                &format!("profile: x\ntopic: t\nauth: {{ mode: bearer, token: \"{spec}\" }}\n"),
+                "profile.yaml",
+                scalo::yaml::Profile::Config,
+            )
             .unwrap();
             instance.validate(&profile)
         };
@@ -4139,9 +4135,7 @@ endpoints:
         }
 
         // A field of another mode is checked the same way.
-        let oauth: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: id, client_secret: \"aws:prod/x:k\" }\n",
-        )
+        let oauth: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: oauth2_client_credentials, client_id: id, client_secret: \"aws:prod/x:k\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         let issues = oauth.validate(&profile);
         assert_eq!(issues.len(), 1, "{issues:?}");
@@ -4210,9 +4204,9 @@ endpoints:
         );
 
         let instance = |auth: &str| {
-            let instance: RestInstance = serde_yaml_ng::from_str(&format!(
+            let instance: RestInstance = scalo::yaml::from_str(&format!(
                 "profile: datadog\ntopic: t\nauth: {{ mode: credentials, credentials: {auth} }}\n"
-            ))
+            ), "profile.yaml", scalo::yaml::Profile::Config)
             .unwrap();
             instance.validate(&profile)
         };
@@ -4475,9 +4469,7 @@ endpoints:
             );
         }
 
-        let instance: RestInstance = serde_yaml_ng::from_str(
-            "profile: datadog\ntopic: t\nauth: { mode: credentials, credentials: { api_key: \"env:A\", \"application.key\": \"env:B\" } }\n",
-        )
+        let instance: RestInstance = scalo::yaml::from_str("profile: datadog\ntopic: t\nauth: { mode: credentials, credentials: { api_key: \"env:A\", \"application.key\": \"env:B\" } }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         let issues = instance.validate(&parse(DATADOG));
         assert!(
@@ -4494,9 +4486,7 @@ endpoints:
     /// authenticated instance whose requests all go out unauthenticated.
     #[test]
     fn named_credentials_under_another_mode_are_refused() {
-        let instance: RestInstance = serde_yaml_ng::from_str(
-            "profile: github\ntopic: t\nauth: { mode: bearer, token: \"env:T\", credentials: { api_key: \"env:A\" } }\n",
-        )
+        let instance: RestInstance = scalo::yaml::from_str("profile: github\ntopic: t\nauth: { mode: bearer, token: \"env:T\", credentials: { api_key: \"env:A\" } }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         let issues = instance.validate(&parse(GITHUB));
         assert_eq!(issues.len(), 1, "{issues:?}");
@@ -4537,9 +4527,7 @@ endpoints:
             issues[0]
         );
 
-        let instance: RestInstance = serde_yaml_ng::from_str(
-            "profile: query_key\ntopic: t\nauth: { mode: credentials, credentials: { api_key: \"env:A\" } }\nunits: { things: { query: { api_key: \"x\" } } }\n",
-        )
+        let instance: RestInstance = scalo::yaml::from_str("profile: query_key\ntopic: t\nauth: { mode: credentials, credentials: { api_key: \"env:A\" } }\nunits: { things: { query: { api_key: \"x\" } } }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         let issues = instance.validate(&profile);
         assert_eq!(issues.len(), 1, "{issues:?}");
@@ -4574,9 +4562,13 @@ endpoints:
     #[test]
     fn an_unknown_decoder_is_a_load_error_with_line_and_field() {
         let yaml = GITHUB.replace("decoder: json_array", "decoder: xml_soap");
-        let err = serde_yaml_ng::from_str::<RestProfile>(&yaml)
-            .unwrap_err()
-            .to_string();
+        let err = scalo::yaml::from_str::<RestProfile>(
+            &yaml,
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("xml_soap"), "names the bad value: {err}");
         assert!(err.contains("line"), "carries the line: {err}");
         assert!(
@@ -4588,23 +4580,35 @@ endpoints:
     #[test]
     fn an_unknown_pager_and_shape_are_load_errors() {
         let yaml = GITHUB.replace("strategy: link_header", "strategy: magic");
-        let err = serde_yaml_ng::from_str::<RestProfile>(&yaml)
-            .unwrap_err()
-            .to_string();
+        let err = scalo::yaml::from_str::<RestProfile>(
+            &yaml,
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("magic") && err.contains("line"), "{err}");
         let yaml = GITHUB.replace("shape: incremental", "shape: snapshot");
-        let err = serde_yaml_ng::from_str::<RestProfile>(&yaml)
-            .unwrap_err()
-            .to_string();
+        let err = scalo::yaml::from_str::<RestProfile>(
+            &yaml,
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("snapshot") && err.contains("dump"), "{err}");
     }
 
     #[test]
     fn a_misspelt_key_is_a_load_error_not_a_silently_ignored_setting() {
         let yaml = GITHUB.replace("max_pages: 50", "max_page: 50");
-        let err = serde_yaml_ng::from_str::<RestProfile>(&yaml)
-            .unwrap_err()
-            .to_string();
+        let err = scalo::yaml::from_str::<RestProfile>(
+            &yaml,
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("max_page") && err.contains("line"), "{err}");
     }
 
@@ -4951,9 +4955,7 @@ endpoints:
             "{fields:?}"
         );
 
-        let two_keys: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: jwt_bearer, service_account_key: \"env:K\", private_key: \"env:P\" }\n",
-        )
+        let two_keys: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: jwt_bearer, service_account_key: \"env:K\", private_key: \"env:P\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             two_keys
@@ -4963,17 +4965,22 @@ endpoints:
             "{:?}",
             two_keys.validate(&profile)
         );
-        let no_key: RestInstance =
-            serde_yaml_ng::from_str("profile: x\ntopic: t\nauth: { mode: jwt_bearer }\n").unwrap();
-        assert_ne!(no_key.validate(&profile), [] as [Issue; 0]);
-        let file_key: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: jwt_bearer, service_account_key_file: \"env:K\" }\n",
+        let no_key: RestInstance = scalo::yaml::from_str(
+            "profile: x\ntopic: t\nauth: { mode: jwt_bearer }\n",
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
         )
         .unwrap();
+        assert_ne!(no_key.validate(&profile), [] as [Issue; 0]);
+        let file_key: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: jwt_bearer, service_account_key_file: \"env:K\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
+        .unwrap();
         assert_eq!(file_key.validate(&profile), [] as [Issue; 0]);
-        let metadata: RestInstance =
-            serde_yaml_ng::from_str("profile: x\ntopic: t\nauth: { mode: gce_metadata }\n")
-                .unwrap();
+        let metadata: RestInstance = scalo::yaml::from_str(
+            "profile: x\ntopic: t\nauth: { mode: gce_metadata }\n",
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap();
         assert!(
             metadata.validate(&profile).is_empty(),
             "the metadata server needs no identity field"
@@ -4993,9 +5000,13 @@ endpoints:
             Some(RowBuilderKind::ColumnarTable)
         );
         assert_eq!(profile.validate(), [] as [Issue; 0]);
-        let err = serde_yaml_ng::from_str::<RestProfile>(&yaml.replace("columnar_table", "magic"))
-            .unwrap_err()
-            .to_string();
+        let err = scalo::yaml::from_str::<RestProfile>(
+            &yaml.replace("columnar_table", "magic"),
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("magic") && err.contains("columnar_table"),
             "{err}"
@@ -5161,9 +5172,13 @@ endpoints:
             "accepts: [bearer, oauth2_client_credentials]",
             "accepts: [bearer]\n  token: \"vault:kv/data/team/x:token\"",
         );
-        let err = serde_yaml_ng::from_str::<RestProfile>(&yaml)
-            .unwrap_err()
-            .to_string();
+        let err = scalo::yaml::from_str::<RestProfile>(
+            &yaml,
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("token"),
             "identity fields are not in the profile grammar: {err}"
@@ -5194,7 +5209,14 @@ endpoints:
             assert_eq!(parse(&yaml).window.format, expected, "{text}");
         }
         let yaml = GITHUB.replace("strftime:%Y-%m-%dT%H:%M:%S+00:00", "iso");
-        assert!(serde_yaml_ng::from_str::<RestProfile>(&yaml).is_err());
+        assert!(
+            scalo::yaml::from_str::<RestProfile>(
+                &yaml,
+                "profile.yaml",
+                scalo::yaml::Profile::Config
+            )
+            .is_err()
+        );
         assert_eq!(
             parse_duration("24h").unwrap(),
             std::time::Duration::from_hours(24)
@@ -5214,7 +5236,14 @@ endpoints:
         assert!(parse_duration("1 hour").is_err());
         assert!(parse_duration("0h").is_err());
         let yaml = GITHUB.replace("lookback: 1h", "lookback: soon");
-        assert!(serde_yaml_ng::from_str::<RestProfile>(&yaml).is_err());
+        assert!(
+            scalo::yaml::from_str::<RestProfile>(
+                &yaml,
+                "profile.yaml",
+                scalo::yaml::Profile::Config
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -5243,13 +5272,20 @@ endpoints:
         assert!(default.retries(500) && default.retries(429) && default.retries(408));
         assert!(!default.retries(400));
         let bad = GITHUB.replace("never_retry: [401, 403]", "retry_on: [\"teapot\"]");
-        assert!(serde_yaml_ng::from_str::<RestProfile>(&bad).is_err());
+        assert!(
+            scalo::yaml::from_str::<RestProfile>(
+                &bad,
+                "profile.yaml",
+                scalo::yaml::Profile::Config
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn instance_validation_checks_mode_identity_and_unit_names() {
         let profile = parse(RUNZERO);
-        let instance: RestInstance = serde_yaml_ng::from_str(
+        let instance: RestInstance = scalo::yaml::from_str(
             r#"
 enabled: true
 profile: runzero
@@ -5258,6 +5294,8 @@ auth: { mode: basic, username: u, password: p }
 vars: { base_url: "https://runzero.example.internal/api/v1.0" }
 units: { assets: { query: { fields: "id,alive" } }, nope: {} }
 "#,
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
         )
         .unwrap();
         let issues = instance.validate(&profile);
@@ -5268,8 +5306,10 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
         );
         assert!(fields.contains(&"units.nope"), "{fields:?}");
 
-        let bearer_without_token: RestInstance = serde_yaml_ng::from_str(
+        let bearer_without_token: RestInstance = scalo::yaml::from_str(
             "profile: runzero\ntopic: runzero\nauth: { mode: bearer }\nvars: { base_url: x }\n",
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
         )
         .unwrap();
         assert!(
@@ -5278,9 +5318,7 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
                 .iter()
                 .any(|i| i.field == "auth.token")
         );
-        let oauth_without_secret: RestInstance = serde_yaml_ng::from_str(
-            "profile: runzero\ntopic: runzero\nauth: { mode: oauth2_client_credentials, client_id: id }\nvars: { base_url: x }\n",
-        )
+        let oauth_without_secret: RestInstance = scalo::yaml::from_str("profile: runzero\ntopic: runzero\nauth: { mode: oauth2_client_credentials, client_id: id }\nvars: { base_url: x }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             oauth_without_secret
@@ -5292,8 +5330,10 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
 
     #[test]
     fn instance_secrets_are_redacted_on_serialise() {
-        let instance: RestInstance = serde_yaml_ng::from_str(
+        let instance: RestInstance = scalo::yaml::from_str(
             "profile: runzero\ntopic: runzero\nauth: { mode: bearer, token: super-secret }\n",
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
         )
         .unwrap();
         let json = serde_json::to_string(&instance).unwrap();
@@ -5404,18 +5444,16 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "{fields:?}"
         );
 
-        let pair: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: \"env:K\" }\n",
-        )
+        let pair: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: \"env:K\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert_eq!(pair.validate(&profile), [] as [Issue; 0]);
-        let document: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: sigv4, credentials_json: \"vault:kv/data/aws:credentials\" }\n",
-        )
+        let document: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: sigv4, credentials_json: \"vault:kv/data/aws:credentials\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert_eq!(document.validate(&profile), [] as [Issue; 0]);
-        let half: RestInstance = serde_yaml_ng::from_str(
+        let half: RestInstance = scalo::yaml::from_str(
             "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA }\n",
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
         )
         .unwrap();
         assert!(
@@ -5425,27 +5463,21 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "{:?}",
             half.validate(&profile)
         );
-        let both: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, credentials_json: j }\n",
-        )
+        let both: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, credentials_json: j }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             !both.validate(&profile).is_empty(),
             "one identity form, not two"
         );
 
-        let role: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, assume_role_arn: \"arn:aws:iam::123456789012:role/dfe-reader\" }\n",
-        )
+        let role: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, assume_role_arn: \"arn:aws:iam::123456789012:role/dfe-reader\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             role.validate(&profile).is_empty(),
             "{:?}",
             role.validate(&profile)
         );
-        let malformed: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, assume_role_arn: \"arn:aws:iam::123:user/nope\" }\n",
-        )
+        let malformed: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, assume_role_arn: \"arn:aws:iam::123:user/nope\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             malformed
@@ -5455,18 +5487,14 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "{:?}",
             malformed.validate(&profile)
         );
-        let govcloud: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, assume_role_arn: \"arn:aws-us-gov:iam::123456789012:role/dfe-reader\" }\n",
-        )
+        let govcloud: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: sigv4, access_key_id: AKIA, secret_access_key: s, assume_role_arn: \"arn:aws-us-gov:iam::123456789012:role/dfe-reader\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             govcloud.validate(&profile).is_empty(),
             "another partition is checked against the region at the first signing"
         );
         let bearer_profile = parse(GITHUB);
-        let not_sigv4: RestInstance = serde_yaml_ng::from_str(
-            "profile: x\ntopic: t\nauth: { mode: bearer, token: t, assume_role_arn: \"arn:aws:iam::123456789012:role/dfe-reader\" }\n",
-        )
+        let not_sigv4: RestInstance = scalo::yaml::from_str("profile: x\ntopic: t\nauth: { mode: bearer, token: t, assume_role_arn: \"arn:aws:iam::123456789012:role/dfe-reader\" }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(
             not_sigv4
@@ -5759,11 +5787,14 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
 
     #[test]
     fn an_inline_profile_and_a_named_profile_both_deserialise() {
-        let named: RestInstance = serde_yaml_ng::from_str("profile: runzero\ntopic: t\n").unwrap();
-        assert!(matches!(named.profile, ProfileRef::Named(ref n) if n == "runzero"));
-        let inline: RestInstance = serde_yaml_ng::from_str(
-            "topic: t\nprofile:\n  base_url: \"{{ vars.u }}\"\n  endpoints: [{ unit: a, path: /a }]\n",
+        let named: RestInstance = scalo::yaml::from_str(
+            "profile: runzero\ntopic: t\n",
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
         )
+        .unwrap();
+        assert!(matches!(named.profile, ProfileRef::Named(ref n) if n == "runzero"));
+        let inline: RestInstance = scalo::yaml::from_str("topic: t\nprofile:\n  base_url: \"{{ vars.u }}\"\n  endpoints: [{ unit: a, path: /a }]\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
         assert!(matches!(inline.profile, ProfileRef::Inline(_)));
     }
@@ -6035,7 +6066,8 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
     fn an_instance_unit_instantiates_a_profile_endpoint_under_its_own_name() {
         let profile = parse(GITHUB);
         let yaml = "profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits:\n  acme_audit:\n    endpoint: audit_log\n    topic: acme\n    vars: { org: acme }\n";
-        let instance: RestInstance = serde_yaml_ng::from_str(yaml).unwrap();
+        let instance: RestInstance =
+            scalo::yaml::from_str(yaml, "profile.yaml", scalo::yaml::Profile::Config).unwrap();
         assert!(
             instance.validate(&profile).is_empty(),
             "{:?}",
@@ -6045,9 +6077,12 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
         assert_eq!(unit.endpoint.as_deref(), Some("audit_log"));
         assert_eq!(unit.topic.as_deref(), Some("acme"));
 
-        let unknown: RestInstance =
-            serde_yaml_ng::from_str(&yaml.replace("endpoint: audit_log", "endpoint: nope"))
-                .unwrap();
+        let unknown: RestInstance = scalo::yaml::from_str(
+            &yaml.replace("endpoint: audit_log", "endpoint: nope"),
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap();
         assert!(
             unknown
                 .validate(&profile)
@@ -6056,8 +6091,12 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "{:?}",
             unknown.validate(&profile)
         );
-        let taken: RestInstance =
-            serde_yaml_ng::from_str(&yaml.replace("  acme_audit:", "  audit_log:")).unwrap();
+        let taken: RestInstance = scalo::yaml::from_str(
+            &yaml.replace("  acme_audit:", "  audit_log:"),
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap();
         assert!(
             taken
                 .validate(&profile)
@@ -6066,8 +6105,12 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             "{:?}",
             taken.validate(&profile)
         );
-        let blank: RestInstance =
-            serde_yaml_ng::from_str(&yaml.replace("topic: acme", "topic: \"\"")).unwrap();
+        let blank: RestInstance = scalo::yaml::from_str(
+            &yaml.replace("topic: acme", "topic: \"\""),
+            "profile.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap();
         assert!(
             blank
                 .validate(&profile)
@@ -6083,9 +6126,7 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
     #[test]
     fn an_unknown_unit_names_the_units_the_profile_declares() {
         let profile = parse(GITHUB);
-        let instance: RestInstance = serde_yaml_ng::from_str(
-            "profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits: { audit_logs: {} }\n",
-        )
+        let instance: RestInstance = scalo::yaml::from_str("profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits: { audit_logs: {} }\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
 
         let issues = instance.validate(&profile);
@@ -6097,9 +6138,7 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
             issues[0].message
         );
 
-        let misinstantiated: RestInstance = serde_yaml_ng::from_str(
-            "profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits:\n  acme:\n    endpoint: audit_logs\n",
-        )
+        let misinstantiated: RestInstance = scalo::yaml::from_str("profile: github\ntopic: t\nauth: { mode: bearer, token: x }\nunits:\n  acme:\n    endpoint: audit_logs\n", "profile.yaml", scalo::yaml::Profile::Config)
         .unwrap();
 
         let issues = misinstantiated.validate(&profile);
