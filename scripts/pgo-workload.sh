@@ -58,7 +58,7 @@ DURATION="${PGO_WORKLOAD_DURATION_SECS:-300}"
 # The broker equals dfe-infra versions.yaml services.redpanda-version, pinned by
 # digest so a rebuilt tag cannot change it. Tag and digest sit on their own
 # lines so the org Renovate regex can read them.
-# renovate: datasource=docker depName=docker.redpanda.com/redpandadata/redpanda
+# renovate: datasource=docker depName=redpandadata/redpanda
 KAFKA_TAG="v26.2.3"
 KAFKA_DIGEST="sha256:9e83cfa99278f30d0133271c26bf670cd69c94ffa6ba0b42830dd0c3bd9dcfd9"
 KAFKA_IMAGE="${PGO_WORKLOAD_KAFKA_IMAGE:-docker.redpanda.com/redpandadata/redpanda:${KAFKA_TAG}@${KAFKA_DIGEST}}"

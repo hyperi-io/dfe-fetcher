@@ -223,7 +223,7 @@ mod tests {
     }
 
     fn instance(yaml: &str) -> FileInstance {
-        serde_yaml_ng::from_str(yaml).unwrap()
+        scalo::yaml::from_str(yaml, "source.yaml", scalo::yaml::Profile::Config).unwrap()
     }
 
     #[test]

@@ -81,7 +81,7 @@ fn harness(instance_yaml: &str) -> Harness {
     config.accumulate.max_rows = 4;
     config.sources.file.insert(
         "exp".into(),
-        serde_yaml_ng::from_str(instance_yaml).unwrap(),
+        scalo::yaml::from_str(instance_yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap(),
     );
     let transport = Arc::new(
         MemoryTransport::new(&MemoryConfig {
@@ -214,7 +214,8 @@ async fn a_directory_dump_lands_one_snapshot_per_file_with_every_format_and_gzip
 
     let yaml = instance_yaml(dir.path(), "*");
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let lease = Counting::new();
     let shape = FileShape::from_instance(&instance, "exp", &lease.as_lease()).expect("shape");
     let d = driver(&h, shape, None);
@@ -296,7 +297,8 @@ async fn an_idle_tick_emits_nothing_and_commits_nothing() {
     std::fs::create_dir(&data).unwrap();
     let yaml = instance_yaml(&data, "*.jsonl");
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let store = cursor_store(&dir.path().join("cursors"));
     let shape = FileShape::from_instance(&instance, "exp", &Counting::new().as_lease()).unwrap();
     let d = driver(&h, shape, Some(Arc::clone(&store)));
@@ -319,7 +321,8 @@ async fn a_read_file_is_never_re_read_and_a_new_one_is_read_next_tick_across_a_r
     std::fs::write(data.join("first.jsonl"), "{\"id\":1}\n").unwrap();
     let yaml = instance_yaml(&data, "*.jsonl");
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let store = cursor_store(&dir.path().join("cursors"));
     let build = || {
         let shape =
@@ -397,7 +400,8 @@ async fn a_file_failing_before_its_first_row_closes_and_commits_the_file_before_
     std::fs::write(data.join("c.jsonl"), "{\"id\":3}\n").unwrap();
     let yaml = instance_yaml(&data, "*");
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let store = cursor_store(&dir.path().join("cursors"));
     let shape = FileShape::from_instance(&instance, "exp", &Counting::new().as_lease()).unwrap();
     let d = driver(&h, shape, Some(Arc::clone(&store)));
@@ -456,7 +460,8 @@ async fn a_truncated_gzip_aborts_only_its_snapshot_and_leaves_earlier_files_comp
     std::fs::write(data.join("cut.jsonl.gz"), &whole[..whole.len() - 8]).unwrap();
     let yaml = instance_yaml(&data, "*.gz");
     let h = harness(&yaml);
-    let instance: FileInstance = serde_yaml_ng::from_str(&yaml).unwrap();
+    let instance: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
     let store = cursor_store(&dir.path().join("cursors"));
     let shape = FileShape::from_instance(&instance, "exp", &Counting::new().as_lease()).unwrap();
     let d = driver(&h, shape, Some(Arc::clone(&store)));

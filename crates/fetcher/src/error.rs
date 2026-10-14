@@ -124,8 +124,8 @@ impl From<&str> for Error {
     }
 }
 
-impl From<serde_yaml_ng::Error> for Error {
-    fn from(err: serde_yaml_ng::Error) -> Self {
+impl From<scalo::yaml::YamlError> for Error {
+    fn from(err: scalo::yaml::YamlError) -> Self {
         Error::Config(format!("YAML parse error: {err}"))
     }
 }
@@ -275,7 +275,12 @@ mod tests {
 
     #[test]
     fn test_from_serde_yaml_error() {
-        let yaml_err = serde_yaml_ng::from_str::<serde_json::Value>("{{{{").unwrap_err();
+        let yaml_err = scalo::yaml::from_str::<serde_json::Value>(
+            "{{{{",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap_err();
         let err: Error = yaml_err.into();
         match &err {
             Error::Config(msg) => assert!(

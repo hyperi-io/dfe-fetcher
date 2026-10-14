@@ -76,15 +76,15 @@ fn an_inline_profile_loads_through_the_cascade_and_validates() {
 }
 
 #[test]
-fn an_unknown_decoder_fails_the_load_with_the_line_and_the_field() {
+fn an_unknown_decoder_fails_the_load_at_its_line_and_column() {
     let dir = tempfile::TempDir::new().unwrap();
     let body = INLINE.replace("decoder: ndjson", "decoder: parquet");
     let err = Config::load_from_file(&write(&dir, &body))
         .expect_err("refused")
         .to_string();
     assert!(err.contains("parquet"), "{err}");
-    assert!(err.contains("decoder"), "names the field: {err}");
     assert!(err.contains("line"), "carries the line: {err}");
+    assert!(err.contains("column"), "points at the value: {err}");
 }
 
 #[test]

@@ -111,8 +111,13 @@ const MOUNTED_CONFIG_DIR: &str = "/etc/vector";
 /// from the file name: YAML and JSON configs parse to a YAML mapping, and a
 /// TOML config's `[table]` lines do not.
 fn inline_config_file(dir: &Path, index: usize, config: &str) -> PathBuf {
-    let extension = match serde_yaml_ng::from_str::<serde_yaml_ng::Value>(config) {
-        Ok(serde_yaml_ng::Value::Mapping(_)) => "yaml",
+    let parsed = scalo::yaml::from_str::<serde_json::Value>(
+        config,
+        "inline vector config",
+        scalo::yaml::Profile::Config,
+    );
+    let extension = match parsed {
+        Ok(serde_json::Value::Object(_)) => "yaml",
         _ => "toml",
     };
     dir.join(format!("instance-{index}.{extension}"))

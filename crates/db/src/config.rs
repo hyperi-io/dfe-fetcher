@@ -540,7 +540,8 @@ mod tests {
     use super::*;
 
     fn instance(yaml: &str) -> DbInstance {
-        serde_yaml_ng::from_str(yaml).expect("instance parses")
+        scalo::yaml::from_str(yaml, "source.yaml", scalo::yaml::Profile::Config)
+            .expect("instance parses")
     }
 
     const GOOD: &str = r#"
@@ -809,7 +810,14 @@ stores:
 
     #[test]
     fn unknown_fields_fail_the_load() {
-        assert!(serde_yaml_ng::from_str::<DbInstance>("engine: odbc\ndsn: x\n").is_err());
+        assert!(
+            scalo::yaml::from_str::<DbInstance>(
+                "engine: odbc\ndsn: x\n",
+                "source.yaml",
+                scalo::yaml::Profile::Config
+            )
+            .is_err()
+        );
     }
 
     const MONGO: &str = r#"
@@ -993,8 +1001,10 @@ stores:
     #[test]
     fn a_mongodb_block_without_its_names_does_not_parse() {
         assert!(
-            serde_yaml_ng::from_str::<DbInstance>(
-                "engine: mongodb\nstores: [{ unit: a, mongodb: { collection: c } }]\n"
+            scalo::yaml::from_str::<DbInstance>(
+                "engine: mongodb\nstores: [{ unit: a, mongodb: { collection: c } }]\n",
+                "source.yaml",
+                scalo::yaml::Profile::Config
             )
             .is_err(),
             "database is required inside the mongodb block"
@@ -1006,8 +1016,10 @@ stores:
     #[test]
     fn the_flat_mongodb_keys_are_no_longer_accepted() {
         assert!(
-            serde_yaml_ng::from_str::<DbInstance>(
-                "engine: mongodb\nstores: [{ unit: a, database: d, collection: c }]\n"
+            scalo::yaml::from_str::<DbInstance>(
+                "engine: mongodb\nstores: [{ unit: a, database: d, collection: c }]\n",
+                "source.yaml",
+                scalo::yaml::Profile::Config
             )
             .is_err(),
             "database at store level is not part of the grammar"
@@ -1029,9 +1041,7 @@ stores:
     #[test]
     fn a_mongodb_filter_must_be_a_document() {
         assert!(
-            serde_yaml_ng::from_str::<DbInstance>(
-                "engine: mongodb\nstores: [{ unit: a, mongodb: { database: d, collection: c, filter: [1] } }]\n"
-            )
+            scalo::yaml::from_str::<DbInstance>("engine: mongodb\nstores: [{ unit: a, mongodb: { database: d, collection: c, filter: [1] } }]\n", "source.yaml", scalo::yaml::Profile::Config)
             .is_err(),
             "an array is not a query document"
         );

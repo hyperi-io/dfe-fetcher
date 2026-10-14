@@ -62,9 +62,9 @@ async fn a_postgres_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id
         "Driver={{{driver_name}}};Server={};Port={};Database=postgres;Uid=postgres;Pwd=postgres;UseDeclareFetch=1;BoolsAsChar=0",
         db.host, db.port
     );
-    let instance: DbInstance = serde_yaml_ng::from_str(&format!(
+    let instance: DbInstance = scalo::yaml::from_str(&format!(
         "engine: odbc\ndialect: postgres\nconnection_string: '{connection_string}'\ntopic: pgdump\nbatch: {{ max_rows: 4 }}\nstores:\n  - {{ unit: assets, shape: dump, query: 'SELECT * FROM assets ORDER BY id', row_key: '/id' }}\n"
-    ))
+    ), "config.yaml", scalo::yaml::Profile::Config)
     .unwrap();
 
     let mut config = Config::default();

@@ -397,8 +397,9 @@ mod tests {
     }
 
     fn instance(engine: &str) -> DbInstance {
-        serde_yaml_ng::from_str(&format!(
-            r#"
+        scalo::yaml::from_str(
+            &format!(
+                r#"
 engine: {engine}
 dialect: {}
 connection_string: "env:DFE_TEST_DSN"
@@ -407,12 +408,15 @@ stores:
   - {{ unit: hosts, shape: dump, query: "SELECT * FROM hosts", row_key: "/id" }}
   - {{ unit: events, shape: tail, query: "SELECT * FROM events", key: [ts, id], limit: 7 }}
 "#,
-            if engine == "clickhouse" {
-                "clickhouse"
-            } else {
-                "postgres"
-            }
-        ))
+                if engine == "clickhouse" {
+                    "clickhouse"
+                } else {
+                    "postgres"
+                }
+            ),
+            "source.yaml",
+            scalo::yaml::Profile::Config,
+        )
         .unwrap()
     }
 

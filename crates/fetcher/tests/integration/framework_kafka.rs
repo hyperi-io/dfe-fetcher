@@ -62,7 +62,7 @@ async fn provider(store: Store) -> String {
 }
 
 fn profile() -> RestProfile {
-    serde_yaml_ng::from_str(
+    scalo::yaml::from_str(
         r#"
 profile: fixture_dump
 base_url: "{{ vars.base_url }}"
@@ -72,14 +72,16 @@ retry: { never_retry: [401, 403] }
 endpoints:
   - { unit: assets, path: /export/org/assets.jsonl, rows: { decoder: ndjson }, row_key: "/id" }
 "#,
+        "config.yaml",
+        scalo::yaml::Profile::Config,
     )
     .unwrap()
 }
 
 fn instance(base_url: &str) -> RestInstance {
-    serde_yaml_ng::from_str(&format!(
+    scalo::yaml::from_str(&format!(
         "profile: fixture_dump\ntopic: fixture\nauth: {{ mode: bearer, token: test-token }}\nvars: {{ base_url: \"{base_url}\" }}\n"
-    ))
+    ), "config.yaml", scalo::yaml::Profile::Config)
     .unwrap()
 }
 

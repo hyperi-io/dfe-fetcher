@@ -74,7 +74,8 @@ mongodb = { version = "3.9.1", default-features = false, features = ["bson-3", "
 bson = { version = "3.1.0", default-features = false, features = ["serde", "serde_json-1"], optional = true }
 
 [dev-dependencies]
-serde_yaml_ng = { workspace = true }
+# Instance YAML in tests parses with the rules the app loads it by.
+scalo = { workspace = true, features = ["yaml"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
 
 [features]

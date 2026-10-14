@@ -133,7 +133,9 @@ fn the_example_config_carries_a_pasteable_file_stanza() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(stanza.is_ascii(), "the example is ASCII only");
-    let config: Config = serde_yaml_ng::from_str(&stanza).expect("the stanza parses as config");
+    let config: Config =
+        scalo::yaml::from_str(&stanza, "config.yaml", scalo::yaml::Profile::Config)
+            .expect("the stanza parses as config");
     assert_eq!(config.sources.file.len(), 1);
     let exports = &config.sources.file["exports"];
     assert!(

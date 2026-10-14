@@ -26,11 +26,13 @@ use dfe_fetcher_rest::profile::{RestInstance, RestProfile};
 use dfe_fetcher_rest::shape::RestShape;
 
 fn profile(yaml: &str) -> RestProfile {
-    serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("profile does not load: {e}\n{yaml}"))
+    scalo::yaml::from_str(yaml, "fixture.yaml", scalo::yaml::Profile::Config)
+        .unwrap_or_else(|e| panic!("profile does not load: {e}\n{yaml}"))
 }
 
 fn instance(fixture: &common::Fixture, yaml: &str) -> RestInstance {
-    let mut inst: RestInstance = serde_yaml_ng::from_str(yaml).unwrap();
+    let mut inst: RestInstance =
+        scalo::yaml::from_str(yaml, "fixture.yaml", scalo::yaml::Profile::Config).unwrap();
     inst.vars
         .insert("base_url".into(), Value::String(fixture.base_url()));
     inst
@@ -239,8 +241,10 @@ async fn a_transport_failure_never_carries_the_query_key() {
     let dead: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
 
     let p = "profile: keyed\nbase_url: \"{{ vars.base_url }}\"\nauth:\n  accepts: [api_key]\n  api_key: { query: api_key }\nretry: { min_backoff_ms: 1, max_backoff_ms: 5 }\nendpoints:\n  - { unit: items, path: /array/items.json, rows: { decoder: json_array } }\n";
-    let mut inst: RestInstance = serde_yaml_ng::from_str(
+    let mut inst: RestInstance = scalo::yaml::from_str(
         "profile: x\ntopic: t\nauth: { mode: api_key, key: super-secret-key }\n",
+        "fixture.yaml",
+        scalo::yaml::Profile::Config,
     )
     .unwrap();
     inst.vars

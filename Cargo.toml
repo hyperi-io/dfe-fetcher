@@ -41,7 +41,7 @@ dfe-fetcher-file = { path = "crates/file" }
 # takes `expression` only. The floor moves with `release.helm.library` in
 # .hyperi-ci.yaml: the library renders only the contract version its scalo
 # release writes.
-scalo = { version = "2.14.9", default-features = false }
+scalo = { version = "2.14.13", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
 cel = { version = ">=0.14.5, <0.15", features = ["json"] }
@@ -61,8 +61,6 @@ async-trait = "0.1.92"
 # Serialisation
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-serde_yaml_ng = "0.10.0"
-serde_ignored = "0.1.14"
 bytes = "1.12.1"
 
 # HTTP client. The REST path, reqsign's default context and scalo all send over

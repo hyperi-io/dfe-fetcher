@@ -199,7 +199,12 @@ async fn a_dump_lands_in_the_envelope_with_the_filter_applied_before_the_buffer(
     let mut config = base_config();
     config.sources.rest.insert(
         "conn".into(),
-        serde_yaml_ng::from_str("profile: x\ntopic: t\nfilter: 'record.alive == true'\n").unwrap(),
+        scalo::yaml::from_str(
+            "profile: x\ntopic: t\nfilter: 'record.alive == true'\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap(),
     );
     let h = harness(config, 100);
     let shape = Scripted {
@@ -624,7 +629,12 @@ async fn a_binary_unit_lands_byte_for_byte_and_a_json_unit_is_still_enriched() {
     let mut config = base_config();
     config.sources.rest.insert(
         "conn".into(),
-        serde_yaml_ng::from_str("profile: x\ntopic: t\nfilter: 'alive == true'\n").unwrap(),
+        scalo::yaml::from_str(
+            "profile: x\ntopic: t\nfilter: 'alive == true'\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap(),
     );
     let h = harness(config, 100);
     let shape = PerUnit {
@@ -1112,7 +1122,12 @@ async fn a_keyset_unit_whose_rows_are_all_filtered_still_commits_the_last_key() 
     let mut config = base_config();
     config.sources.rest.insert(
         "conn".into(),
-        serde_yaml_ng::from_str("profile: x\ntopic: t\nfilter: 'level == \"ERROR\"'\n").unwrap(),
+        scalo::yaml::from_str(
+            "profile: x\ntopic: t\nfilter: 'level == \"ERROR\"'\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap(),
     );
     let h = harness(config, 100);
     let shape = Scripted {
@@ -1195,7 +1210,12 @@ async fn a_filtered_queue_message_is_still_acknowledged_after_the_tick() {
     let mut config = base_config();
     config.sources.rest.insert(
         "conn".into(),
-        serde_yaml_ng::from_str("profile: x\ntopic: t\nfilter: 'severity == \"ERROR\"'\n").unwrap(),
+        scalo::yaml::from_str(
+            "profile: x\ntopic: t\nfilter: 'severity == \"ERROR\"'\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap(),
     );
     let h = harness(config, 100);
     let acked = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -1309,7 +1329,12 @@ async fn a_per_item_dump_whose_item_is_fully_filtered_commits_the_item_marker() 
     let mut config = base_config();
     config.sources.rest.insert(
         "conn".into(),
-        serde_yaml_ng::from_str("profile: x\ntopic: t\nfilter: 'record.alive == true'\n").unwrap(),
+        scalo::yaml::from_str(
+            "profile: x\ntopic: t\nfilter: 'record.alive == true'\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap(),
     );
     let h = harness(config, 100);
     let shape = Scripted {
@@ -1365,7 +1390,12 @@ async fn the_oversize_stub_bypasses_the_filter_and_lands() {
     let mut config = base_config();
     config.sources.rest.insert(
         "conn".into(),
-        serde_yaml_ng::from_str("profile: x\ntopic: t\nfilter: 'record.alive == true'\n").unwrap(),
+        scalo::yaml::from_str(
+            "profile: x\ntopic: t\nfilter: 'record.alive == true'\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .unwrap(),
     );
     let h = harness(config, 100);
     let big = format!(

@@ -21,7 +21,8 @@ fn test_config_from_example_yaml() {
     let yaml =
         std::fs::read_to_string(dfe_fetcher::deployment::repo_root().join("config.example.yaml"))
             .expect("config.example.yaml exists");
-    let config: Config = serde_yaml_ng::from_str(&yaml).expect("example config parses");
+    let config: Config = scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config)
+        .expect("example config parses");
 
     assert_eq!(config.scheduler.default_interval_secs, 300);
     assert!(!config.sources.aws.enabled);

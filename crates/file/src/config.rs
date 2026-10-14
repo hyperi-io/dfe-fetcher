@@ -186,7 +186,8 @@ mod tests {
     use super::*;
 
     fn instance(yaml: &str) -> FileInstance {
-        serde_yaml_ng::from_str(yaml).expect("instance parses")
+        scalo::yaml::from_str(yaml, "source.yaml", scalo::yaml::Profile::Config)
+            .expect("instance parses")
     }
 
     const GOOD: &str = r#"
@@ -343,16 +344,27 @@ units:
 
     #[test]
     fn unknown_keys_fail_the_load_at_every_level() {
-        assert!(serde_yaml_ng::from_str::<FileInstance>("topic: t\npath: x\n").is_err());
         assert!(
-            serde_yaml_ng::from_str::<FileInstance>(
-                "topic: t\nunits: [{ unit: a, dump: { globs: [x] } }]\n"
+            scalo::yaml::from_str::<FileInstance>(
+                "topic: t\npath: x\n",
+                "source.yaml",
+                scalo::yaml::Profile::Config
             )
             .is_err()
         );
         assert!(
-            serde_yaml_ng::from_str::<FileInstance>(
-                "topic: t\nunits: [{ unit: a, tail: { paths: [x], data_dir: d } }]\n"
+            scalo::yaml::from_str::<FileInstance>(
+                "topic: t\nunits: [{ unit: a, dump: { globs: [x] } }]\n",
+                "source.yaml",
+                scalo::yaml::Profile::Config
+            )
+            .is_err()
+        );
+        assert!(
+            scalo::yaml::from_str::<FileInstance>(
+                "topic: t\nunits: [{ unit: a, tail: { paths: [x], data_dir: d } }]\n",
+                "source.yaml",
+                scalo::yaml::Profile::Config
             )
             .is_err()
         );

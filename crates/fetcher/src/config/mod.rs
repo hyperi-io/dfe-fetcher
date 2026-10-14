@@ -357,7 +357,7 @@ impl Config {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
 
-        let (mut config, unknown) = Self::parse_yaml(&content)?;
+        let (mut config, unknown) = Self::parse_yaml(&content, path)?;
         for key in &unknown {
             // A top-level section the fetcher does not own may be the scalo runtime's.
             if key.contains('.') {
@@ -377,14 +377,11 @@ impl Config {
     }
 
     /// Parse a YAML config, returning it with the dotted path of every key
-    /// serde ignored because no field names it.
-    pub fn parse_yaml(content: &str) -> Result<(Self, Vec<String>)> {
-        let mut unknown = Vec::new();
-        let config =
-            serde_ignored::deserialize(serde_yaml_ng::Deserializer::from_str(content), |path| {
-                unknown.push(path.to_string());
-            })?;
-        Ok((config, unknown))
+    /// serde ignored because no field names it. `origin` names the file in errors.
+    pub fn parse_yaml(content: &str, origin: &str) -> Result<(Self, Vec<String>)> {
+        let loaded =
+            scalo::yaml::from_str_reporting(content, origin, scalo::yaml::Profile::Config)?;
+        Ok((loaded.value, loaded.unknown_keys))
     }
 
     /// Register all config sections in the global config registry.
@@ -5868,8 +5865,12 @@ mod tests {
 
     #[test]
     fn a_vector_instance_naming_no_image_runs_the_digest_pinned_default() {
-        let instance: VectorInstance =
-            serde_yaml_ng::from_str("name: syslog\ntopic: syslog\n").expect("parse");
+        let instance: VectorInstance = scalo::yaml::from_str(
+            "name: syslog\ntopic: syslog\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .expect("parse");
         assert_eq!(instance.image.as_deref(), Some(DEFAULT_VECTOR_IMAGE));
         assert!(
             DEFAULT_VECTOR_IMAGE.contains("@sha256:"),
@@ -5918,7 +5919,7 @@ kafka:
     fn a_misspelt_config_key_is_reported_by_path() {
         let yaml = "scheduler:\n  default_interval_secs: 120\n  intervals_secs: 300\n\
                     ingest:\n  enabeld: true\nsourcess: {}\n";
-        let (cfg, unknown) = Config::parse_yaml(yaml).unwrap();
+        let (cfg, unknown) = Config::parse_yaml(yaml, "config.yaml").unwrap();
         assert_eq!(cfg.scheduler.default_interval_secs, 120);
         assert!(!cfg.ingest.enabled);
         for key in ["scheduler.intervals_secs", "ingest.enabeld", "sourcess"] {
@@ -5934,7 +5935,7 @@ kafka:
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.example.yaml");
         let content = std::fs::read_to_string(&path).unwrap();
-        let (_, unknown) = Config::parse_yaml(&content).unwrap();
+        let (_, unknown) = Config::parse_yaml(&content, "config.example.yaml").unwrap();
         let nested: Vec<_> = unknown.iter().filter(|k| k.contains('.')).collect();
         assert!(nested.is_empty(), "config.example.yaml: {nested:?}");
     }
@@ -6186,7 +6187,8 @@ sources:
 "#;
 
     fn from_yaml(yaml: &str) -> Config {
-        serde_yaml_ng::from_str(yaml).expect("the config parses")
+        scalo::yaml::from_str(yaml, "config.yaml", scalo::yaml::Profile::Config)
+            .expect("the config parses")
     }
 
     #[test]
@@ -6348,7 +6350,12 @@ sources:
     /// `Config::default()` does, not scalo's per-table defaults.
     #[test]
     fn test_file_without_dlq_key_takes_the_fleet_dlq_standard() {
-        let cfg: Config = serde_yaml_ng::from_str("config_reload_secs: 0\n").expect("parses");
+        let cfg: Config = scalo::yaml::from_str(
+            "config_reload_secs: 0\n",
+            "config.yaml",
+            scalo::yaml::Profile::Config,
+        )
+        .expect("parses");
         assert_eq!(cfg.dlq.kafka.routing, scalo::dlq::DlqRouting::Common);
         assert_eq!(
             cfg.dlq.kafka.common_topic.as_deref(),
@@ -6502,8 +6509,10 @@ sources:
         cfg.cursor.default_window_hours = 4;
         cfg.config_reload_secs = 60;
 
-        let yaml = serde_yaml_ng::to_string(&cfg).expect("serialize to YAML");
-        let restored: Config = serde_yaml_ng::from_str(&yaml).expect("deserialize from YAML");
+        let yaml = scalo::yaml::to_string(&cfg).expect("serialize to YAML");
+        let restored: Config =
+            scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config)
+                .expect("deserialize from YAML");
 
         assert_eq!(
             restored.scheduler.default_interval_secs,
@@ -6542,8 +6551,10 @@ sources:
             ..Default::default()
         });
 
-        let yaml = serde_yaml_ng::to_string(&cfg).expect("serialize");
-        let restored: Config = serde_yaml_ng::from_str(&yaml).expect("deserialize");
+        let yaml = scalo::yaml::to_string(&cfg).expect("serialize");
+        let restored: Config =
+            scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config)
+                .expect("deserialize");
         assert_eq!(restored.output.output_type, "grpc");
         assert!(restored.output.includes_grpc());
         assert!(!restored.output.includes_kafka());
@@ -6765,7 +6776,8 @@ sources:
         region: eu-west-1
         credential_secret: "vault:kv/data/aws-456:creds"
 "#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse connections");
+        let cfg: Config = scalo::yaml::from_str(yaml, "config.yaml", scalo::yaml::Profile::Config)
+            .expect("parse connections");
         assert_eq!(cfg.sources.aws.connections.len(), 2);
         assert_eq!(cfg.sources.aws.connections[0].id, "acct-123");
         assert_eq!(

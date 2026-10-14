@@ -671,7 +671,8 @@ mod tests {
     fn example_config() -> Config {
         let path = crate::deployment::repo_root().join("config.example.yaml");
         let yaml = std::fs::read_to_string(path).expect("read config.example.yaml");
-        serde_yaml_ng::from_str(&yaml).expect("example config parses")
+        scalo::yaml::from_str(&yaml, "config.example.yaml", scalo::yaml::Profile::Config)
+            .expect("example config parses")
     }
 
     /// What the catalog is checked against for one source type: the name,
