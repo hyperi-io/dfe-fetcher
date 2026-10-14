@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.38](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.37...v1.4.38) (2026-10-14)
+
+### Bug Fixes
+
+* **deps:** update Rust crate clickhouse to 0.15.3 ([#232](https://github.com/hyperi-io/dfe-fetcher/issues/232)) ([3e69598](https://github.com/hyperi-io/dfe-fetcher/commit/3e69598973f285cef5d97ae2509daeccc0439414))
+* rebuild on scalo 2.14.13 and parse YAML through it ([#234](https://github.com/hyperi-io/dfe-fetcher/issues/234)) ([422bea3](https://github.com/hyperi-io/dfe-fetcher/commit/422bea370139f7998e8f3b77a3fd25ac3672842b))
+
 ## [1.4.37](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.36...v1.4.37) (2026-10-13)
 
 ### Bug Fixes
