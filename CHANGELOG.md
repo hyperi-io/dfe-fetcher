@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.39](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.38...v1.4.39) (2026-10-15)
+
+### Bug Fixes
+
+* rebuild on scalo 2.14.15 and rustls 0.23.46 ([5395b1a](https://github.com/hyperi-io/dfe-fetcher/commit/5395b1a560147dccafc98c3ac46012a52117c7f5))
+
 ## [1.4.38](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.37...v1.4.38) (2026-10-14)
 
 ### Bug Fixes
