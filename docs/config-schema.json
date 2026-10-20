@@ -7572,7 +7572,7 @@
           ]
         },
         "topic_refresh_secs": {
-          "description": "Periodic topic refresh interval in seconds (0 = disabled).\nOnly applies when `topics` is empty (auto-discovery mode).",
+          "description": "Periodic topic refresh interval in seconds (0 = disabled).\nOnly applies when `topics` is empty (auto-discovery mode).\nAbove 0, a broker that cannot list its topics at construction is not\nfatal: the transport starts subscribed to nothing and a later refresh\nsubscribes. At 0, construction fails instead.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
