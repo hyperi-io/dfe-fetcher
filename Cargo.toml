@@ -41,7 +41,7 @@ dfe-fetcher-file = { path = "crates/file" }
 # takes `expression` only. The floor moves with `release.helm.library` in
 # .hyperi-ci.yaml: the library renders only the contract version its scalo
 # release writes.
-scalo = { version = "2.14.15", default-features = false }
+scalo = { version = "2.14.18", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
 cel = { version = ">=0.14.5, <0.15", features = ["json"] }
