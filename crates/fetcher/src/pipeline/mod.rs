@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use dfe_fetcher_core::batch::{Outbound, Tenancy};
+use dfe_fetcher_core::frame::scan::trim_range;
 use dfe_fetcher_core::frame::split_array;
 use scalo::dlq::{Dlq, DlqEntry};
 use scalo::logger::security;
@@ -265,6 +266,56 @@ fn split_objects(payload: &Bytes, start: usize) -> Option<Vec<Bytes>> {
         .then_some(elements)
 }
 
+/// Whether `payload` carries a record boundary: a closing brace meeting the
+/// next record's opening brace with only whitespace between, in a body with a
+/// newline. The same scan as the loader's `has_ndjson_boundary`.
+fn has_ndjson_boundary(payload: &[u8]) -> bool {
+    // A raw newline is illegal inside a JSON string, so one compact record has none.
+    if memchr::memchr(b'\n', payload).is_none() {
+        return false;
+    }
+    let mut closed = false;
+    for &b in payload {
+        match b {
+            b'}' => closed = true,
+            b'{' if closed => return true,
+            b if b.is_ascii_whitespace() => {}
+            _ => closed = false,
+        }
+    }
+    false
+}
+
+/// The records of `payload[start..]` when it is two or more whitespace-separated
+/// JSON objects and nothing else, as slices of `payload` trimmed of the
+/// whitespace between them: what the loader's `split_ndjson` fans out. `None`
+/// for anything else, which the loader keeps whole too.
+fn split_ndjson(payload: &Bytes, start: usize) -> Option<Vec<Bytes>> {
+    let body = &payload[start..];
+    if !has_ndjson_boundary(body) {
+        return None;
+    }
+    let mut records = Vec::new();
+    let mut consumed = 0;
+    let mut stream =
+        serde_json::Deserializer::from_slice(body).into_iter::<serde::de::IgnoredAny>();
+    while let Some(item) = stream.next() {
+        item.ok()?;
+        let end = stream.byte_offset();
+        let (from, to) = trim_range(&body[consumed..end]);
+        let record = payload.slice(start + consumed + from..start + consumed + to);
+        if record.first() != Some(&b'{') {
+            return None;
+        }
+        records.push(record);
+        consumed = end;
+    }
+    if body[consumed..].iter().any(|b| !b.is_ascii_whitespace()) {
+        return None;
+    }
+    (records.len() > 1).then_some(records)
+}
+
 /// One stamped object per record of a split body, each record a JSON object
 /// ending in its closing brace. A record that cannot be stamped refuses the
 /// body whole, so the dead letter holds it as fetched.
@@ -294,8 +345,9 @@ fn stamp_each(payload: Bytes, records: &[Bytes], now_ms: u64, stamp: &Stamp<'_>)
 pub enum Enriched {
     /// One row, and what became of its org stamp.
     One(Bytes, Tenancy),
-    /// A JSON array whose every element is an object, as one stamped object
-    /// per element in order, each with its length before the stamp.
+    /// A JSON array whose every element is an object, or a body of two or
+    /// more newline-delimited objects, as one stamped object per record in
+    /// order, each with its length before the stamp.
     Split(Vec<(Bytes, u64)>),
 }
 
@@ -618,10 +670,11 @@ impl PipelineState {
     ///
     /// Same contract as [`Self::enrich_record`], minus the per-record escaping.
     ///
-    /// A JSON array whose every element is an object comes back
-    /// [`Enriched::Split`], one stamped object per element: the loader splits
-    /// an array itself, and an element with no `_org_id` lands in its default
-    /// org. Anything else that is not an object (not JSON, a scalar, an array
+    /// A JSON array whose every element is an object, and a body of two or
+    /// more whitespace-separated objects and nothing else, come back
+    /// [`Enriched::Split`], one stamped object per record: the loader splits
+    /// both itself, and a record with no `_org_id` lands in its default org.
+    /// Anything else that is not an object (not JSON, a scalar, an array
     /// holding a non-object) comes back [`Tenancy::Unstamped`] and unchanged.
     /// A record that opens as an object, after whitespace or a UTF-8
     /// byte-order mark, and cannot be stamped (no closing brace, or a reserved
@@ -649,6 +702,11 @@ impl PipelineState {
         // would land inside one element, or nowhere.
         match body.iter().find(|b| !b.is_ascii_whitespace()) {
             Some(b'{') => {
+                // The stamp lands before the last closing brace only, so a body of
+                // several records is stamped one record at a time.
+                if let Some(records) = split_ndjson(&payload, start) {
+                    return stamp_each(payload, &records, now_ms, stamp);
+                }
                 let Some(enriched) = body
                     .iter()
                     .rposition(|&b| b == b'}')
@@ -1219,6 +1277,65 @@ mod tests {
                 &serde_json::json!(1)
             )
         );
+    }
+
+    /// A body of two or more whitespace-separated objects and nothing else is
+    /// split into one stamped object per record, exactly where the loader's
+    /// `split_ndjson` would fan it out, so no record leaves without the org.
+    #[test]
+    fn newline_delimited_objects_split_where_the_loader_splits_them() {
+        let state = pipeline_over("org_id: acme\n");
+        let (first, second) = (r#"{"a": 1}"#, r#"{"b": 2, "_org_id": "x"}"#);
+        let Enriched::Split(parts) = state.enrich_record(
+            Bytes::from(format!("  {first}\r\n\r\n  {second}  \n")),
+            "ingest",
+            "ingest.source",
+        ) else {
+            panic!("two records split");
+        };
+        let got: Vec<(serde_json::Value, serde_json::Value, u64)> = parts
+            .iter()
+            .map(|(payload, len)| {
+                let row: serde_json::Value = serde_json::from_slice(payload).unwrap();
+                (
+                    row["_org_id"].clone(),
+                    row["_org_id_original"].clone(),
+                    *len,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    serde_json::json!("acme"),
+                    serde_json::Value::Null,
+                    first.len() as u64
+                ),
+                (
+                    serde_json::json!("acme"),
+                    serde_json::json!("x"),
+                    second.len() as u64
+                ),
+            ],
+            "each record counts its own bytes, the separators none"
+        );
+
+        // What the loader leaves whole stays one row here too.
+        for raw in [
+            "{\n  \"a\": 1\n}\n",
+            "{\"msg\": \"}\n{\"}",
+            "{\"a\": 1}\n[2]\n{\"b\": 3}",
+            "{\"a\": 1}\n{\"b\": 2}\njunk",
+        ] {
+            assert!(
+                matches!(
+                    state.enrich_record(Bytes::from(raw), "ingest", "ingest.source"),
+                    Enriched::One(..)
+                ),
+                "{raw}"
+            );
+        }
     }
 
     /// The rows a record goes out as: one counted at its fetched length, or

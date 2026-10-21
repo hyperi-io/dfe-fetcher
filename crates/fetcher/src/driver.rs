@@ -1379,8 +1379,54 @@ mod tests {
         );
     }
 
-    /// A split row's mark rides its last element, and an empty array is
-    /// consumed: the checkpoint commits past both.
+    /// A body of newline-delimited objects leaves as one stamped row per
+    /// record, so the loader's own split never lands the first records in its
+    /// default org while their usage counts under the unit's.
+    #[tokio::test]
+    async fn newline_delimited_objects_leave_as_one_stamped_row_per_record() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b"}"#);
+        let d = Box::pin(driver_over(
+            config,
+            vec![Row::new(format!("{first}\n{second}\n"))],
+        ))
+        .await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let landed = received_raw(&default_rx).await;
+        let mut stamped: Vec<(serde_json::Value, serde_json::Value)> = landed
+            .iter()
+            .filter_map(|payload| serde_json::from_slice::<serde_json::Value>(payload).ok())
+            .map(|row| (row["id"].clone(), row["_org_id"].clone()))
+            .collect();
+        stamped.sort_by_key(|(id, _)| id.to_string());
+        assert_eq!(
+            stamped,
+            [
+                (serde_json::json!("a"), serde_json::json!("acme")),
+                (serde_json::json!("b"), serde_json::json!("acme")),
+            ],
+            "{landed:?}"
+        );
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some((first.len() + second.len()) as u64)
+        );
+    }
+
+    /// A split row's mark rides its last element, whether the row was an array
+    /// or newline-delimited records, and an empty array is consumed: the
+    /// checkpoint commits past each only once all of it is sent.
     #[tokio::test]
     async fn a_split_rows_mark_rides_its_last_element() {
         let (default_rx, default_ep) = listener().await;
@@ -1417,6 +1463,7 @@ mod tests {
                 rows: vec![
                     marked(r#"[{"id":"a"},{"id":"b"}]"#, "split"),
                     marked("[]", "empty"),
+                    marked("{\"id\":\"c\"}\n{\"id\":\"d\"}", "ndjson"),
                 ],
                 acked: Arc::clone(&acked),
             })),
@@ -1441,15 +1488,16 @@ mod tests {
 
         let report = d.run_tick(None).await.expect("tick");
 
-        assert_eq!(report.rows, 2, "two elements buffered, none for []");
-        assert_eq!(received_raw(&default_rx).await.len(), 2);
+        assert_eq!(report.rows, 4, "two rows from each split, none for []");
+        assert_eq!(received_raw(&default_rx).await.len(), 4);
         assert_eq!(
             *acked.lock(),
             [
                 vec![Box::<str>::from("split")],
-                vec![Box::<str>::from("empty")]
+                vec![Box::<str>::from("empty")],
+                vec![Box::<str>::from("ndjson")]
             ],
-            "one row per batch: the first element's flush acks nothing"
+            "one row per batch: a split's first row acks nothing of its own"
         );
     }
 
