@@ -20,7 +20,10 @@
 //! record the transport always refuses cannot hold its source back for good),
 //! or backpressured -- the backpressured subset is retried with a bounded
 //! backoff and, if still refused, the whole tick aborts WITHOUT a checkpoint
-//! so the scheduler's stall loop takes over. A failure the transport reports
+//! so the scheduler's stall loop takes over. A row enrichment refused (it may
+//! name its own org and did not parse) is never sent: it is dead-lettered the
+//! same way, or dropped and counted under
+//! `{reason="reserved_key_unparsed"}`. A failure the transport reports
 //! for every record alike (closed, timed out, the topic or broker gone) is
 //! not a dead-letter case: the tick aborts with no checkpoint and the rows
 //! are re-fetched, which is the at-least-once side of the contract. The
@@ -41,7 +44,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tracing::{debug, warn};
 
-use dfe_fetcher_core::batch::{Batch, Outbound};
+use dfe_fetcher_core::batch::{Batch, Outbound, Tenancy};
 
 use crate::error::{Error, Result};
 use crate::metrics::{DroppedDeadLetter, Metrics};
@@ -53,6 +56,9 @@ const BACKPRESSURE_RETRIES: u32 = 5;
 const BACKPRESSURE_BACKOFF: Duration = Duration::from_millis(200);
 /// Least time between two warnings of refused records dropped.
 const DROPPED_WARN_EVERY_MS: u64 = 10_000;
+/// The dead-letter reason of a row enrichment refused.
+const RESERVED_KEY_UNPARSED: &str =
+    "the record may name its own org and did not parse, so its _org_id could not be replaced";
 /// When refused records dropped were last warned of.
 static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 
@@ -178,7 +184,8 @@ impl Emitter {
     }
 
     /// One concurrent pass over `rows`: returns the backpressured ones and
-    /// adds the ingested bytes of the rows sent to `sent_bytes`.
+    /// adds the ingested bytes of the rows sent to `sent_bytes`. A row
+    /// enrichment refused is dead-lettered without being sent.
     async fn send_round(
         &self,
         rows: Vec<Outbound>,
@@ -187,13 +194,21 @@ impl Emitter {
     ) -> Result<Vec<Outbound>> {
         let mut held = Vec::new();
         let mut refused = Vec::new();
+        let mut unparsed = Vec::new();
         let mut in_flight = FuturesUnordered::new();
         let mut rows = rows.into_iter();
         loop {
             while in_flight.len() < self.in_flight
                 && let Some(row) = rows.next()
             {
-                in_flight.push(self.send_one(row));
+                match row.tenancy {
+                    Tenancy::Stamped => in_flight.push(self.send_one(row)),
+                    Tenancy::Refused => unparsed.push(DeadLetter {
+                        topic: row.topic,
+                        payload: row.payload,
+                        reason: RESERVED_KEY_UNPARSED.to_owned(),
+                    }),
+                }
             }
             let Some((row, outcome)) = in_flight.next().await else {
                 break;
@@ -224,16 +239,24 @@ impl Emitter {
                 }
             }
         }
-        self.dead_letter(refused, report).await?;
+        self.dead_letter(refused, DroppedDeadLetter::TransportRefused, report)
+            .await?;
+        self.dead_letter(unparsed, DroppedDeadLetter::ReservedKeyUnparsed, report)
+            .await?;
         Ok(held)
     }
 
     /// Dead-letter the round's refused records in one confirmed write, so a
     /// record counts as handled only once the DLQ holds it. A refusal is
     /// permanent, so a record with nowhere to go -- no DLQ configured, or one
-    /// no DLQ backend can hold -- is dropped and counted rather than refetched
-    /// for ever.
-    async fn dead_letter(&self, refused: Vec<DeadLetter>, report: &mut EmitReport) -> Result<()> {
+    /// no DLQ backend can hold -- is dropped and counted under `why` rather
+    /// than refetched for ever.
+    async fn dead_letter(
+        &self,
+        refused: Vec<DeadLetter>,
+        why: DroppedDeadLetter,
+        report: &mut EmitReport,
+    ) -> Result<()> {
         if refused.is_empty() {
             return Ok(());
         }
@@ -248,15 +271,14 @@ impl Emitter {
             }
             Ok(DeadLettered::NoQueue) => {
                 report.dropped += count;
-                self.metrics
-                    .add_dead_letters_dropped(DroppedDeadLetter::TransportRefused.as_str(), count);
+                self.metrics.add_dead_letters_dropped(why.as_str(), count);
                 if scalo::logger::log_debounced(&DROPPED_WARNED_AT, DROPPED_WARN_EVERY_MS) {
                     warn!(
                         records = count,
                         topic = %first_topic,
                         reason = %first_reason,
-                        "Records the transport refused were dropped: no dead-letter queue is \
-                         configured. Counted in pipeline_dead_letters_dropped_total"
+                        "Refused records were dropped: no dead-letter queue is configured. \
+                         Counted in pipeline_dead_letters_dropped_total"
                     );
                 }
                 Ok(())
@@ -405,6 +427,82 @@ mod tests {
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "default")]),
             Some(14)
         );
+    }
+
+    /// A row enrichment refused is never sent: with no DLQ it is dropped and
+    /// counted under its own reason, and only the row sent counts for usage.
+    #[tokio::test]
+    async fn a_refused_row_is_dropped_unsent_and_not_counted() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"_org_id":"victim"}"#).with_tenancy(Tenancy::Refused),
+            None,
+        );
+        batcher.push(Outbound::new("fixture_land", r#"{"a":1}"#), None);
+
+        let report = emitter
+            .emit(batcher.take())
+            .await
+            .expect("a refusal does not fail the batch");
+
+        assert_eq!((report.sent, report.dropped), (1, 1));
+        assert_eq!(
+            recorder.counters(&[
+                (
+                    "pipeline_dead_letters_dropped_total",
+                    &[("reason", "reserved_key_unparsed")]
+                ),
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            ]),
+            [Some(1), Some(7)],
+            "dropped under its own reason, and only the row sent counts"
+        );
+    }
+
+    /// With a DLQ, a refused row is held there with the reason it was refused.
+    #[tokio::test]
+    async fn a_refused_row_is_dead_lettered_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dlq_config = Config::default().dlq;
+        dlq_config.enabled = true;
+        dlq_config.mode = scalo::dlq::DlqMode::FileOnly;
+        dlq_config.file.path = dir.path().to_path_buf();
+        let dlq = scalo::dlq::Dlq::spawn(
+            &dlq_config,
+            "dfe-fetcher",
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .expect("dlq");
+        let transport =
+            Arc::new(MemoryTransport::new(&MemoryConfig::default()).expect("memory transport"));
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests_with_dlq(
+            SharedConfig::new(Config::default()),
+            Arc::clone(&metrics),
+            Some(OutputManager::memory(transport)),
+            dlq,
+        ));
+        let emitter = Emitter::new(state, metrics, 4);
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"_org_id":"victim"}"#).with_tenancy(Tenancy::Refused),
+            None,
+        );
+
+        let report = emitter.emit(batcher.take()).await.expect("held");
+
+        assert_eq!(
+            (report.sent, report.dead_lettered, report.dropped),
+            (0, 1, 0)
+        );
+        let lines = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
+            .expect("the DLQ file");
+        assert_eq!(lines.lines().count(), 1, "{lines}");
+        assert!(lines.contains(RESERVED_KEY_UNPARSED), "{lines}");
     }
 
     /// A flush that aborts counts nothing, even for the records it sent before

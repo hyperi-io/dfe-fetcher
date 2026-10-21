@@ -9,6 +9,16 @@
 use bytes::Bytes;
 use dfe_fetcher::config::Config;
 use dfe_fetcher::metrics::Metrics;
+use dfe_fetcher::pipeline::Enriched;
+use dfe_fetcher_core::batch::Tenancy;
+
+/// The one stamped row a record became.
+fn stamped(enriched: Enriched) -> Bytes {
+    match enriched {
+        Enriched::One(payload, Tenancy::Stamped) => payload,
+        Enriched::One(_, tenancy) => panic!("expected one stamped row, got {tenancy:?}"),
+    }
+}
 
 #[test]
 fn test_enrich_empty_json_object() {
@@ -17,7 +27,7 @@ fn test_enrich_empty_json_object() {
     let state = make_pipeline_state(shared);
 
     let payload = Bytes::from("{}");
-    let enriched = state.enrich_record(payload, "test", "test.source");
+    let enriched = stamped(state.enrich_record(payload, "test", "test.source"));
     let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
     assert!(parsed.get("_timestamp_fetcher").is_some());
     assert_eq!(parsed["_source"].as_str().unwrap(), "test");
@@ -31,7 +41,7 @@ fn test_enrich_nested_json() {
     let state = make_pipeline_state(shared);
 
     let payload = Bytes::from(r#"{"outer":{"inner":"value"},"list":[1,2,3]}"#);
-    let enriched = state.enrich_record(payload, "defender", "azure.defender");
+    let enriched = stamped(state.enrich_record(payload, "defender", "azure.defender"));
     let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
     assert_eq!(parsed["outer"]["inner"].as_str().unwrap(), "value");
@@ -46,7 +56,7 @@ fn test_enrich_non_json_returns_unchanged() {
     let state = make_pipeline_state(shared);
 
     let payload = Bytes::from("this is not json");
-    let enriched = state.enrich_record(payload.clone(), "test", "test.source");
+    let enriched = stamped(state.enrich_record(payload.clone(), "test", "test.source"));
     assert_eq!(enriched, payload); // No closing brace, returned unchanged
 }
 
@@ -67,7 +77,7 @@ fn test_enrich_large_payload() {
     json.push('}');
 
     let payload = Bytes::from(json);
-    let enriched = state.enrich_record(payload, "audit_logs", "gcp.audit_logs");
+    let enriched = stamped(state.enrich_record(payload, "audit_logs", "gcp.audit_logs"));
     let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
     assert!(parsed.get("_timestamp_fetcher").is_some());
     assert_eq!(parsed["field_0"].as_str().unwrap(), "value_0");
@@ -95,7 +105,7 @@ async fn test_pipeline_deliver_enriches_and_filters() {
 
     // 1. Enrich a record
     let raw = Bytes::from(r#"{"eventName":"CreateUser","severity":"high"}"#);
-    let enriched = state.enrich_record(raw, "cloudtrail", "aws.cloudtrail");
+    let enriched = stamped(state.enrich_record(raw, "cloudtrail", "aws.cloudtrail"));
     let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
     // 2. Verify all enrichment fields are present
@@ -125,7 +135,7 @@ async fn test_pipeline_deliver_enriches_and_filters() {
 
     // 5. CEL filter: ConsoleLogin should be dropped
     let login_record = Bytes::from(r#"{"eventName":"ConsoleLogin"}"#);
-    let enriched_login = state.enrich_record(login_record, "cloudtrail", "aws.cloudtrail");
+    let enriched_login = stamped(state.enrich_record(login_record, "cloudtrail", "aws.cloudtrail"));
     let login_context: HashMap<String, serde_json::Value> =
         serde_json::from_slice::<serde_json::Value>(&enriched_login)
             .unwrap()

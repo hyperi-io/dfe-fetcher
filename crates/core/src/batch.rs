@@ -107,6 +107,18 @@ impl AccumulateConfig {
     }
 }
 
+/// What became of a row's `_org_id` stamp, which decides whether the row is
+/// sent and which org its usage counts under.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tenancy {
+    /// The row carries the org it was stamped with and counts under it.
+    #[default]
+    Stamped,
+    /// The row may name its own org and did not parse, so its `_org_id`
+    /// could not be replaced: it is dead-lettered, never sent or counted.
+    Refused,
+}
+
 /// One enriched, routed row ready for the transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outbound {
@@ -119,10 +131,13 @@ pub struct Outbound {
     /// The record's bytes as fetched, before the fetcher framed or stamped
     /// it: what `usage_ingested_bytes_total` counts once the row is sent.
     pub ingested_bytes: u64,
+    /// What became of the row's org stamp.
+    pub tenancy: Tenancy,
 }
 
 impl Outbound {
-    /// A row for the default transports, counted as ingested at its own length.
+    /// A stamped row for the default transports, counted as ingested at its
+    /// own length.
     #[must_use]
     pub fn new(topic: &str, payload: impl Into<Bytes>) -> Self {
         let payload: Bytes = payload.into();
@@ -131,7 +146,15 @@ impl Outbound {
             ingested_bytes: payload.len() as u64,
             payload,
             route: None,
+            tenancy: Tenancy::Stamped,
         }
+    }
+
+    /// Record what became of the row's org stamp.
+    #[must_use]
+    pub fn with_tenancy(mut self, tenancy: Tenancy) -> Self {
+        self.tenancy = tenancy;
+        self
     }
 
     /// Send this row to named destinations instead.
@@ -596,5 +619,8 @@ mod tests {
             stamped.ingested_bytes, 7,
             "a stamped row counts what was fetched"
         );
+        assert_eq!(stamped.tenancy, Tenancy::Stamped);
+        let refused = stamped.with_tenancy(Tenancy::Refused);
+        assert_eq!(refused.tenancy, Tenancy::Refused);
     }
 }

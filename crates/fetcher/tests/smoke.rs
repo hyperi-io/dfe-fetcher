@@ -72,7 +72,9 @@ async fn test_startup_pipeline_state_no_output() {
 
     // Enrichment should work without output
     let raw = Bytes::from(r#"{"test":true}"#);
-    let enriched = state.enrich_record(raw.clone(), "test", "test.source");
+    let dfe_fetcher::pipeline::Enriched::One(enriched, tenancy) =
+        state.enrich_record(raw.clone(), "test", "test.source");
+    assert_eq!(tenancy, dfe_fetcher_core::batch::Tenancy::Stamped);
     let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
     assert_eq!(parsed["test"], true);
     assert!(parsed["_timestamp_fetcher"].is_number());

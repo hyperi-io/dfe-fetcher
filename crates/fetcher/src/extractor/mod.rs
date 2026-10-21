@@ -54,7 +54,7 @@ use crate::driver::GuardLease;
 use crate::emit::{EmitReport, Emitter};
 use crate::error::Result;
 use crate::metrics::Metrics;
-use crate::pipeline::PipelineState;
+use crate::pipeline::{Enriched, PipelineState};
 
 /// Trait for external extractors (containers, vector instances).
 ///
@@ -128,7 +128,8 @@ impl ExtractorSink {
 
     /// One record for `topic`, enriched as `source` (the DFE source name the
     /// loader routes on) from `fetcher_source` (the extractor that produced
-    /// it), and counted for usage at its length as it arrived.
+    /// it), and counted for usage at its length as it arrived. A record
+    /// enrichment refuses is dead-lettered unsent by [`ExtractorSink::emit`].
     #[must_use]
     pub fn record(
         &self,
@@ -138,8 +139,11 @@ impl ExtractorSink {
         payload: Bytes,
     ) -> Outbound {
         let ingested = payload.len() as u64;
-        let enriched = self.state().enrich_record(payload, source, fetcher_source);
-        Outbound::new(topic, enriched).with_ingested_bytes(ingested)
+        let Enriched::One(enriched, tenancy) =
+            self.state().enrich_record(payload, source, fetcher_source);
+        Outbound::new(topic, enriched)
+            .with_ingested_bytes(ingested)
+            .with_tenancy(tenancy)
     }
 
     /// Emit records as one batch; every record gets a terminal outcome

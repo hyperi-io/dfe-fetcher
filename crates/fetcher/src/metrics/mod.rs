@@ -58,6 +58,9 @@ pub enum DroppedDeadLetter {
     TransportRefused,
     /// The row is over `max_record_bytes`, scalo's `too_large`.
     TooLarge,
+    /// The row may carry a reserved key such as `_org_id` and did not parse,
+    /// so the fetcher could not replace it.
+    ReservedKeyUnparsed,
 }
 
 impl DroppedDeadLetter {
@@ -67,6 +70,7 @@ impl DroppedDeadLetter {
         match self {
             Self::TransportRefused => "transport_refused",
             Self::TooLarge => "too_large",
+            Self::ReservedKeyUnparsed => "reserved_key_unparsed",
         }
     }
 }
@@ -1185,6 +1189,9 @@ pub(crate) mod recorded {
             .all(|(k, v)| labels.iter().any(|(lk, lv)| lk == k && lv == v))
     }
 
+    /// One recorded series: its name, its labels, then its value.
+    type Series = (String, Vec<(String, String)>, DebugValue);
+
     /// The recorder a test sets for its thread with [`Recorder::install`].
     pub(crate) struct Recorder(DebuggingRecorder);
 
@@ -1198,22 +1205,46 @@ pub(crate) mod recorded {
             metrics::set_default_local_recorder(&self.0)
         }
 
-        /// Every series named `name` in one snapshot, which drains what it
-        /// reads: its labels, then its value.
-        fn series(&self, name: &str) -> Vec<(Vec<(String, String)>, DebugValue)> {
+        /// Every series in one snapshot, which drains what it reads.
+        fn snapshot(&self) -> Vec<Series> {
             self.0
                 .snapshotter()
                 .snapshot()
                 .into_vec()
                 .into_iter()
-                .filter(|(key, _, _, _)| key.key().name() == name)
                 .map(|(key, _, _, value)| {
                     let labels = key
                         .key()
                         .labels()
                         .map(|l| (l.key().to_owned(), l.value().to_owned()))
                         .collect();
-                    (labels, value)
+                    (key.key().name().to_owned(), labels, value)
+                })
+                .collect()
+        }
+
+        /// Every series named `name` in one snapshot: its labels, then its value.
+        fn series(&self, name: &str) -> Vec<(Vec<(String, String)>, DebugValue)> {
+            self.snapshot()
+                .into_iter()
+                .filter(|(found, _, _)| found == name)
+                .map(|(_, labels, value)| (labels, value))
+                .collect()
+        }
+
+        /// Each counter `wanted` names, as [`Recorder::counter`] reads it,
+        /// all from one snapshot so reading the first does not drain the rest.
+        pub(crate) fn counters(&self, wanted: &[(&str, &[(&str, &str)])]) -> Vec<Option<u64>> {
+            let all = self.snapshot();
+            wanted
+                .iter()
+                .map(|(name, labels)| {
+                    all.iter().find_map(|(found, carried, value)| match value {
+                        DebugValue::Counter(n) if found == name && carries(carried, labels) => {
+                            Some(*n)
+                        }
+                        _ => None,
+                    })
                 })
                 .collect()
         }

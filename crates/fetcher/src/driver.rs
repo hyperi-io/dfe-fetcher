@@ -57,7 +57,7 @@ use crate::emit::{EmitReport, Emitter};
 use crate::error::{Error, Result};
 use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::{DroppedDeadLetter, Metrics};
-use crate::pipeline::{DeadLetter, DeadLettered, Stamp};
+use crate::pipeline::{DeadLetter, DeadLettered, Enriched, Stamp};
 
 /// How long the driver waits between admission checks while held.
 const HOLD_POLL: Duration = Duration::from_millis(250);
@@ -489,7 +489,8 @@ impl Driver {
     /// Stamp one framed payload for the transport: enrich, route, topic. A
     /// route that names one destination stamps it as the row's `_source`, so
     /// the row lands in that source's table. `ingested` is the row's length as
-    /// fetched, `0` for a frame of the fetcher's own.
+    /// fetched, `0` for a frame of the fetcher's own. A row enrichment refuses
+    /// still travels with its mark, and the emitter dead-letters it unsent.
     fn stamp(
         &self,
         payload: Bytes,
@@ -499,8 +500,11 @@ impl Driver {
         ingested: u64,
     ) -> Outbound {
         let stamp = stamps.for_route(route.as_ref());
-        let enriched = self.emitter.state().enrich_record_with(payload, stamp);
-        let mut out = Outbound::new(topic, enriched).with_ingested_bytes(ingested);
+        let Enriched::One(enriched, tenancy) =
+            self.emitter.state().enrich_record_with(payload, stamp);
+        let mut out = Outbound::new(topic, enriched)
+            .with_ingested_bytes(ingested)
+            .with_tenancy(tenancy);
         if let Some(route) = route {
             out = out.with_route(route.destinations);
         }
@@ -977,22 +981,26 @@ mod tests {
         (server, format!("http://{listen}"))
     }
 
-    /// Every record a listener has received, with its length on the wire.
-    async fn received(server: &GrpcTransport) -> Vec<(usize, serde_json::Value)> {
+    /// Every record a listener has received, as the bytes that arrived.
+    async fn received_raw(server: &GrpcTransport) -> Vec<Bytes> {
         let mut rows = Vec::new();
         loop {
             let batch = server.recv(100).await.unwrap();
             if batch.records.is_empty() {
                 break;
             }
-            rows.extend(batch.records.iter().map(|record| {
-                (
-                    record.payload.len(),
-                    serde_json::from_slice(&record.payload).unwrap(),
-                )
-            }));
+            rows.extend(batch.records.iter().map(|record| record.payload.clone()));
         }
         rows
+    }
+
+    /// Every record a listener has received, with its length on the wire.
+    async fn received(server: &GrpcTransport) -> Vec<(usize, serde_json::Value)> {
+        received_raw(server)
+            .await
+            .iter()
+            .map(|payload| (payload.len(), serde_json::from_slice(payload).unwrap()))
+            .collect()
     }
 
     /// A gRPC output to `default`, the named destinations `(name, endpoint)`,
@@ -1254,6 +1262,55 @@ mod tests {
         assert_eq!(
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
             Some(fetched)
+        );
+    }
+
+    /// A row that may name its own org but does not parse cannot have its
+    /// `_org_id` replaced, so it never leaves: with no DLQ it is dropped and
+    /// counted, and its bytes count for no org.
+    #[tokio::test]
+    async fn a_row_naming_its_own_org_that_does_not_parse_is_refused_not_sent() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        // A lone surrogate escape, built from the backslash's code point: serde refuses it.
+        let refused = format!(r#"{{"_org_id":"victim","s":"{}ud800"}}"#, char::from(0x5c));
+        let kept = r#"{"id":"kept"}"#;
+        let d = Box::pin(driver_over(config, vec![Row::new(refused), Row::new(kept)])).await;
+
+        d.run_tick(None)
+            .await
+            .expect("a refused row does not fail the tick");
+
+        let mut org_keys: Vec<usize> = received_raw(&default_rx)
+            .await
+            .iter()
+            .map(|payload| memchr::memmem::find_iter(payload, b"\"_org_id\"").count())
+            .collect();
+        org_keys.sort_unstable();
+        assert_eq!(
+            org_keys,
+            [1],
+            "only the row that parses leaves, carrying one _org_id"
+        );
+        assert_eq!(
+            recorder.counters(&[
+                (
+                    "pipeline_dead_letters_dropped_total",
+                    &[("reason", "reserved_key_unparsed")]
+                ),
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+                ("usage_ingested_bytes_total", &[("org_id", "victim")]),
+            ]),
+            [Some(1), Some(kept.len() as u64), None],
+            "the refused row is counted dropped, and its bytes for no org"
         );
     }
 }
