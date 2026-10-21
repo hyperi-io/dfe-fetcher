@@ -210,6 +210,8 @@ pass, say -- keeps the `_original` it arrived with, and the colliding value is
 parked under the next free `<key>_original_<n>` counting from 2, with a
 warning naming the key.
 
+A binary row, and a payload with no closing brace, goes out verbatim with no `_org_id`, so the loader's default org applies to it.
+
 ## Cursor Cold Start
 
 A tick with no window cursor stored, or no cursor store at all, is a cold start. Every one counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart. The first cold start of a source logs a WARN and later ones log at DEBUG, since with no store at all every tick is one.
