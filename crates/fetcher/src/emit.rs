@@ -27,10 +27,11 @@
 //! batch's memory lease is released when the batch drops, after every
 //! outcome is known.
 //!
-//! A flush that settles adds the bytes of the records it sent to
-//! `usage_ingested_bytes_total{org_id}`. A dead-lettered or dropped record is
-//! not counted, and nor is any record of a flush that aborts, because the
-//! re-fetch sends it again.
+//! A flush that settles adds the fetched bytes of the records it sent to
+//! `usage_ingested_bytes_total{org_id}`: each record's length before the
+//! fetcher framed or stamped it, the measure the receiver counts too. A
+//! dead-lettered or dropped record is not counted, and nor is any record of a
+//! flush that aborts, because the re-fetch sends it again.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -55,7 +56,8 @@ const DROPPED_WARN_EVERY_MS: u64 = 10_000;
 /// When refused records dropped were last warned of.
 static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 
-/// Payload bytes the outputs accepted, by the org each record was stamped with.
+/// Fetched bytes of the records the outputs accepted, before the fetcher
+/// stamped them, by the org each record was stamped with.
 pub const USAGE_INGESTED_BYTES_TOTAL: &str = "usage_ingested_bytes_total";
 
 /// What one flush did.
@@ -176,7 +178,7 @@ impl Emitter {
     }
 
     /// One concurrent pass over `rows`: returns the backpressured ones and
-    /// adds the bytes of the rows sent to `sent_bytes`.
+    /// adds the ingested bytes of the rows sent to `sent_bytes`.
     async fn send_round(
         &self,
         rows: Vec<Outbound>,
@@ -199,7 +201,7 @@ impl Emitter {
             match outcome {
                 Ok(()) => {
                     report.sent += 1;
-                    *sent_bytes += row.payload.len() as u64;
+                    *sent_bytes += row.ingested_bytes;
                     self.metrics.inc_records_delivered();
                 }
                 Err(Error::Backpressured(_)) => held.push(row),
@@ -331,6 +333,27 @@ mod tests {
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
             Some(16),
             "7 + 9 payload bytes"
+        );
+    }
+
+    /// A stamped row counts the bytes it was fetched at, not the bytes it is
+    /// sent at.
+    #[tokio::test]
+    async fn a_stamped_row_counts_its_ingested_bytes_not_its_payload() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"a":1,"_source":"fixture"}"#).with_ingested_bytes(7),
+            None,
+        );
+
+        emitter.emit(batcher.take()).await.expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(7)
         );
     }
 

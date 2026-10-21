@@ -488,17 +488,19 @@ impl Driver {
 
     /// Stamp one framed payload for the transport: enrich, route, topic. A
     /// route that names one destination stamps it as the row's `_source`, so
-    /// the row lands in that source's table.
+    /// the row lands in that source's table. `ingested` is the row's length as
+    /// fetched, `0` for a frame of the fetcher's own.
     fn stamp(
         &self,
         payload: Bytes,
         route: Option<Routed>,
         stamps: &UnitStamps<'_>,
         topic: &str,
+        ingested: u64,
     ) -> Outbound {
         let stamp = stamps.for_route(route.as_ref());
         let enriched = self.emitter.state().enrich_record_with(payload, stamp);
-        let mut out = Outbound::new(topic, enriched);
+        let mut out = Outbound::new(topic, enriched).with_ingested_bytes(ingested);
         if let Some(route) = route {
             out = out.with_route(route.destinations);
         }
@@ -515,7 +517,7 @@ impl Driver {
     ) -> Snapshot {
         let snap = Snapshot::start(store);
         run.batch
-            .push(self.stamp(snap.begin(None), None, stamps, topic), None);
+            .push(self.stamp(snap.begin(None), None, stamps, topic, 0), None);
         snap
     }
 
@@ -530,8 +532,10 @@ impl Driver {
         stamps: &UnitStamps<'_>,
         topic: &str,
     ) -> Result<()> {
-        run.batch
-            .push(self.stamp(snap.end(snap.seq()), None, stamps, topic), None);
+        run.batch.push(
+            self.stamp(snap.end(snap.seq()), None, stamps, topic, 0),
+            None,
+        );
         self.flush(unit, run, Trigger::End).await?;
         metrics::counter!(metric_names::SNAPSHOTS_TOTAL, "store" => snap.store().to_owned(), "status" => "complete").increment(1);
         self.commit(run).await
@@ -678,6 +682,8 @@ impl Driver {
                 continue;
             }
             let Row { payload: raw, mark } = row;
+            // Usage counts the row as the shape fetched it, the measure the receiver counts.
+            let ingested = raw.len() as u64;
             if per_item {
                 let Some(Mark::Item { key, .. }) = &mark else {
                     return Err(Error::Framework(dfe_fetcher_core::Error::Source(format!(
@@ -721,11 +727,12 @@ impl Driver {
             // A binary row is opaque bytes: the rules cannot read it and the
             // enricher would splice JSON keys into it, so it goes out verbatim.
             // A stub is the envelope's own frame, like the markers: it lands
-            // whatever the filter says of `record.*`.
+            // whatever the filter says of `record.*`, and the row it stands in
+            // for was dead-lettered, so it ingests nothing.
             let out = if binary {
-                Outbound::new(&topic, payload)
+                Outbound::new(&topic, payload).with_ingested_bytes(ingested)
             } else if stub {
-                self.stamp(payload, None, &stamps, &topic)
+                self.stamp(payload, None, &stamps, &topic, 0)
             } else {
                 let (payload, route) = match rules.apply(payload, &unit.add_fields) {
                     Verdict::Drop => {
@@ -741,7 +748,7 @@ impl Driver {
                     }
                     Verdict::Keep { payload, route } => (payload, route),
                 };
-                self.stamp(payload, route, &stamps, &topic)
+                self.stamp(payload, route, &stamps, &topic, ingested)
             };
             if !run.batch.fits(out.payload.len()) {
                 self.flush(unit, &mut run, Trigger::Bytes).await?;
@@ -1020,6 +1027,12 @@ mod tests {
 
     /// A driver over `rows` from the unit `events` of the source `okta-audit`.
     async fn driver_over(config: Config, rows: Vec<Row>) -> Driver {
+        let unit = UnitSpec::new("events", UnitShape::Incremental, "okta-audit");
+        Box::pin(driver_over_unit(config, unit, rows)).await
+    }
+
+    /// A driver over `rows` from `unit`.
+    async fn driver_over_unit(config: Config, unit: UnitSpec, rows: Vec<Row>) -> Driver {
         let output = OutputManager::new(&config.output, &config.kafka)
             .await
             .unwrap();
@@ -1033,11 +1046,7 @@ mod tests {
         let accumulate = AccumulateConfig::default();
         Driver::new(DriverParts {
             shape: Shape::Custom(Box::new(Fixed {
-                units: vec![UnitSpec::new(
-                    "events",
-                    UnitShape::Incremental,
-                    "okta-audit",
-                )],
+                units: vec![unit],
                 rows,
             })),
             connection_id: "conn".into(),
@@ -1174,10 +1183,16 @@ mod tests {
         assert_eq!(received(&default_rx).await.len(), 1);
     }
 
-    /// A tick that settles counts the bytes it delivered, routed or not, under
-    /// the org its records carry.
+    /// The summed length of `rows` as the shape fetched them.
+    fn fetched_bytes(rows: &[Row]) -> u64 {
+        rows.iter().map(|row| row.payload.len() as u64).sum()
+    }
+
+    /// A tick that settles counts each record's bytes as fetched, routed or
+    /// not, under the org it carries: never the stamped bytes it was sent as,
+    /// so the count means what the receiver's does.
     #[tokio::test]
-    async fn a_settled_tick_counts_its_delivered_bytes_under_the_bound_org() {
+    async fn a_settled_tick_counts_the_fetched_bytes_not_the_stamped_ones() {
         let recorder = Recorder::new();
         let _recording = recorder.install();
         let (default_rx, default_ep) = listener().await;
@@ -1188,7 +1203,9 @@ mod tests {
             &[("inventory", &inventory_ep)],
             "inventory".into(),
         );
-        let d = Box::pin(driver_over(config, three_rows())).await;
+        let rows = three_rows();
+        let fetched = fetched_bytes(&rows);
+        let d = Box::pin(driver_over(config, rows)).await;
 
         d.run_tick(None).await.expect("tick");
 
@@ -1198,10 +1215,45 @@ mod tests {
             .chain(received(&default_rx).await)
             .map(|(len, _)| len)
             .sum();
-        assert!(landed > 0);
+        assert!(landed as u64 > fetched, "the stamp adds bytes");
         assert_eq!(
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
-            Some(landed as u64)
+            Some(fetched)
+        );
+    }
+
+    /// A dump's rows count at their fetched length, without the envelope or
+    /// the unit's `_dfe_fetcher_*` fields, and its begin and end markers count
+    /// nothing.
+    #[tokio::test]
+    async fn a_dump_counts_its_rows_as_fetched_and_its_markers_as_nothing() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let mut unit = UnitSpec::new("assets", UnitShape::Dump, "okta-assets");
+        unit.add_fields = vec![("_dfe_fetcher_package".into(), serde_json::json!("okta"))];
+        let rows = vec![
+            Row::new(r#"{"id":"a","alive":true}"#),
+            Row::new(r#"{"id":"b","alive":false}"#),
+        ];
+        let fetched = fetched_bytes(&rows);
+        let d = Box::pin(driver_over_unit(config, unit, rows)).await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let frames = received(&default_rx).await;
+        assert_eq!(frames.len(), 4, "begin, two rows, end: {frames:?}");
+        assert_eq!(frames[1].1["_dfe_fetcher_package"], "okta");
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(fetched)
         );
     }
 }

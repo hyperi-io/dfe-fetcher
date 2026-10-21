@@ -116,15 +116,20 @@ pub struct Outbound {
     pub payload: Bytes,
     /// Named destinations a route chose, or `None` for the default transports.
     pub route: Option<Arc<[Arc<str>]>>,
+    /// The record's bytes as fetched, before the fetcher framed or stamped
+    /// it: what `usage_ingested_bytes_total` counts once the row is sent.
+    pub ingested_bytes: u64,
 }
 
 impl Outbound {
-    /// A row for the default transports.
+    /// A row for the default transports, counted as ingested at its own length.
     #[must_use]
     pub fn new(topic: &str, payload: impl Into<Bytes>) -> Self {
+        let payload: Bytes = payload.into();
         Self {
             topic: Arc::from(topic),
-            payload: payload.into(),
+            ingested_bytes: payload.len() as u64,
+            payload,
             route: None,
         }
     }
@@ -133,6 +138,14 @@ impl Outbound {
     #[must_use]
     pub fn with_route(mut self, route: Arc<[Arc<str>]>) -> Self {
         self.route = Some(route);
+        self
+    }
+
+    /// Count `bytes` as the record's ingested size, for a payload the fetcher
+    /// stamped or framed, or `0` for a frame of its own.
+    #[must_use]
+    pub fn with_ingested_bytes(mut self, bytes: u64) -> Self {
+        self.ingested_bytes = bytes;
         self
     }
 }
@@ -571,7 +584,17 @@ mod tests {
         let plain = Outbound::new("t", b"{}".to_vec());
         assert_eq!(&*plain.topic, "t");
         assert!(plain.route.is_none());
+        assert_eq!(
+            plain.ingested_bytes, 2,
+            "an unstamped row counts its own bytes"
+        );
         let routed = plain.clone().with_route(Arc::from([Arc::from("siem")]));
         assert_eq!(routed.route.as_deref().map(<[Arc<str>]>::len), Some(1));
+        let stamped =
+            Outbound::new("t", br#"{"a":1,"_source":"t"}"#.to_vec()).with_ingested_bytes(7);
+        assert_eq!(
+            stamped.ingested_bytes, 7,
+            "a stamped row counts what was fetched"
+        );
     }
 }

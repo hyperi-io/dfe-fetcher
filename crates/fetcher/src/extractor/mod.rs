@@ -128,7 +128,7 @@ impl ExtractorSink {
 
     /// One record for `topic`, enriched as `source` (the DFE source name the
     /// loader routes on) from `fetcher_source` (the extractor that produced
-    /// it).
+    /// it), and counted for usage at its length as it arrived.
     #[must_use]
     pub fn record(
         &self,
@@ -137,8 +137,9 @@ impl ExtractorSink {
         topic: &str,
         payload: Bytes,
     ) -> Outbound {
+        let ingested = payload.len() as u64;
         let enriched = self.state().enrich_record(payload, source, fetcher_source);
-        Outbound::new(topic, enriched)
+        Outbound::new(topic, enriched).with_ingested_bytes(ingested)
     }
 
     /// Emit records as one batch; every record gets a terminal outcome
@@ -233,6 +234,50 @@ mod tests {
         let metrics = Arc::new(Metrics::new());
         let state = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
         ExtractorSink::new(state, metrics)
+    }
+
+    /// A sink over an in-process output, under the config `yaml`.
+    fn sink_over_memory(yaml: &str) -> ExtractorSink {
+        let (config, _) = Config::parse_yaml(yaml, "fetcher.yaml").expect("config");
+        let metrics = Arc::new(Metrics::new());
+        let transport = Arc::new(
+            scalo::transport::MemoryTransport::new(&scalo::transport::MemoryConfig::default())
+                .expect("memory transport"),
+        );
+        let state = Arc::new(PipelineState::for_tests(
+            SharedConfig::new(config),
+            Arc::clone(&metrics),
+            Some(crate::output::OutputManager::memory(transport)),
+        ));
+        ExtractorSink::new(state, metrics)
+    }
+
+    /// An extractor record counts for usage at its length as it arrived, not
+    /// at the stamped length it was sent at.
+    #[tokio::test]
+    async fn an_extractor_record_counts_its_bytes_as_it_arrived() {
+        let recorder = crate::metrics::recorded::Recorder::new();
+        let _recording = recorder.install();
+        let sink = sink_over_memory("org_id: acme\n");
+        let payload = Bytes::from(r#"{"event":"test"}"#);
+        let arrived = payload.len() as u64;
+        let record = sink.record(
+            "container-tool",
+            "container.my-tool",
+            "container-tool_land",
+            payload,
+        );
+        assert!(
+            record.payload.len() as u64 > arrived,
+            "the stamp adds bytes"
+        );
+
+        sink.emit(vec![record]).await.expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(arrived)
+        );
     }
 
     #[test]
