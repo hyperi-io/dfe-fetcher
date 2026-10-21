@@ -214,7 +214,7 @@ A payload that opens as a JSON object, after whitespace or a UTF-8 byte-order ma
 
 A JSON array whose every element is an object goes out as one record per element, each stamped, because the loader splits an array into its elements and an element with no `_org_id` lands in its default org. A body of two or more whitespace-separated objects and nothing else, newline-delimited records in one payload, is split the same way, exactly where the loader's own split would fan it out: the stamp lands before the last closing brace only, so sent whole it would reach only the last record. Each record counts for usage at its own length before the stamp, and the row's mark rides its last record. `[]` goes out as nothing.
 
-A binary row, and a payload that is neither an object nor such an array (a scalar, plain text, an array holding a non-object), goes out verbatim with no `_org_id`, so the loader's default org applies to it. Its usage counts under `default_org_id` for the same reason, so usage and storage name the same org.
+A binary row, and a payload that is neither an object nor such a split body (a scalar, plain text, an array holding a non-object), goes out verbatim with no `_org_id`. The loader refuses it, though the archiver may keep it. Its usage counts under `default_org_id`, because usage measures ingest into the platform, not what the loader stores.
 
 ## Cursor Cold Start
 

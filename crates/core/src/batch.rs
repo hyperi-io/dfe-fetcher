@@ -115,8 +115,9 @@ pub enum Tenancy {
     #[default]
     Stamped,
     /// The row carries no `_org_id` (binary, not JSON, a scalar, an array
-    /// holding a non-object), so the loader stores it under its default org
-    /// and it counts there.
+    /// holding a non-object). Its usage counts under the default org, since
+    /// usage measures ingest into the platform: the loader refuses such a
+    /// row, though the archiver may keep it.
     Unstamped,
     /// The row opens as a JSON object the stamp could not reach (no closing
     /// brace, or a reserved key that did not parse), so sent it would keep

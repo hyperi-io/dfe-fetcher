@@ -32,9 +32,10 @@
 //!
 //! A flush that settles adds the fetched bytes of the records it sent to
 //! `usage_ingested_bytes_total{org_id}`: each record's length before the
-//! fetcher framed or stamped it, the measure the receiver counts too, under
-//! the org the loader stores it in. That is the org it was stamped with, or
-//! `default_org_id` for a record that carries no `_org_id`. A dead-lettered
+//! fetcher framed or stamped it, the measure the receiver counts too. A
+//! record counts under the org it was stamped with, and one that carries no
+//! `_org_id` under `default_org_id`: usage measures ingest into the platform,
+//! so it counts such a record though the loader refuses it. A dead-lettered
 //! or dropped record is not counted, and nor is any record of a flush that
 //! aborts, because the re-fetch sends it again.
 
@@ -65,7 +66,8 @@ const UNSTAMPABLE: &str =
 static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 
 /// Fetched bytes of the records the outputs accepted, before the fetcher
-/// stamped them, by the org each record is stored under.
+/// stamped them, by the org each record was stamped with, or `default_org_id`
+/// for a record that carries none.
 pub const USAGE_INGESTED_BYTES_TOTAL: &str = "usage_ingested_bytes_total";
 
 /// The ingested bytes a flush sent, by the org each row counts under.
@@ -73,7 +75,7 @@ pub const USAGE_INGESTED_BYTES_TOTAL: &str = "usage_ingested_bytes_total";
 struct Usage {
     /// Rows that carry the org they were stamped with.
     stamped: u64,
-    /// Rows that carry no `_org_id`, which the loader stores under its default org.
+    /// Rows that carry no `_org_id`, which count under `default_org_id`.
     unstamped: u64,
 }
 
@@ -455,8 +457,8 @@ mod tests {
         );
     }
 
-    /// A row that carries no `_org_id` counts under the default org the loader
-    /// stores it in, not the org the pipeline is bound to.
+    /// A row that carries no `_org_id` counts under the default org, not the
+    /// org the pipeline is bound to.
     #[tokio::test]
     async fn an_unstamped_row_counts_under_the_default_org() {
         let recorder = Recorder::new();

@@ -1322,7 +1322,7 @@ mod tests {
     /// A JSON array of objects leaves as one row per element, each stamped with
     /// the unit's org, so the loader never splits it into its default org. A
     /// row that cannot carry an org leaves as it came and counts under the
-    /// default org the loader stores it in.
+    /// default org.
     #[tokio::test]
     async fn an_array_of_objects_leaves_as_stamped_rows_and_text_counts_under_the_default_org() {
         let recorder = Recorder::new();

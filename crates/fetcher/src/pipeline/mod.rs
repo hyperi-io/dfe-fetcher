@@ -640,8 +640,9 @@ impl PipelineState {
         self.shared_config.with(|c| c.stamped_org().to_owned())
     }
 
-    /// The org a record that carries no `_org_id` counts under:
-    /// `default_org_id`, the org the loader stores it in.
+    /// The org a record that carries no `_org_id` counts for usage under:
+    /// `default_org_id`. Usage measures ingest into the platform, so it counts
+    /// such a record though the loader refuses it.
     pub fn default_org_id(&self) -> String {
         self.shared_config.with(|c| c.default_org_id.clone())
     }
@@ -676,6 +677,9 @@ impl PipelineState {
     /// both itself, and a record with no `_org_id` lands in its default org.
     /// Anything else that is not an object (not JSON, a scalar, an array
     /// holding a non-object) comes back [`Tenancy::Unstamped`] and unchanged.
+    /// The loader refuses such a row, though the archiver may keep it, and its
+    /// usage counts under `default_org_id`, since usage measures ingest into
+    /// the platform rather than what the loader stores.
     /// A record that opens as an object, after whitespace or a UTF-8
     /// byte-order mark, and cannot be stamped (no closing brace, or a reserved
     /// key that does not parse) comes back [`Tenancy::Refused`] and unchanged:
