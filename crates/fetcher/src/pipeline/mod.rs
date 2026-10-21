@@ -9,7 +9,7 @@
 //! Pipeline state and orchestration.
 //!
 //! [`PipelineState`] is what every producer of records shares: the one
-//! enrichment implementation (`_source`, `_source_fetcher`, the two
+//! enrichment implementation (`_source`, `_source_fetcher`, `_org_id`, the two
 //! timestamps), the output transports, the dead-letter queue, the memory
 //! guard and the readiness answer. Nothing here batches or retries: a
 //! framework driver and an extractor both send through
@@ -53,19 +53,22 @@ use scalo::memory::MemoryGuard;
 /// aside rather than duplicated. Two top-level keys of the same name make the
 /// loader's ClickHouse JSON column reject the whole record ("Duplicate path
 /// found during parsing JSON object"), and a rejected record is not
-/// dead-lettered -- it is lost.
-const RESERVED_KEYS: [&str; 4] = [
+/// dead-lettered -- it is lost. A fetched `_org_id` is moved aside the same
+/// way, so a record cannot name its own tenant.
+const RESERVED_KEYS: [&str; 5] = [
     "_timestamp_fetcher",
     "_timestamp_received",
     "_source",
     "_source_fetcher",
+    "_org_id",
 ];
 
 /// Prefixes the pre-filter searches for, one per reserved-key family.
-static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 2]> = LazyLock::new(|| {
+static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 3]> = LazyLock::new(|| {
     [
         memchr::memmem::Finder::new(b"\"_source"),
         memchr::memmem::Finder::new(b"\"_timestamp_"),
+        memchr::memmem::Finder::new(b"\"_org_id"),
     ]
 });
 
@@ -133,31 +136,37 @@ fn json_string_literal(s: &str) -> String {
     serde_json::Value::String(s.to_owned()).to_string()
 }
 
-/// The two source names one enrich pass stamps, escaped once as JSON literals.
+/// The names and the org one enrich pass stamps, escaped once as JSON literals.
 ///
-/// The names are constant for a whole batch while [`PipelineState::enrich_record_with`]
+/// They are constant for a whole batch while [`PipelineState::enrich_record_with`]
 /// runs per record, so the escaping is done here and the append path borrows
 /// the result.
-pub struct SourceNames<'a> {
+pub struct Stamp<'a> {
     /// The DFE source name, the value of `_source`.
     dfe_source: &'a str,
     /// The producing fetcher source, the value of `_source_fetcher`.
     source: &'a str,
+    /// The org the record belongs to, the value of `_org_id`.
+    org: &'a str,
     /// `dfe_source` as a quoted, escaped JSON string literal.
     dfe_source_literal: String,
     /// `source` as a quoted, escaped JSON string literal.
     source_literal: String,
+    /// `org` as a quoted, escaped JSON string literal.
+    org_literal: String,
 }
 
-impl<'a> SourceNames<'a> {
-    /// Escape both names as JSON string literals, once for the batch.
+impl<'a> Stamp<'a> {
+    /// Escape the names and the org as JSON string literals, once for the batch.
     #[must_use]
-    pub fn new(dfe_source: &'a str, source: &'a str) -> Self {
+    pub fn new(dfe_source: &'a str, source: &'a str, org: &'a str) -> Self {
         Self {
             dfe_source,
             source,
+            org,
             dfe_source_literal: json_string_literal(dfe_source),
             source_literal: json_string_literal(source),
+            org_literal: json_string_literal(org),
         }
     }
 }
@@ -168,7 +177,7 @@ impl<'a> SourceNames<'a> {
 /// the fetcher's value takes the name, so each key appears exactly once.
 /// Returns `None` when the payload is not a JSON object, leaving the caller on
 /// the append fast path.
-fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str) -> Option<Bytes> {
+fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, stamp: &Stamp<'_>) -> Option<Bytes> {
     let serde_json::Value::Object(mut map) = serde_json::from_slice(raw).ok()? else {
         return None;
     };
@@ -181,8 +190,9 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
 
     map.insert("_timestamp_fetcher".to_string(), now_ms.into());
     map.insert("_timestamp_received".to_string(), now_ms.into());
-    map.insert("_source".to_string(), dfe_source.into());
-    map.insert("_source_fetcher".to_string(), source.into());
+    map.insert("_source".to_string(), stamp.dfe_source.into());
+    map.insert("_source_fetcher".to_string(), stamp.source.into());
+    map.insert("_org_id".to_string(), stamp.org.into());
 
     serde_json::to_vec(&map).ok().map(Bytes::from)
 }
@@ -423,10 +433,17 @@ impl PipelineState {
         true
     }
 
+    /// The org every record this instance emits belongs to: the configured
+    /// `org_id`, else `default_org_id`.
+    pub fn org_id(&self) -> String {
+        self.shared_config.with(|c| c.stamped_org().to_owned())
+    }
+
     /// Enrich a record with fetcher metadata.
     ///
     /// `_source` is the DFE source name (the topic without its suffix), the field
-    /// dfe-loader routes and filters on; `_source_fetcher` names the producer.
+    /// dfe-loader routes and filters on. `_source_fetcher` names the producer,
+    /// and `_org_id` is [`Self::org_id`].
     ///
     /// The fetcher's value wins for every reserved metadata key -- the loader
     /// routes on `_source`, so the DFE source name must be the one that survives
@@ -434,17 +451,19 @@ impl PipelineState {
     /// `<key>_original`, or the next free `<key>_original_<n>` when that name is
     /// taken too.
     ///
-    /// This escapes the two names on every call; a batch that shares them should
-    /// build a [`SourceNames`] once and call [`Self::enrich_record_with`].
+    /// This reads the org and escapes the names on every call. A batch that
+    /// shares them builds a [`Stamp`] once and calls
+    /// [`Self::enrich_record_with`].
     pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
-        self.enrich_record_with(payload, &SourceNames::new(dfe_source, source))
+        let org = self.org_id();
+        self.enrich_record_with(payload, &Stamp::new(dfe_source, source, &org))
     }
 
-    /// Enrich a record against names already escaped for the whole batch.
+    /// Enrich a record against a stamp already escaped for the whole batch.
     ///
     /// Same contract as [`Self::enrich_record`], minus the per-record escaping.
-    pub fn enrich_record_with(&self, payload: Bytes, names: &SourceNames<'_>) -> Bytes {
-        let source = names.source;
+    pub fn enrich_record_with(&self, payload: Bytes, stamp: &Stamp<'_>) -> Bytes {
+        let source = stamp.source;
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -466,7 +485,7 @@ impl PipelineState {
         // Appending blind would emit a second copy of any reserved key the
         // payload already has, so a collision takes the parse-and-rewrite path.
         if may_carry_reserved_key(raw)
-            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, names.dfe_source, source)
+            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, stamp)
         {
             tracing::trace!(
                 source,
@@ -477,10 +496,14 @@ impl PipelineState {
             return rewritten;
         }
 
-        // The fixed envelope text is 101 bytes plus two timestamps and the two
-        // escaped names; sizing for them keeps this the fast path's only allocation.
+        // 86 bytes of key text and two timestamps of at most 20 digits fit in
+        // 160, so with the escaped literals this is the fast path's only allocation.
         let mut buf = Vec::with_capacity(
-            raw.len() + 128 + names.dfe_source_literal.len() + names.source_literal.len(),
+            raw.len()
+                + 160
+                + stamp.dfe_source_literal.len()
+                + stamp.source_literal.len()
+                + stamp.org_literal.len(),
         );
         buf.extend_from_slice(&raw[..insert_pos]);
 
@@ -502,9 +525,11 @@ impl PipelineState {
         buf.extend_from_slice(b",\"_timestamp_received\":");
         buf.extend_from_slice(now_str.as_bytes());
         buf.extend_from_slice(b",\"_source\":");
-        buf.extend_from_slice(names.dfe_source_literal.as_bytes());
+        buf.extend_from_slice(stamp.dfe_source_literal.as_bytes());
         buf.extend_from_slice(b",\"_source_fetcher\":");
-        buf.extend_from_slice(names.source_literal.as_bytes());
+        buf.extend_from_slice(stamp.source_literal.as_bytes());
+        buf.extend_from_slice(b",\"_org_id\":");
+        buf.extend_from_slice(stamp.org_literal.as_bytes());
         buf.extend_from_slice(&raw[insert_pos..]);
 
         let enriched = Bytes::from(buf);
@@ -1511,21 +1536,88 @@ mod tests {
     }
 
     #[test]
-    fn test_source_names_escape_the_literals_once() {
+    fn test_stamp_escapes_the_literals_once() {
         // The literals the append path writes carry serde's escaping, quotes
-        // included, so a quote or backslash in a name cannot break the record.
-        let names = SourceNames::new(r#"in"gest"#, r#"c:\logs"#);
+        // included, so a quote or backslash in a name or an org cannot break
+        // the record.
+        let stamp = Stamp::new(r#"in"gest"#, r#"c:\logs"#, r#"ac"me"#);
 
-        assert_eq!(names.dfe_source_literal, r#""in\"gest""#);
-        assert_eq!(names.source_literal, r#""c:\\logs""#);
-        assert_eq!(names.dfe_source, r#"in"gest"#);
-        assert_eq!(names.source, r#"c:\logs"#);
+        assert_eq!(stamp.dfe_source_literal, r#""in\"gest""#);
+        assert_eq!(stamp.source_literal, r#""c:\\logs""#);
+        assert_eq!(stamp.org_literal, r#""ac\"me""#);
+        assert_eq!(stamp.dfe_source, r#"in"gest"#);
+        assert_eq!(stamp.source, r#"c:\logs"#);
+        assert_eq!(stamp.org, r#"ac"me"#);
+    }
+
+    /// A pipeline over `yaml` as the config file, reservation-counted like
+    /// [`make_pipeline_state`].
+    fn pipeline_over(yaml: &str) -> PipelineState {
+        let (config, _) = Config::parse_yaml(yaml, "fetcher.yaml").expect("config");
+        PipelineState::for_tests(SharedConfig::new(config), Arc::new(Metrics::new()), None)
+    }
+
+    /// With no org bound, every record carries the built-in default org, on
+    /// the append path and the rewrite path alike.
+    #[test]
+    fn every_record_carries_the_default_org_when_none_is_bound() {
+        let state = make_pipeline_state();
+        for payload in [r#"{"event":"x"}"#, r#"{"event":"x","_source":"theirs"}"#] {
+            let enriched = state.enrich_record(Bytes::from(payload), "ingest", "ingest.source");
+            assert_eq!(key_occurrences(&enriched, "_org_id"), 1, "{payload}");
+            let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+            assert_eq!(parsed["_org_id"], "default", "{payload}");
+        }
+    }
+
+    /// The org the config binds is the one every record carries, and an empty
+    /// binding takes the deployment default.
+    #[test]
+    fn every_record_carries_the_bound_org_and_an_empty_binding_takes_the_default() {
+        let bound = pipeline_over("org_id: acme\n");
+        let enriched = bound.enrich_record(Bytes::from(r#"{"event":"x"}"#), "ingest", "i.s");
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_org_id"], "acme");
+
+        let empty = pipeline_over("org_id: ''\ndefault_org_id: house\n");
+        let enriched = empty.enrich_record(Bytes::from(r#"{"event":"x"}"#), "ingest", "i.s");
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_org_id"], "house");
+    }
+
+    /// An `_org_id` the fetched data carried is parked as `_org_id_original`,
+    /// as `_source` is, and the bound org takes the name: a record cannot pick
+    /// its own tenant.
+    #[test]
+    fn a_fetched_org_id_is_parked_and_the_bound_org_takes_its_place() {
+        let state = pipeline_over("org_id: acme\n");
+        let enriched = state.enrich_record(
+            Bytes::from(r#"{"event":"x","_org_id":"someone-else"}"#),
+            "ingest",
+            "ingest.source",
+        );
+        assert_eq!(
+            key_occurrences(&enriched, "_org_id"),
+            1,
+            "two _org_id keys make ClickHouse reject the record"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_org_id"], "acme");
+        assert_eq!(parsed["_org_id_original"], "someone-else");
+        assert_eq!(parsed["event"], "x");
+
+        let replayed = state.enrich_record(enriched, "ingest", "ingest.source");
+        let parsed: serde_json::Value = serde_json::from_slice(&replayed).unwrap();
+        assert_eq!(parsed["_org_id"], "acme");
+        assert_eq!(parsed["_org_id_original"], "someone-else");
+        assert_eq!(parsed["_org_id_original_2"], "acme");
     }
 
     #[test]
     fn test_may_carry_reserved_key() {
         assert!(may_carry_reserved_key(br#"{"_source":"x"}"#));
         assert!(may_carry_reserved_key(br#"{"_timestamp_received":1}"#));
+        assert!(may_carry_reserved_key(br#"{"_org_id":"x"}"#));
         assert!(!may_carry_reserved_key(br#"{"event":"x","id":7}"#));
         assert!(!may_carry_reserved_key(b"{}"));
     }

@@ -33,8 +33,9 @@ csv-core = { workspace = true }
 futures-core = { workspace = true }
 itoa = { workspace = true }
 memchr = { workspace = true }
-# The compiled CEL surface only: no I/O, no transport, no config.
-scalo = { workspace = true, features = ["expression"] }
+# The compiled CEL surface and the ordered rule set the routes compile to: no
+# I/O, no transport, no config.
+scalo = { workspace = true, features = ["expression", "rules"] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

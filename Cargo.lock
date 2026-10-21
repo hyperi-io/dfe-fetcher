@@ -6278,11 +6278,12 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.14.18"
+version = "2.14.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d3c6b53a20c42f7c0b062a05eb458e3ad6f74b94b3431466a1ca5a38e7fa0f1"
+checksum = "f2511918aac064c7d1f867e10cc67c613aaa1841a086ae86437ae01d84d51f29"
 dependencies = [
  "aes-gcm",
+ "aho-corasick",
  "arc-swap",
  "axum",
  "backon",
@@ -6318,6 +6319,8 @@ dependencies = [
  "rayon",
  "rdkafka",
  "regex",
+ "regex-automata",
+ "regex-syntax",
  "reqwest 0.13.5",
  "rmpv",
  "schemars 1.2.3",
@@ -7076,7 +7079,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

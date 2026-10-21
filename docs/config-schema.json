@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Config",
-  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` -- fetch interval re-computed each cycle\n- `scheduler.jitter_percent` -- jitter re-computed each cycle\n- `kafka.topic_suffix` -- topic name suffix re-read on each delivery\n- `sources.*.filter` -- CEL filter re-evaluated on each record\n- `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle\n- `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle\n- dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload\n\n**Requires pod restart:**\n- `output.*` -- transport connections established at startup\n- `kafka.*` (except `topic_suffix`) -- transport config bound at startup\n- `ingest.*` -- HTTP server binds at startup, auth token resolved once\n- `extractors.*` -- containers and Vector instances spawned at startup\n- `metrics.*` -- metrics server binds at startup\n- `instance_id` -- cursor key prefix set at startup\n- `cursor.directory` -- cursor store created at startup\n- adding a source, or `sources.*.enabled: true` -- source registration at startup\n- `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup\n- `scheduler.max_concurrent_fetches` -- semaphore created at startup\n- `dlq.*` -- DLQ created at startup\n- `buffer.*` -- buffer manager created at startup",
+  "description": "Main configuration struct.\n\n## Hot-reload behaviour\n\nThe config file is watched for changes. When reloaded, values are\navailable via `SharedConfig::get()`. However, not all settings take\neffect without a restart.\n\n**Hot-reloaded (takes effect on next fetch cycle):**\n- `scheduler.default_interval_secs` -- fetch interval re-computed each cycle\n- `scheduler.jitter_percent` -- jitter re-computed each cycle\n- `kafka.topic_suffix` -- topic name suffix re-read on each delivery\n- `sources.*.filter` -- CEL filter re-evaluated on each record\n- `org_id`, `default_org_id` -- the `_org_id` stamped on each record, re-read\n  each fetch cycle and for each extractor record\n- `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle\n- `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle\n- dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload\n\n**Requires pod restart:**\n- `output.*` -- transport connections established at startup\n- `kafka.*` (except `topic_suffix`) -- transport config bound at startup\n- `ingest.*` -- HTTP server binds at startup, auth token resolved once\n- `extractors.*` -- containers and Vector instances spawned at startup\n- `metrics.*` -- metrics server binds at startup\n- `instance_id` -- cursor key prefix set at startup\n- `cursor.directory` -- cursor store created at startup\n- adding a source, or `sources.*.enabled: true` -- source registration at startup\n- `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup\n- `scheduler.max_concurrent_fetches` -- semaphore created at startup\n- `dlq.*` -- DLQ created at startup\n- `buffer.*` -- buffer manager created at startup",
   "type": "object",
   "properties": {
     "scheduler": {
@@ -271,6 +271,19 @@
         "null"
       ],
       "default": null
+    },
+    "org_id": {
+      "description": "The org every record this instance emits belongs to, stamped as\n`_org_id`. The engine fills it from the org of the source the instance\npolls. Unset, null or empty takes `default_org_id`.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "default_org_id": {
+      "description": "The org a record takes when `org_id` binds none.",
+      "type": "string",
+      "default": "default"
     },
     "output": {
       "description": "Output transport configuration.",
@@ -8230,15 +8243,15 @@
       }
     },
     "OutputRoute": {
-      "description": "A per-record route: matched records go to the named destination(s) instead\nof the default.",
+      "description": "A per-record route: matched records go to the named destination(s) instead\nof the default. The first route in declared order that matches wins.\n\nA route naming one destination names the source the record belongs to: the\nrecord's `_source` is that name, so it lands in that source's table. A\nfan-out keeps the fetching source's `_source`. No route changes `_org_id`.",
       "type": "object",
       "properties": {
         "match_field": {
-          "description": "Top-level field to match.",
+          "description": "Field to match: a top-level key, or a dotted path into nested objects.",
           "type": "string"
         },
         "match_value": {
-          "description": "Value to match.",
+          "description": "Value to match: a string as written, a number or a boolean as its JSON\ntext.",
           "type": "string"
         },
         "destination": {
