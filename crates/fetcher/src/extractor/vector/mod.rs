@@ -267,7 +267,7 @@ impl VectorReceiver {
         let records: Vec<_> = batch
             .records
             .into_iter()
-            .map(|record| {
+            .flat_map(|record| {
                 let topic = record
                     .key
                     .as_ref()

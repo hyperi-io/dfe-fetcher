@@ -54,7 +54,7 @@ use crate::driver::GuardLease;
 use crate::emit::{EmitReport, Emitter};
 use crate::error::Result;
 use crate::metrics::Metrics;
-use crate::pipeline::{Enriched, PipelineState};
+use crate::pipeline::PipelineState;
 
 /// Trait for external extractors (containers, vector instances).
 ///
@@ -126,24 +126,23 @@ impl ExtractorSink {
         self.emitter.state()
     }
 
-    /// One record for `topic`, enriched as `source` (the DFE source name the
-    /// loader routes on) from `fetcher_source` (the extractor that produced
-    /// it), and counted for usage at its length as it arrived. A record
-    /// enrichment refuses is dead-lettered unsent by [`ExtractorSink::emit`].
-    #[must_use]
+    /// The rows one record goes out as on `topic`, enriched as `source` (the
+    /// DFE source name the loader routes on) from `fetcher_source` (the
+    /// extractor that produced it), and counted for usage at its length as it
+    /// arrived. A JSON array of objects goes out as one row per element. A
+    /// record enrichment refuses is dead-lettered unsent by
+    /// [`ExtractorSink::emit`].
     pub fn record(
         &self,
         source: &str,
         fetcher_source: &str,
         topic: &str,
         payload: Bytes,
-    ) -> Outbound {
+    ) -> impl Iterator<Item = Outbound> + use<> {
         let ingested = payload.len() as u64;
-        let Enriched::One(enriched, tenancy) =
-            self.state().enrich_record(payload, source, fetcher_source);
-        Outbound::new(topic, enriched)
-            .with_ingested_bytes(ingested)
-            .with_tenancy(tenancy)
+        self.state()
+            .enrich_record(payload, source, fetcher_source)
+            .into_rows(topic, ingested, None)
     }
 
     /// Emit records as one batch; every record gets a terminal outcome
@@ -183,8 +182,10 @@ impl ExtractorSink {
         topic: &str,
         payload: Bytes,
     ) -> Result<()> {
-        let record = self.record(source, fetcher_source, topic, payload);
-        self.emit(vec![record]).await.map(|_| ())
+        let rows = self
+            .record(source, fetcher_source, topic, payload)
+            .collect();
+        self.emit(rows).await.map(|_| ())
     }
 }
 
@@ -265,18 +266,21 @@ mod tests {
         let sink = sink_over_memory("org_id: acme\n");
         let payload = Bytes::from(r#"{"event":"test"}"#);
         let arrived = payload.len() as u64;
-        let record = sink.record(
-            "container-tool",
-            "container.my-tool",
-            "container-tool_land",
-            payload,
-        );
+        let rows: Vec<Outbound> = sink
+            .record(
+                "container-tool",
+                "container.my-tool",
+                "container-tool_land",
+                payload,
+            )
+            .collect();
+        assert_eq!(rows.len(), 1);
         assert!(
-            record.payload.len() as u64 > arrived,
+            rows[0].payload.len() as u64 > arrived,
             "the stamp adds bytes"
         );
 
-        sink.emit(vec![record]).await.expect("sent");
+        sink.emit(rows).await.expect("sent");
 
         assert_eq!(
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
@@ -284,15 +288,59 @@ mod tests {
         );
     }
 
+    /// A JSON array of objects arriving as one record goes out as one stamped
+    /// row per element, each counted at its own length under the bound org.
+    #[tokio::test]
+    async fn an_arriving_array_of_objects_goes_out_as_one_stamped_row_per_element() {
+        let recorder = crate::metrics::recorded::Recorder::new();
+        let _recording = recorder.install();
+        let sink = sink_over_memory("org_id: acme\n");
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b"}"#);
+        let rows: Vec<Outbound> = sink
+            .record(
+                "ingest-tool",
+                "ingest",
+                "ingest-tool_land",
+                Bytes::from(format!("[{first},{second}]")),
+            )
+            .collect();
+        let stamped: Vec<(serde_json::Value, serde_json::Value)> = rows
+            .iter()
+            .map(|row| {
+                let parsed: serde_json::Value = serde_json::from_slice(&row.payload).unwrap();
+                (parsed["id"].clone(), parsed["_org_id"].clone())
+            })
+            .collect();
+        assert_eq!(
+            stamped,
+            [
+                (serde_json::json!("a"), serde_json::json!("acme")),
+                (serde_json::json!("b"), serde_json::json!("acme")),
+            ]
+        );
+
+        sink.emit(rows).await.expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some((first.len() + second.len()) as u64)
+        );
+    }
+
     #[test]
     fn a_record_is_enriched_for_its_topic() {
         let sink = sink();
-        let out = sink.record(
-            "container-tool",
-            "container.my-tool",
-            "container-tool_land",
-            Bytes::from(r#"{"event":"test"}"#),
-        );
+        let rows: Vec<Outbound> = sink
+            .record(
+                "container-tool",
+                "container.my-tool",
+                "container-tool_land",
+                Bytes::from(r#"{"event":"test"}"#),
+            )
+            .collect();
+        let [out] = rows.as_slice() else {
+            panic!("one row, got {rows:?}");
+        };
         assert_eq!(&*out.topic, "container-tool_land");
         assert!(out.route.is_none());
         let parsed: serde_json::Value = serde_json::from_slice(&out.payload).unwrap();

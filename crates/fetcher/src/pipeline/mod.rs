@@ -33,7 +33,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use dfe_fetcher_core::batch::Tenancy;
+use dfe_fetcher_core::batch::{Outbound, Tenancy};
+use dfe_fetcher_core::frame::split_array;
 use scalo::dlq::{Dlq, DlqEntry};
 use scalo::logger::security;
 use scalo::transport::ack::EffectiveGuarantee;
@@ -251,12 +252,69 @@ fn stamp_object(raw: &[u8], insert_pos: usize, now_ms: u64, stamp: &Stamp<'_>) -
     Some(Bytes::from(buf))
 }
 
+/// The elements of a JSON array whose every element is an object, as slices
+/// of `payload`, or `None` when it is anything else.
+fn split_objects(payload: &Bytes) -> Option<Vec<Bytes>> {
+    let elements = split_array(payload, 0, payload.len()).ok()?;
+    elements
+        .iter()
+        .all(|element| element.first() == Some(&b'{') && element.last() == Some(&b'}'))
+        .then_some(elements)
+}
+
 /// What enriching one record made of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub enum Enriched {
     /// One row, and what became of its org stamp.
     One(Bytes, Tenancy),
+    /// A JSON array whose every element is an object, as one stamped object
+    /// per element in order, each with its length before the stamp.
+    Split(Vec<(Bytes, u64)>),
+}
+
+impl Enriched {
+    /// The rows the record goes out as on `topic`, to `route` when one
+    /// matched. One row counts `ingested`, the record's length as fetched,
+    /// and each element of a split counts its own length before the stamp.
+    pub fn into_rows(
+        self,
+        topic: &str,
+        ingested: u64,
+        route: Option<Arc<[Arc<str>]>>,
+    ) -> impl Iterator<Item = Outbound> + use<> {
+        let topic: Arc<str> = Arc::from(topic);
+        let row = move |payload: Bytes, ingested_bytes: u64, tenancy: Tenancy| Outbound {
+            topic: Arc::clone(&topic),
+            payload,
+            route: route.clone(),
+            ingested_bytes,
+            tenancy,
+        };
+        let (one, split) = match self {
+            Enriched::One(payload, tenancy) => (Some(row(payload, ingested, tenancy)), Vec::new()),
+            Enriched::Split(parts) => (None, parts),
+        };
+        one.into_iter().chain(
+            split
+                .into_iter()
+                .map(move |(payload, len)| row(payload, len, Tenancy::Stamped)),
+        )
+    }
+}
+
+/// A record that may name its own org and did not parse, which is never sent.
+#[cold]
+fn refused(payload: Bytes, source: &str) -> Enriched {
+    if scalo::logger::log_debounced(&REFUSED_WARNED_AT, DLQ_LOG_EVERY_MS) {
+        warn!(
+            source,
+            payload_bytes = payload.len(),
+            "A record that may name its own org did not parse, so its _org_id cannot be \
+             replaced: it is dead-lettered, never sent (debounced, max 1/5s)"
+        );
+    }
+    Enriched::One(payload, Tenancy::Refused)
 }
 
 /// How long shutdown waits for the extractors to deliver what they hold before
@@ -503,6 +561,12 @@ impl PipelineState {
         self.shared_config.with(|c| c.stamped_org().to_owned())
     }
 
+    /// The org a record that carries no `_org_id` counts under:
+    /// `default_org_id`, the org the loader stores it in.
+    pub fn default_org_id(&self) -> String {
+        self.shared_config.with(|c| c.default_org_id.clone())
+    }
+
     /// Enrich a record with fetcher metadata.
     ///
     /// `_source` is the DFE source name (the topic without its suffix), the field
@@ -526,6 +590,12 @@ impl PipelineState {
     /// Enrich a record against a stamp already escaped for the whole batch.
     ///
     /// Same contract as [`Self::enrich_record`], minus the per-record escaping.
+    ///
+    /// A JSON array whose every element is an object comes back
+    /// [`Enriched::Split`], one stamped object per element: the loader splits
+    /// an array itself, and an element with no `_org_id` lands in its default
+    /// org. Anything else that is not an object (not JSON, a scalar, an array
+    /// holding a non-object) comes back [`Tenancy::Unstamped`] and unchanged.
     /// A record that may carry a reserved key and does not parse comes back
     /// [`Tenancy::Refused`] and unchanged: its `_org_id` cannot be replaced,
     /// so it must never be sent.
@@ -540,37 +610,55 @@ impl PipelineState {
         .unwrap_or(u64::MAX);
 
         let raw = payload.as_ref();
-        // In an array or a scalar the stamp would land inside one element, so
-        // only a payload that opens as an object takes it.
-        let is_object = raw.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
-        let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}').filter(|_| is_object) else {
-            tracing::trace!(
-                source,
-                payload_bytes = raw.len(),
-                "Enrich skipped -- payload is not a JSON object"
-            );
-            return Enriched::One(payload, Tenancy::Stamped);
-        };
-
-        let Some(enriched) = stamp_object(raw, insert_pos, now_ms, stamp) else {
-            if scalo::logger::log_debounced(&REFUSED_WARNED_AT, DLQ_LOG_EVERY_MS) {
-                warn!(
-                    source,
-                    payload_bytes = raw.len(),
-                    "A record that may name its own org did not parse, so its _org_id cannot be \
-                     replaced: it is dead-lettered, never sent (debounced, max 1/5s)"
-                );
+        // The stamp lands at an object's top level: in an array or a scalar it
+        // would land inside one element, or nowhere.
+        match raw.iter().find(|b| !b.is_ascii_whitespace()) {
+            Some(b'{') => {
+                if let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') {
+                    let Some(enriched) = stamp_object(raw, insert_pos, now_ms, stamp) else {
+                        return refused(payload, source);
+                    };
+                    tracing::trace!(
+                        source,
+                        original_bytes = raw.len(),
+                        enriched_bytes = enriched.len(),
+                        timestamp_fetcher = now_ms,
+                        "Record enriched with fetcher metadata"
+                    );
+                    return Enriched::One(enriched, Tenancy::Stamped);
+                }
             }
-            return Enriched::One(payload, Tenancy::Refused);
-        };
+            Some(b'[') => {
+                if let Some(elements) = split_objects(&payload) {
+                    let parts: Option<Vec<(Bytes, u64)>> = elements
+                        .iter()
+                        .map(|element| {
+                            stamp_object(element, element.len() - 1, now_ms, stamp)
+                                .map(|stamped| (stamped, element.len() as u64))
+                        })
+                        .collect();
+                    // One element that cannot be stamped refuses the record whole,
+                    // so the dead letter holds it as fetched.
+                    let Some(parts) = parts else {
+                        return refused(payload, source);
+                    };
+                    tracing::trace!(
+                        source,
+                        original_bytes = raw.len(),
+                        elements = parts.len(),
+                        "Array split into stamped objects"
+                    );
+                    return Enriched::Split(parts);
+                }
+            }
+            _ => {}
+        }
         tracing::trace!(
             source,
-            original_bytes = raw.len(),
-            enriched_bytes = enriched.len(),
-            timestamp_fetcher = now_ms,
-            "Record enriched with fetcher metadata"
+            payload_bytes = raw.len(),
+            "Enrich skipped -- payload is not a JSON object or an array of objects"
         );
-        Enriched::One(enriched, Tenancy::Stamped)
+        Enriched::One(payload, Tenancy::Unstamped)
     }
 
     /// Send one record to every default transport, with no dead-lettering and
@@ -930,18 +1018,25 @@ mod tests {
         match enriched {
             Enriched::One(payload, Tenancy::Stamped) => payload,
             Enriched::One(_, tenancy) => panic!("expected one stamped row, got {tenancy:?}"),
+            Enriched::Split(parts) => panic!("expected one stamped row, got {parts:?}"),
         }
     }
 
     /// A record that may name its own org and does not parse cannot have its
     /// `_org_id` replaced, so it comes back refused and byte-identical, never
-    /// with a second `_org_id` appended after the sender's.
+    /// with a second `_org_id` appended after the sender's. One such element
+    /// refuses an array whole.
     #[test]
     fn a_record_that_may_name_its_org_and_does_not_parse_is_refused() {
         let state = pipeline_over("org_id: acme\n");
         // A lone surrogate escape, built from the backslash's code point: serde refuses it.
         let lone_surrogate = format!(r#"{{"_org_id":"victim","s":"{}ud800"}}"#, char::from(0x5c));
-        for raw in [lone_surrogate.as_str(), r#"{"_org_id":"victim","s":}"#] {
+        let in_an_array = format!(r#"[{{"id":"a"}},{lone_surrogate}]"#);
+        for raw in [
+            lone_surrogate.as_str(),
+            r#"{"_org_id":"victim","s":}"#,
+            in_an_array.as_str(),
+        ] {
             let payload = Bytes::from(raw.to_owned());
             assert_eq!(
                 state.enrich_record(payload.clone(), "ingest", "ingest.source"),
@@ -974,31 +1069,35 @@ mod tests {
         let state = make_pipeline_state();
         let raw = "this is not json at all";
         let payload = Bytes::from(raw);
-        let enriched = stamped(state.enrich_record(payload, "src", "src.fetcher"));
-        // Non-JSON payload has no closing brace so should be returned unchanged
-        assert_eq!(enriched.as_ref(), raw.as_bytes());
+        assert_eq!(
+            state.enrich_record(payload.clone(), "src", "src.fetcher"),
+            Enriched::One(payload, Tenancy::Unstamped),
+            "no object to stamp, so it goes out as it came"
+        );
     }
 
-    /// Only a JSON object takes the stamp: in an array or a string it would land
-    /// inside one element and leave the record itself untagged.
+    /// Only an object takes the stamp: in a scalar it has nowhere to go, and
+    /// in an array holding a non-object it would land inside one element and
+    /// leave the rest untagged. Those leave unstamped and byte-identical.
     #[test]
-    fn a_payload_that_is_not_an_object_leaves_byte_identical() {
+    fn a_payload_that_cannot_carry_the_org_leaves_unstamped_and_byte_identical() {
         let state = pipeline_over("org_id: acme\n");
-        let raws = [
-            r#"[{"a":1}]"#,
+        for raw in [
             "[1,2]",
-            r#"  [{"_org_id":"x"}]"#,
+            r#"[{"a":1},2]"#,
+            r#"[[{"a":1}]]"#,
+            r#"[{"a":1},"#,
             r#""text}""#,
-        ];
-        let sent: Vec<String> = raws
-            .iter()
-            .map(|raw| {
-                let enriched =
-                    stamped(state.enrich_record(Bytes::from(*raw), "ingest", "ingest.source"));
-                String::from_utf8(enriched.to_vec()).expect("utf-8")
-            })
-            .collect();
-        assert_eq!(sent, raws);
+            r#"{"a":1"#,
+            "42",
+        ] {
+            let payload = Bytes::from(raw);
+            assert_eq!(
+                state.enrich_record(payload.clone(), "ingest", "ingest.source"),
+                Enriched::One(payload, Tenancy::Unstamped),
+                "{raw}"
+            );
+        }
 
         let enriched = stamped(state.enrich_record(Bytes::from(r#"  {"a":1}"#), "ingest", "i.s"));
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
@@ -1006,6 +1105,79 @@ mod tests {
             parsed["_org_id"], "acme",
             "an object after whitespace is stamped"
         );
+    }
+
+    /// A JSON array of objects splits into one stamped object per element, in
+    /// order, each with its length before the stamp. A reserved key an element
+    /// carries is parked as it is in a single object, and `[]` holds no row.
+    #[test]
+    fn an_array_of_objects_splits_into_one_stamped_object_per_element() {
+        let state = pipeline_over("org_id: acme\n");
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b","_org_id":"someone-else"}"#);
+        let Enriched::Split(parts) = state.enrich_record(
+            Bytes::from(format!(" [{first},\n {second}] ")),
+            "ingest",
+            "ingest.source",
+        ) else {
+            panic!("an array of objects splits");
+        };
+        let got: Vec<(serde_json::Value, u64)> = parts
+            .iter()
+            .map(|(payload, len)| (serde_json::from_slice(payload).unwrap(), *len))
+            .collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            (&got[0].0["id"], &got[0].0["_org_id"], got[0].1),
+            (
+                &serde_json::json!("a"),
+                &serde_json::json!("acme"),
+                first.len() as u64
+            )
+        );
+        assert_eq!(
+            (
+                &got[1].0["id"],
+                &got[1].0["_org_id"],
+                &got[1].0["_org_id_original"],
+                got[1].1
+            ),
+            (
+                &serde_json::json!("b"),
+                &serde_json::json!("acme"),
+                &serde_json::json!("someone-else"),
+                second.len() as u64
+            )
+        );
+        assert_eq!(key_occurrences(&parts[1].0, "_org_id"), 1);
+        assert_eq!(
+            state.enrich_record(Bytes::from("[]"), "ingest", "ingest.source"),
+            Enriched::Split(Vec::new())
+        );
+    }
+
+    /// The rows a record goes out as: one counted at its fetched length, or
+    /// one per element of a split counted at the element's own, each on the
+    /// topic and route given.
+    #[test]
+    fn enriched_records_go_out_as_rows_on_their_topic_and_route() {
+        let route: Arc<[Arc<str>]> = Arc::from([Arc::from("siem")]);
+        let one: Vec<Outbound> = Enriched::One(Bytes::from("text"), Tenancy::Unstamped)
+            .into_rows("t_land", 4, Some(Arc::clone(&route)))
+            .collect();
+        assert_eq!(
+            one,
+            [Outbound::new("t_land", "text")
+                .with_tenancy(Tenancy::Unstamped)
+                .with_route(Arc::clone(&route))]
+        );
+        let split: Vec<(u64, Tenancy)> = Enriched::Split(vec![
+            (Bytes::from("{\"a\":1}"), 3),
+            (Bytes::from("{\"b\":2}"), 5),
+        ])
+        .into_rows("t_land", 99, None)
+        .map(|row| (row.ingested_bytes, row.tenancy))
+        .collect();
+        assert_eq!(split, [(3, Tenancy::Stamped), (5, Tenancy::Stamped)]);
     }
 
     #[test]

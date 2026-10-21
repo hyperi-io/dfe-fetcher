@@ -212,7 +212,9 @@ warning naming the key.
 
 A payload that may carry a reserved key and does not parse is refused. "May carry" is a byte scan for the names and for any backslash, since an escape can spell a name. A payload that fails to parse cannot be shown free of one, and appending the fetcher's own could give the record two `_org_id`. A refused row is never sent: it is dead-lettered with the reason, or with no DLQ dropped and counted in `pipeline_dead_letters_dropped_total{reason="reserved_key_unparsed"}`, and its bytes count for no org.
 
-A binary row, and a payload that does not open as a JSON object (an array, a scalar, plain text), goes out verbatim with no `_org_id`, so the loader's default org applies to it.
+A JSON array whose every element is an object goes out as one record per element, each stamped, because the loader splits an array into its elements and an element with no `_org_id` lands in its default org. Each element counts for usage at its own length before the stamp, and the row's mark rides its last element. `[]` goes out as nothing.
+
+A binary row, and a payload that is neither an object nor such an array (a scalar, plain text, an array holding a non-object), goes out verbatim with no `_org_id`, so the loader's default org applies to it. Its usage counts under `default_org_id` for the same reason, so usage and storage name the same org.
 
 ## Cursor Cold Start
 

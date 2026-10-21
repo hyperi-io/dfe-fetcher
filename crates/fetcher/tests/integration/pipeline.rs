@@ -17,6 +17,7 @@ fn stamped(enriched: Enriched) -> Bytes {
     match enriched {
         Enriched::One(payload, Tenancy::Stamped) => payload,
         Enriched::One(_, tenancy) => panic!("expected one stamped row, got {tenancy:?}"),
+        Enriched::Split(parts) => panic!("expected one stamped row, got {parts:?}"),
     }
 }
 
@@ -56,8 +57,11 @@ fn test_enrich_non_json_returns_unchanged() {
     let state = make_pipeline_state(shared);
 
     let payload = Bytes::from("this is not json");
-    let enriched = stamped(state.enrich_record(payload.clone(), "test", "test.source"));
-    assert_eq!(enriched, payload); // No closing brace, returned unchanged
+    assert_eq!(
+        state.enrich_record(payload.clone(), "test", "test.source"),
+        Enriched::One(payload, Tenancy::Unstamped),
+        "no object to stamp, so it goes out as it came"
+    );
 }
 
 #[test]

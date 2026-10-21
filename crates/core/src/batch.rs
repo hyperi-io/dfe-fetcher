@@ -114,6 +114,10 @@ pub enum Tenancy {
     /// The row carries the org it was stamped with and counts under it.
     #[default]
     Stamped,
+    /// The row carries no `_org_id` (binary, not JSON, a scalar, an array
+    /// holding a non-object), so the loader stores it under its default org
+    /// and it counts there.
+    Unstamped,
     /// The row may name its own org and did not parse, so its `_org_id`
     /// could not be replaced: it is dead-lettered, never sent or counted.
     Refused,
@@ -620,7 +624,8 @@ mod tests {
             "a stamped row counts what was fetched"
         );
         assert_eq!(stamped.tenancy, Tenancy::Stamped);
-        let refused = stamped.with_tenancy(Tenancy::Refused);
-        assert_eq!(refused.tenancy, Tenancy::Refused);
+        for tenancy in [Tenancy::Unstamped, Tenancy::Refused] {
+            assert_eq!(stamped.clone().with_tenancy(tenancy).tenancy, tenancy);
+        }
     }
 }

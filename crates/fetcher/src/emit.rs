@@ -32,9 +32,11 @@
 //!
 //! A flush that settles adds the fetched bytes of the records it sent to
 //! `usage_ingested_bytes_total{org_id}`: each record's length before the
-//! fetcher framed or stamped it, the measure the receiver counts too. A
-//! dead-lettered or dropped record is not counted, and nor is any record of a
-//! flush that aborts, because the re-fetch sends it again.
+//! fetcher framed or stamped it, the measure the receiver counts too, under
+//! the org the loader stores it in. That is the org it was stamped with, or
+//! `default_org_id` for a record that carries no `_org_id`. A dead-lettered
+//! or dropped record is not counted, and nor is any record of a flush that
+//! aborts, because the re-fetch sends it again.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -63,8 +65,29 @@ const RESERVED_KEY_UNPARSED: &str =
 static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 
 /// Fetched bytes of the records the outputs accepted, before the fetcher
-/// stamped them, by the org each record was stamped with.
+/// stamped them, by the org each record is stored under.
 pub const USAGE_INGESTED_BYTES_TOTAL: &str = "usage_ingested_bytes_total";
+
+/// The ingested bytes a flush sent, by the org each row counts under.
+#[derive(Debug, Default)]
+struct Usage {
+    /// Rows that carry the org they were stamped with.
+    stamped: u64,
+    /// Rows that carry no `_org_id`, which the loader stores under its default org.
+    unstamped: u64,
+}
+
+impl Usage {
+    /// Count one row the outputs accepted.
+    fn add(&mut self, row: &Outbound) {
+        match row.tenancy {
+            Tenancy::Stamped => self.stamped += row.ingested_bytes,
+            Tenancy::Unstamped => self.unstamped += row.ingested_bytes,
+            // Never sent, so it has no usage.
+            Tenancy::Refused => {}
+        }
+    }
+}
 
 /// What one flush did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -104,7 +127,8 @@ impl Emitter {
 
     /// Send every row of `batch`, returning once each has a terminal outcome;
     /// a backpressured subset is re-sent with a bounded backoff first. What
-    /// it sends is counted under the pipeline's org, read now.
+    /// it sends is counted under the pipeline's org, read now, and a row that
+    /// carries no `_org_id` under `default_org_id`.
     ///
     /// SHORTCUT: per-record `send` futures bounded by `in_flight`, not one
     /// produce call; switch to scalo's native Kafka `send_batch` when it ships.
@@ -144,7 +168,7 @@ impl Emitter {
 
     async fn run(&self, mut batch: Batch, retries: u32, org: &str) -> Result<EmitReport> {
         let mut report = EmitReport::default();
-        let mut sent_bytes: u64 = 0;
+        let mut usage = Usage::default();
         // The rows move out; the batch stays alive to the end so its memory
         // lease is released only once every outcome is known.
         let mut pending: Vec<Outbound> = std::mem::take(&mut batch.rows);
@@ -163,9 +187,7 @@ impl Emitter {
                 tokio::time::sleep(backoff).await;
                 backoff = backoff.saturating_mul(2);
             }
-            pending = self
-                .send_round(pending, &mut report, &mut sent_bytes)
-                .await?;
+            pending = self.send_round(pending, &mut report, &mut usage).await?;
         }
         if !pending.is_empty() {
             self.metrics.inc_transport_backpressured();
@@ -176,21 +198,25 @@ impl Emitter {
             )));
         }
         drop(batch);
-        if sent_bytes > 0 {
+        if usage.stamped > 0 {
             metrics::counter!(USAGE_INGESTED_BYTES_TOTAL, "org_id" => org.to_owned())
-                .increment(sent_bytes);
+                .increment(usage.stamped);
+        }
+        if usage.unstamped > 0 {
+            metrics::counter!(USAGE_INGESTED_BYTES_TOTAL, "org_id" => self.state.default_org_id())
+                .increment(usage.unstamped);
         }
         Ok(report)
     }
 
     /// One concurrent pass over `rows`: returns the backpressured ones and
-    /// adds the ingested bytes of the rows sent to `sent_bytes`. A row
-    /// enrichment refused is dead-lettered without being sent.
+    /// adds the ingested bytes of the rows sent to `usage`. A row enrichment
+    /// refused is dead-lettered without being sent.
     async fn send_round(
         &self,
         rows: Vec<Outbound>,
         report: &mut EmitReport,
-        sent_bytes: &mut u64,
+        usage: &mut Usage,
     ) -> Result<Vec<Outbound>> {
         let mut held = Vec::new();
         let mut refused = Vec::new();
@@ -202,7 +228,7 @@ impl Emitter {
                 && let Some(row) = rows.next()
             {
                 match row.tenancy {
-                    Tenancy::Stamped => in_flight.push(self.send_one(row)),
+                    Tenancy::Stamped | Tenancy::Unstamped => in_flight.push(self.send_one(row)),
                     Tenancy::Refused => unparsed.push(DeadLetter {
                         topic: row.topic,
                         payload: row.payload,
@@ -216,7 +242,7 @@ impl Emitter {
             match outcome {
                 Ok(()) => {
                     report.sent += 1;
-                    *sent_bytes += row.ingested_bytes;
+                    usage.add(&row);
                     self.metrics.inc_records_delivered();
                 }
                 Err(Error::Backpressured(_)) => held.push(row),
@@ -426,6 +452,32 @@ mod tests {
         assert_eq!(
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "default")]),
             Some(14)
+        );
+    }
+
+    /// A row that carries no `_org_id` counts under the default org the loader
+    /// stores it in, not the org the pipeline is bound to.
+    #[tokio::test]
+    async fn an_unstamped_row_counts_under_the_default_org() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", "plain text").with_tenancy(Tenancy::Unstamped),
+            None,
+        );
+        batcher.push(Outbound::new("fixture_land", r#"{"a":1}"#), None);
+
+        let report = emitter.emit(batcher.take()).await.expect("sent");
+
+        assert_eq!(report.sent, 2);
+        assert_eq!(
+            recorder.counters(&[
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+                ("usage_ingested_bytes_total", &[("org_id", "default")]),
+            ]),
+            [Some(7), Some(10)]
         );
     }
 
