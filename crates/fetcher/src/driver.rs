@@ -40,11 +40,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use chrono::Utc;
-use dfe_fetcher_core::batch::{AccumulateConfig, Batcher, Lease, Outbound, Trigger};
+use dfe_fetcher_core::batch::{AccumulateConfig, Batcher, Lease, Tenancy, Trigger};
 use dfe_fetcher_core::checkpoint::{Checkpoint, CheckpointValue, CursorStore};
 use dfe_fetcher_core::envelope::{OversizePolicy, Snapshot};
 use dfe_fetcher_core::metric_names;
-use dfe_fetcher_core::rules::{Route, RowRules, Verdict};
+use dfe_fetcher_core::rules::{Routed, RowRules, Verdict};
 use dfe_fetcher_core::{
     FetchWindow, Mark, Row, RowSource, RowStream, SourceMaturity, TickCtx, TickReport, UnitSpec,
 };
@@ -57,7 +57,7 @@ use crate::emit::{EmitReport, Emitter};
 use crate::error::{Error, Result};
 use crate::json_unwrap::unwrap_nested_json;
 use crate::metrics::{DroppedDeadLetter, Metrics};
-use crate::pipeline::{DeadLetter, DeadLettered, SourceNames};
+use crate::pipeline::{DeadLetter, DeadLettered, Enriched, Stamp};
 
 /// How long the driver waits between admission checks while held.
 const HOLD_POLL: Duration = Duration::from_millis(250);
@@ -234,6 +234,8 @@ struct RulesCache {
 struct TickSettings {
     rules: Arc<RowRules>,
     topic_suffix: String,
+    /// The org every record of the tick is stamped and counted under.
+    org: Arc<str>,
     /// The deployment's `unwrap_nested_json`: string fields holding
     /// serialised JSON are replaced by the parsed value before the rules run.
     unwrap_nested_json: bool,
@@ -247,6 +249,43 @@ struct UnitRun {
     batch: Batcher,
     pending: Checkpoint,
     report: TickReport,
+    /// The org the unit's records carry, which their flush is counted under.
+    org: Arc<str>,
+}
+
+/// What one unit stamps on its records: its own source, or the source a
+/// route names.
+struct UnitStamps<'a> {
+    own: Stamp<'a>,
+    /// One per route, in declared order: `Some` where the route names a source.
+    routed: Vec<Option<Stamp<'a>>>,
+}
+
+impl<'a> UnitStamps<'a> {
+    /// Every stamp carries the tick's one org: a route sets `_source` only, so
+    /// it cannot move a record into another org.
+    fn new(rules: &'a RowRules, topic: &'a str, source_fetcher: &'a str, org: &'a str) -> Self {
+        Self {
+            own: Stamp::new(topic, source_fetcher, org),
+            routed: rules
+                .routes()
+                .iter()
+                .map(|route| {
+                    route
+                        .source
+                        .as_deref()
+                        .map(|source| Stamp::new(source, source_fetcher, org))
+                })
+                .collect(),
+        }
+    }
+
+    /// The stamp for a row `route` matched, or the unit's own.
+    fn for_route(&self, route: Option<&Routed>) -> &Stamp<'a> {
+        route
+            .and_then(|r| self.routed.get(r.index)?.as_ref())
+            .unwrap_or(&self.own)
+    }
 }
 
 /// One connection of one source, as the scheduler ticks it.
@@ -340,13 +379,7 @@ impl Driver {
             return Ok(Arc::clone(&cache.rules));
         }
         let filter = config.sources.filter_for_source(&self.connection_id);
-        let routes = config
-            .output
-            .routes
-            .iter()
-            .map(|r| Route::new(&r.match_field, &r.match_value, r.destination.names()))
-            .collect();
-        let rules = Arc::new(RowRules::compile(filter, routes)?);
+        let rules = Arc::new(RowRules::compile(filter, config.output.rule_routes())?);
         cache.version = Some(version);
         cache.rules = Arc::clone(&rules);
         Ok(rules)
@@ -422,7 +455,7 @@ impl Driver {
         let emitted = if rows == 0 {
             EmitReport::default()
         } else {
-            self.emitter.emit(taken).await?
+            self.emitter.emit_for_org(taken, &run.org).await?
         };
         let acks = run.pending.take_acks();
         if !acks.is_empty() {
@@ -453,20 +486,22 @@ impl Driver {
         Ok(())
     }
 
-    /// Stamp one framed payload for the transport: enrich, route, topic.
-    fn stamp(
-        &self,
-        payload: Bytes,
-        route: Option<Arc<[Arc<str>]>>,
-        names: &SourceNames<'_>,
-        topic: &str,
-    ) -> Outbound {
-        let enriched = self.emitter.state().enrich_record_with(payload, names);
-        let mut out = Outbound::new(topic, enriched);
-        if let Some(route) = route {
-            out = out.with_route(route);
+    /// Enrich one framed payload for the transport. A route that names one
+    /// destination stamps it as the row's `_source`, so the row lands in that
+    /// source's table. A row enrichment refuses still travels with its mark,
+    /// and the emitter dead-letters it unsent.
+    fn enrich(&self, payload: Bytes, route: Option<&Routed>, stamps: &UnitStamps<'_>) -> Enriched {
+        self.emitter
+            .state()
+            .enrich_record_with(payload, stamps.for_route(route))
+    }
+
+    /// Buffer a frame of the fetcher's own, a snapshot marker, which ingests
+    /// nothing and carries no mark.
+    fn push_frame(&self, frame: Bytes, run: &mut UnitRun, stamps: &UnitStamps<'_>, topic: &str) {
+        for out in self.enrich(frame, None, stamps).into_rows(topic, 0, None) {
+            run.batch.push(out, None);
         }
-        out
     }
 
     /// Start a snapshot of `store` and buffer its `begin` marker.
@@ -474,12 +509,11 @@ impl Driver {
         &self,
         store: &str,
         run: &mut UnitRun,
-        names: &SourceNames<'_>,
+        stamps: &UnitStamps<'_>,
         topic: &str,
     ) -> Snapshot {
         let snap = Snapshot::start(store);
-        run.batch
-            .push(self.stamp(snap.begin(None), None, names, topic), None);
+        self.push_frame(snap.begin(None), run, stamps, topic);
         snap
     }
 
@@ -491,11 +525,10 @@ impl Driver {
         snap: &Snapshot,
         unit: &UnitSpec,
         run: &mut UnitRun,
-        names: &SourceNames<'_>,
+        stamps: &UnitStamps<'_>,
         topic: &str,
     ) -> Result<()> {
-        run.batch
-            .push(self.stamp(snap.end(snap.seq()), None, names, topic), None);
+        self.push_frame(snap.end(snap.seq()), run, stamps, topic);
         self.flush(unit, run, Trigger::End).await?;
         metrics::counter!(metric_names::SNAPSHOTS_TOTAL, "store" => snap.store().to_owned(), "status" => "complete").increment(1);
         self.commit(run).await
@@ -586,7 +619,7 @@ impl Driver {
     {
         let rules = &*settings.rules;
         let source_fetcher = format!("{}.{}", self.connection_id, unit.name);
-        let names = SourceNames::new(&unit.topic, &source_fetcher);
+        let stamps = UnitStamps::new(rules, &unit.topic, &source_fetcher, &settings.org);
         let topic = format!("{}{}", unit.topic, settings.topic_suffix);
         let store = unit.store(&self.connection_id);
         let per_item = unit.snapshots_per_item();
@@ -595,10 +628,11 @@ impl Driver {
             batch: Batcher::new(self.accumulate, Arc::clone(&self.lease)),
             pending: Checkpoint::new(self.unit_key(unit)),
             report: TickReport::default(),
+            org: Arc::clone(&settings.org),
         };
         let source = self.name;
         let mut snap = (unit.is_dump() && !per_item)
-            .then(|| self.open_snapshot(&store, &mut run, &names, &topic));
+            .then(|| self.open_snapshot(&store, &mut run, &stamps, &topic));
         let mut item: Option<Box<str>> = None;
 
         loop {
@@ -630,7 +664,7 @@ impl Driver {
                         && per_item
                         && **key != **current
                     {
-                        self.close_snapshot(open, unit, &mut run, &names, &topic)
+                        self.close_snapshot(open, unit, &mut run, &stamps, &topic)
                             .await?;
                     }
                     return Err(e.into());
@@ -641,6 +675,8 @@ impl Driver {
                 continue;
             }
             let Row { payload: raw, mark } = row;
+            // Usage counts the row as the shape fetched it, the measure the receiver counts.
+            let ingested = raw.len() as u64;
             if per_item {
                 let Some(Mark::Item { key, .. }) = &mark else {
                     return Err(Error::Framework(dfe_fetcher_core::Error::Source(format!(
@@ -650,10 +686,10 @@ impl Driver {
                 };
                 if item.as_deref() != Some(&**key) {
                     if let Some(open) = &snap {
-                        self.close_snapshot(open, unit, &mut run, &names, &topic)
+                        self.close_snapshot(open, unit, &mut run, &stamps, &topic)
                             .await?;
                     }
-                    snap = Some(self.open_snapshot(&store, &mut run, &names, &topic));
+                    snap = Some(self.open_snapshot(&store, &mut run, &stamps, &topic));
                     item = Some(key.clone());
                 }
             }
@@ -682,13 +718,14 @@ impl Driver {
                 None => (raw, false),
             };
             // A binary row is opaque bytes: the rules cannot read it and the
-            // enricher would splice JSON keys into it, so it goes out verbatim.
-            // A stub is the envelope's own frame, like the markers: it lands
-            // whatever the filter says of `record.*`.
-            let out = if binary {
-                Outbound::new(&topic, payload)
+            // enricher would splice JSON keys into it, so it goes out verbatim
+            // with no `_org_id`. A stub is the envelope's own frame, like the
+            // markers: it lands whatever the filter says of `record.*`, and the
+            // row it stands in for was dead-lettered, so it ingests nothing.
+            let (enriched, ingested, route) = if binary {
+                (Enriched::One(payload, Tenancy::Unstamped), ingested, None)
             } else if stub {
-                self.stamp(payload, None, &names, &topic)
+                (self.enrich(payload, None, &stamps), 0, None)
             } else {
                 let (payload, route) = match rules.apply(payload, &unit.add_fields) {
                     Verdict::Drop => {
@@ -704,26 +741,42 @@ impl Driver {
                     }
                     Verdict::Keep { payload, route } => (payload, route),
                 };
-                self.stamp(payload, route, &names, &topic)
+                let enriched = self.enrich(payload, route.as_ref(), &stamps);
+                (enriched, ingested, route.map(|r| r.destinations))
             };
-            if !run.batch.fits(out.payload.len()) {
-                self.flush(unit, &mut run, Trigger::Bytes).await?;
+            let mut rows = enriched.into_rows(&topic, ingested, route).peekable();
+            if rows.peek().is_none() {
+                run.batch.consume(mark);
+                continue;
             }
-            metrics::gauge!(metric_names::ACCUMULATE_PENDING_BYTES, "source" => source)
-                .set((run.batch.bytes() + out.payload.len()) as f64);
-            run.batch.push(out, mark);
-            run.report.rows += 1;
-            if snap.is_some() {
-                metrics::counter!(metric_names::SNAPSHOT_ROWS_TOTAL, "store" => store.clone())
-                    .increment(1);
-            }
-            if run.batch.full() {
-                self.flush(unit, &mut run, Trigger::Rows).await?;
+            let mut mark = mark;
+            while let Some(out) = rows.next() {
+                // The row's mark rides its last element, so neither the
+                // checkpoint nor a queue ack passes the row early.
+                let last = if rows.peek().is_none() {
+                    mark.take()
+                } else {
+                    None
+                };
+                if !run.batch.fits(out.payload.len()) {
+                    self.flush(unit, &mut run, Trigger::Bytes).await?;
+                }
+                metrics::gauge!(metric_names::ACCUMULATE_PENDING_BYTES, "source" => source)
+                    .set((run.batch.bytes() + out.payload.len()) as f64);
+                run.batch.push(out, last);
+                run.report.rows += 1;
+                if snap.is_some() {
+                    metrics::counter!(metric_names::SNAPSHOT_ROWS_TOTAL, "store" => store.clone())
+                        .increment(1);
+                }
+                if run.batch.full() {
+                    self.flush(unit, &mut run, Trigger::Rows).await?;
+                }
             }
         }
         match &snap {
             Some(s) => {
-                self.close_snapshot(s, unit, &mut run, &names, &topic)
+                self.close_snapshot(s, unit, &mut run, &stamps, &topic)
                     .await?;
             }
             None => {
@@ -763,6 +816,7 @@ impl Driver {
         let settings = TickSettings {
             rules: self.rules_for(&config)?,
             topic_suffix: config.topic_suffix().to_owned(),
+            org: Arc::from(config.stamped_org()),
             unwrap_nested_json: config.unwrap_nested_json,
             max_hold: config.self_regulation.max_hold(),
         };
@@ -877,5 +931,606 @@ impl Driver {
     pub async fn health_check(&self) -> Result<bool> {
         self.shape.probe().await?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use futures::future::BoxFuture;
+    use scalo::memory::{MemoryGuardConfig, UsageSource};
+    use scalo::transport::{GrpcConfig, GrpcTransport, TransportReceiver};
+
+    use crate::config::{DestinationSpec, OutputRoute};
+    use crate::metrics::recorded::Recorder;
+    use crate::output::OutputManager;
+    use crate::pipeline::PipelineState;
+    use dfe_fetcher_core::UnitShape;
+
+    /// A shape that yields the same rows every tick from one unit.
+    struct Fixed {
+        units: Vec<UnitSpec>,
+        rows: Vec<Row>,
+    }
+
+    impl RowSource for Fixed {
+        fn name(&self) -> &'static str {
+            "fixed"
+        }
+        fn maturity(&self) -> SourceMaturity {
+            SourceMaturity::Alpha
+        }
+        fn units(&self) -> &[UnitSpec] {
+            &self.units
+        }
+        fn rows<'a>(&'a self, _tick: TickCtx<'a>) -> RowStream<'a> {
+            futures::stream::iter(self.rows.clone().into_iter().map(Ok)).boxed()
+        }
+        fn probe(&self) -> BoxFuture<'_, dfe_fetcher_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// A scalo gRPC Push listener on a free loopback port, and its endpoint.
+    async fn listener() -> (GrpcTransport, String) {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let listen = format!("127.0.0.1:{port}");
+        let server = GrpcTransport::new(&GrpcConfig::server(&listen))
+            .await
+            .unwrap();
+        (server, format!("http://{listen}"))
+    }
+
+    /// Every record a listener has received, as the bytes that arrived.
+    async fn received_raw(server: &GrpcTransport) -> Vec<Bytes> {
+        let mut rows = Vec::new();
+        loop {
+            let batch = server.recv(100).await.unwrap();
+            if batch.records.is_empty() {
+                break;
+            }
+            rows.extend(batch.records.iter().map(|record| record.payload.clone()));
+        }
+        rows
+    }
+
+    /// Every record a listener has received, with its length on the wire.
+    async fn received(server: &GrpcTransport) -> Vec<(usize, serde_json::Value)> {
+        received_raw(server)
+            .await
+            .iter()
+            .map(|payload| (payload.len(), serde_json::from_slice(payload).unwrap()))
+            .collect()
+    }
+
+    /// A gRPC output to `default`, the named destinations `(name, endpoint)`,
+    /// and one route from `kind == asset` to `route`, under the config `yaml`.
+    fn routed_config(
+        yaml: &str,
+        default: &str,
+        destinations: &[(&str, &str)],
+        route: crate::config::DestinationRef,
+    ) -> Config {
+        let (mut config, _) = Config::parse_yaml(yaml, "fetcher.yaml").unwrap();
+        config.dlq.enabled = false;
+        config.output.output_type = "grpc".into();
+        config.output.topic_suffix = Some("_land".into());
+        config.output.grpc = Some(GrpcConfig::client(default));
+        for (name, endpoint) in destinations {
+            config.output.destinations.insert(
+                (*name).to_owned(),
+                DestinationSpec {
+                    grpc: Some(GrpcConfig::client(endpoint)),
+                    kafka: None,
+                },
+            );
+        }
+        config.output.routes.push(OutputRoute {
+            match_field: "kind".into(),
+            match_value: "asset".into(),
+            destination: route,
+        });
+        config
+    }
+
+    /// A driver over `rows` from the unit `events` of the source `okta-audit`.
+    async fn driver_over(config: Config, rows: Vec<Row>) -> Driver {
+        let unit = UnitSpec::new("events", UnitShape::Incremental, "okta-audit");
+        Box::pin(driver_over_unit(config, unit, rows)).await
+    }
+
+    /// A driver over `rows` from `unit`.
+    async fn driver_over_unit(config: Config, unit: UnitSpec, rows: Vec<Row>) -> Driver {
+        let output = OutputManager::new(&config.output, &config.kafka)
+            .await
+            .unwrap();
+        let shared = SharedConfig::new(config);
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            shared.clone(),
+            Arc::clone(&metrics),
+            Some(output),
+        ));
+        let accumulate = AccumulateConfig::default();
+        Driver::new(DriverParts {
+            shape: Shape::Custom(Box::new(Fixed {
+                units: vec![unit],
+                rows,
+            })),
+            connection_id: "conn".into(),
+            instance_id: "inst".into(),
+            shared_config: shared,
+            accumulate,
+            oversize: OversizePolicy::default(),
+            emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
+            pressure: None,
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                MemoryGuardConfig {
+                    limit_bytes: 1 << 30,
+                    ..MemoryGuardConfig::default()
+                },
+                UsageSource::Reservations,
+            )),
+            checkpoints: None,
+            metrics,
+            shutdown: CancellationToken::new(),
+        })
+    }
+
+    /// A route naming one destination sends its record there stamped as that
+    /// destination's source, so the loader puts it in that source's table. The
+    /// record's own `_source` is parked as `_source_original`, and the record
+    /// keeps the instance's org whatever the route.
+    #[tokio::test]
+    async fn a_routed_record_lands_as_its_destinations_source_in_the_bound_org() {
+        let (default_rx, default_ep) = listener().await;
+        let (inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let d = Box::pin(driver_over(
+            config,
+            vec![
+                Row::new(r#"{"kind":"asset","id":"a","_source":"theirs","_org_id":"other"}"#),
+                Row::new(r#"{"kind":"event","id":"e"}"#),
+            ],
+        ))
+        .await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let routed = received(&inventory_rx).await;
+        assert_eq!(routed.len(), 1, "{routed:?}");
+        let (_, row) = &routed[0];
+        assert_eq!(row["id"], "a");
+        assert_eq!(row["_source"], "inventory");
+        assert_eq!(row["_source_original"], "theirs");
+        assert_eq!(row["_source_fetcher"], "conn.events");
+        assert_eq!(row["_org_id"], "acme");
+        assert_eq!(row["_org_id_original"], "other");
+
+        let own = received(&default_rx).await;
+        assert_eq!(own.len(), 1, "{own:?}");
+        let (_, row) = &own[0];
+        assert_eq!(row["id"], "e");
+        assert_eq!(row["_source"], "okta-audit");
+        assert_eq!(row["_org_id"], "acme");
+    }
+
+    /// A fan-out names several destinations and so no one source: each copy
+    /// keeps the fetching source's `_source`.
+    #[tokio::test]
+    async fn a_fanned_out_record_keeps_its_own_source() {
+        let (default_rx, default_ep) = listener().await;
+        let (inventory_rx, inventory_ep) = listener().await;
+        let (archive_rx, archive_ep) = listener().await;
+        let config = routed_config(
+            "{}\n",
+            &default_ep,
+            &[("inventory", &inventory_ep), ("archive", &archive_ep)],
+            crate::config::DestinationRef::Many(vec!["inventory".into(), "archive".into()]),
+        );
+        let d = Box::pin(driver_over(
+            config,
+            vec![Row::new(r#"{"kind":"asset","id":"a"}"#)],
+        ))
+        .await;
+
+        d.run_tick(None).await.expect("tick");
+
+        for rx in [&inventory_rx, &archive_rx] {
+            let landed = received(rx).await;
+            assert_eq!(landed.len(), 1, "{landed:?}");
+            assert_eq!(landed[0].1["_source"], "okta-audit");
+            assert_eq!(landed[0].1["_org_id"], "default");
+        }
+        assert_eq!(
+            received(&default_rx).await.len(),
+            0,
+            "a routed record skips the default output"
+        );
+    }
+
+    /// Two assets for the route and one event for the source's own topic.
+    fn three_rows() -> Vec<Row> {
+        vec![
+            Row::new(r#"{"kind":"asset","id":"a"}"#),
+            Row::new(r#"{"kind":"asset","id":"b"}"#),
+            Row::new(r#"{"kind":"event","id":"e"}"#),
+        ]
+    }
+
+    /// Each route counts the records it matched on `rules_hits_total`.
+    #[tokio::test]
+    async fn each_route_counts_the_records_it_matched() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "{}\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let d = Box::pin(driver_over(config, three_rows())).await;
+
+        d.run_tick(None).await.expect("tick");
+
+        assert_eq!(
+            recorder.counter(
+                "rules_hits_total",
+                &[("rule_set", "output.routes"), ("rule", "route-0")]
+            ),
+            Some(2)
+        );
+        assert_eq!(received(&inventory_rx).await.len(), 2);
+        assert_eq!(received(&default_rx).await.len(), 1);
+    }
+
+    /// The summed length of `rows` as the shape fetched them.
+    fn fetched_bytes(rows: &[Row]) -> u64 {
+        rows.iter().map(|row| row.payload.len() as u64).sum()
+    }
+
+    /// A tick that settles counts each record's bytes as fetched, routed or
+    /// not, under the org it carries: never the stamped bytes it was sent as,
+    /// so the count means what the receiver's does.
+    #[tokio::test]
+    async fn a_settled_tick_counts_the_fetched_bytes_not_the_stamped_ones() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let rows = three_rows();
+        let fetched = fetched_bytes(&rows);
+        let d = Box::pin(driver_over(config, rows)).await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let landed: usize = received(&inventory_rx)
+            .await
+            .into_iter()
+            .chain(received(&default_rx).await)
+            .map(|(len, _)| len)
+            .sum();
+        assert!(landed as u64 > fetched, "the stamp adds bytes");
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(fetched)
+        );
+    }
+
+    /// A dump's rows count at their fetched length, without the envelope or
+    /// the unit's `_dfe_fetcher_*` fields, and its begin and end markers count
+    /// nothing.
+    #[tokio::test]
+    async fn a_dump_counts_its_rows_as_fetched_and_its_markers_as_nothing() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let mut unit = UnitSpec::new("assets", UnitShape::Dump, "okta-assets");
+        unit.add_fields = vec![("_dfe_fetcher_package".into(), serde_json::json!("okta"))];
+        let rows = vec![
+            Row::new(r#"{"id":"a","alive":true}"#),
+            Row::new(r#"{"id":"b","alive":false}"#),
+        ];
+        let fetched = fetched_bytes(&rows);
+        let d = Box::pin(driver_over_unit(config, unit, rows)).await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let frames = received(&default_rx).await;
+        assert_eq!(frames.len(), 4, "begin, two rows, end: {frames:?}");
+        assert_eq!(frames[1].1["_dfe_fetcher_package"], "okta");
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(fetched)
+        );
+    }
+
+    /// A row that may name its own org but does not parse cannot have its
+    /// `_org_id` replaced, so it never leaves: with no DLQ it is dropped and
+    /// counted, and its bytes count for no org.
+    #[tokio::test]
+    async fn a_row_naming_its_own_org_that_does_not_parse_is_refused_not_sent() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        // A lone surrogate escape, built from the backslash's code point: serde refuses it.
+        let refused = format!(r#"{{"_org_id":"victim","s":"{}ud800"}}"#, char::from(0x5c));
+        let kept = r#"{"id":"kept"}"#;
+        let d = Box::pin(driver_over(config, vec![Row::new(refused), Row::new(kept)])).await;
+
+        d.run_tick(None)
+            .await
+            .expect("a refused row does not fail the tick");
+
+        let mut org_keys: Vec<usize> = received_raw(&default_rx)
+            .await
+            .iter()
+            .map(|payload| memchr::memmem::find_iter(payload, b"\"_org_id\"").count())
+            .collect();
+        org_keys.sort_unstable();
+        assert_eq!(
+            org_keys,
+            [1],
+            "only the row that parses leaves, carrying one _org_id"
+        );
+        assert_eq!(
+            recorder.counters(&[
+                (
+                    "pipeline_dead_letters_dropped_total",
+                    &[("reason", "unstampable")]
+                ),
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+                ("usage_ingested_bytes_total", &[("org_id", "victim")]),
+            ]),
+            [Some(1), Some(kept.len() as u64), None],
+            "the refused row is counted dropped, and its bytes for no org"
+        );
+    }
+
+    /// A JSON array of objects leaves as one row per element, each stamped with
+    /// the unit's org, so the loader never splits it into its default org. A
+    /// row that cannot carry an org leaves as it came and counts under the
+    /// default org.
+    #[tokio::test]
+    async fn an_array_of_objects_leaves_as_stamped_rows_and_text_counts_under_the_default_org() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b"}"#);
+        let text = "plain text, not JSON";
+        let d = Box::pin(driver_over(
+            config,
+            vec![Row::new(format!("[{first}, {second}]")), Row::new(text)],
+        ))
+        .await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let landed = received_raw(&default_rx).await;
+        let mut objects: Vec<(serde_json::Value, serde_json::Value)> = landed
+            .iter()
+            .filter_map(|payload| serde_json::from_slice::<serde_json::Value>(payload).ok())
+            .filter(serde_json::Value::is_object)
+            .map(|row| (row["id"].clone(), row["_org_id"].clone()))
+            .collect();
+        objects.sort_by_key(|(id, _)| id.to_string());
+        assert_eq!(
+            objects,
+            [
+                (serde_json::json!("a"), serde_json::json!("acme")),
+                (serde_json::json!("b"), serde_json::json!("acme")),
+            ],
+            "{landed:?}"
+        );
+        assert!(
+            landed.iter().any(|payload| payload == text.as_bytes()),
+            "the text row leaves as it came: {landed:?}"
+        );
+        assert_eq!(landed.len(), 3, "{landed:?}");
+        assert_eq!(
+            recorder.counters(&[
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+                ("usage_ingested_bytes_total", &[("org_id", "default")]),
+            ]),
+            [
+                Some((first.len() + second.len()) as u64),
+                Some(text.len() as u64)
+            ],
+            "each element counts its own bytes under acme, the text row under default"
+        );
+    }
+
+    /// A body of newline-delimited objects leaves as one stamped row per
+    /// record, so the loader's own split never lands the first records in its
+    /// default org while their usage counts under the unit's.
+    #[tokio::test]
+    async fn newline_delimited_objects_leave_as_one_stamped_row_per_record() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b"}"#);
+        let d = Box::pin(driver_over(
+            config,
+            vec![Row::new(format!("{first}\n{second}\n"))],
+        ))
+        .await;
+
+        d.run_tick(None).await.expect("tick");
+
+        let landed = received_raw(&default_rx).await;
+        let mut stamped: Vec<(serde_json::Value, serde_json::Value)> = landed
+            .iter()
+            .filter_map(|payload| serde_json::from_slice::<serde_json::Value>(payload).ok())
+            .map(|row| (row["id"].clone(), row["_org_id"].clone()))
+            .collect();
+        stamped.sort_by_key(|(id, _)| id.to_string());
+        assert_eq!(
+            stamped,
+            [
+                (serde_json::json!("a"), serde_json::json!("acme")),
+                (serde_json::json!("b"), serde_json::json!("acme")),
+            ],
+            "{landed:?}"
+        );
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some((first.len() + second.len()) as u64)
+        );
+    }
+
+    /// A split row's mark rides its last element, whether the row was an array
+    /// or newline-delimited records, and an empty array is consumed: the
+    /// checkpoint commits past each only once all of it is sent.
+    #[tokio::test]
+    async fn a_split_rows_mark_rides_its_last_element() {
+        let (default_rx, default_ep) = listener().await;
+        let (_inventory_rx, inventory_ep) = listener().await;
+        let config = routed_config(
+            "org_id: acme\n",
+            &default_ep,
+            &[("inventory", &inventory_ep)],
+            "inventory".into(),
+        );
+        let marked = |payload: &str, ack: &str| Row {
+            payload: Bytes::from(payload.to_owned()),
+            mark: Some(Mark::Ack(ack.into())),
+        };
+        let unit = UnitSpec::new("events", UnitShape::Incremental, "okta-audit");
+        let output = OutputManager::new(&config.output, &config.kafka)
+            .await
+            .unwrap();
+        let shared = SharedConfig::new(config);
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            shared.clone(),
+            Arc::clone(&metrics),
+            Some(output),
+        ));
+        let accumulate = AccumulateConfig {
+            max_rows: 1,
+            ..AccumulateConfig::default()
+        };
+        let acked = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let d = Driver::new(DriverParts {
+            shape: Shape::Custom(Box::new(Acking {
+                units: vec![unit],
+                rows: vec![
+                    marked(r#"[{"id":"a"},{"id":"b"}]"#, "split"),
+                    marked("[]", "empty"),
+                    marked("{\"id\":\"c\"}\n{\"id\":\"d\"}", "ndjson"),
+                ],
+                acked: Arc::clone(&acked),
+            })),
+            connection_id: "conn".into(),
+            instance_id: "inst".into(),
+            shared_config: shared,
+            accumulate,
+            oversize: OversizePolicy::default(),
+            emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
+            pressure: None,
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                MemoryGuardConfig {
+                    limit_bytes: 1 << 30,
+                    ..MemoryGuardConfig::default()
+                },
+                UsageSource::Reservations,
+            )),
+            checkpoints: None,
+            metrics,
+            shutdown: CancellationToken::new(),
+        });
+
+        let report = d.run_tick(None).await.expect("tick");
+
+        assert_eq!(report.rows, 4, "two rows from each split, none for []");
+        assert_eq!(received_raw(&default_rx).await.len(), 4);
+        assert_eq!(
+            *acked.lock(),
+            [
+                vec![Box::<str>::from("split")],
+                vec![Box::<str>::from("empty")],
+                vec![Box::<str>::from("ndjson")]
+            ],
+            "one row per batch: a split's first row acks nothing of its own"
+        );
+    }
+
+    /// A shape that yields fixed rows and records the ids each ack carries.
+    struct Acking {
+        units: Vec<UnitSpec>,
+        rows: Vec<Row>,
+        acked: Arc<parking_lot::Mutex<Vec<Vec<Box<str>>>>>,
+    }
+
+    impl RowSource for Acking {
+        fn name(&self) -> &'static str {
+            "acking"
+        }
+        fn maturity(&self) -> SourceMaturity {
+            SourceMaturity::Alpha
+        }
+        fn units(&self) -> &[UnitSpec] {
+            &self.units
+        }
+        fn rows<'a>(&'a self, _tick: TickCtx<'a>) -> RowStream<'a> {
+            futures::stream::iter(self.rows.clone().into_iter().map(Ok)).boxed()
+        }
+        fn ack<'a>(
+            &'a self,
+            _unit: &'a UnitSpec,
+            ids: Vec<Box<str>>,
+        ) -> BoxFuture<'a, dfe_fetcher_core::Result<()>> {
+            self.acked.lock().push(ids);
+            Box::pin(async { Ok(()) })
+        }
+        fn probe(&self) -> BoxFuture<'_, dfe_fetcher_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 }

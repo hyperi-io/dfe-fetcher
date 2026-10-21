@@ -126,19 +126,23 @@ impl ExtractorSink {
         self.emitter.state()
     }
 
-    /// One record for `topic`, enriched as `source` (the DFE source name the
-    /// loader routes on) from `fetcher_source` (the extractor that produced
-    /// it).
-    #[must_use]
+    /// The rows one record goes out as on `topic`, enriched as `source` (the
+    /// DFE source name the loader routes on) from `fetcher_source` (the
+    /// extractor that produced it), and counted for usage at its length as it
+    /// arrived. A JSON array of objects goes out as one row per element. A
+    /// record enrichment refuses is dead-lettered unsent by
+    /// [`ExtractorSink::emit`].
     pub fn record(
         &self,
         source: &str,
         fetcher_source: &str,
         topic: &str,
         payload: Bytes,
-    ) -> Outbound {
-        let enriched = self.state().enrich_record(payload, source, fetcher_source);
-        Outbound::new(topic, enriched)
+    ) -> impl Iterator<Item = Outbound> + use<> {
+        let ingested = payload.len() as u64;
+        self.state()
+            .enrich_record(payload, source, fetcher_source)
+            .into_rows(topic, ingested, None)
     }
 
     /// Emit records as one batch; every record gets a terminal outcome
@@ -178,8 +182,10 @@ impl ExtractorSink {
         topic: &str,
         payload: Bytes,
     ) -> Result<()> {
-        let record = self.record(source, fetcher_source, topic, payload);
-        self.emit(vec![record]).await.map(|_| ())
+        let rows = self
+            .record(source, fetcher_source, topic, payload)
+            .collect();
+        self.emit(rows).await.map(|_| ())
     }
 }
 
@@ -235,15 +241,106 @@ mod tests {
         ExtractorSink::new(state, metrics)
     }
 
+    /// A sink over an in-process output, under the config `yaml`.
+    fn sink_over_memory(yaml: &str) -> ExtractorSink {
+        let (config, _) = Config::parse_yaml(yaml, "fetcher.yaml").expect("config");
+        let metrics = Arc::new(Metrics::new());
+        let transport = Arc::new(
+            scalo::transport::MemoryTransport::new(&scalo::transport::MemoryConfig::default())
+                .expect("memory transport"),
+        );
+        let state = Arc::new(PipelineState::for_tests(
+            SharedConfig::new(config),
+            Arc::clone(&metrics),
+            Some(crate::output::OutputManager::memory(transport)),
+        ));
+        ExtractorSink::new(state, metrics)
+    }
+
+    /// An extractor record counts for usage at its length as it arrived, not
+    /// at the stamped length it was sent at.
+    #[tokio::test]
+    async fn an_extractor_record_counts_its_bytes_as_it_arrived() {
+        let recorder = crate::metrics::recorded::Recorder::new();
+        let _recording = recorder.install();
+        let sink = sink_over_memory("org_id: acme\n");
+        let payload = Bytes::from(r#"{"event":"test"}"#);
+        let arrived = payload.len() as u64;
+        let rows: Vec<Outbound> = sink
+            .record(
+                "container-tool",
+                "container.my-tool",
+                "container-tool_land",
+                payload,
+            )
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].payload.len() as u64 > arrived,
+            "the stamp adds bytes"
+        );
+
+        sink.emit(rows).await.expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(arrived)
+        );
+    }
+
+    /// A JSON array of objects arriving as one record goes out as one stamped
+    /// row per element, each counted at its own length under the bound org.
+    #[tokio::test]
+    async fn an_arriving_array_of_objects_goes_out_as_one_stamped_row_per_element() {
+        let recorder = crate::metrics::recorded::Recorder::new();
+        let _recording = recorder.install();
+        let sink = sink_over_memory("org_id: acme\n");
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b"}"#);
+        let rows: Vec<Outbound> = sink
+            .record(
+                "ingest-tool",
+                "ingest",
+                "ingest-tool_land",
+                Bytes::from(format!("[{first},{second}]")),
+            )
+            .collect();
+        let stamped: Vec<(serde_json::Value, serde_json::Value)> = rows
+            .iter()
+            .map(|row| {
+                let parsed: serde_json::Value = serde_json::from_slice(&row.payload).unwrap();
+                (parsed["id"].clone(), parsed["_org_id"].clone())
+            })
+            .collect();
+        assert_eq!(
+            stamped,
+            [
+                (serde_json::json!("a"), serde_json::json!("acme")),
+                (serde_json::json!("b"), serde_json::json!("acme")),
+            ]
+        );
+
+        sink.emit(rows).await.expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some((first.len() + second.len()) as u64)
+        );
+    }
+
     #[test]
     fn a_record_is_enriched_for_its_topic() {
         let sink = sink();
-        let out = sink.record(
-            "container-tool",
-            "container.my-tool",
-            "container-tool_land",
-            Bytes::from(r#"{"event":"test"}"#),
-        );
+        let rows: Vec<Outbound> = sink
+            .record(
+                "container-tool",
+                "container.my-tool",
+                "container-tool_land",
+                Bytes::from(r#"{"event":"test"}"#),
+            )
+            .collect();
+        let [out] = rows.as_slice() else {
+            panic!("one row, got {rows:?}");
+        };
         assert_eq!(&*out.topic, "container-tool_land");
         assert!(out.route.is_none());
         let parsed: serde_json::Value = serde_json::from_slice(&out.payload).unwrap();

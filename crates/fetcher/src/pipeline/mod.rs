@@ -9,7 +9,7 @@
 //! Pipeline state and orchestration.
 //!
 //! [`PipelineState`] is what every producer of records shares: the one
-//! enrichment implementation (`_source`, `_source_fetcher`, the two
+//! enrichment implementation (`_source`, `_source_fetcher`, `_org_id`, the two
 //! timestamps), the output transports, the dead-letter queue, the memory
 //! guard and the readiness answer. Nothing here batches or retries: a
 //! framework driver and an extractor both send through
@@ -33,6 +33,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use dfe_fetcher_core::batch::{Outbound, Tenancy};
+use dfe_fetcher_core::frame::scan::trim_range;
+use dfe_fetcher_core::frame::split_array;
 use scalo::dlq::{Dlq, DlqEntry};
 use scalo::logger::security;
 use scalo::transport::ack::EffectiveGuarantee;
@@ -53,28 +56,41 @@ use scalo::memory::MemoryGuard;
 /// aside rather than duplicated. Two top-level keys of the same name make the
 /// loader's ClickHouse JSON column reject the whole record ("Duplicate path
 /// found during parsing JSON object"), and a rejected record is not
-/// dead-lettered -- it is lost.
-const RESERVED_KEYS: [&str; 4] = [
+/// dead-lettered -- it is lost. A fetched `_org_id` is moved aside the same
+/// way, so a record cannot name its own tenant. A payload that may carry one
+/// and does not parse cannot be rebuilt, so it is refused and never sent.
+const RESERVED_KEYS: [&str; 5] = [
     "_timestamp_fetcher",
     "_timestamp_received",
     "_source",
     "_source_fetcher",
+    "_org_id",
 ];
 
 /// Prefixes the pre-filter searches for, one per reserved-key family.
-static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 2]> = LazyLock::new(|| {
+static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 3]> = LazyLock::new(|| {
     [
         memchr::memmem::Finder::new(b"\"_source"),
         memchr::memmem::Finder::new(b"\"_timestamp_"),
+        memchr::memmem::Finder::new(b"\"_org_id"),
     ]
 });
 
+/// The backslash that opens a JSON escape.
+const JSON_ESCAPE: u8 = 0x5c;
+
+/// The UTF-8 byte-order mark some writers put before a JSON document.
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
 /// Cheap pre-filter for [`rewrite_reserved_keys`]: true when the raw bytes
-/// contain the opening quote of a reserved key name anywhere. A nested field or
-/// a string value matches too -- a false positive costs the slower rewrite
-/// path, never correctness.
+/// contain the opening quote of a reserved key name anywhere, or any backslash.
+/// A key spelled with an escape decodes to the reserved name without matching
+/// its literal bytes, so any escape takes the rewrite path. A nested field or a
+/// string value matches too -- a false positive costs the slower rewrite path,
+/// never correctness.
 fn may_carry_reserved_key(raw: &[u8]) -> bool {
-    RESERVED_KEY_FINDERS.iter().any(|f| f.find(raw).is_some())
+    memchr::memchr(JSON_ESCAPE, raw).is_some()
+        || RESERVED_KEY_FINDERS.iter().any(|f| f.find(raw).is_some())
 }
 
 /// Park a reserved key's incoming value beside the fetcher's own.
@@ -133,31 +149,37 @@ fn json_string_literal(s: &str) -> String {
     serde_json::Value::String(s.to_owned()).to_string()
 }
 
-/// The two source names one enrich pass stamps, escaped once as JSON literals.
+/// The names and the org one enrich pass stamps, escaped once as JSON literals.
 ///
-/// The names are constant for a whole batch while [`PipelineState::enrich_record_with`]
+/// They are constant for a whole batch while [`PipelineState::enrich_record_with`]
 /// runs per record, so the escaping is done here and the append path borrows
 /// the result.
-pub struct SourceNames<'a> {
+pub struct Stamp<'a> {
     /// The DFE source name, the value of `_source`.
     dfe_source: &'a str,
     /// The producing fetcher source, the value of `_source_fetcher`.
     source: &'a str,
+    /// The org the record belongs to, the value of `_org_id`.
+    org: &'a str,
     /// `dfe_source` as a quoted, escaped JSON string literal.
     dfe_source_literal: String,
     /// `source` as a quoted, escaped JSON string literal.
     source_literal: String,
+    /// `org` as a quoted, escaped JSON string literal.
+    org_literal: String,
 }
 
-impl<'a> SourceNames<'a> {
-    /// Escape both names as JSON string literals, once for the batch.
+impl<'a> Stamp<'a> {
+    /// Escape the names and the org as JSON string literals, once for the batch.
     #[must_use]
-    pub fn new(dfe_source: &'a str, source: &'a str) -> Self {
+    pub fn new(dfe_source: &'a str, source: &'a str, org: &'a str) -> Self {
         Self {
             dfe_source,
             source,
+            org,
             dfe_source_literal: json_string_literal(dfe_source),
             source_literal: json_string_literal(source),
+            org_literal: json_string_literal(org),
         }
     }
 }
@@ -166,9 +188,8 @@ impl<'a> SourceNames<'a> {
 ///
 /// Every reserved key the payload brought is renamed to `<key>_original` and
 /// the fetcher's value takes the name, so each key appears exactly once.
-/// Returns `None` when the payload is not a JSON object, leaving the caller on
-/// the append fast path.
-fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str) -> Option<Bytes> {
+/// Returns `None` when the payload does not parse as a JSON object.
+fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, stamp: &Stamp<'_>) -> Option<Bytes> {
     let serde_json::Value::Object(mut map) = serde_json::from_slice(raw).ok()? else {
         return None;
     };
@@ -181,10 +202,198 @@ fn rewrite_reserved_keys(raw: &[u8], now_ms: u64, dfe_source: &str, source: &str
 
     map.insert("_timestamp_fetcher".to_string(), now_ms.into());
     map.insert("_timestamp_received".to_string(), now_ms.into());
-    map.insert("_source".to_string(), dfe_source.into());
-    map.insert("_source_fetcher".to_string(), source.into());
+    map.insert("_source".to_string(), stamp.dfe_source.into());
+    map.insert("_source_fetcher".to_string(), stamp.source.into());
+    map.insert("_org_id".to_string(), stamp.org.into());
 
     serde_json::to_vec(&map).ok().map(Bytes::from)
+}
+
+/// Stamp one JSON object whose closing brace is `raw[insert_pos]`.
+///
+/// `None` when the object may carry a reserved key and does not parse: the
+/// key cannot be replaced, and appending would leave the record two of it.
+fn stamp_object(raw: &[u8], insert_pos: usize, now_ms: u64, stamp: &Stamp<'_>) -> Option<Bytes> {
+    if may_carry_reserved_key(raw) {
+        return rewrite_reserved_keys(raw, now_ms, stamp);
+    }
+
+    // 86 bytes of key text and two timestamps of at most 20 digits fit in
+    // 160, so with the escaped literals this is the fast path's only allocation.
+    let mut buf = Vec::with_capacity(
+        raw.len()
+            + 160
+            + stamp.dfe_source_literal.len()
+            + stamp.source_literal.len()
+            + stamp.org_literal.len(),
+    );
+    buf.extend_from_slice(&raw[..insert_pos]);
+
+    // Add comma if not empty object
+    if let Some(pos) = raw[..insert_pos]
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        && raw[pos] != b'{'
+    {
+        buf.push(b',');
+    }
+    // Written straight into the record buffer, so the fast path allocates
+    // once: the literals are escaped per batch and the timestamp formats
+    // into a stack buffer.
+    let mut digits = itoa::Buffer::new();
+    let now_str = digits.format(now_ms);
+    buf.extend_from_slice(b"\"_timestamp_fetcher\":");
+    buf.extend_from_slice(now_str.as_bytes());
+    buf.extend_from_slice(b",\"_timestamp_received\":");
+    buf.extend_from_slice(now_str.as_bytes());
+    buf.extend_from_slice(b",\"_source\":");
+    buf.extend_from_slice(stamp.dfe_source_literal.as_bytes());
+    buf.extend_from_slice(b",\"_source_fetcher\":");
+    buf.extend_from_slice(stamp.source_literal.as_bytes());
+    buf.extend_from_slice(b",\"_org_id\":");
+    buf.extend_from_slice(stamp.org_literal.as_bytes());
+    buf.extend_from_slice(&raw[insert_pos..]);
+    Some(Bytes::from(buf))
+}
+
+/// The elements of the JSON array at `payload[start..]` when every element is
+/// an object, as slices of `payload`, or `None` when it is anything else.
+fn split_objects(payload: &Bytes, start: usize) -> Option<Vec<Bytes>> {
+    let elements = split_array(payload, start, payload.len()).ok()?;
+    elements
+        .iter()
+        .all(|element| element.first() == Some(&b'{') && element.last() == Some(&b'}'))
+        .then_some(elements)
+}
+
+/// Whether `payload` carries a record boundary: a closing brace meeting the
+/// next record's opening brace with only whitespace between, in a body with a
+/// newline. The same scan as the loader's `has_ndjson_boundary`.
+fn has_ndjson_boundary(payload: &[u8]) -> bool {
+    // A raw newline is illegal inside a JSON string, so one compact record has none.
+    if memchr::memchr(b'\n', payload).is_none() {
+        return false;
+    }
+    let mut closed = false;
+    for &b in payload {
+        match b {
+            b'}' => closed = true,
+            b'{' if closed => return true,
+            b if b.is_ascii_whitespace() => {}
+            _ => closed = false,
+        }
+    }
+    false
+}
+
+/// The records of `payload[start..]` when it is two or more whitespace-separated
+/// JSON objects and nothing else, as slices of `payload` trimmed of the
+/// whitespace between them: what the loader's `split_ndjson` fans out. `None`
+/// for anything else, which the loader keeps whole too.
+fn split_ndjson(payload: &Bytes, start: usize) -> Option<Vec<Bytes>> {
+    let body = &payload[start..];
+    if !has_ndjson_boundary(body) {
+        return None;
+    }
+    let mut records = Vec::new();
+    let mut consumed = 0;
+    let mut stream =
+        serde_json::Deserializer::from_slice(body).into_iter::<serde::de::IgnoredAny>();
+    while let Some(item) = stream.next() {
+        item.ok()?;
+        let end = stream.byte_offset();
+        let (from, to) = trim_range(&body[consumed..end]);
+        let record = payload.slice(start + consumed + from..start + consumed + to);
+        if record.first() != Some(&b'{') {
+            return None;
+        }
+        records.push(record);
+        consumed = end;
+    }
+    if body[consumed..].iter().any(|b| !b.is_ascii_whitespace()) {
+        return None;
+    }
+    (records.len() > 1).then_some(records)
+}
+
+/// One stamped object per record of a split body, each record a JSON object
+/// ending in its closing brace. A record that cannot be stamped refuses the
+/// body whole, so the dead letter holds it as fetched.
+fn stamp_each(payload: Bytes, records: &[Bytes], now_ms: u64, stamp: &Stamp<'_>) -> Enriched {
+    let parts: Option<Vec<(Bytes, u64)>> = records
+        .iter()
+        .map(|record| {
+            stamp_object(record, record.len() - 1, now_ms, stamp)
+                .map(|stamped| (stamped, record.len() as u64))
+        })
+        .collect();
+    let Some(parts) = parts else {
+        return refused(payload, stamp.source);
+    };
+    tracing::trace!(
+        source = stamp.source,
+        original_bytes = payload.len(),
+        records = parts.len(),
+        "Body split into stamped objects"
+    );
+    Enriched::Split(parts)
+}
+
+/// What enriching one record made of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum Enriched {
+    /// One row, and what became of its org stamp.
+    One(Bytes, Tenancy),
+    /// A JSON array whose every element is an object, or a body of two or
+    /// more newline-delimited objects, as one stamped object per record in
+    /// order, each with its length before the stamp.
+    Split(Vec<(Bytes, u64)>),
+}
+
+impl Enriched {
+    /// The rows the record goes out as on `topic`, to `route` when one
+    /// matched. One row counts `ingested`, the record's length as fetched,
+    /// and each element of a split counts its own length before the stamp.
+    pub fn into_rows(
+        self,
+        topic: &str,
+        ingested: u64,
+        route: Option<Arc<[Arc<str>]>>,
+    ) -> impl Iterator<Item = Outbound> + use<> {
+        let topic: Arc<str> = Arc::from(topic);
+        let row = move |payload: Bytes, ingested_bytes: u64, tenancy: Tenancy| Outbound {
+            topic: Arc::clone(&topic),
+            payload,
+            route: route.clone(),
+            ingested_bytes,
+            tenancy,
+        };
+        let (one, split) = match self {
+            Enriched::One(payload, tenancy) => (Some(row(payload, ingested, tenancy)), Vec::new()),
+            Enriched::Split(parts) => (None, parts),
+        };
+        one.into_iter().chain(
+            split
+                .into_iter()
+                .map(move |(payload, len)| row(payload, len, Tenancy::Stamped)),
+        )
+    }
+}
+
+/// A record that opens as a JSON object the stamp cannot reach, which is
+/// never sent.
+#[cold]
+fn refused(payload: Bytes, source: &str) -> Enriched {
+    if scalo::logger::log_debounced(&REFUSED_WARNED_AT, DLQ_LOG_EVERY_MS) {
+        warn!(
+            source,
+            payload_bytes = payload.len(),
+            "A record that opens as a JSON object could not be stamped with its org, so it \
+             is dead-lettered, never sent (debounced, max 1/5s)"
+        );
+    }
+    Enriched::One(payload, Tenancy::Refused)
 }
 
 /// How long shutdown waits for the extractors to deliver what they hold before
@@ -199,6 +408,8 @@ const DLQ_LOG_EVERY_MS: u64 = 5_000;
 static DLQ_REFUSED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// When a failed DLQ write was last logged.
 static DLQ_WRITE_FAILED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// When a record the stamp could not reach was last logged.
+static REFUSED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One record for the dead-letter queue.
 #[derive(Debug, Clone)]
@@ -423,10 +634,24 @@ impl PipelineState {
         true
     }
 
+    /// The org every record this instance emits belongs to: the configured
+    /// `org_id`, else `default_org_id`.
+    pub fn org_id(&self) -> String {
+        self.shared_config.with(|c| c.stamped_org().to_owned())
+    }
+
+    /// The org a record that carries no `_org_id` counts for usage under:
+    /// `default_org_id`. Usage measures ingest into the platform, so it counts
+    /// such a record though the loader refuses it.
+    pub fn default_org_id(&self) -> String {
+        self.shared_config.with(|c| c.default_org_id.clone())
+    }
+
     /// Enrich a record with fetcher metadata.
     ///
     /// `_source` is the DFE source name (the topic without its suffix), the field
-    /// dfe-loader routes and filters on; `_source_fetcher` names the producer.
+    /// dfe-loader routes and filters on. `_source_fetcher` names the producer,
+    /// and `_org_id` is [`Self::org_id`].
     ///
     /// The fetcher's value wins for every reserved metadata key -- the loader
     /// routes on `_source`, so the DFE source name must be the one that survives
@@ -434,17 +659,34 @@ impl PipelineState {
     /// `<key>_original`, or the next free `<key>_original_<n>` when that name is
     /// taken too.
     ///
-    /// This escapes the two names on every call; a batch that shares them should
-    /// build a [`SourceNames`] once and call [`Self::enrich_record_with`].
-    pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Bytes {
-        self.enrich_record_with(payload, &SourceNames::new(dfe_source, source))
+    /// This reads the org and escapes the names on every call. A batch that
+    /// shares them builds a [`Stamp`] once and calls
+    /// [`Self::enrich_record_with`].
+    pub fn enrich_record(&self, payload: Bytes, dfe_source: &str, source: &str) -> Enriched {
+        let org = self.org_id();
+        self.enrich_record_with(payload, &Stamp::new(dfe_source, source, &org))
     }
 
-    /// Enrich a record against names already escaped for the whole batch.
+    /// Enrich a record against a stamp already escaped for the whole batch.
     ///
     /// Same contract as [`Self::enrich_record`], minus the per-record escaping.
-    pub fn enrich_record_with(&self, payload: Bytes, names: &SourceNames<'_>) -> Bytes {
-        let source = names.source;
+    ///
+    /// A JSON array whose every element is an object, and a body of two or
+    /// more whitespace-separated objects and nothing else, come back
+    /// [`Enriched::Split`], one stamped object per record: the loader splits
+    /// both itself, and a record with no `_org_id` lands in its default org.
+    /// Anything else that is not an object (not JSON, a scalar, an array
+    /// holding a non-object) comes back [`Tenancy::Unstamped`] and unchanged.
+    /// The loader refuses such a row, though the archiver may keep it, and its
+    /// usage counts under `default_org_id`, since usage measures ingest into
+    /// the platform rather than what the loader stores.
+    /// A record that opens as an object, after whitespace or a UTF-8
+    /// byte-order mark, and cannot be stamped (no closing brace, or a reserved
+    /// key that does not parse) comes back [`Tenancy::Refused`] and unchanged:
+    /// sent, it would keep any `_org_id` its sender gave it. A stamped row
+    /// leaves without the byte-order mark.
+    pub fn enrich_record_with(&self, payload: Bytes, stamp: &Stamp<'_>) -> Enriched {
+        let source = stamp.source;
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -454,68 +696,50 @@ impl PipelineState {
         .unwrap_or(u64::MAX);
 
         let raw = payload.as_ref();
-        let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') else {
-            tracing::trace!(
-                source,
-                payload_bytes = raw.len(),
-                "Enrich skipped -- payload is not a JSON object"
-            );
-            return payload;
+        let start = if raw.starts_with(UTF8_BOM) {
+            UTF8_BOM.len()
+        } else {
+            0
         };
-
-        // Appending blind would emit a second copy of any reserved key the
-        // payload already has, so a collision takes the parse-and-rewrite path.
-        if may_carry_reserved_key(raw)
-            && let Some(rewritten) = rewrite_reserved_keys(raw, now_ms, names.dfe_source, source)
-        {
-            tracing::trace!(
-                source,
-                original_bytes = raw.len(),
-                enriched_bytes = rewritten.len(),
-                "Record enriched, reserved keys rewritten"
-            );
-            return rewritten;
+        let body = &raw[start..];
+        // The stamp lands at an object's top level: in an array or a scalar it
+        // would land inside one element, or nowhere.
+        match body.iter().find(|b| !b.is_ascii_whitespace()) {
+            Some(b'{') => {
+                // The stamp lands before the last closing brace only, so a body of
+                // several records is stamped one record at a time.
+                if let Some(records) = split_ndjson(&payload, start) {
+                    return stamp_each(payload, &records, now_ms, stamp);
+                }
+                let Some(enriched) = body
+                    .iter()
+                    .rposition(|&b| b == b'}')
+                    .and_then(|insert_pos| stamp_object(body, insert_pos, now_ms, stamp))
+                else {
+                    return refused(payload, source);
+                };
+                tracing::trace!(
+                    source,
+                    original_bytes = raw.len(),
+                    enriched_bytes = enriched.len(),
+                    timestamp_fetcher = now_ms,
+                    "Record enriched with fetcher metadata"
+                );
+                return Enriched::One(enriched, Tenancy::Stamped);
+            }
+            Some(b'[') => {
+                if let Some(elements) = split_objects(&payload, start) {
+                    return stamp_each(payload, &elements, now_ms, stamp);
+                }
+            }
+            _ => {}
         }
-
-        // The fixed envelope text is 101 bytes plus two timestamps and the two
-        // escaped names; sizing for them keeps this the fast path's only allocation.
-        let mut buf = Vec::with_capacity(
-            raw.len() + 128 + names.dfe_source_literal.len() + names.source_literal.len(),
-        );
-        buf.extend_from_slice(&raw[..insert_pos]);
-
-        // Add comma if not empty object
-        if let Some(pos) = raw[..insert_pos]
-            .iter()
-            .rposition(|b| !b.is_ascii_whitespace())
-            && raw[pos] != b'{'
-        {
-            buf.push(b',');
-        }
-        // Written straight into the record buffer, so the fast path allocates
-        // once: the literals are escaped per batch and the timestamp formats
-        // into a stack buffer.
-        let mut digits = itoa::Buffer::new();
-        let now_str = digits.format(now_ms);
-        buf.extend_from_slice(b"\"_timestamp_fetcher\":");
-        buf.extend_from_slice(now_str.as_bytes());
-        buf.extend_from_slice(b",\"_timestamp_received\":");
-        buf.extend_from_slice(now_str.as_bytes());
-        buf.extend_from_slice(b",\"_source\":");
-        buf.extend_from_slice(names.dfe_source_literal.as_bytes());
-        buf.extend_from_slice(b",\"_source_fetcher\":");
-        buf.extend_from_slice(names.source_literal.as_bytes());
-        buf.extend_from_slice(&raw[insert_pos..]);
-
-        let enriched = Bytes::from(buf);
         tracing::trace!(
             source,
-            original_bytes = raw.len(),
-            enriched_bytes = enriched.len(),
-            timestamp_fetcher = now_ms,
-            "Record enriched with fetcher metadata"
+            payload_bytes = raw.len(),
+            "Enrich skipped -- payload is not a JSON object or an array of objects"
         );
-        enriched
+        Enriched::One(payload, Tenancy::Unstamped)
     }
 
     /// Send one record to every default transport, with no dead-lettering and
@@ -834,7 +1058,7 @@ mod tests {
             });
 
         let payload = Bytes::from(r#"{"key": "value"}"#);
-        let enriched = state.enrich_record(payload, "cloudtrail", "aws.cloudtrail");
+        let enriched = stamped(state.enrich_record(payload, "cloudtrail", "aws.cloudtrail"));
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         assert!(enriched_str.contains("\"_timestamp_fetcher\":"));
@@ -870,11 +1094,44 @@ mod tests {
         PipelineState::for_tests(shared, metrics, None)
     }
 
+    /// The one stamped row a record became.
+    fn stamped(enriched: Enriched) -> Bytes {
+        match enriched {
+            Enriched::One(payload, Tenancy::Stamped) => payload,
+            Enriched::One(_, tenancy) => panic!("expected one stamped row, got {tenancy:?}"),
+            Enriched::Split(parts) => panic!("expected one stamped row, got {parts:?}"),
+        }
+    }
+
+    /// A record that may name its own org and does not parse cannot have its
+    /// `_org_id` replaced, so it comes back refused and byte-identical, never
+    /// with a second `_org_id` appended after the sender's. One such element
+    /// refuses an array whole.
+    #[test]
+    fn a_record_that_may_name_its_org_and_does_not_parse_is_refused() {
+        let state = pipeline_over("org_id: acme\n");
+        // A lone surrogate escape, built from the backslash's code point: serde refuses it.
+        let lone_surrogate = format!(r#"{{"_org_id":"victim","s":"{}ud800"}}"#, char::from(0x5c));
+        let in_an_array = format!(r#"[{{"id":"a"}},{lone_surrogate}]"#);
+        for raw in [
+            lone_surrogate.as_str(),
+            r#"{"_org_id":"victim","s":}"#,
+            in_an_array.as_str(),
+        ] {
+            let payload = Bytes::from(raw.to_owned());
+            assert_eq!(
+                state.enrich_record(payload.clone(), "ingest", "ingest.source"),
+                Enriched::One(payload, Tenancy::Refused),
+                "{raw}"
+            );
+        }
+    }
+
     #[test]
     fn test_enrich_record_empty_object() {
         let state = make_pipeline_state();
         let payload = Bytes::from("{}");
-        let enriched = state.enrich_record(payload, "test", "test.source");
+        let enriched = stamped(state.enrich_record(payload, "test", "test.source"));
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         // Should be valid JSON
@@ -893,16 +1150,228 @@ mod tests {
         let state = make_pipeline_state();
         let raw = "this is not json at all";
         let payload = Bytes::from(raw);
-        let enriched = state.enrich_record(payload, "src", "src.fetcher");
-        // Non-JSON payload has no closing brace so should be returned unchanged
-        assert_eq!(enriched.as_ref(), raw.as_bytes());
+        assert_eq!(
+            state.enrich_record(payload.clone(), "src", "src.fetcher"),
+            Enriched::One(payload, Tenancy::Unstamped),
+            "no object to stamp, so it goes out as it came"
+        );
+    }
+
+    /// Only an object takes the stamp: in a scalar it has nowhere to go, and
+    /// in an array holding a non-object it would land inside one element and
+    /// leave the rest untagged. Those leave unstamped and byte-identical.
+    #[test]
+    fn a_payload_that_cannot_carry_the_org_leaves_unstamped_and_byte_identical() {
+        let state = pipeline_over("org_id: acme\n");
+        for raw in [
+            "[1,2]",
+            r#"[{"a":1},2]"#,
+            r#"[[{"a":1}]]"#,
+            r#"[{"a":1},"#,
+            r#""text}""#,
+            "42",
+        ] {
+            let payload = Bytes::from(raw);
+            assert_eq!(
+                state.enrich_record(payload.clone(), "ingest", "ingest.source"),
+                Enriched::One(payload, Tenancy::Unstamped),
+                "{raw}"
+            );
+        }
+
+        let enriched = stamped(state.enrich_record(Bytes::from(r#"  {"a":1}"#), "ingest", "i.s"));
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(
+            parsed["_org_id"], "acme",
+            "an object after whitespace is stamped"
+        );
+    }
+
+    /// A JSON array of objects splits into one stamped object per element, in
+    /// order, each with its length before the stamp. A reserved key an element
+    /// carries is parked as it is in a single object, and `[]` holds no row.
+    #[test]
+    fn an_array_of_objects_splits_into_one_stamped_object_per_element() {
+        let state = pipeline_over("org_id: acme\n");
+        let (first, second) = (r#"{"id":"a"}"#, r#"{"id":"b","_org_id":"someone-else"}"#);
+        let Enriched::Split(parts) = state.enrich_record(
+            Bytes::from(format!(" [{first},\n {second}] ")),
+            "ingest",
+            "ingest.source",
+        ) else {
+            panic!("an array of objects splits");
+        };
+        let got: Vec<(serde_json::Value, u64)> = parts
+            .iter()
+            .map(|(payload, len)| (serde_json::from_slice(payload).unwrap(), *len))
+            .collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            (&got[0].0["id"], &got[0].0["_org_id"], got[0].1),
+            (
+                &serde_json::json!("a"),
+                &serde_json::json!("acme"),
+                first.len() as u64
+            )
+        );
+        assert_eq!(
+            (
+                &got[1].0["id"],
+                &got[1].0["_org_id"],
+                &got[1].0["_org_id_original"],
+                got[1].1
+            ),
+            (
+                &serde_json::json!("b"),
+                &serde_json::json!("acme"),
+                &serde_json::json!("someone-else"),
+                second.len() as u64
+            )
+        );
+        assert_eq!(key_occurrences(&parts[1].0, "_org_id"), 1);
+        assert_eq!(
+            state.enrich_record(Bytes::from("[]"), "ingest", "ingest.source"),
+            Enriched::Split(Vec::new())
+        );
+    }
+
+    /// A payload that opens as an object, after whitespace or a byte-order
+    /// mark, and cannot be stamped is refused: sent as it came it would keep
+    /// the `_org_id` its sender gave it.
+    #[test]
+    fn an_object_that_cannot_be_stamped_is_refused_not_sent_unstamped() {
+        let state = pipeline_over("org_id: acme\n");
+        for raw in [
+            &br#"{"_org_id":"victim""#[..],
+            br#"  {"_org_id":"victim","a":1"#,
+            b"\xEF\xBB\xBF{\"_org_id\":\"victim\"",
+            br#"{"a":1"#,
+        ] {
+            let payload = Bytes::copy_from_slice(raw);
+            assert_eq!(
+                state.enrich_record(payload.clone(), "ingest", "ingest.source"),
+                Enriched::One(payload, Tenancy::Refused),
+                "{}",
+                String::from_utf8_lossy(raw)
+            );
+        }
+    }
+
+    /// A byte-order mark is not part of the JSON: an object behind one is
+    /// stamped like any other, and the stamped row leaves without the mark.
+    #[test]
+    fn an_object_behind_a_byte_order_mark_is_stamped_without_it() {
+        let state = pipeline_over("org_id: acme\n");
+        let enriched = stamped(state.enrich_record(
+            Bytes::from_static(b"\xEF\xBB\xBF{\"_org_id\":\"victim\",\"a\":1}"),
+            "ingest",
+            "ingest.source",
+        ));
+        assert_eq!(enriched.first(), Some(&b'{'), "the mark is dropped");
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(
+            (
+                &parsed["_org_id"],
+                &parsed["_org_id_original"],
+                &parsed["a"]
+            ),
+            (
+                &serde_json::json!("acme"),
+                &serde_json::json!("victim"),
+                &serde_json::json!(1)
+            )
+        );
+    }
+
+    /// A body of two or more whitespace-separated objects and nothing else is
+    /// split into one stamped object per record, exactly where the loader's
+    /// `split_ndjson` would fan it out, so no record leaves without the org.
+    #[test]
+    fn newline_delimited_objects_split_where_the_loader_splits_them() {
+        let state = pipeline_over("org_id: acme\n");
+        let (first, second) = (r#"{"a": 1}"#, r#"{"b": 2, "_org_id": "x"}"#);
+        let Enriched::Split(parts) = state.enrich_record(
+            Bytes::from(format!("  {first}\r\n\r\n  {second}  \n")),
+            "ingest",
+            "ingest.source",
+        ) else {
+            panic!("two records split");
+        };
+        let got: Vec<(serde_json::Value, serde_json::Value, u64)> = parts
+            .iter()
+            .map(|(payload, len)| {
+                let row: serde_json::Value = serde_json::from_slice(payload).unwrap();
+                (
+                    row["_org_id"].clone(),
+                    row["_org_id_original"].clone(),
+                    *len,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    serde_json::json!("acme"),
+                    serde_json::Value::Null,
+                    first.len() as u64
+                ),
+                (
+                    serde_json::json!("acme"),
+                    serde_json::json!("x"),
+                    second.len() as u64
+                ),
+            ],
+            "each record counts its own bytes, the separators none"
+        );
+
+        // What the loader leaves whole stays one row here too.
+        for raw in [
+            "{\n  \"a\": 1\n}\n",
+            "{\"msg\": \"}\n{\"}",
+            "{\"a\": 1}\n[2]\n{\"b\": 3}",
+            "{\"a\": 1}\n{\"b\": 2}\njunk",
+        ] {
+            assert!(
+                matches!(
+                    state.enrich_record(Bytes::from(raw), "ingest", "ingest.source"),
+                    Enriched::One(..)
+                ),
+                "{raw}"
+            );
+        }
+    }
+
+    /// The rows a record goes out as: one counted at its fetched length, or
+    /// one per element of a split counted at the element's own, each on the
+    /// topic and route given.
+    #[test]
+    fn enriched_records_go_out_as_rows_on_their_topic_and_route() {
+        let route: Arc<[Arc<str>]> = Arc::from([Arc::from("siem")]);
+        let one: Vec<Outbound> = Enriched::One(Bytes::from("text"), Tenancy::Unstamped)
+            .into_rows("t_land", 4, Some(Arc::clone(&route)))
+            .collect();
+        assert_eq!(
+            one,
+            [Outbound::new("t_land", "text")
+                .with_tenancy(Tenancy::Unstamped)
+                .with_route(Arc::clone(&route))]
+        );
+        let split: Vec<(u64, Tenancy)> = Enriched::Split(vec![
+            (Bytes::from("{\"a\":1}"), 3),
+            (Bytes::from("{\"b\":2}"), 5),
+        ])
+        .into_rows("t_land", 99, None)
+        .map(|row| (row.ingested_bytes, row.tenancy))
+        .collect();
+        assert_eq!(split, [(3, Tenancy::Stamped), (5, Tenancy::Stamped)]);
     }
 
     #[test]
     fn test_enrich_record_nested_json() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"outer":{"inner":42}}"#);
-        let enriched = state.enrich_record(payload, "nested", "nested.src");
+        let enriched = stamped(state.enrich_record(payload, "nested", "nested.src"));
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Original nested data preserved
@@ -931,7 +1400,7 @@ mod tests {
         assert!(big.len() > 10_000, "Test payload should exceed 10KB");
 
         let payload = Bytes::from(big);
-        let enriched = state.enrich_record(payload, "large", "large.source");
+        let enriched = stamped(state.enrich_record(payload, "large", "large.source"));
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Metadata added
@@ -947,7 +1416,7 @@ mod tests {
     fn test_enrich_record_unicode_content() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"name":"日本語テスト","emoji":"🚀🔥"}"#);
-        let enriched = state.enrich_record(payload, "unicode", "unicode.src");
+        let enriched = stamped(state.enrich_record(payload, "unicode", "unicode.src"));
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
 
         // Unicode preserved
@@ -961,7 +1430,7 @@ mod tests {
     fn test_enrich_record_special_chars_in_source() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"key":"val"}"#);
-        let enriched = state.enrich_record(payload, "special", "source/with\"special");
+        let enriched = stamped(state.enrich_record(payload, "special", "source/with\"special"));
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
         // The quote is escaped in the bytes, so the record still parses.
         assert!(
@@ -1312,7 +1781,7 @@ mod tests {
     fn test_enrich_record_with_existing_timestamp_received() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_timestamp_received":12345}"#);
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         assert_eq!(key_occurrences(&enriched, "_timestamp_received"), 1);
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
@@ -1329,7 +1798,7 @@ mod tests {
     fn test_enrich_record_with_existing_source() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_source":"producer-set"}"#);
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         assert_eq!(
             key_occurrences(&enriched, "_source"),
@@ -1348,7 +1817,7 @@ mod tests {
     fn test_enrich_record_with_existing_source_fetcher() {
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_source_fetcher":"producer-set"}"#);
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         assert_eq!(key_occurrences(&enriched, "_source_fetcher"), 1);
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
@@ -1363,7 +1832,7 @@ mod tests {
         let payload = Bytes::from(
             r#"{"event":"x","_source":"a","_source_fetcher":"b","_timestamp_fetcher":1,"_timestamp_received":2}"#,
         );
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         for key in RESERVED_KEYS {
             assert_eq!(key_occurrences(&enriched, key), 1, "duplicate {key}");
@@ -1384,7 +1853,7 @@ mod tests {
         // the nested key where it is and adds exactly one top-level `_source`.
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"inner":{"_source":"nested"}}"#);
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert_eq!(parsed["_source"], "ingest");
@@ -1394,11 +1863,11 @@ mod tests {
 
     #[test]
     fn test_enrich_record_without_a_reserved_key_takes_the_append_path() {
-        // No reserved key means no parse: the payload is copied byte for byte
-        // and the envelope is appended before the closing brace.
+        // No reserved key and no escape means no parse: the payload is copied
+        // byte for byte and the envelope is appended before the closing brace.
         let state = make_pipeline_state();
-        let raw = r#"{"event":"x","id":7,"nested":{"a":[1,2]},"unicode":"caf\u00e9"}"#;
-        let enriched = state.enrich_record(Bytes::from(raw), "ingest", "ingest.source");
+        let raw = r#"{"event":"x","id":7,"nested":{"a":[1,2]},"note":"plain text"}"#;
+        let enriched = stamped(state.enrich_record(Bytes::from(raw), "ingest", "ingest.source"));
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
         let head = &raw[..raw.len() - 1];
@@ -1421,7 +1890,7 @@ mod tests {
         // the append path emits a record no parser accepts.
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x"}"#);
-        let enriched = state.enrich_record(payload, r#"in"gest"#, r#"c:\logs\"a""#);
+        let enriched = stamped(state.enrich_record(payload, r#"in"gest"#, r#"c:\logs\"a""#));
 
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert_eq!(parsed["_source"], r#"in"gest"#);
@@ -1434,7 +1903,7 @@ mod tests {
         // lose the one it already had.
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"_source":"producer-set","_source_original":"first-hop"}"#);
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
         assert_eq!(parsed["_source"], "ingest");
@@ -1448,8 +1917,8 @@ mod tests {
         // pass parks its value under _original_2 rather than overwriting.
         let state = make_pipeline_state();
         let payload = Bytes::from(r#"{"event":"x","_source":"producer-set"}"#);
-        let once = state.enrich_record(payload, "ingest", "ingest.source");
-        let twice = state.enrich_record(once, "replay", "replay.source");
+        let once = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
+        let twice = stamped(state.enrich_record(once, "replay", "replay.source"));
 
         let parsed: serde_json::Value = serde_json::from_slice(&twice).unwrap();
         assert_eq!(parsed["_source"], "replay");
@@ -1464,7 +1933,7 @@ mod tests {
         let payload = Bytes::from(
             r#"{"_source":"a","_source_original":"a0","_source_fetcher":"b","_source_fetcher_original":"b0","_timestamp_fetcher":1,"_timestamp_fetcher_original":10,"_timestamp_received":2,"_timestamp_received_original":20}"#,
         );
-        let enriched = state.enrich_record(payload, "ingest", "ingest.source");
+        let enriched = stamped(state.enrich_record(payload, "ingest", "ingest.source"));
 
         for key in RESERVED_KEYS {
             assert_eq!(key_occurrences(&enriched, key), 1, "duplicate {key}");
@@ -1511,23 +1980,186 @@ mod tests {
     }
 
     #[test]
-    fn test_source_names_escape_the_literals_once() {
+    fn test_stamp_escapes_the_literals_once() {
         // The literals the append path writes carry serde's escaping, quotes
-        // included, so a quote or backslash in a name cannot break the record.
-        let names = SourceNames::new(r#"in"gest"#, r#"c:\logs"#);
+        // included, so a quote or backslash in a name or an org cannot break
+        // the record.
+        let stamp = Stamp::new(r#"in"gest"#, r#"c:\logs"#, r#"ac"me"#);
 
-        assert_eq!(names.dfe_source_literal, r#""in\"gest""#);
-        assert_eq!(names.source_literal, r#""c:\\logs""#);
-        assert_eq!(names.dfe_source, r#"in"gest"#);
-        assert_eq!(names.source, r#"c:\logs"#);
+        assert_eq!(stamp.dfe_source_literal, r#""in\"gest""#);
+        assert_eq!(stamp.source_literal, r#""c:\\logs""#);
+        assert_eq!(stamp.org_literal, r#""ac\"me""#);
+        assert_eq!(stamp.dfe_source, r#"in"gest"#);
+        assert_eq!(stamp.source, r#"c:\logs"#);
+        assert_eq!(stamp.org, r#"ac"me"#);
+    }
+
+    /// A pipeline over `yaml` as the config file, reservation-counted like
+    /// [`make_pipeline_state`].
+    fn pipeline_over(yaml: &str) -> PipelineState {
+        let (config, _) = Config::parse_yaml(yaml, "fetcher.yaml").expect("config");
+        PipelineState::for_tests(SharedConfig::new(config), Arc::new(Metrics::new()), None)
+    }
+
+    /// With no org bound, every record carries the built-in default org, on
+    /// the append path and the rewrite path alike.
+    #[test]
+    fn every_record_carries_the_default_org_when_none_is_bound() {
+        let state = make_pipeline_state();
+        for payload in [r#"{"event":"x"}"#, r#"{"event":"x","_source":"theirs"}"#] {
+            let enriched =
+                stamped(state.enrich_record(Bytes::from(payload), "ingest", "ingest.source"));
+            assert_eq!(key_occurrences(&enriched, "_org_id"), 1, "{payload}");
+            let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+            assert_eq!(parsed["_org_id"], "default", "{payload}");
+        }
+    }
+
+    /// The org the config binds is the one every record carries, and an empty
+    /// binding takes the deployment default.
+    #[test]
+    fn every_record_carries_the_bound_org_and_an_empty_binding_takes_the_default() {
+        let bound = pipeline_over("org_id: acme\n");
+        let enriched =
+            stamped(bound.enrich_record(Bytes::from(r#"{"event":"x"}"#), "ingest", "i.s"));
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_org_id"], "acme");
+
+        let empty = pipeline_over("org_id: ''\ndefault_org_id: house\n");
+        let enriched =
+            stamped(empty.enrich_record(Bytes::from(r#"{"event":"x"}"#), "ingest", "i.s"));
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_org_id"], "house");
+    }
+
+    /// An `_org_id` the fetched data carried is parked as `_org_id_original`,
+    /// as `_source` is, and the bound org takes the name: a record cannot pick
+    /// its own tenant.
+    #[test]
+    fn a_fetched_org_id_is_parked_and_the_bound_org_takes_its_place() {
+        let state = pipeline_over("org_id: acme\n");
+        let enriched = stamped(state.enrich_record(
+            Bytes::from(r#"{"event":"x","_org_id":"someone-else"}"#),
+            "ingest",
+            "ingest.source",
+        ));
+        assert_eq!(
+            key_occurrences(&enriched, "_org_id"),
+            1,
+            "two _org_id keys make ClickHouse reject the record"
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(parsed["_org_id"], "acme");
+        assert_eq!(parsed["_org_id_original"], "someone-else");
+        assert_eq!(parsed["event"], "x");
+
+        let replayed = stamped(state.enrich_record(enriched, "ingest", "ingest.source"));
+        let parsed: serde_json::Value = serde_json::from_slice(&replayed).unwrap();
+        assert_eq!(parsed["_org_id"], "acme");
+        assert_eq!(parsed["_org_id_original"], "someone-else");
+        assert_eq!(parsed["_org_id_original_2"], "acme");
+    }
+
+    /// Every top-level key as JSON decodes it, duplicates kept, so a key spelled
+    /// with an escape counts as the name it decodes to.
+    fn decoded_keys(enriched: &[u8]) -> Vec<(String, serde_json::Value)> {
+        struct Pairs(Vec<(String, serde_json::Value)>);
+        impl<'de> serde::Deserialize<'de> for Pairs {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                d: D,
+            ) -> std::result::Result<Self, D::Error> {
+                struct Visit;
+                impl<'de> serde::de::Visitor<'de> for Visit {
+                    type Value = Pairs;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a JSON object")
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> std::result::Result<Pairs, A::Error> {
+                        let mut pairs = Vec::new();
+                        while let Some(pair) = map.next_entry()? {
+                            pairs.push(pair);
+                        }
+                        Ok(Pairs(pairs))
+                    }
+                }
+                d.deserialize_map(Visit)
+            }
+        }
+        serde_json::from_slice::<Pairs>(enriched)
+            .expect("a JSON object")
+            .0
+    }
+
+    /// A reserved key spelled with a JSON escape decodes to the reserved name,
+    /// so it is parked like the plain spelling: the record carries one
+    /// `_org_id` and one `_source`, both the fetcher's.
+    #[test]
+    fn an_escaped_reserved_key_is_parked_like_the_plain_one() {
+        let state = pipeline_over("org_id: acme\n");
+        // The JSON escape for an underscore, built from the backslash's code point.
+        let underscore = format!("{}u005f", char::from(0x5c));
+        let cases = [
+            (
+                format!(r#"{{"{underscore}org_id":"someone-else","a":1}}"#),
+                "_org_id",
+                "someone-else",
+            ),
+            (
+                format!(r#"{{"_org{underscore}id":"someone-else","a":1}}"#),
+                "_org_id",
+                "someone-else",
+            ),
+            (
+                format!(r#"{{"{underscore}source":"other_table","a":1}}"#),
+                "_source",
+                "other_table",
+            ),
+        ];
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for (payload, key, fetched) in &cases {
+            assert!(payload.contains(char::from(0x5c)), "{payload}");
+            let enriched = stamped(state.enrich_record(
+                Bytes::from(payload.clone()),
+                "ingest",
+                "ingest.source",
+            ));
+            let keys = decoded_keys(&enriched);
+            let values = |name: &str| -> Vec<serde_json::Value> {
+                keys.iter()
+                    .filter(|(k, _)| k == name)
+                    .map(|(_, v)| v.clone())
+                    .collect()
+            };
+            let parked = format!("{key}_original");
+            got.push((
+                payload.as_str(),
+                values("_org_id"),
+                values("_source"),
+                values(&parked),
+            ));
+            want.push((
+                payload.as_str(),
+                vec![serde_json::json!("acme")],
+                vec![serde_json::json!("ingest")],
+                vec![serde_json::json!(fetched)],
+            ));
+        }
+        assert_eq!(got, want);
     }
 
     #[test]
     fn test_may_carry_reserved_key() {
         assert!(may_carry_reserved_key(br#"{"_source":"x"}"#));
         assert!(may_carry_reserved_key(br#"{"_timestamp_received":1}"#));
+        assert!(may_carry_reserved_key(br#"{"_org_id":"x"}"#));
         assert!(!may_carry_reserved_key(br#"{"event":"x","id":7}"#));
         assert!(!may_carry_reserved_key(b"{}"));
+        let escaped = format!(r#"{{"path":"c:{0}{0}logs"}}"#, char::from(0x5c));
+        assert!(may_carry_reserved_key(escaped.as_bytes()));
     }
 
     /// Exercise PipelineState::new with DLQ enabled to cover the DLQ init branch.

@@ -41,9 +41,10 @@ pub struct Enriched {
     pub row: Value,
     pub source: String,
     pub source_fetcher: String,
+    pub org: String,
 }
 
-/// Split the four enrichment keys off a landed record, asserting both
+/// Split the five enrichment keys off a landed record, asserting both
 /// timestamps are numbers.
 pub fn enriched(landed: &Landed) -> Enriched {
     let mut map = landed
@@ -69,10 +70,15 @@ pub fn enriched(landed: &Landed) -> Enriched {
         .remove("_source_fetcher")
         .and_then(|v| v.as_str().map(str::to_owned))
         .expect("_source_fetcher is a string");
+    let org = map
+        .remove("_org_id")
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .expect("_org_id is a string");
     Enriched {
         row: Value::Object(map),
         source,
         source_fetcher,
+        org,
     }
 }
 

@@ -20,6 +20,13 @@
 # one source without it is refused at load.
 # instance_id: "contoso-m365"
 
+# The org every record this instance emits belongs to, stamped as `_org_id`.
+# The engine fills it from the org of the source the instance polls. Unset,
+# null or empty takes default_org_id. A fetched `_org_id` is kept as
+# `_org_id_original`. Both are HOT-RELOADED, re-read each fetch cycle.
+# org_id: "contoso"
+# default_org_id: "default"
+
 # =============================================================================
 # Scheduler
 # =============================================================================
@@ -842,10 +849,13 @@ ingest:
 #
 # Every record goes to the transports under `type` -- its own topic on the bus,
 # the configured endpoint on the direct transport. `destinations` declares other
-# places a record can go, and `routes` sends matching records there instead: a
-# transform, an archiver, or several at once. A backpressured destination HOLDS
-# the batch and stalls the scheduler; the cursor does not advance and nothing is
-# dead-lettered.
+# places a record can go, each named for the DFE source it lands as, and
+# `routes` sends matching records there instead. A route naming one destination
+# stamps that name as the record's `_source`, so it lands in that source's
+# table. A fan-out keeps the fetching source's `_source`. Routes run before
+# `_source` and `_org_id` are stamped, so they never see the stamped values. A
+# backpressured destination HOLDS the batch and stalls the scheduler. The
+# cursor does not advance and nothing is dead-lettered.
 # output:
 #   type: kafka            # "kafka" | "grpc" | "both"
 #   kafka:
@@ -855,26 +865,29 @@ ingest:
 #   grpc:
 #     endpoint: "http://dfe-loader:6000"
 #   destinations:
-#     transform_orders:
+#     orders:
 #       grpc:
 #         endpoint: "http://dfe-transform-orders:6000"
-#     archiver:
+#     orders_archive:
 #       grpc:
 #         endpoint: "http://dfe-archiver:6000"
-#     okta_landing:
+#     okta:
 #       kafka:
 #         topic: "okta"    # suffixed on delivery like a source's topic: okta_land
 #   routes:
-#     - match_field: "_source"
-#       match_value: "orders"
-#       destination: ["transform_orders", "archiver"]
+#     - match_field: "event.kind"
+#       match_value: "order"
+#       destination: "orders"                        # lands as _source: orders
+#     - match_field: "event.kind"
+#       match_value: "refund"
+#       destination: ["orders", "orders_archive"]    # keeps the fetching _source
 
-# Kafka -- transport config REQUIRES RESTART; topic_suffix is hot-reloaded.
+# Kafka -- REQUIRES RESTART, topic_suffix included.
 kafka:
   brokers:                        # REQUIRES RESTART
     - "localhost:9092"
   client_id: "dfe-fetcher"       # REQUIRES RESTART
-  topic_suffix: "_land"          # hot-reloaded
+  topic_suffix: "_land"          # REQUIRES RESTART: the Vector extractor builds its topics once at start
   sasl:
     enabled: false
     mechanism: "SCRAM-SHA-512"

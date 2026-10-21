@@ -20,12 +20,24 @@
 //! record the transport always refuses cannot hold its source back for good),
 //! or backpressured -- the backpressured subset is retried with a bounded
 //! backoff and, if still refused, the whole tick aborts WITHOUT a checkpoint
-//! so the scheduler's stall loop takes over. A failure the transport reports
+//! so the scheduler's stall loop takes over. A row enrichment refused (it
+//! opens as a JSON object the stamp cannot reach) is never sent: it is
+//! dead-lettered the same way, or dropped and counted under
+//! `{reason="unstampable"}`. A failure the transport reports
 //! for every record alike (closed, timed out, the topic or broker gone) is
 //! not a dead-letter case: the tick aborts with no checkpoint and the rows
 //! are re-fetched, which is the at-least-once side of the contract. The
 //! batch's memory lease is released when the batch drops, after every
 //! outcome is known.
+//!
+//! A flush that settles adds the fetched bytes of the records it sent to
+//! `usage_ingested_bytes_total{org_id}`: each record's length before the
+//! fetcher framed or stamped it, the measure the receiver counts too. A
+//! record counts under the org it was stamped with, and one that carries no
+//! `_org_id` under `default_org_id`: usage measures ingest into the platform,
+//! so it counts such a record though the loader refuses it. A dead-lettered
+//! or dropped record is not counted, and nor is any record of a flush that
+//! aborts, because the re-fetch sends it again.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -35,7 +47,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use tracing::{debug, warn};
 
-use dfe_fetcher_core::batch::{Batch, Outbound};
+use dfe_fetcher_core::batch::{Batch, Outbound, Tenancy};
 
 use crate::error::{Error, Result};
 use crate::metrics::{DroppedDeadLetter, Metrics};
@@ -47,8 +59,37 @@ const BACKPRESSURE_RETRIES: u32 = 5;
 const BACKPRESSURE_BACKOFF: Duration = Duration::from_millis(200);
 /// Least time between two warnings of refused records dropped.
 const DROPPED_WARN_EVERY_MS: u64 = 10_000;
+/// The dead-letter reason of a row enrichment refused.
+const UNSTAMPABLE: &str =
+    "the record opens as a JSON object the fetcher could not stamp with its org";
 /// When refused records dropped were last warned of.
 static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
+
+/// Fetched bytes of the records the outputs accepted, before the fetcher
+/// stamped them, by the org each record was stamped with, or `default_org_id`
+/// for a record that carries none.
+pub const USAGE_INGESTED_BYTES_TOTAL: &str = "usage_ingested_bytes_total";
+
+/// The ingested bytes a flush sent, by the org each row counts under.
+#[derive(Debug, Default)]
+struct Usage {
+    /// Rows that carry the org they were stamped with.
+    stamped: u64,
+    /// Rows that carry no `_org_id`, which count under `default_org_id`.
+    unstamped: u64,
+}
+
+impl Usage {
+    /// Count one row the outputs accepted.
+    fn add(&mut self, row: &Outbound) {
+        match row.tenancy {
+            Tenancy::Stamped => self.stamped += row.ingested_bytes,
+            Tenancy::Unstamped => self.unstamped += row.ingested_bytes,
+            // Never sent, so it has no usage.
+            Tenancy::Refused => {}
+        }
+    }
+}
 
 /// What one flush did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -87,7 +128,9 @@ impl Emitter {
     }
 
     /// Send every row of `batch`, returning once each has a terminal outcome;
-    /// a backpressured subset is re-sent with a bounded backoff first.
+    /// a backpressured subset is re-sent with a bounded backoff first. What
+    /// it sends is counted under the pipeline's org, read now, and a row that
+    /// carries no `_org_id` under `default_org_id`.
     ///
     /// SHORTCUT: per-record `send` futures bounded by `in_flight`, not one
     /// produce call; switch to scalo's native Kafka `send_batch` when it ships.
@@ -99,7 +142,18 @@ impl Emitter {
     /// and [`Error::Transport`] when the transport fails for every record or
     /// a refused record cannot be dead-lettered.
     pub async fn emit(&self, batch: Batch) -> Result<EmitReport> {
-        self.run(batch, BACKPRESSURE_RETRIES).await
+        let org = self.state.org_id();
+        self.run(batch, BACKPRESSURE_RETRIES, &org).await
+    }
+
+    /// [`Emitter::emit`] for a batch whose records were stamped with `org`,
+    /// so the usage count names the org the records carry.
+    ///
+    /// # Errors
+    ///
+    /// As [`Emitter::emit`].
+    pub async fn emit_for_org(&self, batch: Batch, org: &str) -> Result<EmitReport> {
+        self.run(batch, BACKPRESSURE_RETRIES, org).await
     }
 
     /// Send every row of `batch` once: a backpressured subset is refused at
@@ -110,11 +164,13 @@ impl Emitter {
     ///
     /// As [`Emitter::emit`], with [`Error::Backpressured`] after the one pass.
     pub async fn emit_once(&self, batch: Batch) -> Result<EmitReport> {
-        self.run(batch, 0).await
+        let org = self.state.org_id();
+        self.run(batch, 0, &org).await
     }
 
-    async fn run(&self, mut batch: Batch, retries: u32) -> Result<EmitReport> {
+    async fn run(&self, mut batch: Batch, retries: u32, org: &str) -> Result<EmitReport> {
         let mut report = EmitReport::default();
+        let mut usage = Usage::default();
         // The rows move out; the batch stays alive to the end so its memory
         // lease is released only once every outcome is known.
         let mut pending: Vec<Outbound> = std::mem::take(&mut batch.rows);
@@ -133,7 +189,7 @@ impl Emitter {
                 tokio::time::sleep(backoff).await;
                 backoff = backoff.saturating_mul(2);
             }
-            pending = self.send_round(pending, &mut report).await?;
+            pending = self.send_round(pending, &mut report, &mut usage).await?;
         }
         if !pending.is_empty() {
             self.metrics.inc_transport_backpressured();
@@ -144,24 +200,43 @@ impl Emitter {
             )));
         }
         drop(batch);
+        if usage.stamped > 0 {
+            metrics::counter!(USAGE_INGESTED_BYTES_TOTAL, "org_id" => org.to_owned())
+                .increment(usage.stamped);
+        }
+        if usage.unstamped > 0 {
+            metrics::counter!(USAGE_INGESTED_BYTES_TOTAL, "org_id" => self.state.default_org_id())
+                .increment(usage.unstamped);
+        }
         Ok(report)
     }
 
-    /// One concurrent pass over `rows`; returns the backpressured ones.
+    /// One concurrent pass over `rows`: returns the backpressured ones and
+    /// adds the ingested bytes of the rows sent to `usage`. A row enrichment
+    /// refused is dead-lettered without being sent.
     async fn send_round(
         &self,
         rows: Vec<Outbound>,
         report: &mut EmitReport,
+        usage: &mut Usage,
     ) -> Result<Vec<Outbound>> {
         let mut held = Vec::new();
         let mut refused = Vec::new();
+        let mut unstampable = Vec::new();
         let mut in_flight = FuturesUnordered::new();
         let mut rows = rows.into_iter();
         loop {
             while in_flight.len() < self.in_flight
                 && let Some(row) = rows.next()
             {
-                in_flight.push(self.send_one(row));
+                match row.tenancy {
+                    Tenancy::Stamped | Tenancy::Unstamped => in_flight.push(self.send_one(row)),
+                    Tenancy::Refused => unstampable.push(DeadLetter {
+                        topic: row.topic,
+                        payload: row.payload,
+                        reason: UNSTAMPABLE.to_owned(),
+                    }),
+                }
             }
             let Some((row, outcome)) = in_flight.next().await else {
                 break;
@@ -169,6 +244,7 @@ impl Emitter {
             match outcome {
                 Ok(()) => {
                     report.sent += 1;
+                    usage.add(&row);
                     self.metrics.inc_records_delivered();
                 }
                 Err(Error::Backpressured(_)) => held.push(row),
@@ -191,16 +267,24 @@ impl Emitter {
                 }
             }
         }
-        self.dead_letter(refused, report).await?;
+        self.dead_letter(refused, DroppedDeadLetter::TransportRefused, report)
+            .await?;
+        self.dead_letter(unstampable, DroppedDeadLetter::Unstampable, report)
+            .await?;
         Ok(held)
     }
 
     /// Dead-letter the round's refused records in one confirmed write, so a
     /// record counts as handled only once the DLQ holds it. A refusal is
     /// permanent, so a record with nowhere to go -- no DLQ configured, or one
-    /// no DLQ backend can hold -- is dropped and counted rather than refetched
-    /// for ever.
-    async fn dead_letter(&self, refused: Vec<DeadLetter>, report: &mut EmitReport) -> Result<()> {
+    /// no DLQ backend can hold -- is dropped and counted under `why` rather
+    /// than refetched for ever.
+    async fn dead_letter(
+        &self,
+        refused: Vec<DeadLetter>,
+        why: DroppedDeadLetter,
+        report: &mut EmitReport,
+    ) -> Result<()> {
         if refused.is_empty() {
             return Ok(());
         }
@@ -215,15 +299,14 @@ impl Emitter {
             }
             Ok(DeadLettered::NoQueue) => {
                 report.dropped += count;
-                self.metrics
-                    .add_dead_letters_dropped(DroppedDeadLetter::TransportRefused.as_str(), count);
+                self.metrics.add_dead_letters_dropped(why.as_str(), count);
                 if scalo::logger::log_debounced(&DROPPED_WARNED_AT, DROPPED_WARN_EVERY_MS) {
                     warn!(
                         records = count,
                         topic = %first_topic,
                         reason = %first_reason,
-                        "Records the transport refused were dropped: no dead-letter queue is \
-                         configured. Counted in pipeline_dead_letters_dropped_total"
+                        "Refused records were dropped: no dead-letter queue is configured. \
+                         Counted in pipeline_dead_letters_dropped_total"
                     );
                 }
                 Ok(())
@@ -245,5 +328,260 @@ impl Emitter {
             None => self.state.send_all(&row.topic, row.payload.clone()).await,
         };
         (row, outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use dfe_fetcher_core::batch::{AccumulateConfig, Batcher, NoLease};
+    use scalo::transport::filter::{FilterAction, FilterRule};
+    use scalo::transport::{MemoryConfig, MemoryTransport};
+
+    use crate::config::{Config, SharedConfig};
+    use crate::metrics::recorded::Recorder;
+    use crate::output::OutputManager;
+
+    /// An emitter over an in-process transport built from `memory`, with no
+    /// DLQ, under the config `yaml`.
+    fn emitter_over(yaml: &str, memory: &MemoryConfig) -> Emitter {
+        let (config, _) = Config::parse_yaml(yaml, "fetcher.yaml").expect("config");
+        let transport = Arc::new(MemoryTransport::new(memory).expect("memory transport"));
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            SharedConfig::new(config),
+            Arc::clone(&metrics),
+            Some(OutputManager::memory(transport)),
+        ));
+        Emitter::new(state, metrics, 4)
+    }
+
+    fn batch(rows: &[&str]) -> Batch {
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        for row in rows {
+            batcher.push(Outbound::new("fixture_land", (*row).to_owned()), None);
+        }
+        batcher.take()
+    }
+
+    /// The bytes of every record a settled flush sent count once, under the
+    /// org the config binds.
+    #[tokio::test]
+    async fn a_settled_flush_counts_the_bytes_it_sent_under_the_bound_org() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+
+        let report = emitter
+            .emit(batch(&[r#"{"a":1}"#, r#"{"bb":22}"#]))
+            .await
+            .expect("sent");
+
+        assert_eq!(report.sent, 2);
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(16),
+            "7 + 9 payload bytes"
+        );
+    }
+
+    /// A stamped row counts the bytes it was fetched at, not the bytes it is
+    /// sent at.
+    #[tokio::test]
+    async fn a_stamped_row_counts_its_ingested_bytes_not_its_payload() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"a":1,"_source":"fixture"}"#).with_ingested_bytes(7),
+            None,
+        );
+
+        emitter.emit(batcher.take()).await.expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            Some(7)
+        );
+    }
+
+    /// The driver names the org it stamped, so the count follows the records
+    /// rather than a config read later.
+    #[tokio::test]
+    async fn emit_for_org_counts_under_the_org_it_is_given() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+
+        emitter
+            .emit_for_org(batch(&[r#"{"a":1}"#]), "beta")
+            .await
+            .expect("sent");
+
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "beta")]),
+            Some(7)
+        );
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            None
+        );
+    }
+
+    /// A record the transport refuses is not ingested, so only the record it
+    /// took is counted, under the built-in default org when none is bound.
+    #[tokio::test]
+    async fn a_refused_record_is_not_counted() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let memory = MemoryConfig {
+            filters_out: vec![FilterRule {
+                expression: r#"id == "poison""#.into(),
+                action: FilterAction::Dlq,
+            }],
+            ..MemoryConfig::default()
+        };
+        let emitter = emitter_over("{}\n", &memory);
+
+        let report = emitter
+            .emit(batch(&[r#"{"id":"poison"}"#, r#"{"id":"clean"}"#]))
+            .await
+            .expect("a refusal does not fail the batch");
+
+        assert_eq!((report.sent, report.dropped), (1, 1));
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "default")]),
+            Some(14)
+        );
+    }
+
+    /// A row that carries no `_org_id` counts under the default org, not the
+    /// org the pipeline is bound to.
+    #[tokio::test]
+    async fn an_unstamped_row_counts_under_the_default_org() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", "plain text").with_tenancy(Tenancy::Unstamped),
+            None,
+        );
+        batcher.push(Outbound::new("fixture_land", r#"{"a":1}"#), None);
+
+        let report = emitter.emit(batcher.take()).await.expect("sent");
+
+        assert_eq!(report.sent, 2);
+        assert_eq!(
+            recorder.counters(&[
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+                ("usage_ingested_bytes_total", &[("org_id", "default")]),
+            ]),
+            [Some(7), Some(10)]
+        );
+    }
+
+    /// A row enrichment refused is never sent: with no DLQ it is dropped and
+    /// counted under its own reason, and only the row sent counts for usage.
+    #[tokio::test]
+    async fn a_refused_row_is_dropped_unsent_and_not_counted() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"_org_id":"victim"}"#).with_tenancy(Tenancy::Refused),
+            None,
+        );
+        batcher.push(Outbound::new("fixture_land", r#"{"a":1}"#), None);
+
+        let report = emitter
+            .emit(batcher.take())
+            .await
+            .expect("a refusal does not fail the batch");
+
+        assert_eq!((report.sent, report.dropped), (1, 1));
+        assert_eq!(
+            recorder.counters(&[
+                (
+                    "pipeline_dead_letters_dropped_total",
+                    &[("reason", "unstampable")]
+                ),
+                ("usage_ingested_bytes_total", &[("org_id", "acme")]),
+            ]),
+            [Some(1), Some(7)],
+            "dropped under its own reason, and only the row sent counts"
+        );
+    }
+
+    /// With a DLQ, a refused row is held there with the reason it was refused.
+    #[tokio::test]
+    async fn a_refused_row_is_dead_lettered_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dlq_config = Config::default().dlq;
+        dlq_config.enabled = true;
+        dlq_config.mode = scalo::dlq::DlqMode::FileOnly;
+        dlq_config.file.path = dir.path().to_path_buf();
+        let dlq = scalo::dlq::Dlq::spawn(
+            &dlq_config,
+            "dfe-fetcher",
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .expect("dlq");
+        let transport =
+            Arc::new(MemoryTransport::new(&MemoryConfig::default()).expect("memory transport"));
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests_with_dlq(
+            SharedConfig::new(Config::default()),
+            Arc::clone(&metrics),
+            Some(OutputManager::memory(transport)),
+            dlq,
+        ));
+        let emitter = Emitter::new(state, metrics, 4);
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"_org_id":"victim"}"#).with_tenancy(Tenancy::Refused),
+            None,
+        );
+
+        let report = emitter.emit(batcher.take()).await.expect("held");
+
+        assert_eq!(
+            (report.sent, report.dead_lettered, report.dropped),
+            (0, 1, 0)
+        );
+        let lines = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
+            .expect("the DLQ file");
+        assert_eq!(lines.lines().count(), 1, "{lines}");
+        assert!(lines.contains(UNSTAMPABLE), "{lines}");
+    }
+
+    /// A flush that aborts counts nothing, even for the records it sent before
+    /// the abort: the tick re-fetches and sends them again.
+    #[tokio::test]
+    async fn an_aborted_flush_counts_nothing() {
+        let recorder = Recorder::new();
+        let _recording = recorder.install();
+        let emitter = emitter_over(
+            "{}\n",
+            &MemoryConfig {
+                buffer_size: 1,
+                ..MemoryConfig::default()
+            },
+        );
+
+        let err = emitter
+            .emit_once(batch(&[r#"{"a":1}"#, r#"{"a":2}"#, r#"{"a":3}"#]))
+            .await
+            .expect_err("the second record finds the transport full");
+
+        assert!(matches!(err, Error::Backpressured(_)), "{err:?}");
+        assert_eq!(
+            recorder.counter("usage_ingested_bytes_total", &[("org_id", "default")]),
+            None
+        );
     }
 }

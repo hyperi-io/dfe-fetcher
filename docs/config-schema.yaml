@@ -12,15 +12,17 @@ description: |-
   **Hot-reloaded (takes effect on next fetch cycle):**
   - `scheduler.default_interval_secs` -- fetch interval re-computed each cycle
   - `scheduler.jitter_percent` -- jitter re-computed each cycle
-  - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
   - `sources.*.filter` -- CEL filter re-evaluated on each record
+  - `org_id`, `default_org_id` -- the `_org_id` stamped on each record, re-read
+    each fetch cycle and for each extractor record
   - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
   - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
   - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 
   **Requires pod restart:**
   - `output.*` -- transport connections established at startup
-  - `kafka.*` (except `topic_suffix`) -- transport config bound at startup
+  - `kafka.*` -- transport config bound at startup
+  - `kafka.topic_suffix` -- the Vector extractor builds its topics once at start
   - `ingest.*` -- HTTP server binds at startup, auth token resolved once
   - `extractors.*` -- containers and Vector instances spawned at startup
   - `metrics.*` -- metrics server binds at startup
@@ -257,6 +259,19 @@ properties:
     - string
     - "null"
     default: null
+  org_id:
+    description: |-
+      The org every record this instance emits belongs to, stamped as
+      `_org_id`. The engine fills it from the org of the source the instance
+      polls. Unset, null or empty takes `default_org_id`.
+    type:
+    - string
+    - "null"
+    default: null
+  default_org_id:
+    description: The org a record takes when `org_id` binds none.
+    type: string
+    default: default
   output:
     description: Output transport configuration.
     $ref: "#/$defs/OutputConfig"
@@ -7440,14 +7455,20 @@ $defs:
   OutputRoute:
     description: |-
       A per-record route: matched records go to the named destination(s) instead
-      of the default.
+      of the default. The first route in declared order that matches wins.
+
+      A route naming one destination names the source the record belongs to: the
+      record's `_source` is that name, so it lands in that source's table. A
+      fan-out keeps the fetching source's `_source`. No route changes `_org_id`.
     type: object
     properties:
       match_field:
-        description: Top-level field to match.
+        description: "Field to match: a top-level key, or a dotted path into nested objects."
         type: string
       match_value:
-        description: Value to match.
+        description: |-
+          Value to match: a string as written, a number or a boolean as its JSON
+          text.
         type: string
       destination:
         description: "Destination for matched records: one name, or a list to fan out."

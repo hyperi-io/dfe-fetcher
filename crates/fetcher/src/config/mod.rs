@@ -67,15 +67,17 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 /// **Hot-reloaded (takes effect on next fetch cycle):**
 /// - `scheduler.default_interval_secs` -- fetch interval re-computed each cycle
 /// - `scheduler.jitter_percent` -- jitter re-computed each cycle
-/// - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
 /// - `sources.*.filter` -- CEL filter re-evaluated on each record
+/// - `org_id`, `default_org_id` -- the `_org_id` stamped on each record, re-read
+///   each fetch cycle and for each extractor record
 /// - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
 /// - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
 /// - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
 ///
 /// **Requires pod restart:**
 /// - `output.*` -- transport connections established at startup
-/// - `kafka.*` (except `topic_suffix`) -- transport config bound at startup
+/// - `kafka.*` -- transport config bound at startup
+/// - `kafka.topic_suffix` -- the Vector extractor builds its topics once at start
 /// - `ingest.*` -- HTTP server binds at startup, auth token resolved once
 /// - `extractors.*` -- containers and Vector instances spawned at startup
 /// - `metrics.*` -- metrics server binds at startup
@@ -122,6 +124,16 @@ pub struct Config {
     /// Auto-derived from source config if omitted.
     #[serde(default)]
     pub instance_id: Option<String>,
+
+    /// The org every record this instance emits belongs to, stamped as
+    /// `_org_id`. The engine fills it from the org of the source the instance
+    /// polls. Unset, null or empty takes `default_org_id`.
+    #[serde(default)]
+    pub org_id: Option<String>,
+
+    /// The org a record takes when `org_id` binds none.
+    #[serde(default = "default_org_id")]
+    pub default_org_id: String,
 
     /// Output transport configuration.
     #[serde(default)]
@@ -233,6 +245,14 @@ const fn default_unwrap_nested_json() -> bool {
     true
 }
 
+/// The org a record takes when no org is bound: the same built-in value in
+/// every DFE component.
+pub const DEFAULT_ORG_ID: &str = "default";
+
+fn default_org_id() -> String {
+    DEFAULT_ORG_ID.to_string()
+}
+
 /// The fleet DLQ standard: one fixed per-app topic and the shared spool path.
 ///
 /// Fetcher entries carry topic destinations, so scalo's per-table routing would
@@ -260,6 +280,8 @@ impl Default for Config {
             dlq: default_dlq(),
             config_reload_secs: 0,
             instance_id: None,
+            org_id: None,
+            default_org_id: default_org_id(),
             output: OutputConfig::default(),
             cursor: CursorConfig::default(),
             scaling: scalo::scaling::ScalingPressureConfig::default(),
@@ -279,13 +301,24 @@ impl Config {
     /// Every path that builds a topic or derives `_source` from one must use
     /// this: a caller that reads `kafka.topic_suffix` directly publishes to a
     /// different topic than the native sources do once `output.topic_suffix`
-    /// is set, and leaves the suffix on `_source`, which the receiver routes on.
+    /// is set, and leaves the suffix on `_source`, which dfe-loader picks the
+    /// table from.
     #[must_use]
     pub fn topic_suffix(&self) -> &str {
         self.output
             .topic_suffix
             .as_deref()
             .unwrap_or(&self.kafka.topic_suffix)
+    }
+
+    /// The org every record carries as `_org_id`: `org_id` when it names one,
+    /// else `default_org_id`.
+    #[must_use]
+    pub fn stamped_org(&self) -> &str {
+        self.org_id
+            .as_deref()
+            .filter(|org| !org.is_empty())
+            .unwrap_or(&self.default_org_id)
     }
 
     /// Whether anything in this config can produce a record: an enabled source,
@@ -437,6 +470,14 @@ impl Config {
         }
 
         self.output.validate_routes()?;
+
+        if self.default_org_id.is_empty() {
+            return Err(Error::Config(
+                "default_org_id is empty, and it is the org a record takes when org_id binds \
+                 none. Remove the key to take the built-in `default`, or name an org"
+                    .into(),
+            ));
+        }
 
         // A DLQ that only writes to Kafka has nowhere to go on a deployment
         // with no broker, and a silently dropped dead-letter is worse than a
@@ -4781,13 +4822,18 @@ pub struct KafkaDestination {
 }
 
 /// A per-record route: matched records go to the named destination(s) instead
-/// of the default.
+/// of the default. The first route in declared order that matches wins.
+///
+/// A route naming one destination names the source the record belongs to: the
+/// record's `_source` is that name, so it lands in that source's table. A
+/// fan-out keeps the fetching source's `_source`. No route changes `_org_id`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OutputRoute {
-    /// Top-level field to match.
+    /// Field to match: a top-level key, or a dotted path into nested objects.
     pub match_field: String,
 
-    /// Value to match.
+    /// Value to match: a string as written, a number or a boolean as its JSON
+    /// text.
     pub match_value: String,
 
     /// Destination for matched records: one name, or a list to fan out.
@@ -4857,12 +4903,28 @@ impl OutputConfig {
         self.includes_kafka() || self.destinations.values().any(|d| d.kafka.is_some())
     }
 
+    /// The routes as the framework's rules compile them, in declared order.
+    pub fn rule_routes(&self) -> Vec<dfe_fetcher_core::rules::Route> {
+        self.routes
+            .iter()
+            .map(|r| {
+                dfe_fetcher_core::rules::Route::new(
+                    &r.match_field,
+                    &r.match_value,
+                    r.destination.names(),
+                )
+            })
+            .collect()
+    }
+
     /// Validate the named destinations and the routes over them.
+    ///
+    /// A route an earlier one always matches first is logged as a warning.
     ///
     /// # Errors
     /// A destination without exactly one transport block, a bus destination
-    /// whose topic is empty, or a route naming a destination that was never
-    /// declared.
+    /// whose topic is empty, a route naming a destination that was never
+    /// declared, or a route whose `match_field` is not a dotted path.
     pub fn validate_routes(&self) -> Result<()> {
         for (name, spec) in &self.destinations {
             match (&spec.grpc, &spec.kafka) {
@@ -4890,8 +4952,31 @@ impl OutputConfig {
                 }
             }
         }
+        let found = dfe_fetcher_core::rules::check_routes(&self.rule_routes());
+        if let Some(error) = found.iter().find(|d| d.is_error()) {
+            return Err(Error::Config(format!(
+                "output.routes{}: {}",
+                route_position(error.rule.as_deref()),
+                error.message
+            )));
+        }
+        for warning in &found {
+            tracing::warn!(
+                route = %route_position(warning.rule.as_deref()),
+                message = %warning.message,
+                "output.routes holds a route that never fires"
+            );
+        }
         Ok(())
     }
+}
+
+/// `[n]` for a finding on the route at position `n` of `output.routes`, or
+/// nothing for one that names no route.
+fn route_position(rule: Option<&str>) -> String {
+    rule.and_then(dfe_fetcher_core::rules::route_index)
+        .map(|n| format!("[{n}]"))
+        .unwrap_or_default()
 }
 
 // =============================================================================
@@ -5131,6 +5216,54 @@ mod tests {
             .output
             .validate_routes()
             .expect("an unset topic is valid");
+    }
+
+    /// A route whose `match_field` is not a dotted path matches nothing, so it
+    /// is refused at load with its position, through scalo's rule set check.
+    #[test]
+    fn a_route_whose_field_is_no_dotted_path_is_refused_at_load() {
+        let (mut config, _) = Config::parse_yaml(
+            "output:\n  destinations:\n    inventory:\n      grpc:\n        endpoint: http://127.0.0.1:1\n  routes:\n    - match_field: kind\n      match_value: asset\n      destination: inventory\n    - match_field: 'a..b'\n      match_value: x\n      destination: inventory\n",
+            "fetcher.yaml",
+        )
+        .expect("config");
+        let err = config
+            .validate()
+            .expect_err("a route that can never match is refused");
+        assert!(err.to_string().contains("output.routes[1]"), "{err}");
+
+        config.output.routes.pop();
+        config.validate().expect("the remaining route is valid");
+    }
+
+    /// An org binding names the org every record carries. Unset, null or
+    /// empty takes `default_org_id`, whose built-in value is `default`.
+    #[test]
+    fn the_stamped_org_is_the_binding_else_the_deployment_default() {
+        assert_eq!(Config::default().stamped_org(), DEFAULT_ORG_ID);
+        assert_eq!(DEFAULT_ORG_ID, "default");
+        for (yaml, org) in [
+            ("org_id: acme\n", "acme"),
+            ("org_id: ~\n", "default"),
+            ("org_id: ''\n", "default"),
+            ("org_id: ''\ndefault_org_id: house\n", "house"),
+            ("default_org_id: house\n", "house"),
+            ("org_id: acme\ndefault_org_id: house\n", "acme"),
+        ] {
+            let (config, unknown) = Config::parse_yaml(yaml, "fetcher.yaml").expect("config");
+            assert!(unknown.is_empty(), "{yaml}: {unknown:?}");
+            assert_eq!(config.stamped_org(), org, "{yaml}");
+        }
+    }
+
+    /// An empty `default_org_id` would stamp records with no tenant, so it is
+    /// refused at load.
+    #[test]
+    fn an_empty_default_org_id_is_refused() {
+        let (config, _) =
+            Config::parse_yaml("default_org_id: ''\n", "fetcher.yaml").expect("config");
+        let err = config.validate().expect_err("an empty default is refused");
+        assert!(err.to_string().contains("default_org_id"), "{err}");
     }
 
     #[test]

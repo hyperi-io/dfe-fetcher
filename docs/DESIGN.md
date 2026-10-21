@@ -196,27 +196,25 @@ takes over.
 
 A dead letter counts only once the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ refuses or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
 
-With no DLQ configured, or a disabled one, a record the transport refuses is still refused for good, so fetching it again would only hold the source back. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, and an oversize row in `{reason="too_large"}`, and the tick carries on. A dead letter no DLQ backend can ever hold (scalo's `Dlq::refusal`: over the Kafka DLQ's ceiling once encoded, which a Vector or ingest record over about 12 MiB can be) is left out of the DLQ write and dropped the same way, counted under scalo's reason. Any other DLQ failure can clear, so it still aborts the tick.
+With no DLQ configured, or a disabled one, a record the transport refuses is still refused for good, so fetching it again would only hold the source back. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, an oversize row in `{reason="too_large"}` and a row enrichment refused in `{reason="unstampable"}`, and the tick carries on. A dead letter no DLQ backend can ever hold (scalo's `Dlq::refusal`: over the Kafka DLQ's ceiling once encoded, which a Vector or ingest record over about 12 MiB can be) is left out of the DLQ write and dropped the same way, counted under scalo's reason. Any other DLQ failure can clear, so it still aborts the tick.
 
 Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{listener, guarantee, reason}`, from scalo's `EffectiveGuarantee::publish_for` against what the outputs confirm. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. The ingest listener and Vector follow their `acknowledgements` setting, and a container's stdout is `best_effort` (`source_cannot_ack`).
 
 ### Enrichment
 
-Four names are reserved on every record: `_timestamp_fetcher`,
-`_timestamp_received`, `_source` (the topic base) and `_source_fetcher`
-(`<connection>.<unit>`). The per-source CEL filter runs on the provider's row
-before they are added, so a filter cannot reference them. A payload that
-already carries one keeps its own value under `<key>_original` and the
-fetcher's value takes the name: the loader routes on `_source`, so the DFE
-source name has to be the one that survives, and a record carrying the same
-top-level key twice is rejected outright by ClickHouse rather than
-dead-lettered.
+Five names are reserved on every record: `_timestamp_fetcher`, `_timestamp_received`, `_source` (the topic base, or the destination a single-destination route names), `_source_fetcher` (`<connection>.<unit>`) and `_org_id` (`org_id`, else `default_org_id`). The per-source CEL filter runs on the provider's row before they are added, so a filter cannot reference them. A payload that already carries one keeps its own value under `<key>_original` and the fetcher's value takes the name: the loader routes on `_source` and the record's org is its `_org_id`, so the fetcher's values have to be the ones that survive, and a record carrying the same top-level key twice is rejected outright by ClickHouse rather than dead-lettered.
 
 `<key>_original` is never overwritten. A payload that already carries both the
 reserved name and its `_original` -- a replayed record on a second enrich
 pass, say -- keeps the `_original` it arrived with, and the colliding value is
 parked under the next free `<key>_original_<n>` counting from 2, with a
 warning naming the key.
+
+A payload that opens as a JSON object, after whitespace or a UTF-8 byte-order mark, and cannot be stamped is refused, because sent as it came it would keep any `_org_id` its sender gave it. That is an object with no closing brace, or one that may carry a reserved key and does not parse. "May carry" is a byte scan for the names and for any backslash, since an escape can spell a name, so a payload that fails to parse cannot be shown free of one, and appending the fetcher's own could give the record two `_org_id`. A refused row is never sent: it is dead-lettered with the reason, or with no DLQ dropped and counted in `pipeline_dead_letters_dropped_total{reason="unstampable"}`, and its bytes count for no org. A stamped row leaves without the byte-order mark.
+
+A JSON array whose every element is an object goes out as one record per element, each stamped, because the loader splits an array into its elements and an element with no `_org_id` lands in its default org. A body of two or more whitespace-separated objects and nothing else, newline-delimited records in one payload, is split the same way, exactly where the loader's own split would fan it out: the stamp lands before the last closing brace only, so sent whole it would reach only the last record. Each record counts for usage at its own length before the stamp, and the row's mark rides its last record. `[]` goes out as nothing.
+
+A binary row, and a payload that is neither an object nor such a split body (a scalar, plain text, an array holding a non-object), goes out verbatim with no `_org_id`. The loader refuses it, though the archiver may keep it. Its usage counts under `default_org_id`, because usage measures ingest into the platform, not what the loader stores.
 
 ## Cursor Cold Start
 
@@ -303,6 +301,8 @@ UUIDv7 `snapshot_id` and `snapshot_at` and all on the unit's own topic
 field, the per-tick and per-file scopes and the consumer rules are in
 [reference/snapshot-envelope.md](reference/snapshot-envelope.md); the writer
 and a reference reassembler are `crates/core/src/envelope.rs`.
+
+A known limitation: a single-destination route moves a dump's matching rows to that destination's table while its `begin` and `end` frames stay in the unit's own, so neither table holds a dump that can be reassembled.
 
 ## Extraction Modes
 

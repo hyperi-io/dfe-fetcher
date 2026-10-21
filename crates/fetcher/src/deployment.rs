@@ -25,6 +25,19 @@ use scalo::deployment::{
 /// writable path `cursor`.
 const CURSOR_DIR: &str = "/var/lib/dfe-fetcher";
 
+/// Config paths the app applies on its next tick or record, which the chart
+/// leaves out of the pod's config checksum.
+// `sources.*.filter` reloads too, but the chart takes no wildcard path.
+// `kafka.topic_suffix` stays out: the Vector extractor builds its topics once at start.
+const HOT_PATHS: [&str; 6] = [
+    "scheduler.default_interval_secs",
+    "scheduler.jitter_percent",
+    "org_id",
+    "default_org_id",
+    "cursor.default_window_hours",
+    "cursor.on_missing_cursor",
+];
+
 /// The chart description and the OCI image description, kept as one string so
 /// the two cannot drift.
 const DESCRIPTION: &str = "Data fetcher for external services (AWS, Azure, M365, GCP)";
@@ -104,7 +117,7 @@ pub fn contract() -> DeploymentContract {
                 .app_protocol("kubernetes.io/h2c"),
         ],
         unbound_listen_paths: vec![],
-        hot_paths: vec![],
+        hot_paths: HOT_PATHS.map(String::from).to_vec(),
         entrypoint_args: vec!["--config".into(), "/etc/dfe/fetcher.yaml".into()],
         secrets: secrets(),
         default_config: Some(serde_json::json!({
@@ -470,6 +483,39 @@ mod tests {
         assert_eq!(cfg["scheduler"]["default_interval_secs"], 300);
         assert_eq!(cfg["scheduler"]["max_concurrent_fetches"], 10);
         assert_eq!(cfg["scheduler"]["jitter_percent"], 10);
+    }
+
+    /// The chart rolls the pods on any config edit outside these paths, so the
+    /// list is exactly what the app applies live.
+    #[test]
+    fn the_contract_declares_exactly_the_paths_the_app_reloads() {
+        assert_eq!(
+            contract().hot_paths,
+            [
+                "scheduler.default_interval_secs",
+                "scheduler.jitter_percent",
+                "org_id",
+                "default_org_id",
+                "cursor.default_window_hours",
+                "cursor.on_missing_cursor",
+            ]
+        );
+    }
+
+    /// A hot path that names no config key skips nothing, so a renamed key
+    /// would quietly roll the pods again.
+    #[test]
+    fn every_hot_path_names_a_config_key() {
+        let config = serde_json::to_value(crate::config::Config::default()).expect("config");
+        let hot_paths = contract().hot_paths;
+        assert_ne!(hot_paths, Vec::<String>::new());
+        for path in hot_paths {
+            let pointer = format!("/{}", path.replace('.', "/"));
+            assert!(
+                config.pointer(&pointer).is_some(),
+                "{path} is no key of Config"
+            );
+        }
     }
 
     /// No lag trigger and no CPU trigger means no ScaledObject at all, which

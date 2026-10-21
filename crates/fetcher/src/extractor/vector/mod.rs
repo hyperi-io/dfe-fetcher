@@ -183,8 +183,8 @@ fn vector_line_level(line: &str) -> Option<Level> {
 
 /// The DFE source name behind an output topic: the topic minus the suffix.
 ///
-/// `_source` carries this value and the receiver routes a fetcher-origin source
-/// on it, so the suffix must come off with the same string the topic was built
+/// `_source` carries this value and dfe-loader picks the record's table from
+/// it, so the suffix must come off with the same string the topic was built
 /// from -- `Config::topic_suffix`, not the legacy `kafka.topic_suffix` alone.
 fn source_from_topic<'a>(topic: &'a str, suffix: &str) -> &'a str {
     if suffix.is_empty() {
@@ -267,7 +267,7 @@ impl VectorReceiver {
         let records: Vec<_> = batch
             .records
             .into_iter()
-            .map(|record| {
+            .flat_map(|record| {
                 let topic = record
                     .key
                     .as_ref()

@@ -107,6 +107,25 @@ impl AccumulateConfig {
     }
 }
 
+/// What became of a row's `_org_id` stamp, which decides whether the row is
+/// sent and which org its usage counts under.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tenancy {
+    /// The row carries the org it was stamped with and counts under it.
+    #[default]
+    Stamped,
+    /// The row carries no `_org_id` (binary, not JSON, a scalar, an array
+    /// holding a non-object). Its usage counts under the default org, since
+    /// usage measures ingest into the platform: the loader refuses such a
+    /// row, though the archiver may keep it.
+    Unstamped,
+    /// The row opens as a JSON object the stamp could not reach (no closing
+    /// brace, or a reserved key that did not parse), so sent it would keep
+    /// any `_org_id` its sender gave it: it is dead-lettered, never sent or
+    /// counted.
+    Refused,
+}
+
 /// One enriched, routed row ready for the transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outbound {
@@ -116,23 +135,47 @@ pub struct Outbound {
     pub payload: Bytes,
     /// Named destinations a route chose, or `None` for the default transports.
     pub route: Option<Arc<[Arc<str>]>>,
+    /// The record's bytes as fetched, before the fetcher framed or stamped
+    /// it: what `usage_ingested_bytes_total` counts once the row is sent.
+    pub ingested_bytes: u64,
+    /// What became of the row's org stamp.
+    pub tenancy: Tenancy,
 }
 
 impl Outbound {
-    /// A row for the default transports.
+    /// A stamped row for the default transports, counted as ingested at its
+    /// own length.
     #[must_use]
     pub fn new(topic: &str, payload: impl Into<Bytes>) -> Self {
+        let payload: Bytes = payload.into();
         Self {
             topic: Arc::from(topic),
-            payload: payload.into(),
+            ingested_bytes: payload.len() as u64,
+            payload,
             route: None,
+            tenancy: Tenancy::Stamped,
         }
+    }
+
+    /// Record what became of the row's org stamp.
+    #[must_use]
+    pub fn with_tenancy(mut self, tenancy: Tenancy) -> Self {
+        self.tenancy = tenancy;
+        self
     }
 
     /// Send this row to named destinations instead.
     #[must_use]
     pub fn with_route(mut self, route: Arc<[Arc<str>]>) -> Self {
         self.route = Some(route);
+        self
+    }
+
+    /// Count `bytes` as the record's ingested size, for a payload the fetcher
+    /// stamped or framed, or `0` for a frame of its own.
+    #[must_use]
+    pub fn with_ingested_bytes(mut self, bytes: u64) -> Self {
+        self.ingested_bytes = bytes;
         self
     }
 }
@@ -571,7 +614,21 @@ mod tests {
         let plain = Outbound::new("t", b"{}".to_vec());
         assert_eq!(&*plain.topic, "t");
         assert!(plain.route.is_none());
+        assert_eq!(
+            plain.ingested_bytes, 2,
+            "an unstamped row counts its own bytes"
+        );
         let routed = plain.clone().with_route(Arc::from([Arc::from("siem")]));
         assert_eq!(routed.route.as_deref().map(<[Arc<str>]>::len), Some(1));
+        let stamped =
+            Outbound::new("t", br#"{"a":1,"_source":"t"}"#.to_vec()).with_ingested_bytes(7);
+        assert_eq!(
+            stamped.ingested_bytes, 7,
+            "a stamped row counts what was fetched"
+        );
+        assert_eq!(stamped.tenancy, Tenancy::Stamped);
+        for tenancy in [Tenancy::Unstamped, Tenancy::Refused] {
+            assert_eq!(stamped.clone().with_tenancy(tenancy).tenancy, tenancy);
+        }
     }
 }
