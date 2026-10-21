@@ -78,6 +78,9 @@ static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 3]> = La
 /// The backslash that opens a JSON escape.
 const JSON_ESCAPE: u8 = 0x5c;
 
+/// The UTF-8 byte-order mark some writers put before a JSON document.
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
 /// Cheap pre-filter for [`rewrite_reserved_keys`]: true when the raw bytes
 /// contain the opening quote of a reserved key name anywhere, or any backslash.
 /// A key spelled with an escape decodes to the reserved name without matching
@@ -252,14 +255,37 @@ fn stamp_object(raw: &[u8], insert_pos: usize, now_ms: u64, stamp: &Stamp<'_>) -
     Some(Bytes::from(buf))
 }
 
-/// The elements of a JSON array whose every element is an object, as slices
-/// of `payload`, or `None` when it is anything else.
-fn split_objects(payload: &Bytes) -> Option<Vec<Bytes>> {
-    let elements = split_array(payload, 0, payload.len()).ok()?;
+/// The elements of the JSON array at `payload[start..]` when every element is
+/// an object, as slices of `payload`, or `None` when it is anything else.
+fn split_objects(payload: &Bytes, start: usize) -> Option<Vec<Bytes>> {
+    let elements = split_array(payload, start, payload.len()).ok()?;
     elements
         .iter()
         .all(|element| element.first() == Some(&b'{') && element.last() == Some(&b'}'))
         .then_some(elements)
+}
+
+/// One stamped object per record of a split body, each record a JSON object
+/// ending in its closing brace. A record that cannot be stamped refuses the
+/// body whole, so the dead letter holds it as fetched.
+fn stamp_each(payload: Bytes, records: &[Bytes], now_ms: u64, stamp: &Stamp<'_>) -> Enriched {
+    let parts: Option<Vec<(Bytes, u64)>> = records
+        .iter()
+        .map(|record| {
+            stamp_object(record, record.len() - 1, now_ms, stamp)
+                .map(|stamped| (stamped, record.len() as u64))
+        })
+        .collect();
+    let Some(parts) = parts else {
+        return refused(payload, stamp.source);
+    };
+    tracing::trace!(
+        source = stamp.source,
+        original_bytes = payload.len(),
+        records = parts.len(),
+        "Body split into stamped objects"
+    );
+    Enriched::Split(parts)
 }
 
 /// What enriching one record made of it.
@@ -303,15 +329,16 @@ impl Enriched {
     }
 }
 
-/// A record that may name its own org and did not parse, which is never sent.
+/// A record that opens as a JSON object the stamp cannot reach, which is
+/// never sent.
 #[cold]
 fn refused(payload: Bytes, source: &str) -> Enriched {
     if scalo::logger::log_debounced(&REFUSED_WARNED_AT, DLQ_LOG_EVERY_MS) {
         warn!(
             source,
             payload_bytes = payload.len(),
-            "A record that may name its own org did not parse, so its _org_id cannot be \
-             replaced: it is dead-lettered, never sent (debounced, max 1/5s)"
+            "A record that opens as a JSON object could not be stamped with its org, so it \
+             is dead-lettered, never sent (debounced, max 1/5s)"
         );
     }
     Enriched::One(payload, Tenancy::Refused)
@@ -329,7 +356,7 @@ const DLQ_LOG_EVERY_MS: u64 = 5_000;
 static DLQ_REFUSED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// When a failed DLQ write was last logged.
 static DLQ_WRITE_FAILED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// When a record that may name its own org and did not parse was last logged.
+/// When a record the stamp could not reach was last logged.
 static REFUSED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One record for the dead-letter queue.
@@ -596,9 +623,11 @@ impl PipelineState {
     /// an array itself, and an element with no `_org_id` lands in its default
     /// org. Anything else that is not an object (not JSON, a scalar, an array
     /// holding a non-object) comes back [`Tenancy::Unstamped`] and unchanged.
-    /// A record that may carry a reserved key and does not parse comes back
-    /// [`Tenancy::Refused`] and unchanged: its `_org_id` cannot be replaced,
-    /// so it must never be sent.
+    /// A record that opens as an object, after whitespace or a UTF-8
+    /// byte-order mark, and cannot be stamped (no closing brace, or a reserved
+    /// key that does not parse) comes back [`Tenancy::Refused`] and unchanged:
+    /// sent, it would keep any `_org_id` its sender gave it. A stamped row
+    /// leaves without the byte-order mark.
     pub fn enrich_record_with(&self, payload: Bytes, stamp: &Stamp<'_>) -> Enriched {
         let source = stamp.source;
         let now_ms = u64::try_from(
@@ -610,45 +639,35 @@ impl PipelineState {
         .unwrap_or(u64::MAX);
 
         let raw = payload.as_ref();
+        let start = if raw.starts_with(UTF8_BOM) {
+            UTF8_BOM.len()
+        } else {
+            0
+        };
+        let body = &raw[start..];
         // The stamp lands at an object's top level: in an array or a scalar it
         // would land inside one element, or nowhere.
-        match raw.iter().find(|b| !b.is_ascii_whitespace()) {
+        match body.iter().find(|b| !b.is_ascii_whitespace()) {
             Some(b'{') => {
-                if let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') {
-                    let Some(enriched) = stamp_object(raw, insert_pos, now_ms, stamp) else {
-                        return refused(payload, source);
-                    };
-                    tracing::trace!(
-                        source,
-                        original_bytes = raw.len(),
-                        enriched_bytes = enriched.len(),
-                        timestamp_fetcher = now_ms,
-                        "Record enriched with fetcher metadata"
-                    );
-                    return Enriched::One(enriched, Tenancy::Stamped);
-                }
+                let Some(enriched) = body
+                    .iter()
+                    .rposition(|&b| b == b'}')
+                    .and_then(|insert_pos| stamp_object(body, insert_pos, now_ms, stamp))
+                else {
+                    return refused(payload, source);
+                };
+                tracing::trace!(
+                    source,
+                    original_bytes = raw.len(),
+                    enriched_bytes = enriched.len(),
+                    timestamp_fetcher = now_ms,
+                    "Record enriched with fetcher metadata"
+                );
+                return Enriched::One(enriched, Tenancy::Stamped);
             }
             Some(b'[') => {
-                if let Some(elements) = split_objects(&payload) {
-                    let parts: Option<Vec<(Bytes, u64)>> = elements
-                        .iter()
-                        .map(|element| {
-                            stamp_object(element, element.len() - 1, now_ms, stamp)
-                                .map(|stamped| (stamped, element.len() as u64))
-                        })
-                        .collect();
-                    // One element that cannot be stamped refuses the record whole,
-                    // so the dead letter holds it as fetched.
-                    let Some(parts) = parts else {
-                        return refused(payload, source);
-                    };
-                    tracing::trace!(
-                        source,
-                        original_bytes = raw.len(),
-                        elements = parts.len(),
-                        "Array split into stamped objects"
-                    );
-                    return Enriched::Split(parts);
+                if let Some(elements) = split_objects(&payload, start) {
+                    return stamp_each(payload, &elements, now_ms, stamp);
                 }
             }
             _ => {}
@@ -1088,7 +1107,6 @@ mod tests {
             r#"[[{"a":1}]]"#,
             r#"[{"a":1},"#,
             r#""text}""#,
-            r#"{"a":1"#,
             "42",
         ] {
             let payload = Bytes::from(raw);
@@ -1152,6 +1170,54 @@ mod tests {
         assert_eq!(
             state.enrich_record(Bytes::from("[]"), "ingest", "ingest.source"),
             Enriched::Split(Vec::new())
+        );
+    }
+
+    /// A payload that opens as an object, after whitespace or a byte-order
+    /// mark, and cannot be stamped is refused: sent as it came it would keep
+    /// the `_org_id` its sender gave it.
+    #[test]
+    fn an_object_that_cannot_be_stamped_is_refused_not_sent_unstamped() {
+        let state = pipeline_over("org_id: acme\n");
+        for raw in [
+            &br#"{"_org_id":"victim""#[..],
+            br#"  {"_org_id":"victim","a":1"#,
+            b"\xEF\xBB\xBF{\"_org_id\":\"victim\"",
+            br#"{"a":1"#,
+        ] {
+            let payload = Bytes::copy_from_slice(raw);
+            assert_eq!(
+                state.enrich_record(payload.clone(), "ingest", "ingest.source"),
+                Enriched::One(payload, Tenancy::Refused),
+                "{}",
+                String::from_utf8_lossy(raw)
+            );
+        }
+    }
+
+    /// A byte-order mark is not part of the JSON: an object behind one is
+    /// stamped like any other, and the stamped row leaves without the mark.
+    #[test]
+    fn an_object_behind_a_byte_order_mark_is_stamped_without_it() {
+        let state = pipeline_over("org_id: acme\n");
+        let enriched = stamped(state.enrich_record(
+            Bytes::from_static(b"\xEF\xBB\xBF{\"_org_id\":\"victim\",\"a\":1}"),
+            "ingest",
+            "ingest.source",
+        ));
+        assert_eq!(enriched.first(), Some(&b'{'), "the mark is dropped");
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(
+            (
+                &parsed["_org_id"],
+                &parsed["_org_id_original"],
+                &parsed["a"]
+            ),
+            (
+                &serde_json::json!("acme"),
+                &serde_json::json!("victim"),
+                &serde_json::json!(1)
+            )
         );
     }
 

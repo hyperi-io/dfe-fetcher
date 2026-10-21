@@ -58,9 +58,10 @@ pub enum DroppedDeadLetter {
     TransportRefused,
     /// The row is over `max_record_bytes`, scalo's `too_large`.
     TooLarge,
-    /// The row may carry a reserved key such as `_org_id` and did not parse,
-    /// so the fetcher could not replace it.
-    ReservedKeyUnparsed,
+    /// The row opens as a JSON object the fetcher could not stamp with its
+    /// org: no closing brace, or a reserved key such as `_org_id` that did not
+    /// parse to be replaced.
+    Unstampable,
 }
 
 impl DroppedDeadLetter {
@@ -70,7 +71,7 @@ impl DroppedDeadLetter {
         match self {
             Self::TransportRefused => "transport_refused",
             Self::TooLarge => "too_large",
-            Self::ReservedKeyUnparsed => "reserved_key_unparsed",
+            Self::Unstampable => "unstampable",
         }
     }
 }

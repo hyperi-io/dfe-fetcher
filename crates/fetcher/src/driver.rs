@@ -1309,7 +1309,7 @@ mod tests {
             recorder.counters(&[
                 (
                     "pipeline_dead_letters_dropped_total",
-                    &[("reason", "reserved_key_unparsed")]
+                    &[("reason", "unstampable")]
                 ),
                 ("usage_ingested_bytes_total", &[("org_id", "acme")]),
                 ("usage_ingested_bytes_total", &[("org_id", "victim")]),

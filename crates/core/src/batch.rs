@@ -118,8 +118,10 @@ pub enum Tenancy {
     /// holding a non-object), so the loader stores it under its default org
     /// and it counts there.
     Unstamped,
-    /// The row may name its own org and did not parse, so its `_org_id`
-    /// could not be replaced: it is dead-lettered, never sent or counted.
+    /// The row opens as a JSON object the stamp could not reach (no closing
+    /// brace, or a reserved key that did not parse), so sent it would keep
+    /// any `_org_id` its sender gave it: it is dead-lettered, never sent or
+    /// counted.
     Refused,
 }
 

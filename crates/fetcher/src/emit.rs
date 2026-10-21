@@ -20,10 +20,10 @@
 //! record the transport always refuses cannot hold its source back for good),
 //! or backpressured -- the backpressured subset is retried with a bounded
 //! backoff and, if still refused, the whole tick aborts WITHOUT a checkpoint
-//! so the scheduler's stall loop takes over. A row enrichment refused (it may
-//! name its own org and did not parse) is never sent: it is dead-lettered the
-//! same way, or dropped and counted under
-//! `{reason="reserved_key_unparsed"}`. A failure the transport reports
+//! so the scheduler's stall loop takes over. A row enrichment refused (it
+//! opens as a JSON object the stamp cannot reach) is never sent: it is
+//! dead-lettered the same way, or dropped and counted under
+//! `{reason="unstampable"}`. A failure the transport reports
 //! for every record alike (closed, timed out, the topic or broker gone) is
 //! not a dead-letter case: the tick aborts with no checkpoint and the rows
 //! are re-fetched, which is the at-least-once side of the contract. The
@@ -59,8 +59,8 @@ const BACKPRESSURE_BACKOFF: Duration = Duration::from_millis(200);
 /// Least time between two warnings of refused records dropped.
 const DROPPED_WARN_EVERY_MS: u64 = 10_000;
 /// The dead-letter reason of a row enrichment refused.
-const RESERVED_KEY_UNPARSED: &str =
-    "the record may name its own org and did not parse, so its _org_id could not be replaced";
+const UNSTAMPABLE: &str =
+    "the record opens as a JSON object the fetcher could not stamp with its org";
 /// When refused records dropped were last warned of.
 static DROPPED_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 
@@ -220,7 +220,7 @@ impl Emitter {
     ) -> Result<Vec<Outbound>> {
         let mut held = Vec::new();
         let mut refused = Vec::new();
-        let mut unparsed = Vec::new();
+        let mut unstampable = Vec::new();
         let mut in_flight = FuturesUnordered::new();
         let mut rows = rows.into_iter();
         loop {
@@ -229,10 +229,10 @@ impl Emitter {
             {
                 match row.tenancy {
                     Tenancy::Stamped | Tenancy::Unstamped => in_flight.push(self.send_one(row)),
-                    Tenancy::Refused => unparsed.push(DeadLetter {
+                    Tenancy::Refused => unstampable.push(DeadLetter {
                         topic: row.topic,
                         payload: row.payload,
-                        reason: RESERVED_KEY_UNPARSED.to_owned(),
+                        reason: UNSTAMPABLE.to_owned(),
                     }),
                 }
             }
@@ -267,7 +267,7 @@ impl Emitter {
         }
         self.dead_letter(refused, DroppedDeadLetter::TransportRefused, report)
             .await?;
-        self.dead_letter(unparsed, DroppedDeadLetter::ReservedKeyUnparsed, report)
+        self.dead_letter(unstampable, DroppedDeadLetter::Unstampable, report)
             .await?;
         Ok(held)
     }
@@ -505,7 +505,7 @@ mod tests {
             recorder.counters(&[
                 (
                     "pipeline_dead_letters_dropped_total",
-                    &[("reason", "reserved_key_unparsed")]
+                    &[("reason", "unstampable")]
                 ),
                 ("usage_ingested_bytes_total", &[("org_id", "acme")]),
             ]),
@@ -554,7 +554,7 @@ mod tests {
         let lines = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
             .expect("the DLQ file");
         assert_eq!(lines.lines().count(), 1, "{lines}");
-        assert!(lines.contains(RESERVED_KEY_UNPARSED), "{lines}");
+        assert!(lines.contains(UNSTAMPABLE), "{lines}");
     }
 
     /// A flush that aborts counts nothing, even for the records it sent before
