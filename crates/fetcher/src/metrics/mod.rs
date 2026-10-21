@@ -390,6 +390,10 @@ impl Metrics {
             "rules_hits_total",
             "Records each output route matched, by rule_set (output.routes) and rule (route-<n>)"
         );
+        metrics::describe_counter!(
+            "rules_clamped_total",
+            "Values a rule set's clamp replaced with its default, by rule_set and rule (output.routes sets no clamp, so it stays 0)"
+        );
         describe_framework_metrics();
 
         Self {
