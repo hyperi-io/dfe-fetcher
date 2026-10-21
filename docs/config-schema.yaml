@@ -12,7 +12,6 @@ description: |-
   **Hot-reloaded (takes effect on next fetch cycle):**
   - `scheduler.default_interval_secs` -- fetch interval re-computed each cycle
   - `scheduler.jitter_percent` -- jitter re-computed each cycle
-  - `kafka.topic_suffix` -- topic name suffix re-read on each delivery
   - `sources.*.filter` -- CEL filter re-evaluated on each record
   - `org_id`, `default_org_id` -- the `_org_id` stamped on each record, re-read
     each fetch cycle and for each extractor record
@@ -22,7 +21,8 @@ description: |-
 
   **Requires pod restart:**
   - `output.*` -- transport connections established at startup
-  - `kafka.*` (except `topic_suffix`) -- transport config bound at startup
+  - `kafka.*` -- transport config bound at startup
+  - `kafka.topic_suffix` -- the Vector extractor builds its topics once at start
   - `ingest.*` -- HTTP server binds at startup, auth token resolved once
   - `extractors.*` -- containers and Vector instances spawned at startup
   - `metrics.*` -- metrics server binds at startup

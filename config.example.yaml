@@ -882,12 +882,12 @@ ingest:
 #       match_value: "refund"
 #       destination: ["orders", "orders_archive"]    # keeps the fetching _source
 
-# Kafka -- transport config REQUIRES RESTART; topic_suffix is hot-reloaded.
+# Kafka -- REQUIRES RESTART, topic_suffix included.
 kafka:
   brokers:                        # REQUIRES RESTART
     - "localhost:9092"
   client_id: "dfe-fetcher"       # REQUIRES RESTART
-  topic_suffix: "_land"          # hot-reloaded
+  topic_suffix: "_land"          # REQUIRES RESTART: the Vector extractor builds its topics once at start
   sasl:
     enabled: false
     mechanism: "SCRAM-SHA-512"
