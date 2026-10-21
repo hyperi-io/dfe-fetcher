@@ -72,12 +72,18 @@ static RESERVED_KEY_FINDERS: LazyLock<[memchr::memmem::Finder<'static>; 3]> = La
     ]
 });
 
+/// The backslash that opens a JSON escape.
+const JSON_ESCAPE: u8 = 0x5c;
+
 /// Cheap pre-filter for [`rewrite_reserved_keys`]: true when the raw bytes
-/// contain the opening quote of a reserved key name anywhere. A nested field or
-/// a string value matches too -- a false positive costs the slower rewrite
-/// path, never correctness.
+/// contain the opening quote of a reserved key name anywhere, or any backslash.
+/// A key spelled with an escape decodes to the reserved name without matching
+/// its literal bytes, so any escape takes the rewrite path. A nested field or a
+/// string value matches too -- a false positive costs the slower rewrite path,
+/// never correctness.
 fn may_carry_reserved_key(raw: &[u8]) -> bool {
-    RESERVED_KEY_FINDERS.iter().any(|f| f.find(raw).is_some())
+    memchr::memchr(JSON_ESCAPE, raw).is_some()
+        || RESERVED_KEY_FINDERS.iter().any(|f| f.find(raw).is_some())
 }
 
 /// Park a reserved key's incoming value beside the fetcher's own.
@@ -1419,10 +1425,10 @@ mod tests {
 
     #[test]
     fn test_enrich_record_without_a_reserved_key_takes_the_append_path() {
-        // No reserved key means no parse: the payload is copied byte for byte
-        // and the envelope is appended before the closing brace.
+        // No reserved key and no escape means no parse: the payload is copied
+        // byte for byte and the envelope is appended before the closing brace.
         let state = make_pipeline_state();
-        let raw = r#"{"event":"x","id":7,"nested":{"a":[1,2]},"unicode":"caf\u00e9"}"#;
+        let raw = r#"{"event":"x","id":7,"nested":{"a":[1,2]},"note":"plain text"}"#;
         let enriched = state.enrich_record(Bytes::from(raw), "ingest", "ingest.source");
         let enriched_str = std::str::from_utf8(&enriched).unwrap();
 
@@ -1613,6 +1619,94 @@ mod tests {
         assert_eq!(parsed["_org_id_original_2"], "acme");
     }
 
+    /// Every top-level key as JSON decodes it, duplicates kept, so a key spelled
+    /// with an escape counts as the name it decodes to.
+    fn decoded_keys(enriched: &[u8]) -> Vec<(String, serde_json::Value)> {
+        struct Pairs(Vec<(String, serde_json::Value)>);
+        impl<'de> serde::Deserialize<'de> for Pairs {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                d: D,
+            ) -> std::result::Result<Self, D::Error> {
+                struct Visit;
+                impl<'de> serde::de::Visitor<'de> for Visit {
+                    type Value = Pairs;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        f.write_str("a JSON object")
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> std::result::Result<Pairs, A::Error> {
+                        let mut pairs = Vec::new();
+                        while let Some(pair) = map.next_entry()? {
+                            pairs.push(pair);
+                        }
+                        Ok(Pairs(pairs))
+                    }
+                }
+                d.deserialize_map(Visit)
+            }
+        }
+        serde_json::from_slice::<Pairs>(enriched)
+            .expect("a JSON object")
+            .0
+    }
+
+    /// A reserved key spelled with a JSON escape decodes to the reserved name,
+    /// so it is parked like the plain spelling: the record carries one
+    /// `_org_id` and one `_source`, both the fetcher's.
+    #[test]
+    fn an_escaped_reserved_key_is_parked_like_the_plain_one() {
+        let state = pipeline_over("org_id: acme\n");
+        // The JSON escape for an underscore, built from the backslash's code point.
+        let underscore = format!("{}u005f", char::from(0x5c));
+        let cases = [
+            (
+                format!(r#"{{"{underscore}org_id":"someone-else","a":1}}"#),
+                "_org_id",
+                "someone-else",
+            ),
+            (
+                format!(r#"{{"_org{underscore}id":"someone-else","a":1}}"#),
+                "_org_id",
+                "someone-else",
+            ),
+            (
+                format!(r#"{{"{underscore}source":"other_table","a":1}}"#),
+                "_source",
+                "other_table",
+            ),
+        ];
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for (payload, key, fetched) in &cases {
+            assert!(payload.contains(char::from(0x5c)), "{payload}");
+            let enriched =
+                state.enrich_record(Bytes::from(payload.clone()), "ingest", "ingest.source");
+            let keys = decoded_keys(&enriched);
+            let values = |name: &str| -> Vec<serde_json::Value> {
+                keys.iter()
+                    .filter(|(k, _)| k == name)
+                    .map(|(_, v)| v.clone())
+                    .collect()
+            };
+            let parked = format!("{key}_original");
+            got.push((
+                payload.as_str(),
+                values("_org_id"),
+                values("_source"),
+                values(&parked),
+            ));
+            want.push((
+                payload.as_str(),
+                vec![serde_json::json!("acme")],
+                vec![serde_json::json!("ingest")],
+                vec![serde_json::json!(fetched)],
+            ));
+        }
+        assert_eq!(got, want);
+    }
+
     #[test]
     fn test_may_carry_reserved_key() {
         assert!(may_carry_reserved_key(br#"{"_source":"x"}"#));
@@ -1620,6 +1714,8 @@ mod tests {
         assert!(may_carry_reserved_key(br#"{"_org_id":"x"}"#));
         assert!(!may_carry_reserved_key(br#"{"event":"x","id":7}"#));
         assert!(!may_carry_reserved_key(b"{}"));
+        let escaped = format!(r#"{{"path":"c:{0}{0}logs"}}"#, char::from(0x5c));
+        assert!(may_carry_reserved_key(escaped.as_bytes()));
     }
 
     /// Exercise PipelineState::new with DLQ enabled to cover the DLQ init branch.
