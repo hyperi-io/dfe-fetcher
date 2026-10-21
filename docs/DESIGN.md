@@ -202,15 +202,7 @@ Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{liste
 
 ### Enrichment
 
-Four names are reserved on every record: `_timestamp_fetcher`,
-`_timestamp_received`, `_source` (the topic base) and `_source_fetcher`
-(`<connection>.<unit>`). The per-source CEL filter runs on the provider's row
-before they are added, so a filter cannot reference them. A payload that
-already carries one keeps its own value under `<key>_original` and the
-fetcher's value takes the name: the loader routes on `_source`, so the DFE
-source name has to be the one that survives, and a record carrying the same
-top-level key twice is rejected outright by ClickHouse rather than
-dead-lettered.
+Five names are reserved on every record: `_timestamp_fetcher`, `_timestamp_received`, `_source` (the topic base, or the destination a single-destination route names), `_source_fetcher` (`<connection>.<unit>`) and `_org_id` (`org_id`, else `default_org_id`). The per-source CEL filter runs on the provider's row before they are added, so a filter cannot reference them. A payload that already carries one keeps its own value under `<key>_original` and the fetcher's value takes the name: the loader routes on `_source` and the record's org is its `_org_id`, so the fetcher's values have to be the ones that survive, and a record carrying the same top-level key twice is rejected outright by ClickHouse rather than dead-lettered.
 
 `<key>_original` is never overwritten. A payload that already carries both the
 reserved name and its `_original` -- a replayed record on a second enrich
@@ -303,6 +295,8 @@ UUIDv7 `snapshot_id` and `snapshot_at` and all on the unit's own topic
 field, the per-tick and per-file scopes and the consumer rules are in
 [reference/snapshot-envelope.md](reference/snapshot-envelope.md); the writer
 and a reference reassembler are `crates/core/src/envelope.rs`.
+
+A known limitation: a single-destination route moves a dump's matching rows to that destination's table while its `begin` and `end` frames stay in the unit's own, so neither table holds a dump that can be reassembled.
 
 ## Extraction Modes
 

@@ -381,6 +381,15 @@ impl Metrics {
             "dfe_fetcher_events_per_second",
             "Current records-per-second throughput (EPS)"
         );
+        metrics::describe_counter!(
+            crate::emit::USAGE_INGESTED_BYTES_TOTAL,
+            metrics::Unit::Bytes,
+            "Bytes of the records the outputs accepted, as fetched before the fetcher stamped them, by org_id"
+        );
+        metrics::describe_counter!(
+            "rules_hits_total",
+            "Records each output route matched, by rule_set (output.routes) and rule (route-<n>)"
+        );
         describe_framework_metrics();
 
         Self {
