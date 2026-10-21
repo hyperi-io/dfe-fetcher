@@ -479,7 +479,10 @@ impl PipelineState {
         .unwrap_or(u64::MAX);
 
         let raw = payload.as_ref();
-        let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}') else {
+        // In an array or a scalar the stamp would land inside one element, so
+        // only a payload that opens as an object takes it.
+        let is_object = raw.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
+        let Some(insert_pos) = raw.iter().rposition(|&b| b == b'}').filter(|_| is_object) else {
             tracing::trace!(
                 source,
                 payload_bytes = raw.len(),
@@ -927,6 +930,34 @@ mod tests {
         let enriched = state.enrich_record(payload, "src", "src.fetcher");
         // Non-JSON payload has no closing brace so should be returned unchanged
         assert_eq!(enriched.as_ref(), raw.as_bytes());
+    }
+
+    /// Only a JSON object takes the stamp: in an array or a string it would land
+    /// inside one element and leave the record itself untagged.
+    #[test]
+    fn a_payload_that_is_not_an_object_leaves_byte_identical() {
+        let state = pipeline_over("org_id: acme\n");
+        let raws = [
+            r#"[{"a":1}]"#,
+            "[1,2]",
+            r#"  [{"_org_id":"x"}]"#,
+            r#""text}""#,
+        ];
+        let sent: Vec<String> = raws
+            .iter()
+            .map(|raw| {
+                let enriched = state.enrich_record(Bytes::from(*raw), "ingest", "ingest.source");
+                String::from_utf8(enriched.to_vec()).expect("utf-8")
+            })
+            .collect();
+        assert_eq!(sent, raws);
+
+        let enriched = state.enrich_record(Bytes::from(r#"  {"a":1}"#), "ingest", "i.s");
+        let parsed: serde_json::Value = serde_json::from_slice(&enriched).unwrap();
+        assert_eq!(
+            parsed["_org_id"], "acme",
+            "an object after whitespace is stamped"
+        );
     }
 
     #[test]

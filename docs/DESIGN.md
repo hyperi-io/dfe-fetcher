@@ -210,7 +210,7 @@ pass, say -- keeps the `_original` it arrived with, and the colliding value is
 parked under the next free `<key>_original_<n>` counting from 2, with a
 warning naming the key.
 
-A binary row, and a payload with no closing brace, goes out verbatim with no `_org_id`, so the loader's default org applies to it.
+A binary row, and a payload that does not open as a JSON object (an array, a scalar, plain text), goes out verbatim with no `_org_id`, so the loader's default org applies to it.
 
 ## Cursor Cold Start
 
