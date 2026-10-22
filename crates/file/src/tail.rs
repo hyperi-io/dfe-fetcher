@@ -383,7 +383,8 @@ mod tailer {
     struct Running {
         rx: mpsc::Receiver<Pass>,
         view: Arc<CheckpointsView>,
-        task: tokio::task::JoinHandle<()>,
+        /// `true` once the tailer ended through its shutdown path.
+        task: tokio::task::JoinHandle<bool>,
         /// Stops this run of the tailer without ending the shape.
         stop: CancellationToken,
         /// Fingerprints seen this process, by the id their marks carry.
@@ -403,11 +404,19 @@ mod tailer {
             })
         }
 
-        /// Stop this run and wait for its final checkpoint write.
-        async fn stop(self) -> std::result::Result<(), tokio::task::JoinError> {
-            self.stop.cancel();
-            drop(self.rx);
-            self.task.await
+        /// Stop this run and wait for its final checkpoint write. `true` when
+        /// the tailer ended through its shutdown path.
+        async fn stop(self) -> std::result::Result<bool, tokio::task::JoinError> {
+            let Self {
+                mut rx, task, stop, ..
+            } = self;
+            stop.cancel();
+            // Drained until the tailer ends, never dropped: a send onto a closed
+            // channel ends it before it joins its checkpoint writer, and that
+            // writer then races the next run's on the same temp file.
+            let drain = async { while rx.next().await.is_some() {} };
+            let ((), ended) = tokio::join!(drain, task);
+            ended
         }
     }
 
@@ -579,9 +588,13 @@ mod tailer {
                     .run(sink, stop_reading, stop_writer, checkpointer)
                     .await
                 {
-                    Ok(_) => info!(unit = %unit, "file tail: tailer stopped"),
+                    Ok(_) => {
+                        info!(unit = %unit, "file tail: tailer stopped");
+                        true
+                    }
                     Err(e) => {
                         warn!(unit = %unit, error = %e, "file tail: tailer ended; the tick side went away");
+                        false
                     }
                 }
             });
@@ -789,6 +802,68 @@ mod tailer {
                 Ok(())
             }
             .boxed()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use dfe_fetcher_core::batch::NoLease;
+
+        /// A tailer stopped mid-read, while its file grows and its passes are
+        /// drained, still ends through its shutdown path, which joins its
+        /// checkpoint writer, so no write of the old run is left to race the
+        /// next run's on the same temp file.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_stopped_tailer_always_joins_its_checkpoint_writer() {
+            use std::io::Write as _;
+            use std::sync::atomic::AtomicBool;
+
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+            let log = dir.path().join("logs").join("app.log");
+            std::fs::write(&log, "{\"n\":0}\n").unwrap();
+            let spec = TailSpec {
+                include: vec![format!("{}/logs/*.log", dir.path().display())],
+                data_dir: dir.path().join("state").display().to_string(),
+                glob_minimum_cooldown_ms: 1,
+                rotate_wait_secs: 1,
+                max_tick_secs: 5,
+                ..TailSpec::default()
+            };
+            let tail = FileTail::new("logs", spec, Arc::new(NoLease)).unwrap();
+            // The file keeps growing, so the tailer has a read to be in the middle of.
+            let growing = Arc::new(AtomicBool::new(true));
+            let appender = {
+                let growing = Arc::clone(&growing);
+                std::thread::spawn(move || {
+                    let mut f = std::fs::OpenOptions::new().append(true).open(log).unwrap();
+                    while growing.load(Ordering::Relaxed) {
+                        writeln!(f, "{{\"n\":1}}").unwrap();
+                        std::thread::sleep(Duration::from_micros(200));
+                    }
+                })
+            };
+
+            let mut ended = Vec::new();
+            for offset in 0..50 {
+                let mut running = tail.start(&[]).await.expect("the tailer starts");
+                // A moved offset gives the run's checkpoint writer something to write.
+                tail.apply(&running.view, &running.ids, &[(1, offset)]);
+                let drained = tokio::time::Instant::now() + Duration::from_millis(5);
+                while tokio::time::timeout_at(drained, running.rx.next())
+                    .await
+                    .is_ok_and(|pass| pass.is_some())
+                {}
+                ended.push(running.stop().await.expect("the tailer task ends"));
+            }
+            growing.store(false, Ordering::Relaxed);
+            appender.join().unwrap();
+
+            assert!(
+                ended.iter().all(|graceful| *graceful),
+                "a tailer ended on a failed send, before joining its checkpoint writer: {ended:?}"
+            );
         }
     }
 }
