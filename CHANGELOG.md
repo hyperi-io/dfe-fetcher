@@ -3,6 +3,14 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.42](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.41...v1.4.42) (2026-10-22)
+
+### Bug Fixes
+
+* **deps:** update redpandadata/redpanda Docker tag to v26.2.4 ([#237](https://github.com/hyperi-io/dfe-fetcher/issues/237)) ([6448c15](https://github.com/hyperi-io/dfe-fetcher/commit/6448c15b9d8738d41961b61b043446797fbe91df))
+* **file:** drain a stopping tailer so it joins its checkpoint writer ([#241](https://github.com/hyperi-io/dfe-fetcher/issues/241)) ([91877a4](https://github.com/hyperi-io/dfe-fetcher/commit/91877a487dbf3b42d1a9cc24dcf29692133582ee))
+* stamp _org_id and route through scalo rules ([#240](https://github.com/hyperi-io/dfe-fetcher/issues/240)) ([66eded7](https://github.com/hyperi-io/dfe-fetcher/commit/66eded7b214910d27b9bc4a7744e151d96f3a57d))
+
 ## [1.4.41](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.40...v1.4.41) (2026-10-20)
 
 ### Bug Fixes
