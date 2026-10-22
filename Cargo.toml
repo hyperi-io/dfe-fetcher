@@ -48,11 +48,11 @@ cel = { version = ">=0.14.5, <0.15", features = ["json"] }
 # Same range as scalo so cargo unifies to ONE schemars in the graph -- scalo's
 # `SensitiveString` x-scalo-secret impl and our derives resolve against the same
 # `JsonSchema` trait.
-schemars = { version = ">=1.2.2, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
+schemars = { version = ">=1.2.3, <2", default-features = false, features = ["std", "derive", "preserve_order"] }
 
 # Async runtime and streams
-tokio = { version = "1.53.2", default-features = false }
-tokio-util = "0.7.19"
+tokio = { version = "1.53.3", default-features = false }
+tokio-util = "0.7.20"
 tokio-stream = "0.1.19"
 futures = "0.3.34"
 futures-core = "0.3.34"
@@ -60,7 +60,7 @@ async-trait = "0.1.92"
 
 # Serialisation
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 bytes = "1.12.1"
 
 # HTTP client. The REST path, reqsign's default context and scalo all send over
@@ -78,8 +78,8 @@ axum = "0.8.9"
 
 # Utilities
 chrono = { version = "0.4.45", features = ["serde"] }
-uuid = "1.27.0"
-smallvec = "1.16.2"
+uuid = "1.28.0"
+smallvec = "1.16.3"
 thiserror = "2.0.21"
 itoa = "1.0.18"
 memchr = "2.8.3"
@@ -89,7 +89,7 @@ base64 = "0.23.1"
 # all three must sit on the same digest line for `SimpleHmac<Sha256>` to compile.
 hmac = "0.13.0"
 sha1 = "0.11.0"
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 hex = "0.4.3"
 # The RFC 3986 encoding a canonical query string is signed with; url's own
 # dependency, so no new crate in the graph.
@@ -99,7 +99,7 @@ percent-encoding = "2.3.2"
 jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 # Test-only RSA key generation for the JWT-bearer fixtures, jsonwebtoken's
 # own backend so no second crypto crate enters the graph.
-aws-lc-rs = "1.18.1"
+aws-lc-rs = "1.18.2"
 # AWS SigV4 signing (reqsign -- lightweight, no AWS SDK dependency). reqsign
 # signs an http::request::Parts and its default context sends STS and metadata
 # calls over the same reqwest line as the REST path.
