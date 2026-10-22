@@ -257,17 +257,38 @@ async fn a_failed_tick_loses_no_lines_on_the_next_tick_of_the_same_driver() {
     let d = driver(&h, shape, Arc::clone(&store));
     assert_eq!(d.run_tick(None).await.expect("tick 1").rows, 2);
 
-    // Tick 2 hands out n=3, emits it, and fails at the checkpoint write.
+    // Tick 2 hands out n=3, emits it, and fails at the checkpoint write. The
+    // tailer does not re-glob inside `glob_minimum_cooldown_ms`, so a tick
+    // straight after the append can see nothing, write nothing and pass.
     append(&log, &["{\"n\":3}"]);
     flaky
         .fail_next_set
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let err = d.run_tick(None).await.expect_err("the commit fails");
+    let mut failed = None;
+    for _ in 0..100 {
+        match d.run_tick(None).await {
+            Ok(report) => assert_eq!(report.rows, 0, "a tick with rows commits"),
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let err = failed.expect("the commit fails");
     assert!(err.to_string().contains("scripted write failure"), "{err}");
 
     // Tick 3 must read n=3 again, plus n=4, from the tick-1 checkpoint.
     append(&log, &["{\"n\":4}"]);
-    assert_eq!(d.run_tick(None).await.expect("tick 3").rows, 2);
+    let mut reread = 0;
+    for _ in 0..100 {
+        reread += d.run_tick(None).await.expect("tick 3").rows;
+        if reread >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(reread, 2, "n=3 again and n=4");
     assert_eq!(d.run_tick(None).await.expect("tick 4").rows, 0);
 
     let frames = landed(&h.transport).await;
