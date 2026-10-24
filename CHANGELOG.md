@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.43](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.42...v1.4.43) (2026-10-24)
+
+### Bug Fixes
+
+* take scalo 2.14.20 and ctutils 0.4.5 ([#243](https://github.com/hyperi-io/dfe-fetcher/issues/243)) ([19ad4bb](https://github.com/hyperi-io/dfe-fetcher/commit/19ad4bbaec540144ae01557353098e82aa50194e)), closes [#238](https://github.com/hyperi-io/dfe-fetcher/issues/238)
+
 ## [1.4.42](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.41...v1.4.42) (2026-10-22)
 
 ### Bug Fixes
