@@ -80,6 +80,12 @@ Blue cylinders are datastores, rounded faded nodes are external systems,
 dotted edges are pushed events. The metrics server (Prometheus, `:9090`) and
 the health probes are not drawn.
 
+## Where parsing happens
+
+The fetcher parses the framing of the API, file or database it reads (NDJSON lines, a JSON array, CSV rows, a response envelope) into one JSON record per row. Records leave already parsed, with the payload and its fields in the record itself.
+
+The fetcher has no raw capture setting and does not keep the bytes it fetched. Parsing a long text field with grok, dissect or a pipeline is the transforms' job, downstream. A record framed wrongly is fixed in the profile or the driver here. See the fleet rule in [design-principles.md](https://github.com/hyperi-io/dfe-infra/blob/main/docs/design-principles.md).
+
 ## Workspace Crates
 
 The repo is a Cargo workspace laid out as a wide DAG off one I/O-free core, so
