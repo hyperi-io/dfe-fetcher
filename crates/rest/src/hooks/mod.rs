@@ -18,6 +18,7 @@
 //! and adding one is a `match` arm the compiler checks. The listers live
 //! beside them: a listing protocol standing where a unit's page fetch would.
 
+mod cloudtrail_event;
 mod cloudwatch_metrics;
 mod columnar_table;
 mod go_module_aggregate;
@@ -53,6 +54,8 @@ pub enum RowBuilder {
     WrapNonObject,
     /// A Pub/Sub received message decoded into the record it carries.
     PubsubMessage,
+    /// A CloudTrail `LookupEvents` record lifted out to the event it carries.
+    CloudtrailEvent,
 }
 
 impl RowBuilder {
@@ -65,6 +68,7 @@ impl RowBuilder {
             RowBuilderKind::GoModuleAggregate => RowBuilder::GoModuleAggregate,
             RowBuilderKind::WrapNonObject => RowBuilder::WrapNonObject,
             RowBuilderKind::PubsubMessage => RowBuilder::PubsubMessage,
+            RowBuilderKind::CloudtrailEvent => RowBuilder::CloudtrailEvent,
         })
     }
 
@@ -80,6 +84,7 @@ impl RowBuilder {
             RowBuilder::CloudwatchMetrics => cloudwatch_metrics::expand(row, ctx),
             RowBuilder::WrapNonObject => wrap_non_object::expand(row),
             RowBuilder::PubsubMessage => pubsub_message::expand(row, ctx),
+            RowBuilder::CloudtrailEvent => cloudtrail_event::expand(row),
             RowBuilder::GoModuleAggregate => Err(dfe_fetcher_core::error::Error::Decode(
                 "go_module_aggregate folds a key's rows; name it under `fold`".into(),
             )),
@@ -99,7 +104,8 @@ impl RowBuilder {
             RowBuilder::ColumnarTable
             | RowBuilder::CloudwatchMetrics
             | RowBuilder::WrapNonObject
-            | RowBuilder::PubsubMessage => Err(dfe_fetcher_core::error::Error::Decode(
+            | RowBuilder::PubsubMessage
+            | RowBuilder::CloudtrailEvent => Err(dfe_fetcher_core::error::Error::Decode(
                 "the builder expands rows one at a time and folds nothing".into(),
             )),
         }
@@ -118,7 +124,8 @@ impl RowBuilder {
             RowBuilder::ColumnarTable
             | RowBuilder::GoModuleAggregate
             | RowBuilder::WrapNonObject
-            | RowBuilder::PubsubMessage => Ok(ids.to_vec()),
+            | RowBuilder::PubsubMessage
+            | RowBuilder::CloudtrailEvent => Ok(ids.to_vec()),
         }
     }
 

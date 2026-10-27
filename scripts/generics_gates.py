@@ -161,6 +161,7 @@ BUDGETS = {
     "crates/rest/src/hooks/cloudwatch_metrics.rs": 300,
     "crates/rest/src/hooks/s3_list.rs": 250,
     "crates/rest/src/shape/queue.rs": 150,
+    "crates/rest/src/hooks/cloudtrail_event.rs": 100,
     "crates/rest/src/hooks/columnar_table.rs": 100,
     "crates/rest/src/hooks/go_module_aggregate.rs": 100,
     "crates/rest/src/hooks/pubsub_message.rs": 100,

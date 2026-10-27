@@ -315,7 +315,7 @@
       }
     },
     "unwrap_nested_json": {
-      "description": "Recursively unwrap double-serialised JSON string fields before delivery.\n\nWhen enabled (default), any string field whose value parses as a JSON\nobject or array is replaced with the parsed value. This makes fields\nlike AWS CloudTrail's `CloudTrailEvent` queryable as nested JSON in\ndownstream systems like ClickHouse.\n\nSet to `false` for sources that intentionally store JSON as strings.",
+      "description": "Recursively unwrap double-serialised JSON string fields before delivery.\n\nWhen enabled (default), any string field whose value parses as a JSON\nobject or array is replaced with the parsed value. This makes such\nfields queryable as nested JSON in downstream systems like ClickHouse.\n\nSet to `false` for sources that intentionally store JSON as strings.",
       "type": "boolean",
       "default": true
     },
@@ -5050,6 +5050,11 @@
           "description": "A Pub/Sub `receivedMessages[]` entry becomes the record its base64\n`message.data` holds (JSON as itself, anything else as `{\"data\"}`),\nwith the message envelope under `_dfe_fetcher_pubsub`.",
           "type": "string",
           "const": "pubsub_message"
+        },
+        {
+          "description": "A CloudTrail `LookupEvents` record becomes the event its\n`CloudTrailEvent` string holds, the shape CloudTrail delivers to S3.\nA record with no usable event lands unchanged with the reason under\n`_dfe_fetcher_parse_error`.",
+          "type": "string",
+          "const": "cloudtrail_event"
         }
       ]
     },

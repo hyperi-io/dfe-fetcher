@@ -186,8 +186,32 @@ fn ids(rows: &[Landed], key: &str) -> Vec<String> {
         .collect()
 }
 
+/// The CloudTrail event a `LookupEvents` record carries, as CloudTrail
+/// delivers it to S3, with documentation addresses and a made-up account.
+fn cloudtrail_event(id: &str) -> Value {
+    json!({
+        "eventVersion": "1.08",
+        "eventTime": "2026-02-19T00:00:00Z",
+        "eventSource": "signin.amazonaws.com",
+        "eventName": "ConsoleLogin",
+        "awsRegion": "ap-southeast-2",
+        "sourceIPAddress": "203.0.113.7",
+        "userIdentity": {"type": "IAMUser", "accountId": "123456789012"},
+        "eventID": id,
+        "recipientAccountId": "123456789012"
+    })
+}
+
+/// A `LookupEvents` record: the event as a JSON string beside the lookup fields.
 fn event(id: &str) -> Value {
-    json!({"EventId": id, "EventName": "ConsoleLogin", "CloudTrailEvent": "{\"eventVersion\":\"1.08\"}"})
+    json!({
+        "EventId": id,
+        "EventName": "ConsoleLogin",
+        "EventTime": 1_771_459_200.0,
+        "Username": "alice",
+        "Resources": [],
+        "CloudTrailEvent": cloudtrail_event(id).to_string()
+    })
 }
 
 // =============================================================================
@@ -304,11 +328,44 @@ async fn test_aws_fetch_cloudtrail_success() {
 
     assert_eq!(rows.len(), 2);
     for (row, id) in rows.iter().zip(["evt-1", "evt-2"]) {
-        let mut expected = event(id);
-        // The deployment's `unwrap_nested_json` (on by default) parses the
-        // JSON-encoded `CloudTrailEvent` string into the event it holds.
-        expected["CloudTrailEvent"] = json!({"eventVersion": "1.08"});
-        assert_landed(row, &expected, "cloudtrail");
+        assert_landed(row, &cloudtrail_event(id), "cloudtrail");
+    }
+}
+
+/// A record whose `CloudTrailEvent` is not a JSON object is kept with the
+/// reason beside it and the page carries on: the neighbours land as events.
+#[tokio::test]
+async fn test_aws_fetch_cloudtrail_malformed_event_is_kept_not_lost() {
+    let server = MockServer::start().await;
+    let mut broken = event("evt-2");
+    broken["CloudTrailEvent"] = json!("{\"eventName\": ");
+    let mut missing = event("evt-3");
+    missing.as_object_mut().unwrap().remove("CloudTrailEvent");
+    json_target(LOOKUP_EVENTS)
+        .respond_with(ok(
+            json!({"Events": [event("evt-1"), broken, missing, event("evt-4")]}),
+        ))
+        .mount(&server)
+        .await;
+
+    let (outcome, rows) = run(one(&server, "cloudtrail"), None).await;
+    outcome.expect("a bad record does not fail the tick");
+
+    assert_eq!(rows.len(), 4, "nothing is dropped");
+    assert_eq!(enriched(&rows[0]).row, cloudtrail_event("evt-1"));
+    assert_eq!(enriched(&rows[3]).row, cloudtrail_event("evt-4"));
+    for (row, id, reason) in [
+        (&rows[1], "evt-2", "is not valid JSON"),
+        (&rows[2], "evt-3", "is missing"),
+    ] {
+        let kept = enriched(row).row;
+        assert_eq!(kept["EventId"], id, "the lookup record, unchanged");
+        assert!(
+            kept["_dfe_fetcher_parse_error"]
+                .as_str()
+                .is_some_and(|e| e.contains(reason)),
+            "{kept}"
+        );
     }
 }
 
@@ -371,7 +428,7 @@ async fn test_aws_fetch_cloudtrail_pagination() {
     assert_eq!(second["MaxResults"], 50);
     assert_eq!(second["StartTime"], body_of(&seen[0])["StartTime"]);
     assert_eq!(
-        ids(&rows, "EventId"),
+        ids(&rows, "eventID"),
         ["evt-1", "evt-2", "evt-3", "evt-4"],
         "the whole window lands"
     );
@@ -478,7 +535,7 @@ async fn test_aws_cloudtrail_paces_pages_to_the_documented_limit() {
         "six pages, none of them refused"
     );
     assert_eq!(rows.len(), 300, "fifty events a page, every page landed");
-    let landed = ids(&rows, "EventId");
+    let landed = ids(&rows, "eventID");
     assert_eq!(landed.first().map(String::as_str), Some("evt-1-0"));
     assert_eq!(
         landed.last().map(String::as_str),
@@ -525,7 +582,7 @@ async fn test_aws_cloudtrail_throttle_is_retried_then_lands() {
         2,
         "the throttle is retried"
     );
-    assert_eq!(ids(&rows, "EventId"), ["evt-1"]);
+    assert_eq!(ids(&rows, "eventID"), ["evt-1"]);
 }
 
 /// A window wider than the default page ceiling drains in one tick: the unit
@@ -586,18 +643,19 @@ async fn test_aws_fetch_error_403_not_retried() {
 #[tokio::test]
 async fn test_aws_fetch_filter_drops_records() {
     let server = MockServer::start().await;
+    let mut assumed = event("evt-2");
+    assumed["CloudTrailEvent"] = json!({"eventID": "evt-2", "eventName": "AssumeRole"})
+        .to_string()
+        .into();
     json_target(LOOKUP_EVENTS)
-        .respond_with(ok(json!({"Events": [
-            {"EventId": "evt-1", "EventName": "ConsoleLogin"},
-            {"EventId": "evt-2", "EventName": "AssumeRole"}
-        ]})))
+        .respond_with(ok(json!({"Events": [event("evt-1"), assumed]})))
         .mount(&server)
         .await;
     let mut cfg = account_config(&server, vec![service("cloudtrail", &[])]);
-    cfg.filter = Some(r#"EventName != "ConsoleLogin""#.into());
+    cfg.filter = Some(r#"eventName != "ConsoleLogin""#.into());
     let (outcome, rows) = run(config(cfg), None).await;
     outcome.expect("fetch");
-    assert_eq!(ids(&rows, "EventId"), ["evt-2"]);
+    assert_eq!(ids(&rows, "eventID"), ["evt-2"]);
 }
 
 /// `credential_secret` resolves to a JSON document carrying both halves of

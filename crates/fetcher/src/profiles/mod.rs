@@ -1773,6 +1773,11 @@ mod tests {
             "CloudTrail raises its own ceiling over the profile's 50"
         );
         assert_eq!(
+            profile.rows_of(cloudtrail).builder,
+            Some(RowBuilderKind::CloudtrailEvent),
+            "the event is the row, not the LookupEvents record around it"
+        );
+        assert_eq!(
             profile.rate_of(cloudtrail).map(|r| r.requests_per_sec),
             Some(2.0),
             "LookupEvents allows 2 requests a second"
