@@ -3,6 +3,24 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.44](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.43...v1.4.44) (2026-10-28)
+
+### Bug Fixes
+
+* accept the block-buffer advisory, unreachable here ([#251](https://github.com/hyperi-io/dfe-fetcher/issues/251)) ([57407bf](https://github.com/hyperi-io/dfe-fetcher/commit/57407bfc6652c53b2853e0c41509cb7aa9e89173))
+* declare the repo classification as product ([#249](https://github.com/hyperi-io/dfe-fetcher/issues/249)) ([674ef2b](https://github.com/hyperi-io/dfe-fetcher/commit/674ef2b071552fafdb12c0b7db04a1396104fd98))
+* **deps:** update redpandadata/redpanda Docker tag to v26.2.6 ([#244](https://github.com/hyperi-io/dfe-fetcher/issues/244)) ([42a65c9](https://github.com/hyperi-io/dfe-fetcher/commit/42a65c9254f0fc9485655f28b3fbd6c89b3934ec))
+* **deps:** update rust-dependencies ([#245](https://github.com/hyperi-io/dfe-fetcher/issues/245)) ([b54518a](https://github.com/hyperi-io/dfe-fetcher/commit/b54518aec4bd436226da20cb6cd46aa3d8556f3f))
+* lift the CloudTrail event out of the LookupEvents record ([#250](https://github.com/hyperi-io/dfe-fetcher/issues/250)) ([f5250cd](https://github.com/hyperi-io/dfe-fetcher/commit/f5250cdb75d2ede2668d5dd8067b1d406d5b665e)), closes [#247](https://github.com/hyperi-io/dfe-fetcher/issues/247)
+* rebuild on scalo 2.14.21 ([5d88cbc](https://github.com/hyperi-io/dfe-fetcher/commit/5d88cbc1b58882a565ed7a84e453e960fb2ac909))
+* register the fetcher's metrics for metrics-manifest ([#257](https://github.com/hyperi-io/dfe-fetcher/issues/257)) ([9376160](https://github.com/hyperi-io/dfe-fetcher/commit/9376160bcb05fc08ddd64faf7f551251d2592838))
+* run each typed block's profile validation at load ([#256](https://github.com/hyperi-io/dfe-fetcher/issues/256)) ([0145bc3](https://github.com/hyperi-io/dfe-fetcher/commit/0145bc353ce5a07630d1b71fda8db7fb4edaa964))
+* say the vault data segment is optional in the secret module docs ([#255](https://github.com/hyperi-io/dfe-fetcher/issues/255)) ([c692f77](https://github.com/hyperi-io/dfe-fetcher/commit/c692f7707aa22f78f2c47d150b88e42090add0e8))
+* stamp the header timestamp from an Entra event's own time ([#252](https://github.com/hyperi-io/dfe-fetcher/issues/252)) ([5731fbf](https://github.com/hyperi-io/dfe-fetcher/commit/5731fbf43aa5aa787cad95ad222f157ea4994940))
+* update the lockfile, pulldown-cmark 0.13.5 clears RUSTSEC-2026-0414 ([#259](https://github.com/hyperi-io/dfe-fetcher/issues/259)) ([e8e8365](https://github.com/hyperi-io/dfe-fetcher/commit/e8e83654c8483f1da143c15c9ea2dc3428b9b05a))
+* validate the PGO workload config on every pull request ([#258](https://github.com/hyperi-io/dfe-fetcher/issues/258)) ([5bea502](https://github.com/hyperi-io/dfe-fetcher/commit/5bea5020fbc1851b708586f2dbf39fb5f59299e2))
+* warn that the fallback instance id is shared by every fetcher ([#254](https://github.com/hyperi-io/dfe-fetcher/issues/254)) ([cd6638b](https://github.com/hyperi-io/dfe-fetcher/commit/cd6638bcdae80d972f345c81681909ed31dbb21c))
+
 ## [1.4.43](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.42...v1.4.43) (2026-10-24)
 
 ### Bug Fixes
