@@ -1289,6 +1289,11 @@ pub enum RowBuilderKind {
     /// `message.data` holds (JSON as itself, anything else as `{"data"}`),
     /// with the message envelope under `_dfe_fetcher_pubsub`.
     PubsubMessage,
+    /// A CloudTrail `LookupEvents` record becomes the event its
+    /// `CloudTrailEvent` string holds, the shape CloudTrail delivers to S3.
+    /// A record with no usable event lands unchanged with the reason under
+    /// `_dfe_fetcher_parse_error`.
+    CloudtrailEvent,
 }
 
 impl RowBuilderKind {

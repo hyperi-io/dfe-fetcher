@@ -302,9 +302,8 @@ properties:
       Recursively unwrap double-serialised JSON string fields before delivery.
 
       When enabled (default), any string field whose value parses as a JSON
-      object or array is replaced with the parsed value. This makes fields
-      like AWS CloudTrail's `CloudTrailEvent` queryable as nested JSON in
-      downstream systems like ClickHouse.
+      object or array is replaced with the parsed value. This makes such
+      fields queryable as nested JSON in downstream systems like ClickHouse.
 
       Set to `false` for sources that intentionally store JSON as strings.
     type: boolean
@@ -4442,6 +4441,13 @@ $defs:
         with the message envelope under `_dfe_fetcher_pubsub`.
       type: string
       const: pubsub_message
+    - description: |-
+        A CloudTrail `LookupEvents` record becomes the event its
+        `CloudTrailEvent` string holds, the shape CloudTrail delivers to S3.
+        A record with no usable event lands unchanged with the reason under
+        `_dfe_fetcher_parse_error`.
+      type: string
+      const: cloudtrail_event
   PaginateSpec:
     description: Pagination as data.
     type: object

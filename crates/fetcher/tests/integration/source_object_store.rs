@@ -388,6 +388,42 @@ async fn the_listing_follows_the_continuation_token() {
     assert_eq!(ids(&rows), ["b", "a"], "across pages, oldest first");
 }
 
+/// A CloudTrail event delivered to S3 is already the record: it lands as
+/// written, with the object envelope beside it and nothing lifted or
+/// rewritten.
+#[tokio::test]
+async fn test_object_store_cloudtrail_event_lands_as_delivered() {
+    let server = MockServer::start().await;
+    let modified = ago(1);
+    mount_listing(
+        &server,
+        None,
+        listing_page(&[contents("logs/2026/a.jsonl.gz", modified, 44)], None),
+    )
+    .await;
+    let event = json!({
+        "eventVersion": "1.08",
+        "eventTime": "2026-02-19T00:00:00Z",
+        "eventName": "ConsoleLogin",
+        "userIdentity": {"type": "IAMUser", "accountId": "123456789012"},
+        "eventID": "evt-1"
+    });
+    mount_object(
+        &server,
+        "logs/2026/a.jsonl.gz",
+        gzip(format!("{event}\n").as_bytes()),
+    )
+    .await;
+
+    let (outcome, rows) = run(config(logs_config(&server)), None).await;
+    outcome.expect("fetch");
+
+    assert_eq!(rows.len(), 1);
+    let mut expected = event;
+    expected["_dfe_fetcher_object"] = envelope("logs/2026/a.jsonl.gz", modified, 44);
+    assert_eq!(enriched(&rows[0]).row, expected);
+}
+
 /// The first tick reads what was written in the last day: an object older
 /// than that is listed but not read.
 #[tokio::test]

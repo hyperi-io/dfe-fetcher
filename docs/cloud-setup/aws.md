@@ -34,6 +34,8 @@ the token the API documents. A 429 or 5xx is retried with backoff (honouring
 advance the fetch window. The health check is STS `GetCallerIdentity`, the one
 call every key may make.
 
+A CloudTrail row is the event itself (`eventName`, `eventTime`, `userIdentity` at the top), the shape CloudTrail delivers to S3. `LookupEvents` wraps each event as a JSON string beside its own lookup fields, and the fetcher lifts the event out of it. A record whose `CloudTrailEvent` is not a JSON object lands as the lookup record with the reason under `_dfe_fetcher_parse_error`, so one bad record neither fails the tick nor is lost. A `filter` on this unit therefore names event fields (`eventName`), not lookup fields (`EventName`).
+
 ## Prerequisites
 
 - An AWS account with the services you intend to fetch already enabled

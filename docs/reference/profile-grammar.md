@@ -80,6 +80,7 @@ entry.
 | | `go_module_aggregate` (a fold) | go_modules |
 | | `wrap_non_object` | object_store |
 | | `pubsub_message` | gcp_pubsub |
+| | `cloudtrail_event` | aws `cloudtrail` |
 | Lister (`lister`) | `s3` (`ListObjectsV2`, the keys modified after the unit's checkpoint) | object_store |
 | Window (`window.format`) | `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis`, `strftime:<pattern>`; `step` chunks the window, `lookback` is the window when the scheduler passes none; a unit may override the format | every incremental profile |
 | Method | `GET` (retried by default), `POST` (retried only with `retry.retry_non_idempotent`) | every profile |
@@ -622,7 +623,7 @@ opts out of the defaults'.
 | `rows.gzip` | The body is a gzip member sequence to inflate before framing (a `Content-Encoding: gzip` response is inflated by the client regardless). |
 | `rows.header` | The first CSV record names the columns. |
 | `rows.quoted` | Each framed row is a JSON string whose content is the row; it is unquoted first. |
-| `rows.builder` | A row builder applied to each framed row: `columnar_table`, `cloudwatch_metrics`, `wrap_non_object`, `pubsub_message`. The folding builder `go_module_aggregate` is named under `fold`, never here. |
+| `rows.builder` | A row builder applied to each framed row: `columnar_table`, `cloudwatch_metrics`, `wrap_non_object`, `pubsub_message`, `cloudtrail_event`. The folding builder `go_module_aggregate` is named under `fold`, never here. |
 
 ## Pagination
 

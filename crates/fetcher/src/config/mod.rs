@@ -151,9 +151,8 @@ pub struct Config {
     /// Recursively unwrap double-serialised JSON string fields before delivery.
     ///
     /// When enabled (default), any string field whose value parses as a JSON
-    /// object or array is replaced with the parsed value. This makes fields
-    /// like AWS CloudTrail's `CloudTrailEvent` queryable as nested JSON in
-    /// downstream systems like ClickHouse.
+    /// object or array is replaced with the parsed value. This makes such
+    /// fields queryable as nested JSON in downstream systems like ClickHouse.
     ///
     /// Set to `false` for sources that intentionally store JSON as strings.
     #[serde(default = "default_unwrap_nested_json")]

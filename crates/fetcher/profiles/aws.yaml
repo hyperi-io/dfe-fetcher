@@ -31,7 +31,9 @@
 # OTLP protobuf per response when `output_format` is `otlp`, declared
 # binary so it leaves the fetcher byte for byte; `period_secs` and `stat`
 # shape the queries). AWS Config's `Results` are JSON-encoded strings,
-# unquoted into the documents they hold.
+# unquoted into the documents they hold. CloudTrail's `LookupEvents` wraps each
+# event as a JSON string under `CloudTrailEvent`: the `cloudtrail_event`
+# builder makes the event the row, the shape CloudTrail delivers to S3.
 profile: aws
 maturity: stable
 base_url: "{{ vars.endpoint_url != '' ? vars.endpoint_url : 'https://' + vars.service + '.' + vars.region + '.amazonaws.com' }}"
@@ -82,7 +84,7 @@ endpoints:
       StartTime: "{{ int(window.start) }}"
       EndTime: "{{ int(window.end) }}"
       MaxResults: 50
-    rows: { decoder: json_at, at: "/Events" }
+    rows: { decoder: json_at, at: "/Events", builder: cloudtrail_event }
     # LookupEvents allows 2 requests a second per account and region.
     rate: { requests_per_sec: 2 }
     # 200 pages of 50 is 10,000 events a window, because the default 50 pages

@@ -9,10 +9,10 @@
 //! Recursively unwrap JSON string fields that contain serialised JSON.
 //!
 //! Some upstream APIs return fields as JSON-encoded strings rather than
-//! nested objects -- for example, AWS CloudTrail's `CloudTrailEvent` field
-//! is a string containing a JSON-serialised event. Storing these verbatim
-//! makes the data hard to query in downstream systems like ClickHouse's
-//! `JSON` column type.
+//! nested objects -- for example, the policy documents inside an AWS
+//! CloudTrail event's `requestParameters`. Storing these verbatim makes the
+//! data hard to query in downstream systems like ClickHouse's `JSON` column
+//! type.
 //!
 //! This module walks a JSON payload and replaces string values that parse
 //! as JSON objects or arrays with their parsed form. Scalar strings (not
