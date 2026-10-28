@@ -22,7 +22,9 @@ all-features = true
 # dfe-infra docs/THREAT-MODEL.md, and the osv-scanner ignore in .hyperi-ci.yaml
 # records it. scalo leaves the 0.31 line once metrics-exporter-opentelemetry,
 # at 0.2.1 requiring opentelemetry ^0.31, moves: hyperi-io/scalo-rs#281.
-ignore = []
+ignore = [
+    { id = "GHSA-qwgh-2vcv-g2f7", reason = "Reached only through the lock: digest 0.10 <- sha2 <- termwiz <- ratatui-termwiz <- ratatui <- scalo, and ratatui's termwiz feature is never enabled, so no build compiles it. Drop when the lock stops carrying digest 0.10, which the digest 0.11 move does." },
+]
 
 [licenses]
 allow = [
