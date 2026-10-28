@@ -146,6 +146,13 @@ impl ServiceApp for App {
             .map_err(|e| CliError::Service(e.to_string()))
     }
 
+    fn register_metrics(&self, manager: &scalo::metrics::MetricsManager) {
+        // `metrics-manifest` and `generate-artefacts` read the registry without
+        // starting the service, so the catalogue stays empty until the
+        // fetcher's own metrics are built against their manager.
+        let _ = Metrics::with_dfe(manager);
+    }
+
     fn deployment_contract(&self) -> Option<scalo::deployment::DeploymentContract> {
         Some(crate::deployment::contract())
     }
@@ -820,6 +827,34 @@ mod tests {
         // SAFETY: test-only, serialised by ENV_LOCK
         unsafe { std::env::remove_var(ENABLED_VAR) };
         resolved
+    }
+
+    /// `metrics-manifest` builds a bare manager and calls `register_metrics`,
+    /// so the catalogue holds the fetcher's metrics only if the app overrides it.
+    #[test]
+    fn register_metrics_fills_the_manifest_catalogue() {
+        let manager =
+            scalo::metrics::MetricsManager::with_config(scalo::metrics::MetricsConfig::offline(""));
+        assert!(
+            manager.registry().manifest().metrics.is_empty(),
+            "a fresh manager starts with no catalogue"
+        );
+
+        App::parse_from(["dfe-fetcher"]).register_metrics(&manager);
+
+        let names: Vec<String> = manager
+            .registry()
+            .manifest()
+            .metrics
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        for expected in ["records_received_total", "transport_sent_total"] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} missing from the catalogue: {names:?}"
+            );
+        }
     }
 
     #[test]
