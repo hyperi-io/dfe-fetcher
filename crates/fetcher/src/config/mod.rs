@@ -677,7 +677,15 @@ impl Config {
     /// credential, a scope set both ways or a service the profile lacks fails
     /// here with the block's name, not at the first tick.
     fn validate_builtin_instances(&self) -> Result<()> {
-        let shipped = crate::profiles::shipped();
+        self.validate_builtin_instances_against(crate::profiles::shipped())
+    }
+
+    /// [`Self::validate_builtin_instances`] over an explicit profile set, so a
+    /// test can hand it a profile that fails its own validation.
+    fn validate_builtin_instances_against(
+        &self,
+        shipped: &std::collections::BTreeMap<String, dfe_fetcher_rest::profile::RestProfile>,
+    ) -> Result<()> {
         for BuiltinInstance {
             connection_id,
             instance,
@@ -688,7 +696,8 @@ impl Config {
                 dfe_fetcher_rest::profile::ProfileRef::Named(name) => name.clone(),
                 dfe_fetcher_rest::profile::ProfileRef::Inline(_) => connection_id.clone(),
             };
-            let issues = instance.validate(&profile);
+            let mut issues = profile.validate();
+            issues.extend(instance.validate(&profile));
             if let Some(first) = issues.first() {
                 return Err(Error::Config(format!(
                     "sources.{block} ({connection_id}): {first}{}",
@@ -5580,6 +5589,41 @@ mod tests {
         assert!(
             !err.contains("prod/okta"),
             "the refusal names the prefix and never echoes the spec: {err}"
+        );
+    }
+
+    /// A typed block runs its profile's own validation at load, as
+    /// `sources.rest` does, so a profile-level mistake fails here and not at
+    /// the first tick.
+    #[test]
+    fn a_typed_block_whose_profile_fails_its_own_validation_is_refused_at_load() {
+        let mut cfg = valid_config();
+        cfg.sources.okta.enabled = true;
+        cfg.sources.okta.tenant_url = Some("https://example.okta.com".to_string());
+        cfg.sources.okta.services = vec![OktaService {
+            name: "system_log".to_string(),
+            config: HashMap::new(),
+        }];
+        cfg.sources.okta.token = Some("vault:kv/data/okta:token".into());
+
+        let shipped = crate::profiles::shipped();
+        cfg.validate_builtin_instances_against(shipped)
+            .expect("the shipped okta profile validates");
+
+        let mut broken = shipped.clone();
+        let okta = broken.get_mut("okta").expect("a shipped okta profile");
+        okta.base_url = "ftp://example.okta.com".to_string();
+        assert!(
+            !okta.validate().is_empty(),
+            "the doctored profile must fail its own validation"
+        );
+        let err = cfg
+            .validate_builtin_instances_against(&broken)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("sources.okta") && err.contains("base_url"),
+            "{err}"
         );
     }
 
