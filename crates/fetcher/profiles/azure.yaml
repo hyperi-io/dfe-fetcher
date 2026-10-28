@@ -18,7 +18,8 @@
 # paging under the subscription, with `api-version` per resource
 # provider), Microsoft Graph (the three Entra audit endpoints:
 # `@odata.nextLink` paging, `$top` 100, the window as an OData clause on
-# each endpoint's own time field) and Log Analytics (one KQL query per
+# each endpoint's own time field, which the `event_time` builder also stamps
+# as the `timestamp` the common header reads) and Log Analytics (one KQL query per
 # configured workspace, the window as the `timespan`, each result table's
 # columnar rows built into objects). The window is RFC 3339 to the second
 # and defaults to the last day. The health check is the Management token
@@ -75,6 +76,7 @@ endpoints:
       api-version: "2023-11-01"
   - unit: entra_signins
     base_url: "{{ vars.graph_url }}"
+    rows: { decoder: json_at, at: "/value", builder: event_time }
     auth: { scope: "https://graph.microsoft.com/.default" }
     vars: { time_field: createdDateTime }
     path: /v1.0/auditLogs/signIns
@@ -84,6 +86,7 @@ endpoints:
     paginate: { strategy: request_path, from: "body:/@odata.nextLink" }
   - unit: entra_directory_audits
     base_url: "{{ vars.graph_url }}"
+    rows: { decoder: json_at, at: "/value", builder: event_time }
     auth: { scope: "https://graph.microsoft.com/.default" }
     vars: { time_field: activityDateTime }
     path: /v1.0/auditLogs/directoryAudits
@@ -93,6 +96,7 @@ endpoints:
     paginate: { strategy: request_path, from: "body:/@odata.nextLink" }
   - unit: entra_provisioning
     base_url: "{{ vars.graph_url }}"
+    rows: { decoder: json_at, at: "/value", builder: event_time }
     auth: { scope: "https://graph.microsoft.com/.default" }
     vars: { time_field: activityDateTime }
     path: /v1.0/auditLogs/provisioning

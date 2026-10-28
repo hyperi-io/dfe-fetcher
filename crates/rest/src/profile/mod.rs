@@ -1294,6 +1294,11 @@ pub enum RowBuilderKind {
     /// A record with no usable event lands unchanged with the reason under
     /// `_dfe_fetcher_parse_error`.
     CloudtrailEvent,
+    /// A row's event time, from the field the unit's `time_field` var names,
+    /// is also stamped as the `timestamp` the common header reads. The rest
+    /// of the record is untouched, and a row with no usable time lands as it
+    /// came.
+    EventTime,
 }
 
 impl RowBuilderKind {

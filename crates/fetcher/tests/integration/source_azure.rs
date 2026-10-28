@@ -491,6 +491,81 @@ async fn test_azure_fetch_entra_split_services_success() {
     );
 }
 
+/// The common header reads an event's time from `timestamp`, and Graph names
+/// it per endpoint. Each Entra unit stamps its own time field there, keeps the
+/// flat record the native schemas read, and leaves a record with no time
+/// alone. The records are the Graph reference's examples.
+#[tokio::test]
+async fn entra_units_stamp_the_header_timestamp_from_the_events_own_time() {
+    let server = MockServer::start().await;
+    mount_token(&server).await;
+    let signin = json!({
+        "id": "66ea54eb-6301-4ee5-be62-ff5a759b0100",
+        "createdDateTime": "2023-12-01T16:03:24Z",
+        "userPrincipalName": "testaccount1@contoso.com",
+        "isInteractive": true
+    });
+    let audit = json!({
+        "id": "Directory_da159bfb-54fa-4092-8a38-6e1fa7870e30_ABCDE_123456",
+        "category": "GroupManagement",
+        "activityDisplayName": "Add member to group",
+        "activityDateTime": "2018-01-09T21:20:02.7215374Z",
+        "initiatedBy": {"user": {"userPrincipalName": "bob@wingtiptoysonline.com"}, "app": null}
+    });
+    let provisioning = json!({
+        "id": "75b5b0ae-9fc5-8d0e-e0a9-7y6a4728de56",
+        "activityDateTime": "2019-05-04T03:00:54Z",
+        "provisioningAction": "create"
+    });
+    let undated = json!({"id": "audit-without-a-time"});
+    mount_page(&server, SIGNINS, vec![signin.clone()]).await;
+    mount_page(
+        &server,
+        DIRECTORY_AUDITS,
+        vec![audit.clone(), undated.clone()],
+    )
+    .await;
+    mount_page(&server, PROVISIONING, vec![provisioning.clone()]).await;
+    let w = fetch_window("2026-05-21T13:30:00Z", "2026-05-22T13:30:00Z");
+
+    let (outcome, rows) = run(
+        config(tenant_config(
+            &server,
+            &[
+                "entra_signins",
+                "entra_directory_audits",
+                "entra_provisioning",
+            ],
+        )),
+        Some(&w),
+    )
+    .await;
+    outcome.expect("fetch");
+
+    let landed = |id: &str| {
+        rows.iter()
+            .find(|row| row.record["id"] == id)
+            .unwrap_or_else(|| panic!("{id} did not land"))
+            .record
+            .clone()
+    };
+    for (original, time_field) in [
+        (&signin, "createdDateTime"),
+        (&audit, "activityDateTime"),
+        (&provisioning, "activityDateTime"),
+    ] {
+        let record = landed(original["id"].as_str().unwrap());
+        assert_eq!(record["timestamp"], original[time_field], "{original}");
+        for (key, value) in original.as_object().unwrap() {
+            assert_eq!(&record[key], value, "{key} must survive the stamp");
+        }
+    }
+    assert!(
+        landed("audit-without-a-time").get("timestamp").is_none(),
+        "a record with no event time gains no timestamp"
+    );
+}
+
 /// Graph pages with `@odata.nextLink`, followed as given.
 #[tokio::test]
 async fn entra_signins_follow_the_odata_next_link() {
