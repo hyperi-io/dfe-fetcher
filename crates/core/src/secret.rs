@@ -8,12 +8,15 @@
 
 //! The once-resolved secret.
 //!
-//! A credential spec (`vault:<mount>/data/<path>:<key>` and its `bao:` and
+//! A credential spec (`vault:<mount>/<path>:<key>` and its `bao:` and
 //! `openbao:` spellings, `env:VAR`, `file:<path>`, or a literal) is resolved
 //! the first time it is read and held for the life of its owner, so a vault
 //! round trip happens once per process, not once per tick. The cell is here;
 //! the resolver is the I/O crate's, named by the type parameter, so core never
 //! reaches a vault or the environment itself.
+//!
+//! The first path segment is the KV v2 mount. A `data/` segment after it is
+//! accepted and ignored.
 
 use std::fmt;
 use std::marker::PhantomData;
