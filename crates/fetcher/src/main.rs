@@ -30,7 +30,7 @@ use scalo::scaling::ScalingComponent;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use dfe_fetcher::config::{Config, derive_instance_id, reload_config};
+use dfe_fetcher::config::{Config, derive_instance_id, reload_config, unset_instance_id_warning};
 use dfe_fetcher::cursor;
 use dfe_fetcher::deployment;
 use dfe_fetcher::driver::{Driver, DriverParts, Shape};
@@ -422,11 +422,8 @@ async fn run_fetcher_service(
     // Derive instance identity for cursor isolation
     let instance_id = derive_instance_id(&config);
     info!(instance_id, "Fetcher instance identity");
-    if config.instance_id.is_none() {
-        warn!(
-            instance_id,
-            "Instance ID was auto-derived; set 'instance_id' in config for stable cursor keys"
-        );
+    if let Some(message) = unset_instance_id_warning(&config) {
+        warn!(instance_id, "{message}");
     }
 
     // Resolve cursor directory: explicit config > config file's parent > current dir
