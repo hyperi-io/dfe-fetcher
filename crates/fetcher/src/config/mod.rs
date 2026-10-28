@@ -1015,6 +1015,28 @@ pub fn derive_instance_id(config: &Config) -> String {
     FALLBACK_INSTANCE_ID.to_string()
 }
 
+/// The startup warning for an `instance_id` the config left unset, or `None`
+/// when it is set. The fallback id is the same in every such fetcher, so two of
+/// them read and write each other's cursor keys, and the warning says that.
+#[must_use]
+pub fn unset_instance_id_warning(config: &Config) -> Option<String> {
+    if config.instance_id.is_some() {
+        return None;
+    }
+    let derived = derive_instance_id(config);
+    Some(if derived == FALLBACK_INSTANCE_ID {
+        format!(
+            "Instance ID fell back to '{FALLBACK_INSTANCE_ID}', which every fetcher without \
+             'instance_id' shares, so two of them collide on cursor keys. Set 'instance_id' \
+             in config"
+        )
+    } else {
+        "Instance ID was auto-derived from the source config. Set 'instance_id' in config \
+         for stable cursor keys"
+            .to_string()
+    })
+}
+
 /// Reload configuration from the same source.
 pub fn reload_config(current: &Config) -> Result<Config> {
     Config::load(current.config_path.as_deref())
@@ -6248,6 +6270,40 @@ sources:
     fn test_instance_id_no_sources_enabled() {
         let cfg = Config::default();
         assert_eq!(derive_instance_id(&cfg), "dfe-fetcher");
+    }
+
+    #[test]
+    fn unset_instance_id_warning_names_the_shared_fallback() {
+        let mut explicit = Config::default();
+        explicit.instance_id = Some("pod-a".to_string());
+        let mut derived = Config::default();
+        derived.sources.aws.enabled = true;
+
+        let cases: [(&str, Config, Option<&[&str]>); 3] = [
+            ("explicit id", explicit, None),
+            (
+                "fallback id",
+                Config::default(),
+                Some(&["dfe-fetcher", "shares", "collide", "instance_id"]),
+            ),
+            (
+                "derived id",
+                derived,
+                Some(&["auto-derived", "instance_id"]),
+            ),
+        ];
+        for (label, cfg, expect) in cases {
+            let warning = unset_instance_id_warning(&cfg);
+            match (warning, expect) {
+                (None, None) => {}
+                (Some(w), Some(words)) => {
+                    for word in words {
+                        assert!(w.contains(word), "{label}: '{word}' missing from: {w}");
+                    }
+                }
+                (got, _) => panic!("{label}: unexpected warning {got:?}"),
+            }
+        }
     }
 
     #[test]
