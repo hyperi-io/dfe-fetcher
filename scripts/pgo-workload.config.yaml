@@ -1,0 +1,89 @@
+# Config the PGO workload runs the fetcher against. scripts/pgo-workload.sh copies
+# it to a temp dir with @CURSOR_DIR@ filled in, and the config tests load it
+# through the normal validation so a stale service name fails a pull request.
+#
+# Aggressive 1-second intervals across all four sources push max throughput
+# through the hot path: HTTP fetch -> parse -> enrich -> filter -> produce.
+instance_id: "pgo-workload"
+
+scheduler:
+  default_interval_secs: 1
+  jitter_percent: 0
+  max_concurrent_fetches: 8
+
+cursor:
+  directory: "@CURSOR_DIR@"
+  default_window_hours: 1
+
+output:
+  type: "kafka"
+  topic_suffix: ""
+  kafka:
+    brokers: ["localhost:19092"]
+    client_id: "dfe-fetcher-pgo"
+    librdkafka_overrides:
+      linger.ms: "10"
+      compression.type: "zstd"
+
+sources:
+  azure:
+    enabled: true
+    tenant_id: "00000000-0000-0000-0000-000000000001"
+    client_id: "11111111-1111-1111-1111-111111111111"
+    client_secret: "pgo-mock-secret"
+    subscription_id: "00000000-0000-0000-0000-000000000001"
+    interval_secs: 1
+    topic: "azure"
+    services:
+      - name: activity_log
+    token_url_override: "http://127.0.0.1:19090/oauth/token"
+    management_url_override: "http://127.0.0.1:19090/azure/activity"
+    graph_url_override: "http://127.0.0.1:19090/azure/graph"
+
+  m365:
+    enabled: true
+    tenant_id: "00000000-0000-0000-0000-000000000002"
+    client_id: "22222222-2222-2222-2222-222222222222"
+    client_secret: "pgo-mock-secret"
+    interval_secs: 1
+    topic: "m365"
+    services:
+      - name: alerts
+    token_url_override: "http://127.0.0.1:19090/oauth/token"
+    management_url_override: "http://127.0.0.1:19090/m365/management"
+    graph_url_override: "http://127.0.0.1:19090/m365/graph"
+
+  aws:
+    enabled: true
+    region: "ap-southeast-2"
+    # Placeholder credentials -- fetcher SigV4-signs requests but the
+    # destination is the local mock, which ignores signatures. Use a
+    # non-AKIA prefix so static-analysis secret scanners don't flag it.
+    access_key_id: "PGOMOCK000000000000A"
+    secret_access_key: "pgo-mock-secret-key-zzzzzzzzzzzzzzzzzzzzzzzz"
+    interval_secs: 1
+    topic: "aws"
+    endpoint_override: "http://127.0.0.1:19090/aws"
+    services:
+      - name: cloudtrail
+      - name: guardduty
+
+  gcp:
+    enabled: true
+    project_id: "pgo-project"
+    interval_secs: 1
+    topic: "gcp"
+    services:
+      - name: cloud_logging
+        config:
+          filter: "logName:cloudaudit.googleapis.com"
+    api_url_override: "http://127.0.0.1:19090/gcp"
+    token_url_override: "http://127.0.0.1:19090/oauth/token"
+
+metrics:
+  address: "127.0.0.1:9090"
+
+dlq:
+  enabled: false
+
+config_reload_secs: 0
