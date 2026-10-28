@@ -6279,7 +6279,7 @@ sources:
         let mut derived = Config::default();
         derived.sources.aws.enabled = true;
 
-        let cases: [(&str, Config, Option<&[&str]>); 3] = [
+        let cases: Vec<(&str, Config, Option<&[&str]>)> = vec![
             ("explicit id", explicit, None),
             (
                 "fallback id",
