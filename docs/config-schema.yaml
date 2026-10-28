@@ -4448,6 +4448,13 @@ $defs:
         `_dfe_fetcher_parse_error`.
       type: string
       const: cloudtrail_event
+    - description: |-
+        A row's event time, from the field the unit's `time_field` var names,
+        is also stamped as the `timestamp` the common header reads. The rest
+        of the record is untouched, and a row with no usable time lands as it
+        came.
+      type: string
+      const: event_time
   PaginateSpec:
     description: Pagination as data.
     type: object
