@@ -144,12 +144,12 @@ fn test_output_legacy_kafka_config_mapping() {
             key_file: None,
         },
         producer: ProducerConfig {
-            batch_size: 1_000_000,
-            batch_messages: 5000,
-            linger_ms: 50,
-            compression: "zstd".into(),
-            acks: "all".into(),
-            retries: 3,
+            batch_size: Some(1_000_000),
+            batch_messages: Some(5000),
+            linger_ms: Some(50),
+            compression: Some("zstd".into()),
+            acks: Some("all".into()),
+            retries: Some(3),
         },
         librdkafka_overrides: std::collections::HashMap::new(),
     };

@@ -503,19 +503,20 @@ async fn a_librdkafka_override_sets_the_output_producers_record_ceiling() {
     transport.close().await.expect("producer closes");
 }
 
-/// With no override the producer keeps scalo's record ceiling and the
-/// `producer.batch_size` it is given.
+/// With no override the producer keeps scalo's record ceiling and scalo's
+/// batch size, since an unset `producer.batch_size` is not sent.
 #[test]
 fn without_an_override_the_producer_keeps_its_defaults() {
     let kafka = KafkaConfig::default();
-    let producer = producer_client_config(&build_scalo_kafka_config(&kafka), &[]);
+    let scalo = build_scalo_kafka_config(&kafka);
+    let producer = producer_client_config(&scalo, &[]);
     assert_eq!(
         producer.get("message.max.bytes"),
         Some(MESSAGE_MAX_BYTES.to_string().as_str())
     );
     assert_eq!(
         producer.get("batch.size"),
-        Some(kafka.producer.batch_size.to_string().as_str())
+        Some(scalo.sizing.resolved_producer_map()["batch.size"].as_str())
     );
 }
 

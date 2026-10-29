@@ -549,29 +549,29 @@ pub fn build_scalo_kafka_config(legacy: &LegacyKafkaConfig) -> ScaloKafkaConfig 
         config.ssl_key_location.clone_from(&legacy.tls.key_file);
     }
 
-    // Map producer settings as librdkafka overrides
-    config.librdkafka_overrides.insert(
-        "batch.size".to_string(),
-        batch_size_under_ceiling(legacy, &config).to_string(),
+    // Map producer settings the operator set as librdkafka overrides. A field
+    // left unset is not sent, so scalo's producer settings apply to it.
+    let producer = &legacy.producer;
+    if let Some(batch_size) = batch_size_under_ceiling(legacy, &config) {
+        config
+            .librdkafka_overrides
+            .insert("batch.size".to_string(), batch_size.to_string());
+    }
+    let mut set = |key: &str, value: Option<String>| {
+        if let Some(value) = value {
+            config.librdkafka_overrides.insert(key.to_string(), value);
+        }
+    };
+    set(
+        "batch.num.messages",
+        producer.batch_messages.map(|v| v.to_string()),
     );
-    config.librdkafka_overrides.insert(
-        "batch.num.messages".to_string(),
-        legacy.producer.batch_messages.to_string(),
-    );
-    config.librdkafka_overrides.insert(
-        "linger.ms".to_string(),
-        legacy.producer.linger_ms.to_string(),
-    );
-    config.librdkafka_overrides.insert(
-        "compression.type".to_string(),
-        legacy.producer.compression.clone(),
-    );
-    config
-        .librdkafka_overrides
-        .insert("acks".to_string(), legacy.producer.acks.clone());
-    config.librdkafka_overrides.insert(
-        "message.send.max.retries".to_string(),
-        legacy.producer.retries.to_string(),
+    set("linger.ms", producer.linger_ms.map(|v| v.to_string()));
+    set("compression.type", producer.compression.clone());
+    set("acks", producer.acks.clone());
+    set(
+        "message.send.max.retries",
+        producer.retries.map(|v| v.to_string()),
     );
 
     // The operator's map wins over every producer setting mapped above, under
@@ -610,19 +610,24 @@ fn producer_alias(key: &str) -> Option<&'static str> {
     })
 }
 
-/// `producer.batch_size`, held under the producer's `message.max.bytes` by the
-/// 1/16 the stack keeps for framing and codec growth, so a full batch never
-/// sits at the cap of a topic sized to that ceiling.
-fn batch_size_under_ceiling(legacy: &LegacyKafkaConfig, config: &ScaloKafkaConfig) -> usize {
+/// `producer.batch_size` when the operator set it, held under the producer's
+/// `message.max.bytes` by the 1/16 the stack keeps for framing and codec
+/// growth, so a full batch never sits at the cap of a topic sized to that
+/// ceiling. Unset stays unset: scalo's batch size is well under any ceiling.
+fn batch_size_under_ceiling(
+    legacy: &LegacyKafkaConfig,
+    config: &ScaloKafkaConfig,
+) -> Option<usize> {
+    let batch_size = legacy.producer.batch_size?;
     let sizing = config.sizing.resolved_producer_map();
-    legacy
-        .librdkafka_overrides
-        .get("message.max.bytes")
-        .or_else(|| sizing.get("message.max.bytes"))
-        .and_then(|ceiling| ceiling.trim().parse::<usize>().ok())
-        .map_or(legacy.producer.batch_size, |ceiling| {
-            legacy.producer.batch_size.min(ceiling - ceiling / 16)
-        })
+    Some(
+        legacy
+            .librdkafka_overrides
+            .get("message.max.bytes")
+            .or_else(|| sizing.get("message.max.bytes"))
+            .and_then(|ceiling| ceiling.trim().parse::<usize>().ok())
+            .map_or(batch_size, |ceiling| batch_size.min(ceiling - ceiling / 16)),
+    )
 }
 
 #[cfg(test)]
@@ -809,61 +814,51 @@ mod tests {
         assert_eq!(result.security_protocol, "ssl");
     }
 
+    /// A producer field the operator set reaches librdkafka as an override.
     #[test]
     fn test_build_scalo_kafka_config_producer_overrides() {
-        let legacy = KafkaConfig::default();
+        let mut legacy = KafkaConfig::default();
+        legacy.producer = ProducerConfig {
+            batch_size: Some(1_000_000),
+            batch_messages: Some(5_000),
+            linger_ms: Some(50),
+            compression: Some("lz4".to_string()),
+            acks: Some("1".to_string()),
+            retries: Some(3),
+        };
         let result = build_scalo_kafka_config(&legacy);
 
-        // Verify all producer settings mapped to librdkafka_overrides
-        assert_eq!(
-            result.librdkafka_overrides.get("batch.size"),
-            Some(&legacy.producer.batch_size.to_string())
-        );
-        assert_eq!(
-            result.librdkafka_overrides.get("batch.num.messages"),
-            Some(&legacy.producer.batch_messages.to_string())
-        );
-        assert_eq!(
-            result.librdkafka_overrides.get("linger.ms"),
-            Some(&legacy.producer.linger_ms.to_string())
-        );
-        assert_eq!(
-            result.librdkafka_overrides.get("compression.type"),
-            Some(&legacy.producer.compression)
-        );
-        assert_eq!(
-            result.librdkafka_overrides.get("acks"),
-            Some(&legacy.producer.acks)
-        );
-        assert_eq!(
-            result.librdkafka_overrides.get("message.send.max.retries"),
-            Some(&legacy.producer.retries.to_string())
-        );
+        for (key, want) in [
+            ("batch.size", "1000000"),
+            ("batch.num.messages", "5000"),
+            ("linger.ms", "50"),
+            ("compression.type", "lz4"),
+            ("acks", "1"),
+            ("message.send.max.retries", "3"),
+        ] {
+            assert_eq!(
+                result.librdkafka_overrides.get(key).map(String::as_str),
+                Some(want),
+                "{key}"
+            );
+        }
     }
 
-    /// The legacy producer codec reaches scalo as an override, which wins over
-    /// scalo's own producer settings, so its default must be scalo's codec and
-    /// name no level, leaving scalo to give zstd its level.
+    /// With no `producer` block nothing is sent as an override, so scalo's
+    /// producer settings (batch size, linger, codec and level, acks, retries)
+    /// are the ones that run.
     #[test]
-    fn the_legacy_producer_codec_defaults_to_scalos() {
+    fn no_producer_block_leaves_scalos_defaults_alone() {
         let result = build_scalo_kafka_config(&KafkaConfig::default());
+        assert!(
+            result.librdkafka_overrides.is_empty(),
+            "{:?}",
+            result.librdkafka_overrides
+        );
+
         let scalo_default = result.sizing.resolved_producer_map();
         assert_eq!(scalo_default["compression.type"], "zstd");
         assert_eq!(scalo_default["compression.level"], "3");
-        assert_eq!(
-            result.librdkafka_overrides.get("compression.type"),
-            Some(&scalo_default["compression.type"])
-        );
-        assert!(
-            !result
-                .librdkafka_overrides
-                .contains_key("compression.level")
-        );
-        assert!(
-            !result
-                .librdkafka_overrides
-                .contains_key("compression.codec")
-        );
     }
 
     /// An override wins over the `producer` mapping under either of
@@ -872,7 +867,7 @@ mod tests {
     #[test]
     fn an_override_wins_over_the_producer_section_under_either_name() {
         let mut legacy = KafkaConfig::default();
-        legacy.producer.retries = 5;
+        legacy.producer.retries = Some(5);
         legacy.librdkafka_overrides = std::collections::HashMap::from([
             ("retries".to_string(), "2".to_string()),
             ("linger.ms".to_string(), "40".to_string()),
@@ -906,6 +901,7 @@ mod tests {
     #[test]
     fn a_lowered_ceiling_holds_the_batch_under_it() {
         let mut legacy = KafkaConfig::default();
+        legacy.producer.batch_size = Some(8 * 1024 * 1024);
         legacy
             .librdkafka_overrides
             .insert("message.max.bytes".to_string(), "8388608".to_string());
@@ -935,7 +931,7 @@ mod tests {
     #[test]
     fn a_batch_under_the_ceiling_is_left_alone() {
         let mut legacy = KafkaConfig::default();
-        legacy.producer.batch_size = 1_000_000;
+        legacy.producer.batch_size = Some(1_000_000);
         legacy
             .librdkafka_overrides
             .insert("message.max.bytes".to_string(), "8388608".to_string());
@@ -950,7 +946,7 @@ mod tests {
         legacy
             .librdkafka_overrides
             .insert("message.max.bytes".to_string(), "eight".to_string());
-        legacy.producer.batch_size = 8 * 1024 * 1024;
+        legacy.producer.batch_size = Some(8 * 1024 * 1024);
         assert_eq!(
             build_scalo_kafka_config(&legacy)
                 .librdkafka_overrides

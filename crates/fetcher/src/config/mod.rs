@@ -4704,40 +4704,33 @@ impl Default for KafkaTlsConfig {
 }
 
 /// Kafka producer settings.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+///
+/// Every field is unset by default and a field left unset is not sent, so the
+/// producer runs on scalo's own settings (batch size, linger, codec at its
+/// level, acks, retries) and a change to those reaches the fetcher. Set a
+/// field to override scalo for that one property.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ProducerConfig {
-    /// Maximum batch size in bytes.
-    pub batch_size: usize,
+    /// Maximum batch size in bytes. Held under `message.max.bytes` when the
+    /// producer's record ceiling is lowered.
+    pub batch_size: Option<usize>,
 
     /// Maximum messages per batch.
-    pub batch_messages: usize,
+    pub batch_messages: Option<usize>,
 
     /// Linger time in milliseconds.
-    pub linger_ms: u32,
+    pub linger_ms: Option<u32>,
 
-    /// Compression type (none, gzip, snappy, lz4, zstd). The default, zstd,
-    /// runs at `compression.level` 3.
-    pub compression: String,
+    /// Compression type (none, gzip, snappy, lz4, zstd). Unset, scalo's codec
+    /// runs: zstd at `compression.level` 3.
+    pub compression: Option<String>,
 
     /// Acknowledgment level (0, 1, all).
-    pub acks: String,
+    pub acks: Option<String>,
 
     /// Number of retries.
-    pub retries: u32,
-}
-
-impl Default for ProducerConfig {
-    fn default() -> Self {
-        Self {
-            batch_size: 8 * 1024 * 1024, // 8MiB
-            batch_messages: 10_000,
-            linger_ms: 20,
-            compression: "zstd".to_string(),
-            acks: "all".to_string(),
-            retries: 5,
-        }
-    }
+    pub retries: Option<u32>,
 }
 
 // =============================================================================
@@ -5104,7 +5097,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.scheduler.default_interval_secs, 300);
-        assert_eq!(config.kafka.producer.batch_messages, 10_000);
+        assert_eq!(config.kafka.producer.batch_messages, None);
         assert_eq!(config.kafka.topic_suffix, "_land");
     }
 
