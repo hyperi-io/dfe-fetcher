@@ -135,7 +135,7 @@ fn validation_names_the_instance_and_field_for_a_binding_problem() {
 #[test]
 fn a_named_profile_that_is_not_shipped_is_refused_at_validate() {
     let dir = tempfile::TempDir::new().unwrap();
-    let body = r#"
+    let body = r"
 kafka:
   brokers: [broker:9092]
 sources:
@@ -144,7 +144,7 @@ sources:
       topic: thing
       profile: no_such_profile
       auth: { mode: none }
-"#;
+";
     let config = Config::load_from_file(&write(&dir, body)).expect("loads");
     let err = config
         .validate()

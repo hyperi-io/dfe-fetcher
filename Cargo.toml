@@ -143,6 +143,8 @@ dbg_macro = "deny"
 module_name_repetitions = "allow"
 # #[must_use] goes where dropping the value is a bug, not on every pure function.
 must_use_candidate = "allow"
+# 8 sites turn counts into f64 values: 2 gauge values in main.rs and 6 in the integration tests.
+cast_precision_loss = "allow"
 # 49 doc comments name database, cloud and protocol identifiers without backticks.
 doc_markdown = "allow"
 # 5 functions run past the 150-line threshold, the largest at 260 lines.

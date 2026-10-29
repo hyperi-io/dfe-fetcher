@@ -153,7 +153,7 @@ async fn test_vault_resolve_existing_secret() {
         .unwrap_or_else(|e| panic!("fixture: read the secret back from {}: {e}", v.address));
     assert_eq!(readback, "super-secret-value", "fixture readback");
 
-    let _guard = VAULT_ENV_LOCK
+    let guard = VAULT_ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: test-only, serialised by VAULT_ENV_LOCK
@@ -174,7 +174,7 @@ async fn test_vault_resolve_existing_secret() {
         std::env::remove_var("BAO_ADDR");
         std::env::remove_var("BAO_TOKEN");
     }
-    drop(_guard);
+    drop(guard);
 
     let value = result.unwrap_or_else(|e| {
         panic!(
@@ -198,7 +198,7 @@ async fn test_vault_resolve_missing_path_returns_error() {
         return;
     };
 
-    let _guard = VAULT_ENV_LOCK
+    let guard = VAULT_ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: test-only, serialised by VAULT_ENV_LOCK
@@ -219,7 +219,7 @@ async fn test_vault_resolve_missing_path_returns_error() {
         std::env::remove_var("BAO_ADDR");
         std::env::remove_var("BAO_TOKEN");
     }
-    drop(_guard);
+    drop(guard);
 
     let err = result
         .err()

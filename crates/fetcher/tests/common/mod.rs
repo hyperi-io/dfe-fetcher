@@ -298,6 +298,10 @@ impl VaultTestConfig {
     /// True when this config owns a container, false when it points at a live
     /// external OpenBao. A naming assertion only applies to the former.
     #[must_use]
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "_container exists to keep the container alive"
+    )]
     pub fn manages_container(&self) -> bool {
         self._container.is_some()
     }
