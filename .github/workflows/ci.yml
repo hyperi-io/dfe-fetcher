@@ -58,6 +58,9 @@ jobs:
   ci:
     uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@main
     with:
+      runner-build: namespace-profile-hyperi-amd64-32x64
+      runner-quality: namespace-profile-hyperi-amd64-8x16
+      runner-build-arm64: namespace-profile-hyperi-arm64-32x64
       tag: ${{ inputs.tag || '' }}
       from-head: ${{ inputs.from-head || '' }}
       bump: ${{ inputs.bump || 'auto' }}
