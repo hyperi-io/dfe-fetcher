@@ -143,6 +143,19 @@ dbg_macro = "deny"
 module_name_repetitions = "allow"
 # #[must_use] goes where dropping the value is a bug, not on every pure function.
 must_use_candidate = "allow"
+# 49 doc comments name database, cloud and protocol identifiers without backticks.
+doc_markdown = "allow"
+# 5 functions run past the 150-line threshold, the largest at 260 lines.
+too_many_lines = "allow"
+# 4 casts in the metric and timestamp code, each on a value the surrounding code bounds.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+# 3 Default impls, 3 match arms, 2 push_str of a format!, 1 unused self, 1 map then unwrap_or_else.
+derivable_impls = "allow"
+match_same_arms = "allow"
+format_push_string = "allow"
+unused_self = "allow"
+map_unwrap_or = "allow"
 
 [profile.release]
 lto = "thin"
