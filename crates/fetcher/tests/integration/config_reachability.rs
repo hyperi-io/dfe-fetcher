@@ -561,6 +561,39 @@ fn metrics_address_from_the_config_file_reaches_the_listener() {
     );
 }
 
+/// `config-check` resolves the `env:` specs `run` resolves.
+///
+/// An enabled source whose identity spec names an unset variable kills `run` at
+/// startup, so the check an operator runs before a deploy has to fail on it.
+#[test]
+fn config_check_fails_on_a_spec_that_cannot_resolve() {
+    // The child process inherits this process's env at spawn.
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(
+        &dir,
+        "kafka:\n  brokers: [broker:9092]\nsources:\n  gcp:\n    enabled: true\n    project_id: env:DFE_FETCHER_CONFIG_CHECK_UNSET_PROJECT\n",
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_dfe-fetcher"))
+        .args(["--config", &path, "config-check"])
+        .env_remove("DFE_FETCHER_CONFIG_CHECK_UNSET_PROJECT")
+        .output()
+        .expect("run config-check");
+    let report = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "config-check passed a config that cannot resolve:\n{report}"
+    );
+    assert!(
+        report.contains("DFE_FETCHER_CONFIG_CHECK_UNSET_PROJECT"),
+        "the report must name the unresolved variable:\n{report}"
+    );
+}
+
 /// `config-check` run by the binary from `dir` with no `--config`, returning
 /// what it printed.
 fn config_check_in(dir: &Path) -> String {

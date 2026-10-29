@@ -120,6 +120,20 @@ impl ServiceApp for App {
         config
             .validate()
             .map_err(|e| CliError::Config(format!("validation failed: {e}")))?;
+        // `config-check` is what an operator runs before a deploy, and `run`
+        // resolves env:/vault: specs before it starts. Resolve them here too,
+        // on a copy, or a config that cannot resolve passes the check and then
+        // kills `run`. The lifecycle loads the config once, so this cannot be
+        // a second load ahead of it.
+        if matches!(self.command(), Some(StandardCommand::ConfigCheck)) {
+            let mut resolved = config.clone();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(
+                    dfe_fetcher::config::resolve::resolve_config_specs(&mut resolved),
+                )
+            })
+            .map_err(|e| CliError::Config(format!("a spec does not resolve: {e}")))?;
+        }
         Ok(config)
     }
 
