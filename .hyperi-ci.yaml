@@ -58,6 +58,7 @@ build:
   strategies:
     - native
   rust:
+    glibc_max: "2.41"
     # What the release image ships. Without an engine here, a `sources.db` or
     # `file-tail` config is refused at load by a binary that never compiled it.
     # `db-odbc` stays out: it needs `libodbc2` and a driver package per engine
