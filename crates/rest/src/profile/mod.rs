@@ -1273,6 +1273,10 @@ pub enum RowBuilderKind {
     /// A columnar table (`{columns: [{name}], rows: [[...]]}`, the Log
     /// Analytics result shape) becomes one object per row keyed by column.
     ColumnarTable,
+    /// A CloudWatch Logs event gets the call's log group (`logGroupName`, from
+    /// `vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which
+    /// `FilterLogEvents` leaves off the events.
+    CloudwatchLogs,
     /// A CloudWatch `GetMetricData` response joined with the metric
     /// descriptors the lookup asked for: one JSON row per datapoint, or one
     /// OTLP protobuf per response when `vars.output_format` is `otlp`.

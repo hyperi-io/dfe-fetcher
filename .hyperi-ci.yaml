@@ -58,6 +58,11 @@ build:
   strategies:
     - native
   rust:
+    glibc_max: "2.41"
+    optimize:
+      pgo:
+        # Built before the workload clock starts: an uncached arm64 runner takes longer than the workload timeout to compile it.
+        workload_setup_cmd: "cargo build --release --features pgo-driver --bin pgo-driver"
     # What the release image ships. Without an engine here, a `sources.db` or
     # `file-tail` config is refused at load by a binary that never compiled it.
     # `db-odbc` stays out: it needs `libodbc2` and a driver package per engine

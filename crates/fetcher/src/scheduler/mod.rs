@@ -95,6 +95,9 @@ impl Scheduler {
         let shared_config = self.shared_config.clone();
 
         tokio::spawn(async move {
+            // Whichever way this task ends (shutdown, a reload that dropped
+            // the source, a closed semaphore), the driver's tailer is stopped.
+            let _stop = StopDriverOnDrop(Arc::clone(&driver));
             // The cursor key and the per-source metric and log labels are keyed
             // on the CONNECTION id, not the type name, so each account or
             // tenant of a type checkpoints and reports independently; a
@@ -330,6 +333,18 @@ impl Scheduler {
         let base_secs = source_interval.unwrap_or(config.scheduler.default_interval_secs);
         let jitter_secs = calculate_jitter(base_secs, config.scheduler.jitter_percent);
         Duration::from_secs(base_secs + jitter_secs)
+    }
+}
+
+/// Stops a driver's background work when the fetch task holding it ends.
+struct StopDriverOnDrop(Arc<Driver>);
+
+impl Drop for StopDriverOnDrop {
+    fn drop(&mut self) {
+        let driver = Arc::clone(&self.0);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { driver.stop().await });
+        }
     }
 }
 

@@ -15,10 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use scalo::deployment::{
-    CONTRACT_SCHEMA_VERSION, DeploymentContract, HealthContract, ImageProfile, NativeDepsContract,
-    PortContract, ResourceList, ResourcesContract, SecretEnvContract, SecretGroupContract,
-    SecurityContract, ServiceAccount, WritablePath, base_image_from_cascade,
-    image_registry_from_cascade,
+    DeploymentContract, HealthContract, ImageProfile, NativeDepsContract, PortContract,
+    ResourceList, ResourcesContract, SecretEnvContract, SecretGroupContract, WritablePath,
+    base_image_from_cascade, image_registry_from_cascade,
 };
 
 /// Where the cursor store keeps its files, on the contract's persistent
@@ -116,60 +115,14 @@ pub fn contract() -> DeploymentContract {
                 .bound_from("extractors.vector.grpc_bind_address")
                 .app_protocol("kubernetes.io/h2c"),
         ],
-        unbound_listen_paths: vec![],
         hot_paths: HOT_PATHS.map(String::from).to_vec(),
         entrypoint_args: vec!["--config".into(), "/etc/dfe/fetcher.yaml".into()],
         secrets: secrets(),
-        default_config: Some(serde_json::json!({
-            "scheduler": {
-                "default_interval_secs": 300,
-                "max_concurrent_fetches": 10,
-                "jitter_percent": 10
-            },
-            "sources": {
-                "aws": { "enabled": false, "region": "us-east-1", "topic": "aws" },
-                "azure": { "enabled": false, "topic": "azure" },
-                "m365": { "enabled": false, "topic": "m365" },
-                "gcp": { "enabled": false, "topic": "gcp" }
-            },
-            "kafka": {
-                "brokers": ["kafka:9092"],
-                "client_id": "dfe-fetcher",
-                "topic_suffix": "_land",
-                "producer": {
-                    "compression": "zstd",
-                    "acks": "all"
-                }
-            },
-            // Matches `IngestConfig::default`: the listener counts as work, so
-            // shipping it on would hold every generated deployment out of idle.
-            "ingest": {
-                "enabled": false,
-                "bind_address": "0.0.0.0:8080"
-            },
-            // Matches `VectorExtractorConfig::default`, and carries the address
-            // and switch the vector-grpc port is bound from and gated on.
-            "extractors": {
-                "vector": {
-                    "enabled": false,
-                    "grpc_bind_address": "0.0.0.0:6000"
-                }
-            },
-            "metrics": {
-                "enabled": true,
-                "address": "0.0.0.0:9090"
-            },
-            // Left empty, the cursor store falls back to the config file's
-            // read-only mount and loses every cursor on a restart.
-            "cursor": {
-                "directory": CURSOR_DIR
-            }
-        })),
+        default_config: default_config(),
         depends_on: vec!["kafka".into()],
         // The fetcher polls its upstreams rather than draining a queue, so it
         // never scales out and the chart carries no ScaledObject.
         keda: None,
-        schema_version: CONTRACT_SCHEMA_VERSION,
         // scalo writes no vendor, licence or copyright of its own, so the
         // labels and the generated Dockerfile header carry exactly these.
         oci_labels: scalo::deployment::OciLabels {
@@ -200,9 +153,78 @@ pub fn contract() -> DeploymentContract {
                 memory: "256Mi".into(),
             },
         },
-        security: SecurityContract::default(),
-        singleton: false,
-        service_account: ServiceAccount::Own,
+        ..DeploymentContract::default()
+    }
+}
+
+/// The config keys the contract advertises as the deployment default. Each
+/// value is read from `Config::default()`, so the two cannot drift, and the
+/// listeners are gated on the same switches the app reads.
+const DEFAULT_CONFIG_KEYS: [&str; 20] = [
+    "/scheduler/default_interval_secs",
+    "/scheduler/max_concurrent_fetches",
+    "/scheduler/jitter_percent",
+    "/sources/aws/enabled",
+    "/sources/aws/region",
+    "/sources/aws/topic",
+    "/sources/azure/enabled",
+    "/sources/azure/topic",
+    "/sources/m365/enabled",
+    "/sources/m365/topic",
+    "/sources/gcp/enabled",
+    "/sources/gcp/topic",
+    "/kafka/client_id",
+    "/kafka/topic_suffix",
+    "/ingest/enabled",
+    "/ingest/bind_address",
+    "/extractors/vector/enabled",
+    "/extractors/vector/grpc_bind_address",
+    "/metrics/enabled",
+    "/metrics/address",
+];
+
+/// The deployment default config: [`DEFAULT_CONFIG_KEYS`] from
+/// `Config::default()`, plus the two values a deployment decides. The
+/// in-cluster broker has no default in the app, and the cursor directory is
+/// empty there because it resolves from the config path, which sits on a
+/// read-only mount.
+///
+/// `None` when `Config::default()` does not serialise or a listed key is not in
+/// it, which the contract tests refuse.
+fn default_config() -> Option<serde_json::Value> {
+    let defaults = serde_json::to_value(crate::config::Config::default()).ok()?;
+    let mut config = serde_json::Value::Object(serde_json::Map::new());
+    for pointer in DEFAULT_CONFIG_KEYS {
+        set_at(&mut config, pointer, defaults.pointer(pointer)?.clone());
+    }
+    set_at(
+        &mut config,
+        "/kafka/brokers",
+        serde_json::json!(["kafka:9092"]),
+    );
+    set_at(
+        &mut config,
+        "/cursor/directory",
+        serde_json::json!(CURSOR_DIR),
+    );
+    Some(config)
+}
+
+/// Set `value` at the JSON pointer `pointer` in `root`, creating the objects on the way.
+fn set_at(root: &mut serde_json::Value, pointer: &str, value: serde_json::Value) {
+    let mut node = root;
+    let mut keys = pointer.trim_start_matches('/').split('/').peekable();
+    while let Some(key) = keys.next() {
+        let Some(object) = node.as_object_mut() else {
+            return;
+        };
+        if keys.peek().is_none() {
+            object.insert(key.to_owned(), value);
+            return;
+        }
+        node = object
+            .entry(key.to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     }
 }
 
@@ -467,6 +489,37 @@ mod tests {
         );
     }
 
+    /// The advertised default is the app's own default plus the two values a
+    /// deployment decides, and it loads and validates as a config file. A key
+    /// the contract hand-wrote would differ from `Config::default()` here.
+    #[test]
+    fn the_default_config_is_the_apps_default_and_loads() {
+        let advertised = contract().default_config.expect("default_config");
+        let defaults = serde_json::to_value(crate::config::Config::default()).expect("config");
+
+        let mut differing = Vec::new();
+        let mut stack = vec![(String::new(), &advertised)];
+        while let Some((path, node)) = stack.pop() {
+            match node {
+                serde_json::Value::Object(map) => {
+                    stack.extend(map.iter().map(|(k, v)| (format!("{path}/{k}"), v)));
+                }
+                leaf if defaults.pointer(&path) != Some(leaf) => differing.push(path),
+                _ => {}
+            }
+        }
+        differing.sort();
+        assert_eq!(differing, ["/cursor/directory", "/kafka/brokers"]);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("fetcher.yaml");
+        std::fs::write(&file, serde_json::to_string(&advertised).expect("json")).expect("write");
+        let config = crate::config::Config::load_from_file(file.to_str().expect("utf-8"))
+            .expect("the default config loads");
+        config.validate().expect("the default config validates");
+        assert_eq!(config.kafka.brokers, ["kafka:9092"]);
+    }
+
     #[test]
     fn test_contract_default_config_is_some() {
         let c = contract();
@@ -528,7 +581,7 @@ mod tests {
     #[test]
     fn test_contract_schema_version() {
         let c = contract();
-        assert_eq!(c.schema_version, CONTRACT_SCHEMA_VERSION);
+        assert_eq!(c.schema_version, scalo::deployment::CONTRACT_SCHEMA_VERSION);
     }
 
     #[test]
@@ -728,7 +781,7 @@ mod tests {
         // reach production silently.
         let path = repo_root().join("Dockerfile");
         let on_disk = std::fs::read_to_string(&path).expect("read Dockerfile");
-        let generated = generate_dockerfile(&contract(), None);
+        let generated = generate_dockerfile(&contract(), None).expect("the contract is valid");
         assert_eq!(
             on_disk.trim(),
             generated.trim(),

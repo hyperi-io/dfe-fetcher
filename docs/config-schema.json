@@ -206,12 +206,12 @@
           "key_file": null
         },
         "producer": {
-          "batch_size": 8388608,
-          "batch_messages": 10000,
-          "linger_ms": 20,
-          "compression": "zstd",
-          "acks": "all",
-          "retries": 5
+          "batch_size": null,
+          "batch_messages": null,
+          "linger_ms": null,
+          "compression": null,
+          "acks": null,
+          "retries": null
         },
         "librdkafka_overrides": {}
       }
@@ -241,6 +241,7 @@
         "queue_capacity": 10000,
         "batch_size": 256,
         "flush_interval_ms": 100,
+        "max_payload_bytes": 524288,
         "file": {
           "enabled": true,
           "path": "/var/spool/dfe/dlq",
@@ -5032,6 +5033,11 @@
           "const": "columnar_table"
         },
         {
+          "description": "A CloudWatch Logs event gets the call's log group (`logGroupName`, from\n`vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which\n`FilterLogEvents` leaves off the events.",
+          "type": "string",
+          "const": "cloudwatch_logs"
+        },
+        {
           "description": "A CloudWatch `GetMetricData` response joined with the metric\ndescriptors the lookup asked for: one JSON row per datapoint, or one\nOTLP protobuf per response when `vars.output_format` is `otlp`.",
           "type": "string",
           "const": "cloudwatch_metrics"
@@ -7103,12 +7109,12 @@
           "description": "Producer-specific settings.",
           "$ref": "#/$defs/ProducerConfig",
           "default": {
-            "batch_size": 8388608,
-            "batch_messages": 10000,
-            "linger_ms": 20,
-            "compression": "zstd",
-            "acks": "all",
-            "retries": 5
+            "batch_size": null,
+            "batch_messages": null,
+            "linger_ms": null,
+            "compression": null,
+            "acks": null,
+            "retries": null
           }
         },
         "librdkafka_overrides": {
@@ -7185,46 +7191,64 @@
       }
     },
     "ProducerConfig": {
-      "description": "Kafka producer settings.",
+      "description": "Kafka producer settings.\n\nEvery field is unset by default and a field left unset is not sent, so the\nproducer runs on scalo's own settings (batch size, linger, codec at its\nlevel, acks, retries) and a change to those reaches the fetcher. Set a\nfield to override scalo for that one property.",
       "type": "object",
       "properties": {
         "batch_size": {
-          "description": "Maximum batch size in bytes.",
-          "type": "integer",
+          "description": "Maximum batch size in bytes. Held under `message.max.bytes` when the\nproducer's record ceiling is lowered.",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint",
           "minimum": 0,
-          "default": 8388608
+          "default": null
         },
         "batch_messages": {
           "description": "Maximum messages per batch.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint",
           "minimum": 0,
-          "default": 10000
+          "default": null
         },
         "linger_ms": {
           "description": "Linger time in milliseconds.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
           "minimum": 0,
-          "default": 20
+          "default": null
         },
         "compression": {
-          "description": "Compression type (none, gzip, snappy, lz4, zstd). The default, zstd,\nruns at `compression.level` 3.",
-          "type": "string",
-          "default": "zstd"
+          "description": "Compression type (none, gzip, snappy, lz4, zstd). Unset, scalo's codec\nruns: zstd at `compression.level` 3.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "acks": {
           "description": "Acknowledgment level (0, 1, all).",
-          "type": "string",
-          "default": "all"
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "retries": {
           "description": "Number of retries.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
           "minimum": 0,
-          "default": 5
+          "default": null
         }
       }
     },
@@ -7297,6 +7321,16 @@
           "format": "uint64",
           "minimum": 0,
           "default": 100
+        },
+        "max_payload_bytes": {
+          "description": "Payload bytes an entry keeps: a longer payload is cut to this and the\nentry marked `truncated` with its original length, so it lands where\nthe whole record could not. `None` keeps every payload whole. Default\n[`DEFAULT_MAX_PAYLOAD_BYTES`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "default": 524288
         },
         "file": {
           "description": "File backend configuration.",
@@ -7525,7 +7559,7 @@
           ]
         },
         "group": {
-          "description": "Consumer group ID.\n\nEmpty marks a producer-only transport: it subscribes to nothing, even\nwhen `topics` is set. scalo's own consumer clients (the admin's\noffset-query consumer, the idle consumer of a producer-only transport)\ntake a group id derived from this field, or from `client_id` when it is\nempty, so a broker granting groups by prefix covers them too.",
+          "description": "Consumer group ID.\n\nEmpty means [`KafkaTransport::new`](super::KafkaTransport::new) builds\nno consumer, and [`KafkaTransport::receiver`](super::KafkaTransport::receiver)\nrefuses the config. The admin's offset-query consumer takes a group id\nderived from this field, or from `client_id` when it is empty, so a\nbroker granting groups by prefix covers it too.",
           "type": "string",
           "default": "scalo-consumer"
         },

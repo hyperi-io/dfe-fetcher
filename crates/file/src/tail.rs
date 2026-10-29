@@ -465,11 +465,28 @@ mod tailer {
         /// Stop the tailer and wait for its final checkpoint write. Terminal:
         /// a later tick reports the tailer as stopped.
         pub async fn stop(&self) {
+            self.stop_at(None).await;
+        }
+
+        /// [`stop`](Self::stop), first handing the tailer the positions the
+        /// driver last committed.
+        ///
+        /// The tailer's checkpoint view only takes committed positions at the
+        /// start of the NEXT tick, so a tailer stopped without them writes a
+        /// final checkpoint that leaves out the last acknowledged tick, and a
+        /// restart reads those lines again.
+        pub async fn stop_at(&self, committed: Option<&CheckpointValue>) {
             self.shutdown.cancel();
-            if let Some(running) = self.running.lock().await.take()
-                && let Err(e) = running.stop().await
-            {
-                warn!(unit = %self.unit, error = %e, "file tail: tailer task ended badly");
+            if let Some(running) = self.running.lock().await.take() {
+                match committed_lines(committed) {
+                    Ok(lines) => self.apply(&running.view, &running.ids, &lines),
+                    Err(e) => {
+                        warn!(unit = %self.unit, error = %e, "file tail: the committed checkpoint is not a tail's; stopping without it");
+                    }
+                }
+                if let Err(e) = running.stop().await {
+                    warn!(unit = %self.unit, error = %e, "file tail: tailer task ended badly");
+                }
             }
         }
 
@@ -1104,6 +1121,39 @@ mod tailer_tests {
         let state =
             std::fs::read_to_string(dir.path().join("state").join("checkpoints.json")).unwrap();
         assert!(state.contains("\"version\":\"1\""), "{state}");
+    }
+
+    /// The final checkpoint of a stopped tailer holds the last acknowledged
+    /// tick. The tailer only takes committed positions at the start of the
+    /// next tick, so a stop that is not handed them writes a checkpoint
+    /// without the lines the last tick delivered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stopped_tailer_writes_the_last_committed_tick_to_its_final_checkpoint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        append(
+            &dir.path().join("logs").join("app.log"),
+            &["{\"n\":1}", "{\"n\":2}"],
+        );
+        let state = dir.path().join("state").join("checkpoints.json");
+
+        let tail = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
+        let (rows, committed) = tick(&tail, None).await;
+        assert_eq!(rows.len(), 2);
+        tail.stop().await;
+        let without = std::fs::read_to_string(&state).unwrap();
+        assert!(
+            !without.contains("\"position\":16"),
+            "a stop given no committed positions already holds the tick: {without}"
+        );
+
+        let tail = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
+        let (rows, committed_again) = tick(&tail, None).await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(committed, committed_again);
+        tail.stop_at(committed.as_ref()).await;
+        let with = std::fs::read_to_string(&state).unwrap();
+        assert!(with.contains("\"position\":16"), "{with}");
     }
 
     /// A tick whose lines the driver never commits (a failed flush) is

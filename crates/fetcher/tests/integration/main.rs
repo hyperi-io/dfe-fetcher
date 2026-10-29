@@ -41,6 +41,7 @@ mod file_dump;
 mod file_tail;
 mod framework;
 mod framework_kafka;
+mod generics_gates;
 mod kafka_consume;
 mod output_kafka;
 mod pipeline;

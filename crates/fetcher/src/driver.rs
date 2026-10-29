@@ -27,6 +27,7 @@
 //! tick with no rows publishes nothing and an item that fails leaves the ones
 //! before it complete and committed.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -362,6 +363,24 @@ impl Driver {
     #[must_use]
     pub fn shape(&self) -> &Shape {
         &self.shape
+    }
+
+    /// Stop what the shape runs in the background and wait for it to finish.
+    ///
+    /// A file tailer writes its final checkpoint, including the last
+    /// acknowledged tick, which only the driver's checkpoint store holds.
+    /// Every other shape runs nothing between ticks. Safe to call again.
+    pub async fn stop(&self) {
+        let Shape::File(shape) = &self.shape else {
+            return;
+        };
+        let mut committed = HashMap::new();
+        for unit in shape.units() {
+            if let Some(checkpoint) = self.load_checkpoint(unit).await {
+                committed.insert(unit.name.to_string(), checkpoint);
+            }
+        }
+        shape.stop_at(&committed).await;
     }
 
     /// The connection id.

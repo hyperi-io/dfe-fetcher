@@ -15,12 +15,14 @@
 //! file's item mark); a tail unit is incremental and its rows carry line
 //! marks the driver commits after the acks.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
 
 use dfe_fetcher_core::batch::Lease;
+use dfe_fetcher_core::checkpoint::CheckpointValue;
 use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::{RowSource, RowStream, SnapshotScope, SourceMaturity, TickCtx, UnitSpec};
 
@@ -135,12 +137,21 @@ impl FileShape {
     /// Boxed like [`RowSource::probe`] so the signature is the same whether
     /// or not the tailer is built: without it there is nothing to await.
     pub fn stop(&self) -> BoxFuture<'_, ()> {
+        async move { self.stop_at(&HashMap::new()).await }.boxed()
+    }
+
+    /// [`stop`](Self::stop), with each unit's last committed checkpoint by
+    /// unit name, so the final checkpoint includes the last acknowledged tick.
+    pub fn stop_at<'a>(
+        &'a self,
+        committed: &'a HashMap<String, CheckpointValue>,
+    ) -> BoxFuture<'a, ()> {
         #[cfg(feature = "tail")]
         {
             async move {
                 for b in &self.bound {
                     if let UnitKind::Tail(t) = &b.kind {
-                        t.stop().await;
+                        t.stop_at(committed.get(&*b.unit.name)).await;
                     }
                 }
             }
@@ -148,6 +159,7 @@ impl FileShape {
         }
         #[cfg(not(feature = "tail"))]
         {
+            let _ = committed;
             futures::future::ready(()).boxed()
         }
     }

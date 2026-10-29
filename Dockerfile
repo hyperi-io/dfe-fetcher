@@ -19,7 +19,7 @@ LABEL io.hyperi.profile="production"
 # Apt versions are unpinned because Debian drops superseded ones, so the digest-pinned base is what fixes the release.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl netcat-openbsd iputils-ping gnupg \
+    ca-certificates curl gnupg \
     && curl -fsSL https://packages.confluent.io/clients/deb/archive.key -o /tmp/repo-key.asc \
     && gpg --show-keys --with-colons --with-fingerprint /tmp/repo-key.asc \
        > /tmp/repo-key.info \
@@ -32,13 +32,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/confluent-clients.list \
     && apt-get update && apt-get install -y --no-install-recommends \
        librdkafka1 libssl3t64 zlib1g libzstd1 \
+    && apt-get purge -y --auto-remove curl gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dfe-fetcher /usr/local/bin/dfe-fetcher
 RUN chmod +x /usr/local/bin/dfe-fetcher
 
-# Ubuntu 24.04 ships with ubuntu user at UID 1000 -- remove before creating appuser
+# A base image may ship its own user at UID 1000 (Ubuntu's `ubuntu`), so remove it first.
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi && useradd --create-home --uid 1000 appuser
+RUN mkdir -p '/var/lib/dfe-fetcher' && chown 1000:1000 '/var/lib/dfe-fetcher'
+WORKDIR /home/appuser
 # Numeric, so Kubernetes runAsNonRoot can verify it without reading /etc/passwd.
 USER 1000
 
@@ -47,10 +50,9 @@ EXPOSE 9090
 #   8080/tcp ingest -- when config.ingest.enabled is true
 #   6000/tcp vector-grpc -- when config.extractors.vector.enabled is true
 
-# Shell form maps any curl failure to exit 1, the only unhealthy status Docker defines.
-# hadolint ignore=DL3025
+# bash builtins only, so the image needs no HTTP client. A status other than 200 exits 1.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -sf http://localhost:9090/livez > /dev/null || exit 1
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/localhost/9090 && printf 'GET /livez HTTP/1.0\\r\\n\\r\\n' >&3 && read -r _ code _ <&3 && [ \"$code\" = 200 ]"]
 
 ENTRYPOINT ["dfe-fetcher"]
 CMD ["--config", "/etc/dfe/fetcher.yaml"]

@@ -424,7 +424,7 @@ async fn a_postgres_tail_resumes_from_the_committed_keyset_across_a_restart() {
     .await;
 }
 
-const MARIADB_EVENTS: &str = r#"
+const MARIADB_EVENTS: &str = r"
 CREATE TABLE events (
     ts DATETIME(6) NOT NULL,
     id INT NOT NULL,
@@ -437,7 +437,7 @@ INSERT INTO events VALUES
     ('2026-03-01 00:00:01', 1, 'c'),
     ('2026-03-01 00:00:02', 1, 'd'),
     ('2026-03-01 00:00:02', 2, 'e');
-"#;
+";
 
 #[tokio::test]
 async fn a_mariadb_tail_resumes_from_the_committed_keyset_across_a_restart() {

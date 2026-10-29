@@ -76,6 +76,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Locate pgo-driver; build on demand if missing.
+# CI builds it first in .hyperi-ci.yaml's pgo.workload_setup_cmd, before the
+# workload timeout starts. The build below is the local fallback.
 PGO_DRIVER_PATH="${PGO_DRIVER_PATH:-}"
 if [[ -z "$PGO_DRIVER_PATH" ]]; then
     for candidate in \

@@ -114,12 +114,31 @@ impl ServiceApp for App {
         }
     }
 
+    /// Not ready until `run_service` installs the pipeline's check.
+    fn readiness_check(&self, _config: &Self::Config) -> Option<scalo::metrics::ReadinessFn> {
+        Some(Arc::new(|| false))
+    }
+
     fn load_config(&self, path: Option<&str>) -> Result<Config, CliError> {
         let config =
             Config::load(path).map_err(|e| CliError::Config(format!("failed to load: {e}")))?;
         config
             .validate()
             .map_err(|e| CliError::Config(format!("validation failed: {e}")))?;
+        // `config-check` is what an operator runs before a deploy, and `run`
+        // resolves env:/vault: specs before it starts. Resolve them here too,
+        // on a copy, or a config that cannot resolve passes the check and then
+        // kills `run`. The lifecycle loads the config once, so this cannot be
+        // a second load ahead of it.
+        if matches!(self.command(), Some(StandardCommand::ConfigCheck)) {
+            let mut resolved = config.clone();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(
+                    dfe_fetcher::config::resolve::resolve_config_specs(&mut resolved),
+                )
+            })
+            .map_err(|e| CliError::Config(format!("a spec does not resolve: {e}")))?;
+        }
         Ok(config)
     }
 
@@ -207,12 +226,24 @@ async fn main() {
                 // intentionally omits Contract Identity Annotation labels.
                 // The full ci/ pipeline (`generate-artefacts`) is where
                 // identity gets stamped in once scalo wires it.
-                println!("{}", generate_dockerfile(&contract, None));
+                match generate_dockerfile(&contract, None) {
+                    Ok(dockerfile) => println!("{dockerfile}"),
+                    Err(e) => {
+                        eprintln!("fatal: the deployment contract is invalid: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 return;
             }
             AppCommand::EmitCompose => {
                 let contract = deployment::contract();
-                println!("{}", generate_compose_fragment(&contract));
+                match generate_compose_fragment(&contract) {
+                    Ok(compose) => println!("{compose}"),
+                    Err(e) => {
+                        eprintln!("fatal: the deployment contract is invalid: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 return;
             }
             AppCommand::EmitContract => {
@@ -239,6 +270,10 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+/// How long shutdown waits for the source drivers to stop what they run, so a
+/// file tailer's final checkpoint is written before the process exits.
+const DRIVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One connection's fetch task, ready to schedule: a source type expands
 /// into one entry per connection, each keyed on its connection id (cursor
@@ -610,6 +645,7 @@ async fn run_fetcher_service(
     // fetch task holds the only `Arc<Driver>`: a cancelled task then drops its
     // driver and releases the connection's credentials and client.
     let mut running: HashMap<String, CancellationToken> = HashMap::new();
+    let mut drivers: Vec<Arc<Driver>> = Vec::new();
     for entry in entries {
         // Surface non-stable sources at startup: the profile declares the
         // maturity, and anything not stable is code-complete but not
@@ -637,6 +673,7 @@ async fn run_fetcher_service(
             entry.driver.connection_id().to_owned(),
             entry.cancel.clone(),
         );
+        drivers.push(Arc::clone(&entry.driver));
         scheduler.spawn_source_task(
             entry.driver,
             entry.interval_secs,
@@ -726,6 +763,19 @@ async fn run_fetcher_service(
 
     // Run pipeline orchestrator (blocks until shutdown)
     let run = orchestrator.run().await;
+
+    // The fetch tasks end on the same shutdown, but nothing waits for them, so
+    // a file tailer's final checkpoint is written here, before the runtime
+    // goes. A tick that will not release the tailer cannot hold the exit.
+    if tokio::time::timeout(
+        DRIVER_STOP_TIMEOUT,
+        futures::future::join_all(drivers.iter().map(|d| d.stop())),
+    )
+    .await
+    .is_err()
+    {
+        warn!("a source driver did not stop in time; its tailer's last checkpoint may be missing");
+    }
 
     // Before any exit: process::exit skips drops, leaving the managed Vector
     // containers running and their inline configs on disk.
@@ -818,6 +868,9 @@ mod tests {
             }
         }
         let app = App::parse_from(["dfe-fetcher", "--config", path]);
+        // run_app sets the cascade up from --config before load_config.
+        scalo::config::setup(app.common_args().to_config_options(app.env_prefix()))
+            .expect("cascade sets up");
         app.load_config(Some(path)).expect("config loads");
         let resolved =
             VersionCheckConfig::from_cascade_or(app.name(), "0.0.0", app.version_check_defaults());

@@ -503,19 +503,20 @@ async fn a_librdkafka_override_sets_the_output_producers_record_ceiling() {
     transport.close().await.expect("producer closes");
 }
 
-/// With no override the producer keeps scalo's record ceiling and the
-/// `producer.batch_size` it is given.
+/// With no override the producer keeps scalo's record ceiling and scalo's
+/// batch size, since an unset `producer.batch_size` is not sent.
 #[test]
 fn without_an_override_the_producer_keeps_its_defaults() {
     let kafka = KafkaConfig::default();
-    let producer = producer_client_config(&build_scalo_kafka_config(&kafka), &[]);
+    let scalo = build_scalo_kafka_config(&kafka);
+    let producer = producer_client_config(&scalo, &[]);
     assert_eq!(
         producer.get("message.max.bytes"),
         Some(MESSAGE_MAX_BYTES.to_string().as_str())
     );
     assert_eq!(
         producer.get("batch.size"),
-        Some(kafka.producer.batch_size.to_string().as_str())
+        Some(scalo.sizing.resolved_producer_map()["batch.size"].as_str())
     );
 }
 
@@ -558,6 +559,39 @@ fn metrics_address_from_the_config_file_reaches_the_listener() {
     assert!(
         line.contains("127.0.0.1:9391"),
         "the runtime would bind a metrics address the config did not set: {line:?}"
+    );
+}
+
+/// `config-check` resolves the `env:` specs `run` resolves.
+///
+/// An enabled source whose identity spec names an unset variable kills `run` at
+/// startup, so the check an operator runs before a deploy has to fail on it.
+#[test]
+fn config_check_fails_on_a_spec_that_cannot_resolve() {
+    // The child process inherits this process's env at spawn.
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(
+        &dir,
+        "kafka:\n  brokers: [broker:9092]\nsources:\n  gcp:\n    enabled: true\n    project_id: env:DFE_FETCHER_CONFIG_CHECK_UNSET_PROJECT\n",
+    );
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_dfe-fetcher"))
+        .args(["--config", &path, "config-check"])
+        .env_remove("DFE_FETCHER_CONFIG_CHECK_UNSET_PROJECT")
+        .output()
+        .expect("run config-check");
+    let report = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "config-check passed a config that cannot resolve:\n{report}"
+    );
+    assert!(
+        report.contains("DFE_FETCHER_CONFIG_CHECK_UNSET_PROJECT"),
+        "the report must name the unresolved variable:\n{report}"
     );
 }
 
