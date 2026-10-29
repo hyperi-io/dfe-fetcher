@@ -514,6 +514,10 @@ impl PipelineState {
     /// output transports are not yet initialised. The [`Orchestrator`]
     /// creates the [`OutputManager`] asynchronously and injects it through
     /// this `output` parameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pipeline components cannot be built from the config.
     pub fn new(
         shared_config: SharedConfig,
         metrics: Arc<Metrics>,
@@ -913,6 +917,10 @@ impl PipelineState {
     }
 
     /// Reload configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reload cannot be applied.
     pub fn reload_config(&self, new_config: Config) -> Result<()> {
         self.shared_config.update(new_config);
         let version = self.shared_config.version();
@@ -935,6 +943,10 @@ impl Orchestrator {
     /// Async because output transport creation (Kafka, gRPC) requires
     /// network connections. Pass a config with no brokers to skip
     /// output transport initialisation (tests, config-check).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an output transport or the pipeline cannot be created.
     pub async fn new(
         config: Config,
         metrics: Arc<Metrics>,
@@ -989,6 +1001,10 @@ impl Orchestrator {
     }
 
     /// Run the orchestrator (background tasks).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a background task fails.
     pub async fn run(&self) -> Result<()> {
         info!("Pipeline orchestrator running");
 
@@ -2069,13 +2085,13 @@ mod tests {
         // The literals the append path writes carry serde's escaping, quotes
         // included, so a quote or backslash in a name or an org cannot break
         // the record.
-        let stamp = Stamp::new(r#"in"gest"#, r#"c:\logs"#, r#"ac"me"#);
+        let stamp = Stamp::new(r#"in"gest"#, r"c:\logs", r#"ac"me"#);
 
         assert_eq!(stamp.dfe_source_literal, r#""in\"gest""#);
         assert_eq!(stamp.source_literal, r#""c:\\logs""#);
         assert_eq!(stamp.org_literal, r#""ac\"me""#);
         assert_eq!(stamp.dfe_source, r#"in"gest"#);
-        assert_eq!(stamp.source, r#"c:\logs"#);
+        assert_eq!(stamp.source, r"c:\logs");
         assert_eq!(stamp.org, r#"ac"me"#);
     }
 

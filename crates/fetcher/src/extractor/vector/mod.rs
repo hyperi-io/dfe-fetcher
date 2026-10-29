@@ -617,6 +617,10 @@ impl VectorManager {
     }
 
     /// Stop all managed Vector instances, then remove their inline configs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an instance cannot be stopped or its inline config removed.
     pub async fn stop(&self) -> Result<()> {
         if !self.config.enabled {
             return Ok(());

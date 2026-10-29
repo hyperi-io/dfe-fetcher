@@ -421,7 +421,7 @@ impl CsvFramer {
             self.fields_len += written;
             self.ends_len += ended;
             match result {
-                csv_core::ReadRecordResult::InputEmpty => return,
+                csv_core::ReadRecordResult::InputEmpty | csv_core::ReadRecordResult::End => return,
                 csv_core::ReadRecordResult::OutputFull => {
                     let grown = self.fields.len() * 2;
                     self.fields.resize(grown, 0);
@@ -431,7 +431,6 @@ impl CsvFramer {
                     self.ends.resize(grown, 0);
                 }
                 csv_core::ReadRecordResult::Record => self.take_record(out),
-                csv_core::ReadRecordResult::End => return,
             }
         }
     }

@@ -31,6 +31,10 @@ use crate::config::Config;
 use crate::credential::{CredentialError, resolve};
 
 /// Resolve all `env:`/`vault:` spec strings on opted-in config fields.
+///
+/// # Errors
+///
+/// Returns [`CredentialError`] when an `env:` or `vault:` spec cannot be resolved.
 pub async fn resolve_config_specs(config: &mut Config) -> Result<(), CredentialError> {
     let aws = &mut config.sources.aws;
     if aws.enabled {

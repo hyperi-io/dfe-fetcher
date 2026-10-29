@@ -1292,6 +1292,10 @@ async fn metrics_list(
 
 /// The CloudWatch shape, stage two: one datapoint per query, with a second
 /// page carrying one more when no token was sent.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a test index becomes a metric value"
+)]
 async fn metrics_data(
     State(state): State<Shared>,
     Query(query): Query<HashMap<String, String>>,

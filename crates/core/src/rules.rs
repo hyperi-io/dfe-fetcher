@@ -273,7 +273,7 @@ impl RowRules {
 /// not an object (an array, a scalar, not JSON) is returned unchanged.
 ///
 /// A key the row ALREADY carries is not appended a second time: two top-level
-/// keys of the same name make the loader's ClickHouse JSON column reject the
+/// keys of the same name make the loader's `ClickHouse` JSON column reject the
 /// whole record, and a rejected record is not dead-lettered -- it is lost. On
 /// a possible collision the row is parsed once and the value it arrived with
 /// is parked under `<key>_original` (the next free `<key>_original_<n>` when
@@ -700,7 +700,7 @@ mod tests {
 
     /// An added field whose key the row already carries replaces it and parks
     /// the row's own value, rather than appending a second copy of the key:
-    /// ClickHouse rejects a record with a duplicate top-level key outright.
+    /// `ClickHouse` rejects a record with a duplicate top-level key outright.
     #[test]
     fn an_added_field_the_row_already_carries_parks_the_original_instead_of_duplicating() {
         let fields = [("_dfe_fetcher_object".to_string(), json!({"key": "ours"}))];

@@ -248,8 +248,7 @@ fn test_error_into_response_status_codes() {
         assert_eq!(
             response.status().as_u16(),
             expected_status,
-            "Error variant should map to HTTP {}",
-            expected_status
+            "Error variant should map to HTTP {expected_status}"
         );
     }
 }

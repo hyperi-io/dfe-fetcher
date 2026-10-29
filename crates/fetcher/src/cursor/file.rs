@@ -57,6 +57,10 @@ impl FileCursorStore {
     /// Creates the directory if it does not exist. Loads any existing
     /// `.cursor.json` files into the in-memory cache. If the directory
     /// is not writable, falls back to read-only mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be created.
     pub fn new(directory: &str) -> Result<Self> {
         let dir_path = PathBuf::from(directory);
 

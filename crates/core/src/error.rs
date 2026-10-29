@@ -191,7 +191,7 @@ mod tests {
     }
 
     /// A refusal the profile declared a throttle classifies as one whatever
-    /// its status: AWS paces CloudTrail with a 400 carrying
+    /// its status: AWS paces `CloudTrail` with a 400 carrying
     /// `ThrottlingException`, which would otherwise be counted a client bug
     /// and never retried.
     #[test]

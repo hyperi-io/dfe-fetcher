@@ -422,7 +422,7 @@ async fn run_fetcher_service(
                         // Prometheus scaler (fetch_pressure / throttle_ratio).
                         engine_metrics.update_rate_gauge();
                     }
-                    _ = shutdown.cancelled() => break,
+                    () = shutdown.cancelled() => break,
                 }
             }
         });

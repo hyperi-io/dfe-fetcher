@@ -138,32 +138,26 @@ unsafe_code = "deny"
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
-
-# Allow these pedantic lints (too noisy for early development)
-needless_raw_string_hashes = "allow"
-doc_markdown = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-too_many_lines = "allow"
-if_not_else = "allow"
-match_same_arms = "allow"
+dbg_macro = "deny"
+# Types keep descriptive names even where the module path repeats them, so call sites read without it.
 module_name_repetitions = "allow"
+# #[must_use] goes where dropping the value is a bug, not on every pure function.
 must_use_candidate = "allow"
+# 8 sites turn counts into f64 values: 2 gauge values in main.rs and 6 in the integration tests.
 cast_precision_loss = "allow"
+# 49 doc comments name database, cloud and protocol identifiers without backticks.
+doc_markdown = "allow"
+# 5 functions run past the 150-line threshold, the largest at 260 lines.
+too_many_lines = "allow"
+# 4 casts in the metric and timestamp code, each on a value the surrounding code bounds.
 cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
-cast_lossless = "allow"
-needless_update = "allow"
-ignored_unit_patterns = "allow"
-used_underscore_binding = "allow"
-manual_let_else = "allow"
-map_unwrap_or = "allow"
-unused_self = "allow"
+# 3 Default impls, 3 match arms, 2 push_str of a format!, 1 unused self, 1 map then unwrap_or_else.
 derivable_impls = "allow"
-trivially_copy_pass_by_ref = "allow"
+match_same_arms = "allow"
 format_push_string = "allow"
-single_char_add_str = "allow"
-uninlined_format_args = "allow"
+unused_self = "allow"
+map_unwrap_or = "allow"
 
 [profile.release]
 lto = "thin"

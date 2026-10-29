@@ -228,6 +228,10 @@ impl OutputManager {
     /// If `output.kafka` is set, uses that. Otherwise falls back to the
     /// legacy top-level `kafka` section by building a scalo `KafkaConfig`
     /// from the legacy fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an output transport cannot be created.
     pub async fn new(output: &OutputConfig, legacy_kafka: &LegacyKafkaConfig) -> Result<Self> {
         let mut transports = Vec::new();
 
@@ -316,6 +320,10 @@ impl OutputManager {
     /// outbound `dlq` filter, an over-size or malformed record -- does not stop
     /// the others: the fan-out finishes and ONE [`Error::TransportRecord`]
     /// naming every refusal comes back, so the record is dead-lettered once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TransportRecord`] naming every transport that refused the record.
     pub async fn send_to(
         &self,
         destinations: &[&str],
@@ -372,6 +380,10 @@ impl OutputManager {
     /// Attempts delivery to every transport even if one fails, so that a
     /// Kafka failure does not prevent gRPC from receiving the message (and
     /// vice versa). Returns the first error encountered for DLQ routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first transport error, after every transport has been tried.
     pub async fn send_all(&self, key: &str, payload: Bytes) -> Result<()> {
         let mut first_error: Option<Error> = None;
 
