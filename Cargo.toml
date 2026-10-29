@@ -138,32 +138,11 @@ unsafe_code = "deny"
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
-
-# Allow these pedantic lints (too noisy for early development)
-needless_raw_string_hashes = "allow"
-doc_markdown = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-too_many_lines = "allow"
-if_not_else = "allow"
-match_same_arms = "allow"
+dbg_macro = "deny"
+# Types keep descriptive names even where the module path repeats them, so call sites read without it.
 module_name_repetitions = "allow"
+# #[must_use] goes where dropping the value is a bug, not on every pure function.
 must_use_candidate = "allow"
-cast_precision_loss = "allow"
-cast_possible_truncation = "allow"
-cast_sign_loss = "allow"
-cast_lossless = "allow"
-needless_update = "allow"
-ignored_unit_patterns = "allow"
-used_underscore_binding = "allow"
-manual_let_else = "allow"
-map_unwrap_or = "allow"
-unused_self = "allow"
-derivable_impls = "allow"
-trivially_copy_pass_by_ref = "allow"
-format_push_string = "allow"
-single_char_add_str = "allow"
-uninlined_format_args = "allow"
 
 [profile.release]
 lto = "thin"
