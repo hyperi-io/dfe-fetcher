@@ -10,7 +10,7 @@
 //!
 //! A dump is one `begin` marker, the store's rows, and one `end` marker
 //! carrying the row count, all on the same topic and all stamped with the same
-//! `snapshot_id` (UUIDv7) and `snapshot_at`. `timestamp` repeats `snapshot_at`
+//! `snapshot_id` (`UUIDv7`) and `snapshot_at`. `timestamp` repeats `snapshot_at`
 //! so the loader's `_timestamp` groups the whole dump; the provider's record
 //! sits under `record` so its own keys cannot collide with the envelope's.
 //! `seq` is 0-based and monotonic over rows and oversize stubs, so
@@ -61,7 +61,7 @@ impl Kind {
 /// The fields every frame of a snapshot carries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Head {
-    /// The dump this frame belongs to, a UUIDv7 minted at `snapshot_at`.
+    /// The dump this frame belongs to, a `UUIDv7` minted at `snapshot_at`.
     pub snapshot_id: Uuid,
     /// When the dump started.
     pub snapshot_at: DateTime<Utc>,

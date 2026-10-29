@@ -231,6 +231,10 @@ async fn auth_middleware(
 ///
 /// Binds to the configured address and serves the ingest endpoints.
 /// Returns when the shutdown token is cancelled.
+///
+/// # Errors
+///
+/// Returns an error when the listener cannot bind or the server fails.
 pub async fn run_ingest_server(
     config: &IngestConfig,
     pipeline: Arc<PipelineState>,

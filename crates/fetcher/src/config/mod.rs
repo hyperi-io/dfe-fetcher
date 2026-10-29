@@ -338,6 +338,10 @@ impl Config {
     }
 
     /// Load configuration with cascade: CLI -> ENV -> .env -> file -> defaults
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the config file cannot be read or parsed, the cascade fails, or the result fails validation.
     pub fn load(config_path: Option<&str>) -> Result<Self> {
         // If an explicit config file is provided, load it directly
         if let Some(path) = config_path {
@@ -385,6 +389,10 @@ impl Config {
     /// `--config /etc/dfe/fetcher.yaml`, and the file is deserialised here
     /// rather than through the scalo cascade. Env layering therefore has to
     /// happen here too, or the deployment's env vars reach nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read or parsed, or an environment override does not deserialise.
     pub fn load_from_file(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
@@ -410,6 +418,10 @@ impl Config {
 
     /// Parse a YAML config, returning it with the dotted path of every key
     /// serde ignored because no field names it. `origin` names the file in errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `content` is not valid YAML for the config.
     pub fn parse_yaml(content: &str, origin: &str) -> Result<(Self, Vec<String>)> {
         let loaded =
             scalo::yaml::from_str_reporting(content, origin, scalo::yaml::Profile::Config)?;
@@ -437,6 +449,10 @@ impl Config {
     }
 
     /// Validate the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first contradictory or missing setting.
     pub fn validate(&self) -> Result<()> {
         // A missing broker or endpoint is a contradiction only once something
         // would send to it; with nothing to send, the config is valid but empty
@@ -1047,6 +1063,10 @@ pub fn unset_instance_id_warning(config: &Config) -> Option<String> {
 }
 
 /// Reload configuration from the same source.
+///
+/// # Errors
+///
+/// Returns the errors of [`Config::load`].
 pub fn reload_config(current: &Config) -> Result<Config> {
     Config::load(current.config_path.as_deref())
 }
@@ -4357,6 +4377,10 @@ pub struct PluginsConfig {
 }
 
 impl PluginsConfig {
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "_rest is the serde catch-all for unknown plugin keys"
+    )]
     pub fn warn_if_configured(&self) {
         if self.directory.is_some() || !self._rest.is_empty() {
             tracing::warn!("extractors.plugins is deprecated -- use container extractors instead");

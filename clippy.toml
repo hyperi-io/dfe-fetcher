@@ -1,0 +1,12 @@
+# Project:   dfe-fetcher
+# File:      clippy.toml
+# Purpose:   Clippy linter configuration
+#
+# License:   BUSL-1.1
+# Copyright: (c) 2026 HYPERI PTY LIMITED
+
+too-many-lines-threshold = 150
+
+# unwrap_used / expect_used stay denied in shipped code, not in #[test] or #[cfg(test)]
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
