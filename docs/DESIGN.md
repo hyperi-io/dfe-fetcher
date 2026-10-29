@@ -102,7 +102,7 @@ flowchart TB
     tailer["vector-file-source<br>third-party/ (vendored, MIT)"]
     core["dfe-fetcher-core<br>crates/core<br>Row, Mark, RowSource, Batcher, RowRules,<br>snapshot envelope, checkpoints, metric names"]
 
-    engines["engine drivers<br>unixODBC + arrow-odbc, clickhouse-dfe, mongodb"]
+    engines["engine drivers<br>unixODBC + arrow-odbc, dfe-clickhouse, mongodb"]
 
     app --> core
     app --> rest

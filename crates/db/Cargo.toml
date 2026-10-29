@@ -52,10 +52,10 @@ arrow = { version = "60.1.0", default-features = false, features = ["json"], opt
 base64 = { workspace = true, optional = true }
 
 # clickhouse: the official HTTP client streams `FORMAT JSONEachRow` with
-# server-side parameters; clickhouse-dfe adds the ping and the typed server
+# server-side parameters; dfe-clickhouse adds the ping and the typed server
 # exception. rustls only, never native-tls.
 clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", "rustls-tls"], optional = true }
-clickhouse-dfe = { version = "0.1.3", default-features = false, features = ["ext"], optional = true }
+dfe-clickhouse = { version = "0.1.4", default-features = false, features = ["ext"], optional = true }
 url = { workspace = true, optional = true }
 
 # mongodb: the official driver, the second approved exception to the one-wire
@@ -84,5 +84,5 @@ default = []
 # ships. The config grammar and the shape are always compiled; an instance
 # naming an engine that is not built fails validation with that reason.
 odbc = ["dep:odbc-api", "dep:arrow-odbc", "dep:arrow", "dep:base64"]
-clickhouse = ["dep:clickhouse", "dep:clickhouse-dfe", "dep:url"]
+clickhouse = ["dep:clickhouse", "dep:dfe-clickhouse", "dep:url"]
 mongodb = ["dep:mongodb", "dep:bson"]
