@@ -494,9 +494,10 @@ async fn build_destinations(
 }
 
 /// Resolve the effective scalo Kafka config: `output.kafka` when set, else
-/// built from the legacy top-level `kafka` section. Produce-only (empty
-/// consumer group, so scalo builds no idle consumer). ONE resolution shared
-/// by the output transport and the DLQ producer -- if they ever diverge,
+/// built from the legacy top-level `kafka` section. Produce-only: the empty
+/// consumer group never subscribes, though scalo still builds an idle consumer
+/// under a group id derived from the config. ONE resolution shared by the
+/// output transport and the DLQ's Kafka backend -- if they ever diverge,
 /// dead-letters go to a different broker than the data.
 pub fn resolve_kafka_config(
     output: &OutputConfig,

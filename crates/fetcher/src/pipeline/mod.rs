@@ -36,8 +36,9 @@ use bytes::Bytes;
 use dfe_fetcher_core::batch::{Outbound, Tenancy};
 use dfe_fetcher_core::frame::scan::trim_range;
 use dfe_fetcher_core::frame::split_array;
-use scalo::dlq::{Dlq, DlqEntry};
+use scalo::dlq::{Dlq, DlqConfig, DlqEntry};
 use scalo::logger::security;
+use scalo::transport::KafkaConfig as ScaloKafkaConfig;
 use scalo::transport::ack::EffectiveGuarantee;
 use scalo::transport::{AckControl, AckKind, HeldAcks, SinkConfirmation};
 use tokio_util::sync::CancellationToken;
@@ -469,6 +470,31 @@ pub enum DeadLettered {
     NoQueue,
 }
 
+/// The scalo DLQ config, and the Kafka client config its Kafka backend is
+/// built on.
+///
+/// When the output reaches the bus, the Kafka backend rides the SAME resolved
+/// producer config as the output transport (`resolve_kafka_config`), so
+/// dead-letters land on the broker the data uses. A gRPC-only fetcher has no
+/// broker: its DLQ gets no Kafka backend and no client config, and dead
+/// letters go to the file backend. A Kafka backend there queues every entry
+/// for a broker nobody configured, and scalo's cascade never hands a queued
+/// entry on to the file backend.
+fn dlq_backends(config: &Config) -> (DlqConfig, Option<ScaloKafkaConfig>) {
+    let mut dlq = config.dlq.clone();
+    if !config.output.uses_bus() {
+        dlq.kafka.enabled = false;
+        return (dlq, None);
+    }
+    (
+        dlq,
+        Some(crate::output::resolve_kafka_config(
+            &config.output,
+            &config.kafka,
+        )),
+    )
+}
+
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
@@ -508,12 +534,10 @@ impl PipelineState {
         }
         let memory_guard = Arc::new(MemoryGuard::new(mg_config));
 
-        // Initialise DLQ if enabled. The Kafka backend rides the SAME resolved
-        // producer config as the output transport (resolve_kafka_config) --
-        // dead-letters must land on the broker the data uses.
+        // Initialise DLQ if enabled.
         let dlq = if config.dlq.enabled {
-            let dlq_kafka = crate::output::resolve_kafka_config(&config.output, &config.kafka);
-            match Dlq::spawn(&config.dlq, "dfe-fetcher", Some(&dlq_kafka), shutdown) {
+            let (dlq_config, dlq_kafka) = dlq_backends(&config);
+            match Dlq::spawn(&dlq_config, "dfe-fetcher", dlq_kafka.as_ref(), shutdown) {
                 Ok(d) => Some(d),
                 Err(e) => {
                     warn!(error = %e, "Failed to initialise DLQ, continuing without it");
@@ -1616,6 +1640,67 @@ mod tests {
             "gave up after {:?}",
             started.elapsed()
         );
+    }
+
+    /// A gRPC-only fetcher has no broker, so its DLQ builds no Kafka backend
+    /// and no Kafka client, and a dead letter lands in the file backend.
+    #[tokio::test]
+    async fn a_grpc_only_dead_letter_lands_in_the_file_dlq_and_no_kafka_client_is_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.output.output_type = "grpc".to_string();
+        config.dlq.enabled = true;
+        config.dlq.file.path = dir.path().to_path_buf();
+        assert_eq!(config.dlq.mode, scalo::dlq::DlqMode::Cascade, "the default");
+        assert!(config.dlq.kafka.enabled, "the shipped default");
+
+        let (dlq_config, kafka) = dlq_backends(&config);
+        assert!(
+            kafka.is_none(),
+            "a Kafka client config reached Dlq::spawn on a gRPC-only output"
+        );
+        assert!(
+            !dlq_config.kafka.enabled,
+            "the gRPC-only DLQ asked for a Kafka backend"
+        );
+
+        let state = PipelineState::new(
+            SharedConfig::new(config),
+            Arc::new(Metrics::new()),
+            None,
+            CancellationToken::new(),
+        )
+        .expect("pipeline state");
+        let letter = DeadLetter {
+            topic: Arc::from("t_land"),
+            payload: Bytes::from_static(br#"{"id":1}"#),
+            reason: "refused".into(),
+        };
+        assert_eq!(
+            state.dead_letter(vec![letter]).await.expect("held"),
+            DeadLettered::Held { dropped: 0 }
+        );
+        let written = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
+            .expect("the DLQ file");
+        assert_eq!(written.lines().count(), 1);
+    }
+
+    /// An output that reaches the bus keeps the Kafka backend, on the same
+    /// producer config the output uses.
+    #[test]
+    fn a_bus_output_keeps_its_kafka_dlq_backend() {
+        let mut config = Config::default();
+        config.kafka.brokers = vec!["broker:9092".into()];
+        for output_type in ["kafka", "both"] {
+            config.output.output_type = output_type.to_string();
+            let (dlq_config, kafka) = dlq_backends(&config);
+            assert!(dlq_config.kafka.enabled, "{output_type}");
+            assert_eq!(
+                kafka.expect("the Kafka client config").brokers,
+                ["broker:9092"],
+                "{output_type}"
+            );
+        }
     }
 
     /// A DLQ write is counted only once a backend confirms it. With no DLQ the
