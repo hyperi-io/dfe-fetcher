@@ -8,7 +8,7 @@
 
 """Run the generics acceptance gates over `crates/`.
 
-Each gate is a ripgrep pattern that may hit only the framework site that owns
+Each gate is a regular expression that may hit only the framework site that owns
 the mechanism (a pager, a signer, a lookback), plus tests, fixtures and the
 shipped profiles that name provider fields as data. A hit anywhere else is a
 provider mechanism written twice. The dependency gates check that the core
@@ -16,11 +16,14 @@ crate pulls no sibling crate and that no shape crate depends on the app, and
 the budget gate counts the Rust lines of every hook against its cap.
 
 Usage: `scripts/generics-gates.sh` from anywhere inside the repo; exit 0 when
-every gate holds, 1 when one does not, 2 when a tool the gates need is missing.
+every gate holds, 1 when one does not, 2 when git or cargo is missing. The
+integration test `generics_gates` runs the same script, so the gates run in CI.
 """
 
 from __future__ import annotations
 
+import fnmatch
+import re
 import shutil
 import subprocess
 import sys
@@ -43,7 +46,7 @@ ALWAYS_ALLOWED = (
 
 @dataclass(frozen=True, slots=True)
 class Gate:
-    """One ripgrep gate: what to search for, where, and which sites may hit."""
+    """One regex gate: what to search for, where, and which sites may hit."""
 
     name: str
     pattern: str
@@ -162,6 +165,7 @@ BUDGETS = {
     "crates/rest/src/hooks/s3_list.rs": 250,
     "crates/rest/src/shape/queue.rs": 150,
     "crates/rest/src/hooks/cloudtrail_event.rs": 100,
+    "crates/rest/src/hooks/cloudwatch_logs.rs": 100,
     "crates/rest/src/hooks/columnar_table.rs": 100,
     "crates/rest/src/hooks/event_time.rs": 100,
     "crates/rest/src/hooks/go_module_aggregate.rs": 100,
@@ -195,16 +199,42 @@ def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def rg_hits(gate: Gate) -> list[str]:
-    """Every `path:line:text` the gate's pattern hits under its paths."""
-    cmd = ["rg", "-n", "--no-heading", "--color", "never", gate.pattern]
-    if gate.glob:
-        cmd += ["--glob", gate.glob]
-    cmd += list(gate.paths)
-    done = run(cmd)
-    if done.returncode not in (0, 1):
-        raise RuntimeError(f"rg failed for `{gate.name}`: {done.stderr.strip()}")
-    return [line for line in done.stdout.splitlines() if line]
+def candidate_files(gate: Gate) -> list[str]:
+    """The files under the gate's paths that git tracks or would track.
+
+    Ignored files and hidden directories are skipped, and the gate's glob picks
+    the files by name: `*.rs` keeps them, `!*.yaml` drops them.
+    """
+    done = run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", *gate.paths])
+    if done.returncode != 0:
+        raise RuntimeError(f"git ls-files failed for `{gate.name}`: {done.stderr.strip()}")
+    files = []
+    for path in sorted(set(done.stdout.splitlines())):
+        if any(part.startswith(".") for part in path.split("/")):
+            continue
+        if gate.glob:
+            keep = fnmatch.fnmatch(path.rsplit("/", 1)[-1], gate.glob.removeprefix("!"))
+            if keep == gate.glob.startswith("!"):
+                continue
+        files.append(path)
+    return files
+
+
+def hits_for(gate: Gate) -> list[str]:
+    """Every `path:line:text` the gate's pattern hits, skipping binary files."""
+    pattern = re.compile(gate.pattern)
+    hits = []
+    for path in candidate_files(gate):
+        try:
+            data = (REPO / path).read_bytes()
+        except FileNotFoundError:
+            continue
+        if b"\0" in data:
+            continue
+        for number, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), start=1):
+            if pattern.search(line):
+                hits.append(f"{path}:{number}:{line}")
+    return hits
 
 
 def test_module_starts(path: str, cache: dict[str, int | None]) -> int | None:
@@ -229,11 +259,11 @@ def allowed(gate: Gate, hit: str, cache: dict[str, int | None]) -> bool:
     return start is not None and int(line) > start
 
 
-def check_rg(report: Report) -> None:
-    """Run every ripgrep gate, printing each hit and failing on a forbidden one."""
+def check_patterns(report: Report) -> None:
+    """Run every pattern gate, printing each hit and failing on a forbidden one."""
     cache: dict[str, int | None] = {}
     for gate in GATES:
-        hits = rg_hits(gate)
+        hits = hits_for(gate)
         print(f"gate: {gate.name} ({gate.expect})")
         forbidden = [hit for hit in hits if not allowed(gate, hit, cache)]
         for hit in hits:
@@ -300,13 +330,13 @@ def check_budgets(report: Report) -> None:
 
 
 def main() -> int:
-    """Run every gate; 0 when all hold, 1 when one fails, 2 without ripgrep."""
-    if shutil.which("rg") is None:
-        print("ripgrep (rg) is required: the gates cannot run, so they have not passed")
+    """Run every gate; 0 when all hold, 1 when one fails, 2 without git."""
+    if shutil.which("git") is None:
+        print("git is required: the gates cannot run, so they have not passed")
         return 2
     report = Report()
     try:
-        check_rg(report)
+        check_patterns(report)
     except RuntimeError as e:
         print(str(e))
         return 2
