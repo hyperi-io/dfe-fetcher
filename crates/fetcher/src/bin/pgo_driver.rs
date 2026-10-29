@@ -96,7 +96,7 @@ async fn main() {
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("pgo-driver: SIGINT received");
             }
-            _ = sigterm() => {
+            () = sigterm() => {
                 eprintln!("pgo-driver: SIGTERM received");
             }
         }

@@ -114,6 +114,11 @@ impl ServiceApp for App {
         }
     }
 
+    /// Not ready until `run_service` installs the pipeline's check.
+    fn readiness_check(&self, _config: &Self::Config) -> Option<scalo::metrics::ReadinessFn> {
+        Some(Arc::new(|| false))
+    }
+
     fn load_config(&self, path: Option<&str>) -> Result<Config, CliError> {
         let config =
             Config::load(path).map_err(|e| CliError::Config(format!("failed to load: {e}")))?;
@@ -221,12 +226,24 @@ async fn main() {
                 // intentionally omits Contract Identity Annotation labels.
                 // The full ci/ pipeline (`generate-artefacts`) is where
                 // identity gets stamped in once scalo wires it.
-                println!("{}", generate_dockerfile(&contract, None));
+                match generate_dockerfile(&contract, None) {
+                    Ok(dockerfile) => println!("{dockerfile}"),
+                    Err(e) => {
+                        eprintln!("fatal: the deployment contract is invalid: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 return;
             }
             AppCommand::EmitCompose => {
                 let contract = deployment::contract();
-                println!("{}", generate_compose_fragment(&contract));
+                match generate_compose_fragment(&contract) {
+                    Ok(compose) => println!("{compose}"),
+                    Err(e) => {
+                        eprintln!("fatal: the deployment contract is invalid: {e}");
+                        std::process::exit(1);
+                    }
+                }
                 return;
             }
             AppCommand::EmitContract => {
@@ -851,6 +868,9 @@ mod tests {
             }
         }
         let app = App::parse_from(["dfe-fetcher", "--config", path]);
+        // run_app sets the cascade up from --config before load_config.
+        scalo::config::setup(app.common_args().to_config_options(app.env_prefix()))
+            .expect("cascade sets up");
         app.load_config(Some(path)).expect("config loads");
         let resolved =
             VersionCheckConfig::from_cascade_or(app.name(), "0.0.0", app.version_check_defaults());

@@ -15,10 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use scalo::deployment::{
-    CONTRACT_SCHEMA_VERSION, DeploymentContract, HealthContract, ImageProfile, NativeDepsContract,
-    PortContract, ResourceList, ResourcesContract, SecretEnvContract, SecretGroupContract,
-    SecurityContract, ServiceAccount, WritablePath, base_image_from_cascade,
-    image_registry_from_cascade,
+    DeploymentContract, HealthContract, ImageProfile, NativeDepsContract, PortContract,
+    ResourceList, ResourcesContract, SecretEnvContract, SecretGroupContract, WritablePath,
+    base_image_from_cascade, image_registry_from_cascade,
 };
 
 /// Where the cursor store keeps its files, on the contract's persistent
@@ -116,7 +115,6 @@ pub fn contract() -> DeploymentContract {
                 .bound_from("extractors.vector.grpc_bind_address")
                 .app_protocol("kubernetes.io/h2c"),
         ],
-        unbound_listen_paths: vec![],
         hot_paths: HOT_PATHS.map(String::from).to_vec(),
         entrypoint_args: vec!["--config".into(), "/etc/dfe/fetcher.yaml".into()],
         secrets: secrets(),
@@ -125,7 +123,6 @@ pub fn contract() -> DeploymentContract {
         // The fetcher polls its upstreams rather than draining a queue, so it
         // never scales out and the chart carries no ScaledObject.
         keda: None,
-        schema_version: CONTRACT_SCHEMA_VERSION,
         // scalo writes no vendor, licence or copyright of its own, so the
         // labels and the generated Dockerfile header carry exactly these.
         oci_labels: scalo::deployment::OciLabels {
@@ -156,9 +153,7 @@ pub fn contract() -> DeploymentContract {
                 memory: "256Mi".into(),
             },
         },
-        security: SecurityContract::default(),
-        singleton: false,
-        service_account: ServiceAccount::Own,
+        ..DeploymentContract::default()
     }
 }
 
@@ -586,7 +581,7 @@ mod tests {
     #[test]
     fn test_contract_schema_version() {
         let c = contract();
-        assert_eq!(c.schema_version, CONTRACT_SCHEMA_VERSION);
+        assert_eq!(c.schema_version, scalo::deployment::CONTRACT_SCHEMA_VERSION);
     }
 
     #[test]
@@ -786,7 +781,7 @@ mod tests {
         // reach production silently.
         let path = repo_root().join("Dockerfile");
         let on_disk = std::fs::read_to_string(&path).expect("read Dockerfile");
-        let generated = generate_dockerfile(&contract(), None);
+        let generated = generate_dockerfile(&contract(), None).expect("the contract is valid");
         assert_eq!(
             on_disk.trim(),
             generated.trim(),

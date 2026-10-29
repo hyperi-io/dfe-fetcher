@@ -32,7 +32,7 @@ use dfe_fetcher_core::batch::{Lease, NoLease};
 use dfe_fetcher_core::envelope::{Envelope, Kind, Status};
 use dfe_fetcher_db::{DbInstance, DbShape};
 
-const INIT: &str = r#"
+const INIT: &str = r"
 CREATE TABLE assets (
     id integer PRIMARY KEY,
     name text NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE assets (
 INSERT INTO assets
 SELECT n, 'asset-' || n, n % 2 = 0, '2026-01-01 00:00:00+00'::timestamptz + (n || ' minutes')::interval
 FROM generate_series(0, 14) AS n;
-"#;
+";
 
 #[tokio::test]
 async fn a_postgres_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id() {

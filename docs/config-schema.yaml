@@ -233,6 +233,7 @@ properties:
       queue_capacity: 10000
       batch_size: 256
       flush_interval_ms: 100
+      max_payload_bytes: 524288
       file:
         enabled: true
         path: /var/spool/dfe/dlq
@@ -6406,6 +6407,18 @@ $defs:
         format: uint64
         minimum: 0
         default: 100
+      max_payload_bytes:
+        description: |-
+          Payload bytes an entry keeps: a longer payload is cut to this and the
+          entry marked `truncated` with its original length, so it lands where
+          the whole record could not. `None` keeps every payload whole. Default
+          [`DEFAULT_MAX_PAYLOAD_BYTES`].
+        type:
+        - integer
+        - "null"
+        format: uint
+        minimum: 0
+        default: 524288
       file:
         description: File backend configuration.
         $ref: "#/$defs/FileDlqConfig"
@@ -6604,11 +6617,11 @@ $defs:
         description: |-
           Consumer group ID.
 
-          Empty marks a producer-only transport: it subscribes to nothing, even
-          when `topics` is set. scalo's own consumer clients (the admin's
-          offset-query consumer, the idle consumer of a producer-only transport)
-          take a group id derived from this field, or from `client_id` when it is
-          empty, so a broker granting groups by prefix covers them too.
+          Empty means [`KafkaTransport::new`](super::KafkaTransport::new) builds
+          no consumer, and [`KafkaTransport::receiver`](super::KafkaTransport::receiver)
+          refuses the config. The admin's offset-query consumer takes a group id
+          derived from this field, or from `client_id` when it is empty, so a
+          broker granting groups by prefix covers it too.
         type: string
         default: scalo-consumer
       client_id:

@@ -823,6 +823,7 @@ impl PipelineState {
         for letter in letters {
             let entry = DlqEntry::new("dfe-fetcher", &letter.reason, letter.payload.to_vec())
                 .with_destination(&*letter.topic);
+            let entry = dlq.cap(entry);
             if let Some(refusal) = dlq.refusal(&entry) {
                 dropped += 1;
                 self.metrics.add_dead_letters_dropped(refusal.as_str(), 1);

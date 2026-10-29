@@ -44,9 +44,9 @@ use dfe_fetcher_db::DbInstance;
 use dfe_fetcher_file::FileInstance;
 use dfe_fetcher_rest::RestInstance;
 use dfe_fetcher_rest::profile::SignaturePreset;
+use scalo::config;
 use scalo::config::flat_env::{self, ApplyFlatEnv};
 use scalo::config::sensitive::SensitiveString;
-use scalo::config::{self, ConfigOptions};
 use scalo::dlq::DlqConfig;
 use scalo::transport::AcknowledgementsConfig;
 use serde::{Deserialize, Serialize};
@@ -345,21 +345,13 @@ impl Config {
     pub fn load(config_path: Option<&str>) -> Result<Self> {
         // If an explicit config file is provided, load it directly
         if let Some(path) = config_path {
-            init_cascade(path)?;
             return Self::load_from_file(path);
         }
 
-        // Otherwise, use scalo's 7-layer cascade
-        config::setup(ConfigOptions {
-            env_prefix: ENV_PREFIX.to_string(),
-            config_paths: Vec::new(),
-            load_dotenv: true,
-            ..Default::default()
-        })
-        .map_err(|e| Error::Config(format!("failed to setup config: {e}")))?;
-
-        // Get the global config and unmarshal to our struct
-        let cfg = config::get();
+        // Otherwise, read scalo's 7-layer cascade, which run_app sets up.
+        let cfg = config::try_get().ok_or_else(|| {
+            Error::Config("the config cascade is not set up: scalo's run_app sets it up".into())
+        })?;
 
         // A deserialise failure is fatal. Defaulting instead discards the whole
         // file over one mistyped value, leaving a fetcher with no sources
@@ -876,26 +868,6 @@ impl Config {
             }
         }
         Ok(())
-    }
-}
-
-/// Set up scalo's cascade with the `--config` file as its settings layer.
-///
-/// The fetcher reads its own sections from the file directly, but the sections
-/// scalo's runtime owns (`version_check`, `metrics` and the rest) resolve from
-/// the cascade alone. A reload re-enters here, and the cascade is set once per
-/// process.
-fn init_cascade(path: &str) -> Result<()> {
-    let opts = ConfigOptions {
-        env_prefix: ENV_PREFIX.to_string(),
-        config_paths: vec![std::path::PathBuf::from(path)],
-        // A working-tree `.env` must not reach a deployment's `--config` load.
-        load_dotenv: false,
-        ..Default::default()
-    };
-    match config::setup(opts) {
-        Ok(()) | Err(config::ConfigError::AlreadyInitialised) => Ok(()),
-        Err(e) => Err(Error::Config(format!("failed to setup config: {e}"))),
     }
 }
 
@@ -6199,16 +6171,20 @@ kafka:
                 ("DFE_FETCHER_CONFIG_RELOAD_SECS", "not-a-number"),
             ],
             || {
-                // An already-initialised global makes Config::load fail at
-                // `config::setup` instead, which would pass the assertion below
-                // for the wrong reason.
+                // An already-initialised global was set up from another test's
+                // environment, so the unmarshal would not see this one.
                 assert!(
                     config::try_get().is_none(),
                     "the scalo config global is already initialised in this \
-                     process, so Config::load(None) cannot reach the unmarshal. \
-                     Run under `cargo nextest` (one process per test), not \
-                     `cargo test`."
+                     process, so Config::load(None) cannot read this test's \
+                     environment. Run under `cargo nextest` (one process per \
+                     test), not `cargo test`."
                 );
+                config::setup(config::ConfigOptions {
+                    env_prefix: ENV_PREFIX.to_string(),
+                    ..Default::default()
+                })
+                .expect("cascade sets up");
 
                 let err = Config::load(None)
                     .err()

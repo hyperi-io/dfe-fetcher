@@ -238,7 +238,7 @@ impl OutputManager {
         if output.includes_kafka() {
             let kafka_config = resolve_kafka_config(output, legacy_kafka);
 
-            let transport = KafkaTransport::new(&kafka_config)
+            let transport = KafkaTransport::sender(&kafka_config)
                 .await
                 .map_err(|e| Error::Transport(format!("kafka init failed: {e}")))?;
 
