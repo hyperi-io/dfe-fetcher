@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.45](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.44...v1.4.45) (2026-10-29)
+
+### Bug Fixes
+
+* 2.2.2 round on scalo 2.14.22 ([#262](https://github.com/hyperi-io/dfe-fetcher/issues/262)) ([e8e3245](https://github.com/hyperi-io/dfe-fetcher/commit/e8e3245184a4fdf6a358f2959f0eb2ad05a878bb))
+* bring the clippy config to the baseline ([#261](https://github.com/hyperi-io/dfe-fetcher/issues/261)) ([eb9232d](https://github.com/hyperi-io/dfe-fetcher/commit/eb9232dc95efc86b7d8389f4654c6fac6d7b585b))
+
 ## [1.4.44](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.43...v1.4.44) (2026-10-28)
 
 ### Bug Fixes
