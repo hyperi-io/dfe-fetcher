@@ -3102,6 +3102,30 @@ mod tests {
         );
     }
 
+    /// Names where one is a prefix of another, in the order Duo's own
+    /// `canonicalize_parameters` (duo_hmac_python, `duo_hmac/duo_canonicalize.py`)
+    /// returns them. It sorts the encoded NAMES and each name's values on their
+    /// own, then joins `name=value`. Sorting the joined strings instead would
+    /// put `a=1` after `a1=3` and `a.b=2`, because `=` sorts above `.` and the
+    /// digits. The expected string is that function's output for
+    /// `{a: [1], a.b: [2], a1: [3], a-b: [4], a/b: [5], b: [6, 0]}`.
+    #[tokio::test]
+    async fn the_canonical_query_orders_prefix_shaped_names_as_duos_reference_does() {
+        let mode = duo(SignaturePreset::DuoV5).unwrap();
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://api-deadbeef.duosecurity.com/admin/v2/logs/authentication?b=6&a1=3&a.b=2&a=1&a-b=4&a/b=5&b=0"
+                .parse()
+                .unwrap(),
+        );
+        let canonical = canonical_at_vector_date(signer(&mode), &request);
+        assert_eq!(
+            canonical.lines().nth(4),
+            Some("a=1&a%2Fb=5&a-b=4&a.b=2&a1=3&b=0&b=6"),
+            "{canonical}"
+        );
+    }
+
     /// The two arms of the axis the Duo and Cortex vectors leave unexercised:
     /// an HMAC-SHA256, pinned by RFC 4231's second test case, and the base64
     /// encoding, which is that same digest written the other way.
