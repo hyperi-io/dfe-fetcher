@@ -33,7 +33,7 @@ pub trait ResolveSecret {
 }
 
 /// Prefixes the resolver strips and resolves; a spec starting with anything
-/// else is a literal credential. `bao:` and `openbao:` are the OpenBao
+/// else is a literal credential. `bao:` and `openbao:` are the `OpenBao`
 /// tooling's spellings of the same KV lookup as `vault:`.
 const RESOLVED_PREFIXES: [&str; 5] = ["vault:", "bao:", "openbao:", "env:", "file:"];
 

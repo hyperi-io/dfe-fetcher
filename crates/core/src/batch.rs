@@ -241,7 +241,7 @@ pub struct Batch {
     pub marks: Vec<Mark>,
     /// Payload bytes in the batch.
     pub bytes: usize,
-    _leased: Leased,
+    leased: Leased,
 }
 
 impl std::fmt::Debug for Batch {
@@ -250,7 +250,7 @@ impl std::fmt::Debug for Batch {
             .field("rows", &self.rows.len())
             .field("marks", &self.marks.len())
             .field("bytes", &self.bytes)
-            .field("leased", &self._leased.bytes)
+            .field("leased", &self.leased.bytes)
             .finish()
     }
 }
@@ -367,7 +367,7 @@ impl Batcher {
             rows,
             marks: std::mem::take(&mut self.marks),
             bytes,
-            _leased: Leased {
+            leased: Leased {
                 lease: Arc::clone(&self.lease),
                 bytes: bytes as u64,
             },
