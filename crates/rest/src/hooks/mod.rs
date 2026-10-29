@@ -19,6 +19,7 @@
 //! beside them: a listing protocol standing where a unit's page fetch would.
 
 mod cloudtrail_event;
+mod cloudwatch_logs;
 mod cloudwatch_metrics;
 mod columnar_table;
 mod event_time;
@@ -44,6 +45,8 @@ pub use s3_list::Lister;
 pub enum RowBuilder {
     /// A columnar table becomes one object per row keyed by column name.
     ColumnarTable,
+    /// A CloudWatch Logs event with the call's log group and region on it.
+    CloudwatchLogs,
     /// A CloudWatch `GetMetricData` response joined with the descriptors
     /// the batch asked for: one JSON row per datapoint, or one OTLP
     /// protobuf per response.
@@ -68,6 +71,7 @@ impl RowBuilder {
     pub fn build(kind: Option<RowBuilderKind>) -> Option<Self> {
         kind.map(|kind| match kind {
             RowBuilderKind::ColumnarTable => RowBuilder::ColumnarTable,
+            RowBuilderKind::CloudwatchLogs => RowBuilder::CloudwatchLogs,
             RowBuilderKind::CloudwatchMetrics => RowBuilder::CloudwatchMetrics,
             RowBuilderKind::GoModuleAggregate => RowBuilder::GoModuleAggregate,
             RowBuilderKind::WrapNonObject => RowBuilder::WrapNonObject,
@@ -86,6 +90,7 @@ impl RowBuilder {
     pub fn expand(self, row: &[u8], ctx: &TemplateCtx) -> Result<Vec<Bytes>> {
         match self {
             RowBuilder::ColumnarTable => columnar_table::expand(row),
+            RowBuilder::CloudwatchLogs => cloudwatch_logs::expand(row, ctx),
             RowBuilder::CloudwatchMetrics => cloudwatch_metrics::expand(row, ctx),
             RowBuilder::WrapNonObject => wrap_non_object::expand(row),
             RowBuilder::PubsubMessage => pubsub_message::expand(row, ctx),
@@ -108,6 +113,7 @@ impl RowBuilder {
         match self {
             RowBuilder::GoModuleAggregate => go_module_aggregate::fold(rows, ctx),
             RowBuilder::ColumnarTable
+            | RowBuilder::CloudwatchLogs
             | RowBuilder::CloudwatchMetrics
             | RowBuilder::WrapNonObject
             | RowBuilder::PubsubMessage
@@ -129,6 +135,7 @@ impl RowBuilder {
         match self {
             RowBuilder::CloudwatchMetrics => Ok(cloudwatch_metrics::queries(ids, ctx)),
             RowBuilder::ColumnarTable
+            | RowBuilder::CloudwatchLogs
             | RowBuilder::GoModuleAggregate
             | RowBuilder::WrapNonObject
             | RowBuilder::PubsubMessage

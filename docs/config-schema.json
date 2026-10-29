@@ -5032,6 +5032,11 @@
           "const": "columnar_table"
         },
         {
+          "description": "A CloudWatch Logs event gets the call's log group (`logGroupName`, from\n`vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which\n`FilterLogEvents` leaves off the events.",
+          "type": "string",
+          "const": "cloudwatch_logs"
+        },
+        {
           "description": "A CloudWatch `GetMetricData` response joined with the metric\ndescriptors the lookup asked for: one JSON row per datapoint, or one\nOTLP protobuf per response when `vars.output_format` is `otlp`.",
           "type": "string",
           "const": "cloudwatch_metrics"

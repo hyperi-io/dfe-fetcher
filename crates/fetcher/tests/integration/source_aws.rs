@@ -1160,6 +1160,12 @@ async fn test_aws_fetch_cloudwatch_logs_success() {
     );
     assert_signed(&seen[0], ACCESS_KEY, "us-east-1", "logs");
     assert_eq!(ids(&rows, "eventId"), ["ev-1", "ev-2", "ev-3"]);
+    assert_eq!(
+        ids(&rows, "logGroupName"),
+        ["/aws/lambda/test"; 3],
+        "the group is a property of the call, stamped on each event"
+    );
+    assert_eq!(ids(&rows, "awsRegion"), ["us-east-1"; 3]);
     for row in &rows {
         assert_eq!(enriched(row).source_fetcher, "aws.cloudwatch_logs");
     }

@@ -4418,6 +4418,12 @@ $defs:
       type: string
       const: columnar_table
     - description: |-
+        A CloudWatch Logs event gets the call's log group (`logGroupName`, from
+        `vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which
+        `FilterLogEvents` leaves off the events.
+      type: string
+      const: cloudwatch_logs
+    - description: |-
         A CloudWatch `GetMetricData` response joined with the metric
         descriptors the lookup asked for: one JSON row per datapoint, or one
         OTLP protobuf per response when `vars.output_format` is `otlp`.

@@ -63,7 +63,7 @@ permission.
 | GuardDuty | `guardduty:ListDetectors`, `guardduty:ListFindings`, `guardduty:GetFindings` | One detector per region; fetcher walks all detectors and looks findings up under the detector that listed them |
 | SecurityHub | `securityhub:GetFindings` | Requires SecurityHub enabled in the account; fetches every finding whose record changed in the window, in any workflow status, so a finding's resolution arrives as an update. The `workflow_status` knob narrows it |
 | Config | `config:SelectResourceConfig` | Requires AWS Config recording in the account; the `expression` knob replaces the default query |
-| CloudWatch Logs | `logs:FilterLogEvents`, `logs:DescribeLogGroups`, `logs:DescribeLogStreams`, `logs:GetLogEvents` | Per-service config must set `log_group_name` |
+| CloudWatch Logs | `logs:FilterLogEvents` | Per-service config must set `log_group_name`. Each event carries `logGroupName` and `awsRegion` from the call |
 | CloudWatch Metrics | `cloudwatch:ListMetrics`, `cloudwatch:GetMetricData`, `cloudwatch:GetMetricStatistics`, `cloudwatch:DescribeAlarms` | Per-service config must set `namespaces` |
 | Inspector | `inspector2:ListFindings` (or managed policy `AmazonInspector2ReadOnlyAccess`) | Inspector v2; returns empty unless enabled tenant-side |
 | Health | `health:DescribeEvents` | Requires Business / Enterprise On-Ramp / Enterprise Support tier |
@@ -114,10 +114,7 @@ permission.
       "Sid": "CloudWatchLogsRead",
       "Effect": "Allow",
       "Action": [
-        "logs:FilterLogEvents",
-        "logs:DescribeLogGroups",
-        "logs:DescribeLogStreams",
-        "logs:GetLogEvents"
+        "logs:FilterLogEvents"
       ],
       "Resource": "*"
     },

@@ -152,7 +152,7 @@ endpoints:
       endTime: "{{ int(window.end) }}"
       limit: 10000
       filterPattern: "{{ vars.filter_pattern != '' ? vars.filter_pattern : null }}"
-    rows: { decoder: json_at, at: "/events" }
+    rows: { decoder: json_at, at: "/events", builder: cloudwatch_logs }
     paginate: { strategy: cursor, from: "body:/nextToken", into: "body:/nextToken" }
   - unit: cloudwatch_metrics
     vars: { service: monitoring }
