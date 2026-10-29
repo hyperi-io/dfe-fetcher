@@ -254,6 +254,10 @@ async fn main() {
     }
 }
 
+/// How long shutdown waits for the source drivers to stop what they run, so a
+/// file tailer's final checkpoint is written before the process exits.
+const DRIVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// One connection's fetch task, ready to schedule: a source type expands
 /// into one entry per connection, each keyed on its connection id (cursor
 /// key + metric/log label).
@@ -624,6 +628,7 @@ async fn run_fetcher_service(
     // fetch task holds the only `Arc<Driver>`: a cancelled task then drops its
     // driver and releases the connection's credentials and client.
     let mut running: HashMap<String, CancellationToken> = HashMap::new();
+    let mut drivers: Vec<Arc<Driver>> = Vec::new();
     for entry in entries {
         // Surface non-stable sources at startup: the profile declares the
         // maturity, and anything not stable is code-complete but not
@@ -651,6 +656,7 @@ async fn run_fetcher_service(
             entry.driver.connection_id().to_owned(),
             entry.cancel.clone(),
         );
+        drivers.push(Arc::clone(&entry.driver));
         scheduler.spawn_source_task(
             entry.driver,
             entry.interval_secs,
@@ -740,6 +746,19 @@ async fn run_fetcher_service(
 
     // Run pipeline orchestrator (blocks until shutdown)
     let run = orchestrator.run().await;
+
+    // The fetch tasks end on the same shutdown, but nothing waits for them, so
+    // a file tailer's final checkpoint is written here, before the runtime
+    // goes. A tick that will not release the tailer cannot hold the exit.
+    if tokio::time::timeout(
+        DRIVER_STOP_TIMEOUT,
+        futures::future::join_all(drivers.iter().map(|d| d.stop())),
+    )
+    .await
+    .is_err()
+    {
+        warn!("a source driver did not stop in time; its tailer's last checkpoint may be missing");
+    }
 
     // Before any exit: process::exit skips drops, leaving the managed Vector
     // containers running and their inline configs on disk.
