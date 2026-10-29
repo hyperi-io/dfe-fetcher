@@ -1150,21 +1150,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clickhouse-dfe"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b3fff89c4968c1d27c1ce2502b84f07b1941804579436ec8055d8d7d8597382"
-dependencies = [
- "bytes",
- "clickhouse",
- "futures-util",
- "serde",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "clickhouse-macros"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1820,6 +1805,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dfe-clickhouse"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59325ab2a05b008f27f2342a0bcab5c14ea7049626744b1be60b85dfc1194155"
+dependencies = [
+ "bytes",
+ "clickhouse",
+ "futures-util",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dfe-fetcher"
 version = "1.3.0"
 dependencies = [
@@ -1908,7 +1908,7 @@ dependencies = [
  "bson",
  "bytes",
  "clickhouse",
- "clickhouse-dfe",
+ "dfe-clickhouse",
  "dfe-fetcher-core",
  "futures",
  "metrics",
@@ -7115,7 +7115,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",

@@ -13,7 +13,7 @@
 //! itself, and reads the body chunk by chunk: an unpolled body stalls the TCP
 //! window, which is the backpressure. Parameters travel as `param_<name>`
 //! query arguments and are bound server-side, never interpolated. The
-//! `clickhouse-dfe` extensions add the ping the probe uses and the typed
+//! `dfe-clickhouse` extensions add the ping the probe uses and the typed
 //! server exception the error mapping reads.
 //!
 //! # Type mapping
@@ -45,7 +45,7 @@ use std::sync::Arc;
 
 use clickhouse::Client;
 use clickhouse::query::BytesCursor;
-use clickhouse_dfe::{ClientExt, ServerException};
+use dfe_clickhouse::{ClientExt, ServerException};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use serde::Deserialize;
