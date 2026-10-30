@@ -34,7 +34,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use backon::BackoffBuilder;
-use bytes::Bytes;
 use scalo::http_client::{HttpClientConfig, RequestSigner};
 
 use dfe_fetcher_core::error::{Error, Result};
@@ -397,10 +396,18 @@ impl RequestExecutor {
     }
 
     /// The provider's error text: the value at `error.at` when the body is JSON
-    /// and carries it, else the body's first bytes.
-    async fn error_text(&self, response: reqwest::Response) -> String {
-        let body: Bytes = response.bytes().await.unwrap_or_default();
-        let body = &body[..body.len().min(ERROR_BODY_BYTES)];
+    /// and carries it, else the body's first bytes. Only the first
+    /// [`ERROR_BODY_BYTES`] are read, so a refusal of any size holds no more.
+    async fn error_text(&self, mut response: reqwest::Response) -> String {
+        let mut body = Vec::with_capacity(ERROR_BODY_BYTES);
+        while body.len() < ERROR_BODY_BYTES {
+            let Ok(Some(chunk)) = response.chunk().await else {
+                break;
+            };
+            let room = ERROR_BODY_BYTES - body.len();
+            body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        }
+        let body = body.as_slice();
         if let Some(pointer) = &self.error_at
             && let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
             && let Some(text) = value.pointer(pointer)
@@ -552,5 +559,65 @@ mod tests {
             "refused at the gate, never signed: {err:?}"
         );
         assert_eq!(err.api_error_code(), "origin_refused");
+    }
+
+    /// A refusal's error text is the body's first bytes, read without waiting
+    /// for the rest: the provider below announces a megabyte, sends 8 KiB and
+    /// drops the connection, which a whole-body read sees only as a failed read.
+    #[tokio::test]
+    async fn a_refusal_body_is_read_only_as_far_as_the_error_text() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await;
+            let head = "HTTP/1.1 500 Internal Server Error\r\ncontent-type: text/plain\r\n\
+                        content-length: 1048576\r\n\r\n";
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(&[b'x'; 8192]).await.unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let executor = RequestExecutor::new(
+            reqwest::Client::new(),
+            RetrySpec {
+                max_retries: 0,
+                ..RetrySpec::default()
+            },
+            None,
+            Vec::new(),
+        );
+        let mut origins = OriginSet::new();
+        let base = format!("http://{addr}");
+        assert!(origins.permit(&base));
+        let ctx = TemplateCtx::new();
+        let err = executor
+            .send(
+                Sending {
+                    source: "huge-refusal",
+                    auth: &AuthMode::None,
+                    ctx: &ctx,
+                    origins: &origins,
+                    idempotent: true,
+                    ignore: &[],
+                },
+                || {
+                    Ok(reqwest::Request::new(
+                        reqwest::Method::GET,
+                        format!("{base}/x").parse().unwrap(),
+                    ))
+                },
+            )
+            .await
+            .expect_err("a 500 is an error");
+        let Error::Api { status, text, .. } = err else {
+            panic!("an API error: {err:?}");
+        };
+        assert_eq!(status, 500);
+        assert_eq!(text.len(), ERROR_BODY_BYTES, "the first bytes, capped");
+        assert!(text.bytes().all(|b| b == b'x'));
     }
 }

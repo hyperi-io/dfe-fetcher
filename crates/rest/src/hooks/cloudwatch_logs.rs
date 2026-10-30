@@ -1,20 +1,22 @@
 // Project:   dfe-fetcher
 // File:      crates/rest/src/hooks/cloudwatch_logs.rs
-// Purpose:   The CloudWatch Logs row builder: the log group and region of the call stamped on each event
+// Purpose:   The CloudWatch Logs row builder: the log group, account and region of the call stamped on each event
 // Language:  Rust
 //
 // License:   BUSL-1.1
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! A `FilterLogEvents` event carries `eventId`, `logStreamName`, `timestamp`,
-//! `ingestionTime` and `message`. The log group and the region belong to the
-//! call, so a row read without them cannot say which group it came from, and
-//! a deployment polling several groups from one source cannot tell them apart.
+//! `ingestionTime` and `message`. The log group, the account and the region
+//! belong to the call, so a row read without them cannot say which group it
+//! came from, and a deployment polling several groups or accounts from one
+//! source cannot tell them apart.
 //!
-//! The row gets `logGroupName` from the unit's `log_group_name` var and
-//! `awsRegion` from its `region` var, the keys the meta schema and CloudTrail
-//! already use. A key the event already carries is left alone, and a row that
-//! is not a JSON object lands unchanged.
+//! The row gets `logGroupName` from the unit's `log_group_name` var,
+//! `awsAccountId` from its `account_id` var (the account of the role the
+//! instance assumes) and `awsRegion` from its `region` var. A var that is unset
+//! stamps nothing, a key the event already carries is left alone, and a row
+//! that is not a JSON object lands unchanged.
 
 use bytes::Bytes;
 use serde_json::Value;
@@ -24,9 +26,13 @@ use dfe_fetcher_core::error::{Error, Result};
 use crate::profile::template::TemplateCtx;
 
 /// (row key, unit var) pairs stamped onto each event.
-const STAMPS: [(&str, &str); 2] = [("logGroupName", "log_group_name"), ("awsRegion", "region")];
+const STAMPS: [(&str, &str); 3] = [
+    ("logGroupName", "log_group_name"),
+    ("awsAccountId", "account_id"),
+    ("awsRegion", "region"),
+];
 
-/// The event with the call's log group and region on it.
+/// The event with the call's log group, account and region on it.
 pub(super) fn expand(row: &[u8], ctx: &TemplateCtx) -> Result<Vec<Bytes>> {
     let unchanged = || Ok(vec![Bytes::copy_from_slice(row)]);
     if row.trim_ascii_start().first() != Some(&b'{') {
@@ -85,11 +91,16 @@ mod tests {
     }
 
     #[test]
-    fn the_log_group_and_region_are_stamped_and_the_event_kept() {
-        let vars = json!({"log_group_name": "/aws/lambda/test", "region": "ap-southeast-2"});
+    fn the_log_group_account_and_region_are_stamped_and_the_event_kept() {
+        let vars = json!({
+            "log_group_name": "/aws/lambda/test",
+            "account_id": "123456789012",
+            "region": "ap-southeast-2"
+        });
         let out: Value =
             serde_json::from_slice(&expanded(&event().to_string(), vars)).expect("a JSON row");
         assert_eq!(out["logGroupName"], "/aws/lambda/test");
+        assert_eq!(out["awsAccountId"], "123456789012");
         assert_eq!(out["awsRegion"], "ap-southeast-2");
         for (key, value) in event().as_object().expect("an object") {
             assert_eq!(&out[key], value, "{key} must survive the stamp");
@@ -122,5 +133,9 @@ mod tests {
         let out: Value = serde_json::from_slice(&expanded(&row, vars)).expect("a JSON row");
         assert_eq!(out["logGroupName"], "g");
         assert_eq!(out["awsRegion"], "theirs");
+        assert!(
+            out.get("awsAccountId").is_none(),
+            "no role, no account var: nothing stamped"
+        );
     }
 }
