@@ -294,6 +294,73 @@ fn an_empty_env_value_is_not_a_setting() {
     );
 }
 
+/// An env value that reads as a number reaches a string field as written: a
+/// numeric secret or account id used to refuse startup with the value in the
+/// error. A value that fits no field is refused naming the key, not the value.
+#[test]
+fn a_numeric_env_value_reaches_a_string_field_and_an_error_names_no_value() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(
+        &dir,
+        "kafka:\n  brokers: [broker:9092]\nsources:\n  rest:\n    rz:\n      topic: runzero\n      \
+         profile: runzero\n      auth: { mode: bearer, token: \"env:RZ\" }\n",
+    );
+    let cases = [
+        (
+            "DFE_FETCHER__SOURCES__AWS__SECRET_ACCESS_KEY",
+            "987654321012",
+            "sources.aws.secret_access_key",
+        ),
+        (
+            "DFE_FETCHER__SOURCES__AWS__SECRET_ACCESS_KEY",
+            "[123,456]",
+            "sources.aws.secret_access_key",
+        ),
+        (
+            "DFE_FETCHER_SOURCES__AWS__ACCESS_KEY_ID",
+            "000123",
+            "sources.aws.access_key_id",
+        ),
+        (
+            "DFE_FETCHER__SOURCES__REST__RZ__AUTH__TOKEN",
+            "123456789987",
+            "sources.rest.rz.auth.token",
+        ),
+        (
+            "DFE_FETCHER__SCHEDULER__DEFAULT_INTERVAL_SECS",
+            "60",
+            "scheduler.default_interval_secs",
+        ),
+    ];
+    for (var, value, field) in cases {
+        // SAFETY: test-only; set and removed inside this one locked test.
+        unsafe { std::env::set_var(var, value) };
+        let loaded = Config::load_from_file(&path);
+        unsafe { std::env::remove_var(var) };
+        let applied = expose_during(|| serde_json::to_value(loaded.expect("config loads")))
+            .expect("config serialises");
+        let reached = at(&applied, field).is_some_and(|v| {
+            v.as_str() == Some(value) || v.as_u64().is_some_and(|n| n.to_string() == value)
+        });
+        // The message names the variable, never the value.
+        assert!(reached, "{var} did not reach its field as written");
+    }
+
+    const BAD: &str = "DFE_FETCHER__SCHEDULER__DEFAULT_INTERVAL_SECS";
+    // SAFETY: test-only; removed immediately after the load.
+    unsafe { std::env::set_var(BAD, "secret-ish-987") };
+    let refused = Config::load_from_file(&path);
+    unsafe { std::env::remove_var(BAD) };
+    let err = refused.expect_err("a string is no interval").to_string();
+    assert!(
+        err.contains("default_interval_secs") && !err.contains("secret-ish-987"),
+        "the error names the key and never the value: {err}"
+    );
+}
+
 // ============================================================================
 // Kafka SASL
 // ============================================================================

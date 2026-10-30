@@ -1606,6 +1606,13 @@ impl GoogleWorkspaceSourceConfig {
 /// `max_results` is sent as the cap.
 const AWS_MAX_RESULTS: u64 = 100;
 
+/// The 12-digit account an ARN (`arn:<partition>:<service>:<region>:<account>:...`)
+/// belongs to, or `None` when it names none.
+fn arn_account(arn: &str) -> Option<&str> {
+    let account = arn.trim().strip_prefix("arn:")?.split(':').nth(3)?;
+    (account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit())).then_some(account)
+}
+
 /// The workflow statuses Security Hub's `GetFindings` filter accepts.
 const SECURITYHUB_WORKFLOW_STATUSES: [&str; 4] = ["NEW", "NOTIFIED", "RESOLVED", "SUPPRESSED"];
 
@@ -1670,6 +1677,9 @@ impl AwsSourceConfig {
                         .collect();
                     let mut vars = BTreeMap::new();
                     vars.insert("region".into(), Value::String(config.region.clone()));
+                    if let Some(account) = config.assume_role_arn.as_deref().and_then(arn_account) {
+                        vars.insert("account_id".into(), Value::String(account.to_owned()));
+                    }
                     if let Some(url) = config.endpoint_override.as_deref().filter(|u| !u.is_empty()) {
                         vars.insert("endpoint_url".into(), Value::String(url.to_owned()));
                     }
@@ -3549,7 +3559,11 @@ mod tests {
             "no role unless the block names one"
         );
         assert_eq!(i.vars["region"], "ap-southeast-2");
-        assert_eq!(i.vars.len(), 1, "no endpoint override: the public hosts");
+        assert_eq!(
+            i.vars.len(),
+            1,
+            "no endpoint override: the public hosts; no role: no account"
+        );
 
         let mut cfg = aws();
         cfg.assume_role_arn = Some("arn:aws:iam::123456789012:role/dfe-reader".into());
@@ -3559,6 +3573,24 @@ mod tests {
             Some("arn:aws:iam::123456789012:role/dfe-reader"),
             "the role rides on the instance's identity and the signer assumes it"
         );
+        assert_eq!(
+            i.vars["account_id"], "123456789012",
+            "the role's account is the account every unit reads"
+        );
+        for arn in [
+            "arn:aws:iam:::role/x",
+            "arn:aws:iam::12345:role/x",
+            "not-an-arn",
+        ] {
+            cfg.assume_role_arn = Some(arn.into());
+            assert!(
+                !only(cfg.instances().unwrap())
+                    .instance
+                    .vars
+                    .contains_key("account_id"),
+                "{arn} names no account"
+            );
+        }
         cfg.assume_role_arn = Some("  ".into());
         assert!(
             only(cfg.instances().unwrap())

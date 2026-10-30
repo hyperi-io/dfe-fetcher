@@ -4420,8 +4420,9 @@ $defs:
       const: columnar_table
     - description: |-
         A CloudWatch Logs event gets the call's log group (`logGroupName`, from
-        `vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which
-        `FilterLogEvents` leaves off the events.
+        `vars.log_group_name`), account (`awsAccountId`, from `vars.account_id`)
+        and region (`awsRegion`, from `vars.region`), which `FilterLogEvents`
+        leaves off the events.
       type: string
       const: cloudwatch_logs
     - description: |-

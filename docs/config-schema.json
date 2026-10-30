@@ -5033,7 +5033,7 @@
           "const": "columnar_table"
         },
         {
-          "description": "A CloudWatch Logs event gets the call's log group (`logGroupName`, from\n`vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which\n`FilterLogEvents` leaves off the events.",
+          "description": "A CloudWatch Logs event gets the call's log group (`logGroupName`, from\n`vars.log_group_name`), account (`awsAccountId`, from `vars.account_id`)\nand region (`awsRegion`, from `vars.region`), which `FilterLogEvents`\nleaves off the events.",
           "type": "string",
           "const": "cloudwatch_logs"
         },

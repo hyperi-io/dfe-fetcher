@@ -495,6 +495,26 @@ fn dlq_backends(config: &Config) -> (DlqConfig, Option<ScaloKafkaConfig>) {
     )
 }
 
+/// The memory guard's settings: the `DFE_FETCHER_MEMORY_*` env vars, then
+/// `buffer.memory_limit` and `buffer.pressure_threshold` for what the env
+/// leaves unset. `buffer.pressure_threshold` always holds a value, so applied
+/// unconditionally it would override the env's threshold every time.
+fn memory_guard_config(config: &Config) -> scalo::memory::MemoryGuardConfig {
+    let mut mg_config = scalo::memory::MemoryGuardConfig::from_env("DFE_FETCHER");
+    if mg_config.limit_bytes == 0 && config.buffer.memory_limit > 0 {
+        mg_config.limit_bytes = config.buffer.memory_limit as u64;
+    }
+    let env_threshold =
+        scalo::config::flat_env::flat_env_parsed::<f64>("DFE_FETCHER", "MEMORY_PRESSURE_THRESHOLD");
+    if env_threshold.is_none()
+        && config.buffer.pressure_threshold > 0.0
+        && config.buffer.pressure_threshold <= 1.0
+    {
+        mg_config.pressure_threshold = config.buffer.pressure_threshold;
+    }
+    mg_config
+}
+
 /// Shared pipeline state accessible from handlers and schedulers.
 pub struct PipelineState {
     shared_config: SharedConfig,
@@ -525,18 +545,7 @@ impl PipelineState {
         shutdown: CancellationToken,
     ) -> Result<Self> {
         let config = shared_config.get();
-
-        // Create MemoryGuard -- prefer env vars (cgroup-aware), fall back to BufferConfig
-        let mut mg_config = scalo::memory::MemoryGuardConfig::from_env("DFE_FETCHER");
-        if mg_config.limit_bytes == 0 && config.buffer.memory_limit > 0 {
-            // Legacy config fallback: explicit limit from buffer.memory_limit
-            mg_config.limit_bytes = config.buffer.memory_limit as u64;
-        }
-        if config.buffer.pressure_threshold > 0.0 && config.buffer.pressure_threshold <= 1.0 {
-            // Honour legacy pressure_threshold if set explicitly
-            mg_config.pressure_threshold = config.buffer.pressure_threshold;
-        }
-        let memory_guard = Arc::new(MemoryGuard::new(mg_config));
+        let memory_guard = Arc::new(MemoryGuard::new(memory_guard_config(&config)));
 
         // Initialise DLQ if enabled.
         let dlq = if config.dlq.enabled {
@@ -1700,6 +1709,27 @@ mod tests {
         let written = std::fs::read_to_string(dir.path().join("dfe-fetcher/dlq.ndjson"))
             .expect("the DLQ file");
         assert_eq!(written.lines().count(), 1);
+    }
+
+    /// The env's pressure threshold wins over `buffer.pressure_threshold`,
+    /// which holds its default whether or not the file sets it. With the env
+    /// unset, the buffer value applies.
+    #[test]
+    #[allow(unsafe_code)]
+    fn the_env_pressure_threshold_wins_over_the_buffer_default() {
+        const VAR: &str = "DFE_FETCHER_MEMORY_PRESSURE_THRESHOLD";
+        let mut config = Config::default();
+        config.buffer.pressure_threshold = 0.7;
+        // SAFETY: test-only, and nextest runs each test in its own process.
+        unsafe { std::env::set_var(VAR, "0.5") };
+        let from_env = memory_guard_config(&config).pressure_threshold;
+        unsafe { std::env::remove_var(VAR) };
+        let from_buffer = memory_guard_config(&config).pressure_threshold;
+        assert!((from_env - 0.5).abs() < f64::EPSILON, "env: {from_env}");
+        assert!(
+            (from_buffer - 0.7).abs() < f64::EPSILON,
+            "buffer: {from_buffer}"
+        );
     }
 
     /// An output that reaches the bus keeps the Kafka backend, on the same

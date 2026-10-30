@@ -1274,8 +1274,9 @@ pub enum RowBuilderKind {
     /// Analytics result shape) becomes one object per row keyed by column.
     ColumnarTable,
     /// A CloudWatch Logs event gets the call's log group (`logGroupName`, from
-    /// `vars.log_group_name`) and region (`awsRegion`, from `vars.region`), which
-    /// `FilterLogEvents` leaves off the events.
+    /// `vars.log_group_name`), account (`awsAccountId`, from `vars.account_id`)
+    /// and region (`awsRegion`, from `vars.region`), which `FilterLogEvents`
+    /// leaves off the events.
     CloudwatchLogs,
     /// A CloudWatch `GetMetricData` response joined with the metric
     /// descriptors the lookup asked for: one JSON row per datapoint, or one

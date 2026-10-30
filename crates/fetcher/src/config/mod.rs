@@ -528,6 +528,11 @@ impl Config {
                 "scheduler.default_interval_secs must be > 0".into(),
             ));
         }
+        if self.scheduler.max_concurrent_fetches == 0 {
+            return Err(Error::Config(
+                "scheduler.max_concurrent_fetches must be > 0: no source would ever fetch".into(),
+            ));
+        }
 
         // Validate container extractor names are unique
         {
@@ -539,6 +544,10 @@ impl Config {
                         container.name
                     )));
                 }
+                refuse_zero_interval(
+                    &format!("extractors.containers.{}", container.name),
+                    container.interval_secs,
+                )?;
                 if container.topic.is_empty() {
                     return Err(Error::Config(format!(
                         "container extractor '{}' has empty topic",
@@ -704,6 +713,10 @@ impl Config {
                 dfe_fetcher_rest::profile::ProfileRef::Named(name) => name.clone(),
                 dfe_fetcher_rest::profile::ProfileRef::Inline(_) => connection_id.clone(),
             };
+            refuse_zero_interval(
+                &format!("sources.{block} ({connection_id})"),
+                instance.interval_secs,
+            )?;
             let mut issues = profile.validate();
             issues.extend(instance.validate(&profile));
             if let Some(first) = issues.first() {
@@ -745,6 +758,7 @@ impl Config {
             if !instance.enabled {
                 continue;
             }
+            refuse_zero_interval(&format!("sources.db.{id}"), instance.interval_secs)?;
             if let Some(filter) = &instance.filter {
                 let errors = scalo::expression::validate(filter);
                 if !errors.is_empty() {
@@ -798,6 +812,7 @@ impl Config {
             if !instance.enabled {
                 continue;
             }
+            refuse_zero_interval(&format!("sources.file.{id}"), instance.interval_secs)?;
             if let Some(filter) = &instance.filter {
                 let errors = scalo::expression::validate(filter);
                 if !errors.is_empty() {
@@ -848,6 +863,7 @@ impl Config {
             if !instance.enabled {
                 continue;
             }
+            refuse_zero_interval(&format!("sources.rest.{id}"), instance.interval_secs)?;
             let profile = dfe_fetcher_rest::profile::bound::resolve_profile(instance, shipped)
                 .map_err(|e| Error::Config(format!("sources.rest.{id}.profile: {e}")))?;
             let mut issues = profile.validate();
@@ -885,22 +901,26 @@ impl Config {
 /// an unset credential would arrive as `Some("")` and sign requests with an
 /// empty key instead of failing on the missing one.
 ///
+/// figment parses each value as a number, bool or list where it looks like
+/// one, so a key whose field wants a string and was given digits (a numeric
+/// secret, an account id) is merged again as the exact text. An error names
+/// each key and the type it found, never the value, because the value may be
+/// a secret.
+///
 /// `config_path` is `#[serde(skip)]`, so the round trip through serde loses it --
 /// it is carried across by hand.
 fn apply_nested_env(config: &mut Config) -> Result<()> {
     use figment::Figment;
+    use figment::error::{Actual, Kind};
     use figment::providers::{Env, Serialized};
     use scalo::config::sensitive::expose_during;
 
     let config_path = config.config_path.clone();
-    let prefix = format!("{ENV_PREFIX}_");
-
-    // Secrets already in the config serialise as `***REDACTED***` outside an
-    // expose window, which would overwrite them with the mask.
-    let merged = expose_during(|| {
-        // `Env::raw` hands over the untouched variable name, which is what
-        // makes the value reachable for the empty check.
-        let env = Env::raw()
+    // `Env::raw` hands over the untouched variable name, which is what makes
+    // the value reachable for the empty check.
+    let env = || {
+        let prefix = format!("{ENV_PREFIX}_");
+        Env::raw()
             .filter_map(move |key| {
                 if !key.starts_with(&prefix)
                     || std::env::var(key.as_str()).is_ok_and(|v| v.is_empty())
@@ -909,22 +929,102 @@ fn apply_nested_env(config: &mut Config) -> Result<()> {
                 }
                 Some(key.as_str()[prefix.len()..].trim_start_matches('_').into())
             })
-            .split("__");
-        // `figment::Error` is 200+ bytes; carry the message, not the value.
-        Figment::from(Serialized::defaults(&*config))
-            .merge(env)
-            .extract::<Config>()
-            .map_err(|e| e.to_string())
-    })
-    .map_err(|e| {
-        Error::Config(format!(
-            "failed to apply {ENV_PREFIX} environment overrides: {e}"
-        ))
-    })?;
+            .split("__")
+    };
 
-    *config = merged;
-    config.config_path = config_path;
-    Ok(())
+    let mut verbatim: Vec<(String, String)> = Vec::new();
+    loop {
+        // Secrets already in the config serialise as `***REDACTED***` outside
+        // an expose window, which would overwrite them with the mask.
+        let extracted = expose_during(|| {
+            let skip = verbatim.clone();
+            let parsed = env().filter(move |key| {
+                !skip
+                    .iter()
+                    .any(|(k, _)| key.as_str().eq_ignore_ascii_case(k))
+            });
+            verbatim
+                .iter()
+                .fold(
+                    Figment::from(Serialized::defaults(&*config)).merge(parsed),
+                    |figment, (key, value)| figment.merge(Serialized::default(key, value)),
+                )
+                .extract::<Config>()
+                .map_err(Box::new)
+        });
+        let causes: Vec<figment::Error> = match extracted {
+            Ok(merged) => {
+                *config = merged;
+                config.config_path = config_path;
+                return Ok(());
+            }
+            Err(e) => (*e).into_iter().collect(),
+        };
+        let mut retry = false;
+        for cause in &causes {
+            let Kind::InvalidType(
+                Actual::Unsigned(_)
+                | Actual::Signed(_)
+                | Actual::Float(_)
+                | Actual::Bool(_)
+                | Actual::Seq
+                | Actual::Map,
+                expected,
+            ) = &cause.kind
+            else {
+                continue;
+            };
+            let path = cause.path.join(".");
+            if !expected.contains("string")
+                || verbatim.iter().any(|(k, _)| k.eq_ignore_ascii_case(&path))
+            {
+                continue;
+            }
+            if let Some((key, value)) = env()
+                .iter()
+                .find(|(k, _)| k.as_str().eq_ignore_ascii_case(&path))
+            {
+                verbatim.push((key.as_str().to_owned(), value));
+                retry = true;
+            }
+        }
+        if !retry {
+            return Err(Error::Config(format!(
+                "failed to apply {ENV_PREFIX} environment overrides: {}",
+                without_values(&causes)
+            )));
+        }
+    }
+}
+
+/// Each env extraction error as its key and the type found there, never the
+/// value.
+fn without_values(causes: &[figment::Error]) -> String {
+    use figment::error::{Actual, Kind};
+
+    let shape = |actual: &Actual| match actual {
+        Actual::Str(_) => "a string",
+        Actual::Unsigned(_) | Actual::Signed(_) => "an integer",
+        Actual::Float(_) => "a float",
+        Actual::Bool(_) => "a bool",
+        Actual::Seq => "a sequence",
+        Actual::Map => "a map",
+        _ => "another type",
+    };
+    causes
+        .iter()
+        .map(|e| {
+            let found = match &e.kind {
+                Kind::InvalidType(actual, expected) | Kind::InvalidValue(actual, expected) => {
+                    format!("found {}, expected {expected}", shape(actual))
+                }
+                Kind::Message(_) => "the value does not parse".to_owned(),
+                other => other.to_string(),
+            };
+            format!("{}: {found}", e.path.join("."))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Overlay a per-connection optional field onto the resolved config: when the
@@ -955,6 +1055,16 @@ fn validate_connection_ids(type_name: &str, ids: &[&str]) -> Result<()> {
                 "sources.{type_name}: duplicate connection id '{id}' (ids must be unique)"
             )));
         }
+    }
+    Ok(())
+}
+
+/// Refuse an `interval_secs` of 0: the scheduler would start each fetch the
+/// moment the last one ended, and a scheduled container extractor's timer
+/// panics on a zero period.
+fn refuse_zero_interval(owner: &str, interval_secs: Option<u64>) -> Result<()> {
+    if interval_secs == Some(0) {
+        return Err(Error::Config(format!("{owner}: interval_secs must be > 0")));
     }
     Ok(())
 }
@@ -5112,12 +5222,68 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
+    /// A zero interval or concurrency is refused at load, naming its key: a
+    /// zero interval re-fetches without pause, a zero-period container timer
+    /// panics the process, and no permit means no source ever fetches.
     #[test]
-    fn test_invalid_scheduler_interval() {
-        let mut config = Config::default();
-        config.kafka.brokers = vec!["localhost:9092".to_string()];
-        config.scheduler.default_interval_secs = 0;
-        assert!(config.validate().is_err());
+    fn a_zero_interval_or_concurrency_is_refused_naming_its_key() {
+        const OUTPUT: &str = "output:\n  type: kafka\n  kafka:\n    brokers: [localhost:9092]\n";
+        let rest = |interval: u64| {
+            format!(
+                "sources:\n  rest:\n    rz:\n      enabled: true\n      topic: runzero\n      \
+                 interval_secs: {interval}\n      profile: runzero\n      auth: {{ mode: bearer, \
+                 token: \"env:RZ_TOKEN\" }}\n      vars: {{ base_url: \"https://rz.example/api/v1.0\" }}\n"
+            )
+        };
+        let cases = [
+            ("scheduler", "scheduler:\n  default_interval_secs: 0\n".to_owned(), "scheduler.default_interval_secs"),
+            ("concurrency", "scheduler:\n  max_concurrent_fetches: 0\n".to_owned(), "scheduler.max_concurrent_fetches"),
+            ("rest", rest(0), "sources.rest.rz: interval_secs"),
+            (
+                "typed block",
+                "sources:\n  aws:\n    enabled: true\n    interval_secs: 0\n    access_key_id: AKIAPROBE\n    \
+                 secret_access_key: \"env:AWS_SECRET\"\n    services: [{ name: cloudtrail }]\n"
+                    .to_owned(),
+                "sources.aws (aws): interval_secs",
+            ),
+            (
+                "typed connection",
+                "sources:\n  aws:\n    enabled: true\n    services: [{ name: cloudtrail }]\n    connections:\n      \
+                 - { id: acct, interval_secs: 0, access_key_id: AKIAPROBE, secret_access_key: \"env:AWS_SECRET\" }\n"
+                    .to_owned(),
+                "sources.aws (acct): interval_secs",
+            ),
+            (
+                "file",
+                "sources:\n  file:\n    exports:\n      topic: exports\n      interval_secs: 0\n      units:\n        \
+                 - { unit: assets, dump: { paths: [\"/data/*.jsonl\"] } }\n"
+                    .to_owned(),
+                "sources.file.exports: interval_secs",
+            ),
+            (
+                "db",
+                "sources:\n  db:\n    inv:\n      engine: clickhouse\n      connection_string: \"env:DSN\"\n      \
+                 interval_secs: 0\n      topic: inventory\n      stores:\n        \
+                 - { unit: rows, shape: tail, limit: 50, max_pages_per_tick: 3, row_key: \"/id\", \
+                 query: \"SELECT 1\", key: [id] }\n"
+                    .to_owned(),
+                "sources.db.inv: interval_secs",
+            ),
+            (
+                "container",
+                "extractors:\n  containers:\n    - { name: probe, image: \"busybox:1.37\", topic: probe, interval_secs: 0 }\n"
+                    .to_owned(),
+                "extractors.containers.probe: interval_secs",
+            ),
+        ];
+        for (name, yaml, key) in cases {
+            let (config, _) = Config::parse_yaml(&format!("{OUTPUT}{yaml}"), "test").expect(name);
+            let err = config.validate().expect_err(name).to_string();
+            assert!(err.contains(key), "{name}: {err}");
+        }
+        let (config, _) =
+            Config::parse_yaml(&format!("{OUTPUT}{}", rest(60)), "test").expect("rest");
+        config.validate().expect("a non-zero interval loads");
     }
 
     // -- env override tests --
