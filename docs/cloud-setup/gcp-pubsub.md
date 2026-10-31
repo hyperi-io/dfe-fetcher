@@ -1,5 +1,5 @@
 <!-- Project:   dfe-fetcher                         -->
-<!-- File:      docs/cloud-setup/gcp_pubsub.md        -->
+<!-- File:      docs/cloud-setup/gcp-pubsub.md        -->
 <!-- Purpose:   GCP Pub/Sub pull cloud admin setup guide -->
 <!-- Language:  Markdown                              -->
 <!--                                                  -->

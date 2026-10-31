@@ -18,7 +18,7 @@
 //! REST profile, a database or a file shape), container extractors, and
 //! Vector.dev extractors -- feed one emit path that enriches, filters, and
 //! routes each record to the output transport (Kafka and/or gRPC). See
-//! `docs/DESIGN.md` for diagrams and the full data flow.
+//! `docs/internals.md` for diagrams and the full data flow.
 
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]

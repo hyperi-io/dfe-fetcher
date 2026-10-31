@@ -17,7 +17,7 @@ anything on the provider side.
 For the fetcher's own configuration (scheduler, output, credential resolution,
 the `sources.db` and `sources.file` blocks), see
 [config.example.yaml](../../config.example.yaml); the architecture and the
-profile grammar are in [../DESIGN.md](../DESIGN.md).
+profile grammar are in [../internals.md](../internals.md).
 
 ## Credentials in Kubernetes
 
@@ -50,8 +50,8 @@ An empty value counts as unset, so a Secret key left blank leaves the field unse
 | Azure | Platform and security logs | [azure.md](azure.md) |
 | Microsoft 365 | Audit and security logs | [m365.md](m365.md) |
 | Google Cloud | Audit and security logs | [gcp.md](gcp.md) |
-| Google Cloud Pub/Sub | Subscription streaming | [gcp_pubsub.md](gcp_pubsub.md) |
-| Google Workspace | Admin and audit logs | [google_workspace.md](google_workspace.md) |
+| Google Cloud Pub/Sub | Subscription streaming | [gcp-pubsub.md](gcp-pubsub.md) |
+| Google Workspace | Admin and audit logs | [google-workspace.md](google-workspace.md) |
 | Okta | System log | [okta.md](okta.md) |
 | Cisco Duo | Admin and authentication logs | [duo.md](duo.md) |
 | CrowdStrike | Falcon detections and events | [crowdstrike.md](crowdstrike.md) |
@@ -63,7 +63,7 @@ An empty value counts as unset, so a Secret key left blank leaves the field unse
 | GitHub | Audit log | [github.md](github.md) |
 | Salesforce | Event monitoring logs | [salesforce.md](salesforce.md) |
 | runZero | Asset inventory snapshots | [runzero.md](runzero.md) |
-| Object store | Buckets (S3 and compatible) | [object_store.md](object_store.md) |
+| Object store | Buckets (S3 and compatible) | [object-store.md](object-store.md) |
 | Package registries | PyPI, crates.io, Go modules | [supply-chain.md](supply-chain.md) |
 
 ## Source Maturity
