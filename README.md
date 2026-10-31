@@ -36,7 +36,7 @@ flowchart LR
   collect its stdout JSON lines, or accept HTTP POSTs on the ingest endpoint.
 - **Vector.dev extractors** -- receive data over Vector's native gRPC protocol.
 
-[docs/DESIGN.md](docs/DESIGN.md) has the diagrams (system, the framework's
+[docs/internals.md](docs/internals.md) has the diagrams (system, the framework's
 tick, the configuration cascade) and the design rationale;
 [docs/architecture.md](docs/architecture.md) is the codemap of the Cargo
 workspace. The
@@ -114,7 +114,7 @@ profile grammar field by field.
 Configuration loads through a layered cascade (CLI, then `DFE_FETCHER_*`
 environment variables, then config files, then defaults); send `SIGHUP` to
 reload the hot-reloadable settings without a restart. The cascade is
-diagrammed in [docs/DESIGN.md](docs/DESIGN.md).
+diagrammed in [docs/internals.md](docs/internals.md).
 
 Service ports: metrics and health on `9090` (`/livez`, `/readyz`), and -- each
 off until a deployment turns it on -- the ingest HTTP endpoint on `8080` and
@@ -198,8 +198,8 @@ The setup guides are indexed in
 | Azure | `sources.azure` | Activity Log, Defender alerts, Sentinel incidents, the Entra ID audit feeds, Log Analytics queries | stable | [azure.md](docs/cloud-setup/azure.md) |
 | Microsoft 365 | `sources.m365` | Management Activity feeds (audit, DLP, Exchange), Graph security alerts | stable | [m365.md](docs/cloud-setup/m365.md) |
 | Google Cloud | `sources.gcp` | Cloud Audit Logs, VPC flow and DNS query logs, any Cloud Logging filter, Security Command Center findings | stable | [gcp.md](docs/cloud-setup/gcp.md) |
-| Google Cloud Pub/Sub | `sources.gcp_pubsub` | Pull subscriptions (a Cloud Logging sink), acknowledged after delivery | alpha | [gcp_pubsub.md](docs/cloud-setup/gcp_pubsub.md) |
-| Google Workspace | `sources.google_workspace` | Reports API activity per application | alpha | [google_workspace.md](docs/cloud-setup/google_workspace.md) |
+| Google Cloud Pub/Sub | `sources.gcp_pubsub` | Pull subscriptions (a Cloud Logging sink), acknowledged after delivery | alpha | [gcp-pubsub.md](docs/cloud-setup/gcp-pubsub.md) |
+| Google Workspace | `sources.google_workspace` | Reports API activity per application | alpha | [google-workspace.md](docs/cloud-setup/google-workspace.md) |
 | Okta | `sources.okta` | System Log | alpha | [okta.md](docs/cloud-setup/okta.md) |
 | Cisco Duo | `sources.duo` | Admin API authentication logs | alpha | [duo.md](docs/cloud-setup/duo.md) |
 | CrowdStrike | `sources.crowdstrike` | Falcon alerts | alpha | [crowdstrike.md](docs/cloud-setup/crowdstrike.md) |
@@ -210,7 +210,7 @@ The setup guides are indexed in
 | Slack | `sources.slack` | Enterprise Grid audit logs | alpha | [slack.md](docs/cloud-setup/slack.md) |
 | GitHub | `sources.github` | Organisation or enterprise audit log | alpha | [github.md](docs/cloud-setup/github.md) |
 | Salesforce | `sources.salesforce` | Setup audit trail, login history, event log files | alpha | [salesforce.md](docs/cloud-setup/salesforce.md) |
-| Object store | `sources.object_store` | S3 (and S3-compatible) bucket prefixes, each object read once | alpha | [object_store.md](docs/cloud-setup/object_store.md) |
+| Object store | `sources.object_store` | S3 (and S3-compatible) bucket prefixes, each object read once | alpha | [object-store.md](docs/cloud-setup/object-store.md) |
 | PyPI, crates.io, Go modules | `sources.pypi`, `sources.crates_io`, `sources.go_modules` | Package metadata for supply-chain monitoring | alpha | [supply-chain.md](docs/cloud-setup/supply-chain.md) |
 | runZero | `sources.rest` (profile `runzero`) | Asset inventory exports as snapshot dumps | alpha | [runzero.md](docs/cloud-setup/runzero.md) |
 | Databases | `sources.db` | Any ODBC-reachable database, ClickHouse or MongoDB: stores dumped whole or tailed by key | alpha | [db-drivers.md](docs/reference/db-drivers.md) |
@@ -279,7 +279,7 @@ Both inbound listeners ship off -- the ingest HTTP endpoint on 8080
 `crates/fetcher/src/config/mod.rs`. Only metrics and health on 9090 listen by
 default. So grade a dependency advisory here by reachability first and severity
 second: the same advisory in dfe-receiver, which takes untrusted input, is a
-different finding. `dfe-infra/docs/THREAT-MODEL.md` is the source of truth for
+different finding. `dfe-infra/docs/threat-model.md` is the source of truth for
 that, and an entry in its accepted-risks table is settled. The one way to hand
 this service untrusted input is running ingest open:
 `/ingest/{source}/{topic}` takes the destination topic from the URL, so an open
@@ -301,7 +301,7 @@ listener with no `auth_token` refuses to start unless
 | `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), vendored, depended on by path from `crates/file` only. |
 | `scripts/generics_gates.py` | The generics acceptance gates: one framework site per provider mechanism, the crate dependency direction, per-hook line budgets. |
 | `config.example.yaml` | The annotated reference for every setting. |
-| `docs/architecture.md`, `docs/DESIGN.md` | The workspace codemap with its negative invariants, and the diagrams plus rationale. |
+| `docs/architecture.md`, `docs/internals.md` | The workspace codemap with its negative invariants, and the diagrams plus rationale. |
 
 ### Commands that prove a change
 

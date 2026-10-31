@@ -1,5 +1,5 @@
 <!-- Project:   dfe-fetcher                          -->
-<!-- File:      docs/DESIGN.md                        -->
+<!-- File:      docs/internals.md                        -->
 <!-- Purpose:   Architecture, data flow, and design rationale -->
 <!-- Language:  Markdown                               -->
 <!--                                                   -->

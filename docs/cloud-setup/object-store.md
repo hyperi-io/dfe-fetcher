@@ -1,5 +1,5 @@
 <!-- Project:   dfe-fetcher                         -->
-<!-- File:      docs/cloud-setup/object_store.md     -->
+<!-- File:      docs/cloud-setup/object-store.md     -->
 <!-- Purpose:   Object-store source family setup guide -->
 <!-- Language:  Markdown                              -->
 <!--                                                  -->

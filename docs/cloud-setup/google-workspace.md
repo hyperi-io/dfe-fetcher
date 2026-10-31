@@ -1,5 +1,5 @@
 <!-- Project:   dfe-fetcher                         -->
-<!-- File:      docs/cloud-setup/google_workspace.md  -->
+<!-- File:      docs/cloud-setup/google-workspace.md  -->
 <!-- Purpose:   Google Workspace cloud admin setup guide -->
 <!-- Language:  Markdown                              -->
 <!--                                                  -->
