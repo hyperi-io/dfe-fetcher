@@ -1,13 +1,19 @@
 # dfe-fetcher
 
+[![Build Status](https://github.com/hyperi-io/dfe-fetcher/actions/workflows/ci.yml/badge.svg)](https://github.com/hyperi-io/dfe-fetcher/actions)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
 
-Data fetcher for the HyperI DFE (Data Fusion Engine) platform. It pulls
-security and operational data from cloud and SaaS providers, databases, files
-and external extractors, then delivers each record to the DFE pipeline over
-Kafka and/or gRPC. It is built on the
-[scalo](https://github.com/hyperi-io/scalo-rs) data-plane runtime (config
-cascade, logging, metrics, transport, memory guard, deployment contract).
+Pulls security and operational data from cloud and SaaS APIs, databases, files and external extractors, and delivers each record to a DFE deployment over Kafka or gRPC. It is the half of ingest that goes and gets the data, where dfe-receiver waits for it to arrive.
+
+## What it gives you
+
+- A new REST provider as a YAML profile, with no Rust: the base URL, auth modes, endpoints, decoder and pager, checked at load with the line of any unknown key.
+- Database sources over ODBC, the ClickHouse HTTP interface and MongoDB, dumped whole or tailed: by key tuple on SQL, and by change stream on MongoDB, so updates arrive as change events ([drivers](docs/reference/db-drivers.md)). File sources are read once or followed through rotation.
+- Any tool run in a Docker or podman container as a source, its stdout JSON lines collected.
+- A cursor or checkpoint written only after the transport has taken the batch, so a failed tick fetches again rather than losing records.
+- A dump sent as one snapshot, framed `begin`, rows and `end`, so a consumer can tell a truncated dump from a complete one.
+- A per-source CEL filter, hot-reloaded, and a memory guard that stops pulling from a provider while the service is under pressure.
+- Secrets from a secrets manager, an env var or a literal, config reload on SIGHUP or file watch, and a deployment contract that generates its Dockerfile and Compose file.
 
 ## Architecture
 
@@ -45,37 +51,6 @@ reference pages are
 field and closed vocabulary of a profile) and
 [docs/reference/snapshot-envelope.md](docs/reference/snapshot-envelope.md)
 (the frames a dump travels in).
-
-## Features
-
-- **Declarative REST sources** -- a profile names the base URL template, the
-  auth modes the API accepts, the endpoints with their decoder and pager, and
-  the request constructs (a keyset, a two-stage lookup, a manifest, a queue).
-  An instance binds it to one deployment's identity. Unknown keys, decoders,
-  pagers and auth modes fail the load with the YAML line.
-- **Database sources** -- a `dump` store selects a whole result set into the
-  snapshot envelope; a `tail` store follows a table by key tuple. ODBC (every
-  SQL dialect with a driver), the ClickHouse HTTP interface, and MongoDB
-  (collections dumped, tailed by change stream); the driver and licence
-  per engine are in [docs/reference/db-drivers.md](docs/reference/db-drivers.md).
-- **File sources** -- a `dump` unit reads each file a glob matches once
-  (NDJSON, JSON array, CSV, gzip by magic), one snapshot per file; a `tail`
-  unit follows growing files through rotation.
-- **Checkpoint after acknowledgement** -- a unit's cursor or checkpoint is
-  written only after the transport has taken the batch, so a failed tick
-  re-fetches and a queue message is acknowledged only after delivery.
-- **Snapshot envelope** -- a dump travels as `begin`, rows and `end` frames
-  under one `snapshot_id`, so a consumer can rebuild a whole store and tell a
-  truncated dump from a complete one.
-- **Filtering and enrichment** -- a per-source CEL filter (hot-reloaded), then
-  the fetch and receive timestamps and the source tags.
-- **Memory-pressure brake** -- rows are pulled from the provider only while
-  the memory guard admits them; a paused source flushes what it holds.
-- **Credential resolution** -- every secret field is a spec: a secrets-manager
-  reference, an environment variable, or a literal.
-- **Observability** -- Prometheus metrics and liveness / readiness probes.
-- **Live config reload** -- via SIGHUP or file watch.
-- **Deployment artefacts** -- emits a deployment contract, which a release assembles into a thin Helm chart, and generates its own Dockerfile and Compose file from it.
 
 ## Quick Start
 
