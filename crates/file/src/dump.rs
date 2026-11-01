@@ -412,24 +412,36 @@ impl FileSource for FileDump {
             Ok(marker) => marker,
             Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
         };
-        let files = match list(&self.spec.paths, marker.as_ref()) {
-            Ok(files) => files,
-            Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
+        // The glob walk and its stats block, so they run on the blocking pool.
+        let patterns = self.spec.paths.clone();
+        let listed = async move {
+            tokio::task::spawn_blocking(move || list(&patterns, marker.as_ref()))
+                .await
+                .map_err(|e| Error::Source(format!("file dump: listing task failed: {e}")))?
         };
-        debug!(unit = %self.unit, files = files.len(), "file dump: tick");
+        let unit = Arc::clone(&self.unit);
         let decoder = self.spec.decoder;
         let chunk_bytes = self.spec.chunk_bytes;
         let max_row_bytes = self.spec.max_row_bytes;
         let lease = Arc::clone(&self.lease);
-        futures::stream::iter(files)
-            .flat_map(move |candidate| {
-                file_rows(
-                    candidate,
-                    decoder,
-                    chunk_bytes,
-                    max_row_bytes,
-                    Arc::clone(&lease),
-                )
+        futures::stream::once(listed)
+            .flat_map(move |listing| match listing {
+                Ok(files) => {
+                    debug!(unit = %unit, files = files.len(), "file dump: tick");
+                    let lease = Arc::clone(&lease);
+                    futures::stream::iter(files)
+                        .flat_map(move |candidate| {
+                            file_rows(
+                                candidate,
+                                decoder,
+                                chunk_bytes,
+                                max_row_bytes,
+                                Arc::clone(&lease),
+                            )
+                        })
+                        .boxed()
+                }
+                Err(e) => futures::stream::once(async move { Err(e) }).boxed(),
             })
             .boxed()
     }
@@ -438,7 +450,8 @@ impl FileSource for FileDump {
         async move {
             for pattern in &self.spec.paths {
                 let base = glob_base(pattern);
-                if !base.is_dir() {
+                let is_dir = tokio::fs::metadata(&base).await.is_ok_and(|m| m.is_dir());
+                if !is_dir {
                     warn!(unit = %self.unit, pattern, base = %base.display(), "file dump: base directory absent");
                     return Err(Error::Source(format!(
                         "file dump: base directory of `{pattern}` does not exist"
@@ -487,6 +500,28 @@ mod tests {
 
     async fn collect(dump: &FileDump, cp: Option<&CheckpointValue>) -> Result<Vec<Row>> {
         dump.rows(cp).try_collect().await
+    }
+
+    /// The glob walk and the stats are blocking filesystem calls, so they
+    /// run when the stream is first polled, on the blocking pool, never in
+    /// the call that builds the stream on a runtime worker: a file landing
+    /// between the two is still listed.
+    #[tokio::test]
+    async fn files_are_listed_when_the_stream_is_polled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.jsonl"), "{\"id\":\"a\"}\n").unwrap();
+        let dump = FileDump::new(
+            "u",
+            DumpSpec {
+                paths: vec![format!("{}/*.jsonl", dir.path().display())],
+                ..DumpSpec::default()
+            },
+            no_lease(),
+        );
+        let rows = dump.rows(None);
+        std::fs::write(dir.path().join("b.jsonl"), "{\"id\":\"b\"}\n").unwrap();
+        let rows: Vec<Row> = rows.try_collect().await.unwrap();
+        assert_eq!(rows.len(), 2, "both files, listed at the first poll");
     }
 
     #[test]
