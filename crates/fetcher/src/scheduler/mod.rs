@@ -124,9 +124,9 @@ impl Scheduler {
                 }
             }
 
-            // The width of the last failed attempt. A reload never respawns a
-            // live source's task, so a frozen span survives one.
-            let mut retry_span: Option<chrono::Duration> = None;
+            // The last failed attempt's window. A reload never respawns a live
+            // source's task, so a frozen window survives one.
+            let mut retry: Option<FetchWindow> = None;
 
             loop {
                 // Compute interval from CURRENT config (hot-reloaded)
@@ -176,7 +176,10 @@ impl Scheduler {
                     cursor_store.as_deref(),
                     &cursor_key,
                     max_span,
-                    retry_span.map(|span| span.min(max_span)),
+                    retry.as_ref().map(|failed| Retry {
+                        start: failed.start,
+                        span: (failed.end - failed.start).min(max_span),
+                    }),
                     config.cursor.on_missing_cursor,
                     &metrics,
                     &source_log,
@@ -202,7 +205,7 @@ impl Scheduler {
                     window_start = %window.start,
                     window_end = %window.end,
                     window_hours = (window.end - window.start).num_seconds() as f64 / 3600.0,
-                    retry = retry_span.is_some(),
+                    retry = retry.is_some(),
                     "Fetch started"
                 );
 
@@ -236,7 +239,7 @@ impl Scheduler {
 
                         // The driver has awaited every acknowledgement inside
                         // run_tick, so the window is safe to advance past.
-                        retry_span = None;
+                        retry = None;
                         write_cursor(
                             cursor_store.as_deref(),
                             &cursor_key,
@@ -256,10 +259,9 @@ impl Scheduler {
                         let fetch_duration = fetch_start.elapsed();
                         metrics.record_fetch_duration(label, fetch_duration);
 
-                        // The cursor did not move, so without this the next
-                        // window would be this one plus another interval --
-                        // wider than the width that just failed.
-                        retry_span = Some(window.end - window.start);
+                        // The next attempt covers this window again: wider
+                        // could not fit, and a slid lookback would skip its start.
+                        retry = Some(window.clone());
 
                         // Per tick, because the throttle ratio's denominator is ticks.
                         let code = e.api_error_code();
@@ -455,6 +457,16 @@ impl<'a> SourceLog<'a> {
     }
 }
 
+/// The window of the last failed attempt, as the next attempt reads it.
+#[derive(Debug, Clone, Copy)]
+struct Retry {
+    /// Where the failed window started: the cold start's own position until a
+    /// cursor exists.
+    start: chrono::DateTime<Utc>,
+    /// Its width, never wider than the configured span.
+    span: chrono::Duration,
+}
+
 /// Why a tick has no cursor to resume from.
 enum NoCursor {
     /// No store, or nothing stored for the key: a new source, or a cursor lost
@@ -477,11 +489,11 @@ enum NoCursor {
 /// `dfe_fetcher_cursor_read_failures_total{source}` and logged at ERROR,
 /// debounced to one log per `REPEAT_LOG_EVERY_MS`.
 ///
-/// A window running on from a cursor is at most `max_span` wide, or
-/// `retry_span` wide when the last attempt failed, so a tick that fails is
-/// retried over a window no wider than the one that failed. The cold-start
-/// fallback ignores `retry_span`: its start slides forward with `now`, so a
-/// narrow span there would pin the window in the past.
+/// A window running on from a cursor is at most `max_span` wide, or the
+/// `retry` width when the last attempt failed, so a tick that fails is retried
+/// over a window no wider than the one that failed. A cold start that failed
+/// is retried from the failed window's start rather than a lookback slid on
+/// with the clock, which would leave that window's first records behind.
 ///
 /// When a cursor is found, records its age (seconds since `last_fetch_end`)
 /// as `dfe_fetcher_cursor_age_seconds` for staleness monitoring.
@@ -495,12 +507,13 @@ async fn build_fetch_window(
     store: Option<&dyn CursorStore>,
     cursor_key: &str,
     max_span: chrono::Duration,
-    retry_span: Option<chrono::Duration>,
+    retry: Option<Retry>,
     on_missing: MissingCursor,
     metrics: &Metrics,
     source: &SourceLog<'_>,
 ) -> Result<FetchWindow, Error> {
     let now = Utc::now();
+    let span = retry.map_or(max_span, |r| r.span);
     let source_prefix = source.name;
 
     let missing = match store {
@@ -524,24 +537,7 @@ async fn build_fetch_window(
                     "Cursor details"
                 );
                 metrics.set_cursor_age(source_prefix, age_secs);
-                // The one-second floor stops a degenerate span pinning the
-                // window at the cursor for good.
-                let span = retry_span
-                    .unwrap_or(max_span)
-                    .max(chrono::Duration::seconds(1));
-                // A cursor ahead of the clock -- a clock step, a cursor file
-                // copied from another host -- gives an empty window rather
-                // than an inverted one.
-                let end = cursor
-                    .last_fetch_end
-                    .checked_add_signed(span)
-                    .unwrap_or(chrono::DateTime::<Utc>::MAX_UTC)
-                    .min(now)
-                    .max(cursor.last_fetch_end);
-                return Ok(FetchWindow {
-                    start: cursor.last_fetch_end,
-                    end,
-                });
+                return Ok(window_from(cursor.last_fetch_end, span, now));
             }
             Ok(None) => NoCursor::ColdStart("no cursor is stored"),
             Err(e) => NoCursor::ReadFailed(e.to_string()),
@@ -590,9 +586,12 @@ async fn build_fetch_window(
                     cursor_key, cause, "Cursor cold start: fetching the default lookback window"
                 );
             }
-            Ok(FetchWindow {
-                start: now - max_span,
-                end: now,
+            Ok(match retry {
+                Some(failed) => window_from(failed.start, span, now),
+                None => FetchWindow {
+                    start: now - max_span,
+                    end: now,
+                },
             })
         }
         MissingCursor::Refuse => {
@@ -609,6 +608,24 @@ async fn build_fetch_window(
             Err(refused)
         }
     }
+}
+
+/// The window from `start` at most `span` wide and ending no later than `now`.
+///
+/// The one-second floor stops a degenerate span pinning the window at its
+/// start for good. A start ahead of the clock -- a clock step, a cursor file
+/// copied from another host -- gives an empty window, not an inverted one.
+fn window_from(
+    start: chrono::DateTime<Utc>,
+    span: chrono::Duration,
+    now: chrono::DateTime<Utc>,
+) -> FetchWindow {
+    let end = start
+        .checked_add_signed(span.max(chrono::Duration::seconds(1)))
+        .unwrap_or(chrono::DateTime::<Utc>::MAX_UTC)
+        .min(now)
+        .max(start);
+    FetchWindow { start, end }
 }
 
 /// Write cursor after a successful fetch. Logs warning on failure but does
@@ -942,7 +959,7 @@ mod tests {
         store: Option<&dyn CursorStore>,
         cursor_key: &str,
         max_span: chrono::Duration,
-        retry_span: Option<chrono::Duration>,
+        retry: Option<Retry>,
         metrics: &Metrics,
         source_prefix: &str,
     ) -> FetchWindow {
@@ -950,7 +967,7 @@ mod tests {
             store,
             cursor_key,
             max_span,
-            retry_span,
+            retry,
             MissingCursor::Lookback,
             metrics,
             &SourceLog::new(source_prefix),
@@ -1412,7 +1429,10 @@ mod tests {
             Some(&store),
             "test.key",
             chrono::Duration::hours(1),
-            Some(chrono::Duration::minutes(5)),
+            Some(Retry {
+                start: last_end,
+                span: chrono::Duration::minutes(5),
+            }),
             &metrics,
             "test",
         )
@@ -1474,7 +1494,10 @@ mod tests {
             Some(&store),
             "test.key",
             chrono::Duration::hours(1),
-            Some(chrono::Duration::zero()),
+            Some(Retry {
+                start: last_end,
+                span: chrono::Duration::zero(),
+            }),
             &metrics,
             "test",
         )
@@ -1739,12 +1762,12 @@ mod tests {
         );
     }
 
-    /// Spawn a paced source over a cursor store seeded at `last_end`, whose
-    /// shape records each window and fails its first `fail_ticks` ticks.
-    /// Returns the windows the shape saw and the store, after `intervals`
-    /// one-second ticks.
+    /// Spawn a paced source over a cursor store seeded at `last_end` (empty
+    /// when `None`), whose shape records each window and fails its first
+    /// `fail_ticks` ticks. Returns the windows the shape saw and the store,
+    /// after `intervals` one-second ticks.
     async fn run_recorded_ticks(
-        last_end: chrono::DateTime<Utc>,
+        last_end: Option<chrono::DateTime<Utc>>,
         fail_ticks: u64,
         intervals: usize,
     ) -> (Vec<FetchWindow>, Arc<crate::cursor::file::FileCursorStore>) {
@@ -1757,7 +1780,9 @@ mod tests {
         let store = Arc::new(
             crate::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap(),
         );
-        seed_cursor(&store, "test.recording", last_end).await;
+        if let Some(last_end) = last_end {
+            seed_cursor(&store, "test.recording", last_end).await;
+        }
 
         let scheduler_config = SchedulerConfig {
             default_interval_secs: 1,
@@ -1878,7 +1903,7 @@ mod tests {
         tokio::time::pause();
 
         let last_end = Utc::now() - chrono::Duration::hours(6);
-        let (seen, _store) = run_recorded_ticks(last_end, u64::MAX, 10).await;
+        let (seen, _store) = run_recorded_ticks(Some(last_end), u64::MAX, 10).await;
 
         assert!(
             seen.len() >= 2,
@@ -1891,6 +1916,36 @@ mod tests {
             chrono::Duration::hours(1),
             "six hours behind, the first window still spans one hour"
         );
+    }
+
+    /// A cold start that fails is retried over the window that failed, not a
+    /// lookback that has slid on with the clock: the records at the start of
+    /// the first window were never delivered, and a sliding retry would leave
+    /// them behind once it succeeds. The success then writes the cursor at
+    /// that window's end, so the source walks forward from there.
+    #[tokio::test]
+    async fn a_failed_cold_start_is_retried_over_the_window_that_failed() {
+        tokio::time::pause();
+
+        let (seen, store) = run_recorded_ticks(None, 2, 10).await;
+
+        assert!(
+            seen.len() >= 4,
+            "the source should have ticked at least four times, got {}",
+            seen.len()
+        );
+        assert_eq!(seen[1], seen[0], "the first retry repeats the failed window");
+        assert_eq!(seen[2], seen[0], "and so does the retry that succeeds");
+        assert_eq!(
+            seen[3].start, seen[0].end,
+            "the next window runs on from the cursor the success wrote"
+        );
+        let cursor = store
+            .get("test.recording")
+            .await
+            .unwrap()
+            .expect("the success wrote a cursor");
+        assert!(cursor.last_fetch_end >= seen[0].end);
     }
 
     /// A window holding more rows than the page ceiling allows is fetched in
@@ -2046,7 +2101,7 @@ mod tests {
 
         let span = chrono::Duration::hours(1);
         let last_end = Utc::now() - chrono::Duration::hours(30);
-        let (seen, store) = run_recorded_ticks(last_end, 1, 20).await;
+        let (seen, store) = run_recorded_ticks(Some(last_end), 1, 20).await;
 
         assert!(
             seen.len() >= 3,
