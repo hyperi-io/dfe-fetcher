@@ -857,6 +857,16 @@ async fn ndjson(
             gzip(format!("{two}\n").as_bytes()),
         )
             .into_response(),
+        "raw.csv.gz" => (
+            [(header::CONTENT_TYPE, "application/gzip")],
+            gzip(b"id,name\n1,a\n2,b\n"),
+        )
+            .into_response(),
+        "raw.json.gz" => (
+            [(header::CONTENT_TYPE, "application/gzip")],
+            gzip(br#"[{"id":1},{"id":2}]"#),
+        )
+            .into_response(),
         "encoded.jsonl" => (
             [
                 (header::CONTENT_ENCODING, "gzip"),

@@ -515,7 +515,7 @@ async fn a_window_step_splits_the_tick_into_chunked_requests() {
 async fn ndjson_edge_cases_over_http() {
     let fx = common::start().await;
     let p = format!(
-        "{PLAIN}defaults: {{ rows: {{ decoder: ndjson }} }}\nendpoints:\n  - {{ unit: trailing, path: /ndjson/trailing.jsonl }}\n  - {{ unit: notrailing, path: /ndjson/notrailing.jsonl }}\n  - {{ unit: empty, path: /ndjson/empty.jsonl }}\n  - {{ unit: single, path: /ndjson/single.jsonl }}\n  - {{ unit: raw_gzip, path: /ndjson/raw.jsonl.gz, rows: {{ decoder: ndjson, gzip: true }} }}\n  - {{ unit: encoded, path: /ndjson/encoded.jsonl }}\n"
+        "{PLAIN}defaults: {{ rows: {{ decoder: ndjson }} }}\nendpoints:\n  - {{ unit: trailing, path: /ndjson/trailing.jsonl }}\n  - {{ unit: notrailing, path: /ndjson/notrailing.jsonl }}\n  - {{ unit: empty, path: /ndjson/empty.jsonl }}\n  - {{ unit: single, path: /ndjson/single.jsonl }}\n  - {{ unit: raw_gzip, path: /ndjson/raw.jsonl.gz, rows: {{ decoder: ndjson, gzip: true }} }}\n  - {{ unit: gzip_csv, path: /ndjson/raw.csv.gz, rows: {{ decoder: csv, header: true, gzip: true }} }}\n  - {{ unit: gzip_json, path: /ndjson/raw.json.gz, rows: {{ decoder: json, gzip: true }} }}\n  - {{ unit: encoded, path: /ndjson/encoded.jsonl }}\n"
     );
     let s = shape(&fx, &p, BEARER_INSTANCE);
     assert_eq!(fetch(&s, "trailing", None).await.unwrap().len(), 2);
@@ -531,6 +531,18 @@ async fn ndjson_edge_cases_over_http() {
         2,
         "explicit gzip body"
     );
+    for (unit, second) in [
+        ("gzip_csv", serde_json::json!({"id": "2", "name": "b"})),
+        ("gzip_json", serde_json::json!({"id": 2})),
+    ] {
+        let rows = fetch(&s, unit, None).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "{unit}: a page-bounded decoder reads the inflated body"
+        );
+        assert_eq!(rows[1], second, "{unit}");
+    }
     assert_eq!(
         fetch(&s, "encoded", None).await.unwrap().len(),
         2,

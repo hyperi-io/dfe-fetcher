@@ -532,28 +532,29 @@ impl RestShape {
         let stream = body_stream(response, bytes);
 
         let needs_tree = stage.pager.reads_body() || stage.fail_when.is_some();
-        let (rows, tree): (RowBytes<'a>, Option<Value>) =
-            if stage.decoder.is_page_bounded() || needs_tree {
-                let body = collect_page(stream, endpoint.max_page_bytes).await?;
-                let tree = if needs_tree {
-                    Some(
-                        serde_json::from_slice::<Value>(&body)
-                            .map_err(|e| Error::Decode(format!("page body is not JSON: {e}")))?,
-                    )
-                } else {
-                    None
-                };
-                if let (Some(predicate), Some(value)) = (stage.fail_when, &tree) {
-                    self.check_failure(predicate, value, &response_headers)?;
-                }
-                let framed = stage.decoder.frame_page(&body)?;
-                (
-                    futures::stream::iter(framed.into_iter().map(Ok)).boxed(),
-                    tree,
+        let (rows, tree): (RowBytes<'a>, Option<Value>) = if stage.decoder.is_page_bounded()
+            || needs_tree
+        {
+            let body = collect_page(stage.decoder.inflate(stream), endpoint.max_page_bytes).await?;
+            let tree = if needs_tree {
+                Some(
+                    serde_json::from_slice::<Value>(&body)
+                        .map_err(|e| Error::Decode(format!("page body is not JSON: {e}")))?,
                 )
             } else {
-                (stage.decoder.frame(stream, endpoint.max_page_bytes), None)
+                None
             };
+            if let (Some(predicate), Some(value)) = (stage.fail_when, &tree) {
+                self.check_failure(predicate, value, &response_headers)?;
+            }
+            let framed = stage.decoder.frame_page(&body)?;
+            (
+                futures::stream::iter(framed.into_iter().map(Ok)).boxed(),
+                tree,
+            )
+        } else {
+            (stage.decoder.frame(stream, endpoint.max_page_bytes), None)
+        };
         let rows = match stage.builder {
             Some(builder) => builder.expand_stream(rows, ctx.clone()),
             None => rows,
