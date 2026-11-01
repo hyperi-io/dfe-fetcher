@@ -447,7 +447,9 @@ One fetcher per tenant, each with its own config, `instance_id` (the first half
 of every cursor key) and credentials. Several accounts of one provider type
 can share a fetcher: the typed blocks take a `connections` list, and
 `sources.rest` takes any number of instances of one profile, each with its own
-connection id.
+connection id. The connection id is the second part of every cursor key, so
+ids must differ across every source once case is ignored, and no id may be
+another followed by `.`.
 
 ## Decision Framework: Profile vs Container vs Vector
 

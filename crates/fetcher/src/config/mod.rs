@@ -621,6 +621,7 @@ impl Config {
         for block in REGISTRY.iter().filter(|b| b.enabled(&self.sources)) {
             validate_connection_ids(block.name, &block.connection_ids(&self.sources))?;
         }
+        validate_cursor_key_space(&self.sources.scheduled_connections())?;
 
         // Validate the Vector listeners: which instance each serves, and each
         // address.
@@ -1059,6 +1060,46 @@ fn validate_connection_ids(type_name: &str, ids: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Refuse connection ids that would share a cursor key across sources.
+///
+/// A connection's cursor keys are `<instance>.<id>` and
+/// `<instance>.<id>.<unit>`, compared without case, so two ids equal after
+/// normalising collide, and an id that starts with another id and a `.`
+/// collides with that id's units.
+fn validate_cursor_key_space(scheduled: &[(&'static str, &str)]) -> Result<()> {
+    let normalised: Vec<(&str, &str, String)> = scheduled
+        .iter()
+        .map(|&(owner, id)| (owner, id, crate::cursor::normalize_cursor_key(id)))
+        .collect();
+    for (i, (owner, id, key)) in normalised.iter().enumerate() {
+        for (other_owner, other, other_key) in &normalised[i + 1..] {
+            if key == other_key {
+                return Err(Error::Config(format!(
+                    "sources.{owner} `{id}` and sources.{other_owner} `{other}` are the same cursor \
+                     key `{key}`: connection ids are cursor keys compared without case, so each \
+                     must be unique across every source"
+                )));
+            }
+            for (long, long_owner, short, short_owner) in [
+                (key, owner, other_key, other_owner),
+                (other_key, other_owner, key, owner),
+            ] {
+                if long.len() > short.len()
+                    && long.starts_with(short.as_str())
+                    && long.as_bytes()[short.len()] == b'.'
+                {
+                    return Err(Error::Config(format!(
+                        "sources.{long_owner} `{long}` starts with sources.{short_owner} \
+                         `{short}.`, so its cursor key is the cursor key of a `{short}` unit. \
+                         Rename one of them"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Refuse an `interval_secs` of 0: the scheduler would start each fetch the
 /// moment the last one ended, and a scheduled container extractor's timer
 /// panics on a zero period.
@@ -1446,27 +1487,42 @@ impl SourcesConfig {
     /// Infallible, so a reload can never skip the diff for a config error.
     #[must_use]
     pub fn scheduled_connection_ids(&self) -> BTreeSet<&str> {
+        self.scheduled_connections()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
+    }
+
+    /// [`Self::scheduled_connection_ids`] with each id's `sources.` block and
+    /// nothing merged, so two sources naming one id both appear.
+    #[must_use]
+    pub fn scheduled_connections(&self) -> Vec<(&'static str, &str)> {
         builtin::REGISTRY
             .iter()
             .filter(|block| block.enabled(self))
-            .flat_map(|block| block.connection_ids(self))
+            .flat_map(|block| {
+                block
+                    .connection_ids(self)
+                    .into_iter()
+                    .map(move |id| (block.name, id))
+            })
             .chain(
                 self.rest
                     .iter()
                     .filter(|(_, instance)| instance.enabled)
-                    .map(|(id, _)| id.as_str()),
+                    .map(|(id, _)| ("rest", id.as_str())),
             )
             .chain(
                 self.db
                     .iter()
                     .filter(|(_, instance)| instance.enabled)
-                    .map(|(id, _)| id.as_str()),
+                    .map(|(id, _)| ("db", id.as_str())),
             )
             .chain(
                 self.file
                     .iter()
                     .filter(|(_, instance)| instance.enabled)
-                    .map(|(id, _)| id.as_str()),
+                    .map(|(id, _)| ("file", id.as_str())),
             )
             .collect()
     }
@@ -7109,6 +7165,63 @@ sources:
         ];
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("duplicate connection id"), "{err}");
+    }
+
+    /// A connection id is the middle of every cursor key it owns
+    /// (`<instance>.<id>` and `<instance>.<id>.<unit>`), and the store
+    /// compares keys without case. Two sources whose ids meet there would
+    /// read and advance each other's windows, so the ids are checked across
+    /// every source: the same id in two types, two ids differing only in
+    /// case, and an id that is another's dotted prefix are refused.
+    #[test]
+    fn connection_ids_are_unique_across_every_source_as_cursor_keys() {
+        fn with(aws: &[&str], okta: &[&str]) -> Config {
+            let mut cfg = valid_config();
+            cfg.sources.aws.enabled = !aws.is_empty();
+            cfg.sources.aws.connections = aws
+                .iter()
+                .map(|id| AwsConnection {
+                    id: (*id).to_owned(),
+                    credential_secret: Some(format!("vault:kv/data/{id}:credentials")),
+                    ..Default::default()
+                })
+                .collect();
+            cfg.sources.okta.enabled = !okta.is_empty();
+            cfg.sources.okta.tenant_url = Some("https://example.okta.com".to_string());
+            cfg.sources.okta.services = vec![OktaService {
+                name: "system_log".to_string(),
+                config: HashMap::new(),
+            }];
+            cfg.sources.okta.token = Some("vault:kv/data/okta:token".into());
+            cfg.sources.okta.connections = okta
+                .iter()
+                .map(|id| OktaConnection {
+                    id: (*id).to_owned(),
+                    ..Default::default()
+                })
+                .collect();
+            cfg.instance_id = Some("inst".into());
+            cfg
+        }
+        for (aws, okta, refused) in [
+            (&["acme"][..], &["acme"][..], Some("acme")),
+            (&["Acme", "acme"][..], &[][..], Some("acme")),
+            (&["acme"][..], &["ACME"][..], Some("acme")),
+            (&["acme", "acme.events"][..], &[][..], Some("acme.events")),
+            (&["acme.events"][..], &["acme"][..], Some("acme.events")),
+            (&["acme-a", "acme.b"][..], &["acme-b"][..], None),
+        ] {
+            let result = with(aws, okta).validate();
+            match refused {
+                None => assert!(result.is_ok(), "{aws:?} {okta:?}: {result:?}"),
+                Some(id) => {
+                    let err = result
+                        .expect_err(&format!("{aws:?} {okta:?} share a cursor key"))
+                        .to_string();
+                    assert!(err.contains(id) && err.contains("cursor key"), "{err}");
+                }
+            }
+        }
     }
 
     #[test]
