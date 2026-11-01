@@ -51,6 +51,8 @@ pub struct FileCursorStore {
     cache: RwLock<HashMap<String, CursorValue>>,
     /// One disk write per key at a time, held until the blocking write ends.
     writers: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Writes started and not yet on disk.
+    pending: Arc<std::sync::atomic::AtomicUsize>,
     read_only: bool,
     /// When a write the read-only store could not persist was last warned of.
     read_only_warned_at: std::sync::atomic::AtomicU64,
@@ -80,6 +82,7 @@ impl FileCursorStore {
                 directory: dir_path,
                 cache: RwLock::new(HashMap::new()),
                 writers: parking_lot::Mutex::new(HashMap::new()),
+                pending: Arc::default(),
                 read_only: true,
                 read_only_warned_at: std::sync::atomic::AtomicU64::new(0),
             });
@@ -149,6 +152,7 @@ impl FileCursorStore {
             directory: dir_path,
             cache: RwLock::new(cache),
             writers: parking_lot::Mutex::new(HashMap::new()),
+            pending: Arc::default(),
             read_only,
             read_only_warned_at: std::sync::atomic::AtomicU64::new(0),
         })
@@ -170,6 +174,13 @@ impl FileCursorStore {
             .join(format!("{normalised_key}.{CURSOR_EXTENSION}.tmp"))
     }
 
+    /// Cursor writes started and not yet on disk, for a caller that must know
+    /// every commit has landed before it reads the files.
+    #[must_use]
+    pub fn pending_writes(&self) -> usize {
+        self.pending.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// The write lock of one key.
     fn writer(&self, normalised_key: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut writers = self.writers.lock();
@@ -184,6 +195,7 @@ impl FileCursorStore {
     /// The key's write lock moves into the blocking task, so a caller that is
     /// cancelled mid-write still leaves the next writer waiting for this one.
     async fn persist_one(&self, normalised_key: &str) -> Result<()> {
+        let _pending = Pending::start(&self.pending);
         let turn = self.writer(normalised_key).lock_owned().await;
         let Some(value) = self.cache.read().get(normalised_key).cloned() else {
             return Ok(());
@@ -221,6 +233,22 @@ impl FileCursorStore {
             ),
             Err(e) => warn!(error = %e, "cursor remove task failed"),
         }
+    }
+}
+
+/// Counts one write as pending until it is dropped.
+struct Pending(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Pending {
+    fn start(count: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 

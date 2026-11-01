@@ -1790,6 +1790,27 @@ mod tests {
     /// `fail_ticks` ticks and whose provider publishes `delay` behind the
     /// clock. Returns the windows the shape saw and the store, after
     /// `intervals` one-second ticks.
+    /// Let the paused clock's due ticks run to their next sleep: a cursor
+    /// write finishes on the blocking pool in real time, so the source task
+    /// is yielded to until the store has nothing pending.
+    async fn settle(store: &crate::cursor::file::FileCursorStore) {
+        // Bounded so a write that never lands fails the test instead of hanging it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            if store.pending_writes() == 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a cursor write did not land"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     async fn run_recorded_ticks(
         last_end: Option<chrono::DateTime<Utc>>,
         fail_ticks: u64,
@@ -1835,7 +1856,7 @@ mod tests {
 
         for _ in 0..intervals {
             tokio::time::advance(Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
+            settle(&store).await;
         }
         shutdown.cancel();
         tokio::task::yield_now().await;
@@ -2128,7 +2149,7 @@ mod tests {
 
         for _ in 0..10 {
             tokio::time::advance(Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
+            settle(&store).await;
         }
         shutdown.cancel();
 
