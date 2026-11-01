@@ -521,6 +521,16 @@ impl Driver {
         Ok(())
     }
 
+    /// Hold the mark of a row consumed without being buffered, flushing once
+    /// held marks reach the batch bound so their acknowledgements go out.
+    async fn consume(&self, unit: &UnitSpec, run: &mut UnitRun, mark: Option<Mark>) -> Result<()> {
+        run.batch.consume(mark);
+        if run.batch.full() {
+            self.flush(unit, run, Trigger::Rows).await?;
+        }
+        Ok(())
+    }
+
     /// Enrich one framed payload for the transport. A route that names one
     /// destination stamps it as the row's `_source`, so the row lands in that
     /// source's table. A row enrichment refuses still travels with its mark,
@@ -706,7 +716,7 @@ impl Driver {
                 }
             };
             if row.is_mark_only() {
-                run.batch.consume(row.mark);
+                self.consume(unit, &mut run, row.mark).await?;
                 continue;
             }
             let Row { payload: raw, mark } = row;
@@ -747,7 +757,7 @@ impl Driver {
                 None if oversize => {
                     self.dead_letter_oversize(unit, &topic, &raw, &mut run)
                         .await?;
-                    run.batch.consume(mark);
+                    self.consume(unit, &mut run, mark).await?;
                     continue;
                 }
                 None => (raw, false),
@@ -771,7 +781,7 @@ impl Driver {
                         if let Some(s) = &mut snap {
                             s.retract();
                         }
-                        run.batch.consume(mark);
+                        self.consume(unit, &mut run, mark).await?;
                         continue;
                     }
                     Verdict::Keep { payload, route } => (payload, route),
@@ -781,7 +791,7 @@ impl Driver {
             };
             let mut rows = enriched.into_rows(&topic, ingested, route).peekable();
             if rows.peek().is_none() {
-                run.batch.consume(mark);
+                self.consume(unit, &mut run, mark).await?;
                 continue;
             }
             let mut mark = mark;
@@ -1533,6 +1543,69 @@ mod tests {
                 vec![Box::<str>::from("ndjson")]
             ],
             "one row per batch: a split's first row acks nothing of its own"
+        );
+    }
+
+    /// Rows consumed without being sent still flush their acknowledgements at
+    /// `max_rows`, so a queue whose every message is filtered acks as it goes
+    /// rather than holding every id until the tick ends.
+    #[tokio::test]
+    async fn consumed_rows_ack_in_batches_of_max_rows() {
+        let (config, _) = Config::parse_yaml("{}\n", "fetcher.yaml").unwrap();
+        let unit = UnitSpec::new("events", UnitShape::Incremental, "okta-audit");
+        let shared = SharedConfig::new(config);
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            shared.clone(),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let accumulate = AccumulateConfig {
+            max_rows: 2,
+            ..AccumulateConfig::default()
+        };
+        let acked = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mark_only = |id: &str| Row {
+            payload: Bytes::new(),
+            mark: Some(Mark::Ack(id.into())),
+        };
+        let d = Driver::new(DriverParts {
+            shape: Shape::Custom(Box::new(Acking {
+                units: vec![unit],
+                rows: ["a", "b", "c", "d", "e"].map(mark_only).to_vec(),
+                acked: Arc::clone(&acked),
+            })),
+            connection_id: "conn".into(),
+            instance_id: "inst".into(),
+            shared_config: shared,
+            accumulate,
+            oversize: OversizePolicy::default(),
+            emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
+            pressure: None,
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                MemoryGuardConfig {
+                    limit_bytes: 1 << 30,
+                    ..MemoryGuardConfig::default()
+                },
+                UsageSource::Reservations,
+            )),
+            checkpoints: None,
+            metrics,
+            shutdown: CancellationToken::new(),
+        });
+
+        d.run_tick(None).await.expect("tick");
+
+        let ids = |batch: &[&str]| {
+            batch
+                .iter()
+                .map(|&id| Box::<str>::from(id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            *acked.lock(),
+            [ids(&["a", "b"]), ids(&["c", "d"]), ids(&["e"])],
+            "acked at the bound, the remainder at the end"
         );
     }
 
