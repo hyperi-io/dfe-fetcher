@@ -604,7 +604,7 @@ opts out of the defaults'.
 | `row_key` | JSON pointer to the row's identity, for the oversize stub and logs. |
 | `paginate` | Pagination ([Pagination](#pagination)). |
 | `fail_when` | CEL over a 2xx body; true fails the tick with the text at `error.at`. |
-| `max_pages` | Page ceiling per tick. |
+| `max_pages` | Page ceiling per tick. A unit that reads the window, a dump and a lister fail when pages remain past it, so nothing is committed past rows never read (a windowed unit is read again in narrower halves). A unit that reads no window is cut short. |
 | `rate` | The provider's rate limit for this unit's requests (`requests_per_sec`, a fraction for a limit slower than one a second), held to across its pages, window steps and ticks; the defaults' when unset, and unpaced when neither sets one. |
 | `timeout_secs` | Total bound on one request of this endpoint, its body included. Refused on a unit whose decoder streams: a streamed store takes as long as it takes and the client's idle read timeout bounds each read instead. |
 | `max_page_bytes` | Bytes a page-bounded decoder may buffer. |
@@ -658,7 +658,7 @@ when it renders one, whose host is held to the rule under
 |-----------|--------|---------|
 | `construct.keyset` | `from` (a template rendering the list of keys) or `request` plus `keys_at` (the keys come from one request the unit sends first); exactly one. One page sequence per key. | `{{ key }}` in the unit's templates and `add_fields`. |
 | `construct.lookup` | `id_at` (pointer into each first-stage row to its id; unset when the row is the id), `batch`, `request`, `rows`, `paginate`, `max_pages`. A second request per batch of ids; a lookup whose request reads `key` flushes its ids before the next key. | `{{ ids }}` in the batch request. |
-| `construct.manifest` | `item_request`, `rows`, `key` and `position` (templates of the item's identity and RFC 3339 position, set together, giving every row an item checkpoint mark), `max_items` (items per key per tick; the rest wait), `add_fields` (rendered per item). The pages' rows are pointers; the unit's rows are what each item answers. | `{{ item }}` in the item request and fields. |
+| `construct.manifest` | `item_request`, `rows`, `key` and `position` (templates of the item's identity and RFC 3339 position, set together, giving every row an item checkpoint mark), `max_items` (items per key per tick: with `key` and `position` the rest wait for the next tick, otherwise a unit that reads the window or is a dump fails like a page ceiling, and one that reads no window is cut short), `add_fields` (rendered per item). The pages' rows are pointers; the unit's rows are what each item answers. | `{{ item }}` in the item request and fields. |
 | `construct.queue` | `ack_at` (pointer into each framed row to its ack id), `ack_request` (POST by default), `ack_batch` (ids per acknowledgement). The ack request is sent for each batch of ids the driver hands back after the batch is delivered. | `{{ ids }}` in the ack request. |
 | `prelude` | A list of `LookupRequest`s sent once per tick before the unit's first page, rendered from the unit's vars alone (never the window, a key or an item). | -- |
 

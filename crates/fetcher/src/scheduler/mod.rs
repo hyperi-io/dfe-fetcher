@@ -775,7 +775,8 @@ mod tests {
                 return futures::stream::once(async {
                     Err(dfe_fetcher_core::Error::PageCeiling {
                         unit: "dense".into(),
-                        max_pages: 200,
+                        ceiling: "max_pages",
+                        limit: 200,
                     })
                 })
                 .boxed();

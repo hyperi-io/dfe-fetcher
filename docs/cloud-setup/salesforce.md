@@ -37,8 +37,8 @@ Services (each emits source tag `salesforce.<service>`):
 - `event_log_file` - two-stage: SOQL lists `EventLogFile` rows in the window,
   then each row's `LogFile` body is downloaded and parsed from CSV to one
   record per line, with `_dfe_fetcher_event_type` / `_dfe_fetcher_log_date`
-  provenance fields added. At most 200 files are read a tick; the rest wait
-  for the next.
+  provenance fields added. A window listing more than 200 files is read
+  again in halves until each half fits, so no file is skipped.
 
 The source is the shipped `salesforce` profile
 (`crates/fetcher/profiles/salesforce.yaml`); the `sources.salesforce` block

@@ -603,9 +603,12 @@ async fn event_log_file_knobs_narrow_the_listing() {
     );
 }
 
-/// At most two hundred log files are downloaded a tick, in list order.
+/// A window listing more than two hundred log files fails the unit at the
+/// two hundred and first, in list order, rather than succeed and let the
+/// scheduler advance past the files never downloaded. The driver then reads
+/// the window again in halves.
 #[tokio::test]
-async fn at_most_200_log_files_are_downloaded_per_tick() {
+async fn a_window_listing_more_than_200_log_files_fails_rather_than_skip_them() {
     let server = MockServer::start().await;
     let app = connected_app(&server, &server.uri()).await;
     let files: Vec<Value> = (1..=205)
@@ -619,21 +622,32 @@ async fn at_most_200_log_files_are_downloaded_per_tick() {
         .respond_with(ResponseTemplate::new(200).set_body_string("EVENT_TYPE\nLogin\n"))
         .mount(&server)
         .await;
-    let (outcome, rows) = run(
+    // The landed rows depend on when the batch window flushed, so only the
+    // failure and the downloads are asserted.
+    let (outcome, _rows) = run(
         config(jwt_config(&server, &app, &["event_log_file"])),
         Some(&window()),
     )
     .await;
-    outcome.expect("fetch");
-    assert_eq!(rows.len(), 200);
+    // The mock lists all 205 files for any window, so every half is over the
+    // cap too and the tick fails once the window cannot be halved further.
+    let err = outcome.expect_err("205 files under a cap of 200");
+    assert!(
+        err.contains("`event_log_file` hit max_items (200)"),
+        "{err}"
+    );
     let downloads: Vec<String> = paths(&server)
         .await
         .into_iter()
         .filter(|p| p.ends_with("/LogFile"))
         .collect();
-    assert_eq!(downloads.len(), 200);
-    assert!(downloads[0].contains("0AT0001"));
-    assert!(downloads[199].contains("0AT0200"));
+    assert!(downloads[0].contains("0AT0001"), "list order");
+    assert!(
+        downloads
+            .iter()
+            .all(|p| (201..=205).all(|n| !p.contains(&format!("0AT{n:04}")))),
+        "no file past the cap is downloaded"
+    );
 }
 
 /// A `LogFile` the org keeps failing to serve is retried per the policy

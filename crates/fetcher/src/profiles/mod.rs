@@ -912,7 +912,7 @@ mod tests {
     /// by every unit, the two SOQL units with their documented fields and
     /// the window as bare RFC 3339 literals, `nextRecordsUrl` followed for
     /// fifty pages, and EventLogFile as a manifest of CSV downloads capped
-    /// at two hundred a tick.
+    /// at two hundred a window.
     #[test]
     fn salesforce_ships_as_soql_audit_windows_and_an_event_log_file_manifest() {
         use dfe_fetcher_core::UnitShape;
@@ -1025,7 +1025,7 @@ mod tests {
     /// The object-store profile is the S3 contract the characterisation
     /// tests pinned: SigV4 for `s3` in the instance's region on a
     /// path-style host, the `ListObjectsV2` listing under the bucket with
-    /// the prefix and a thousand keys a page for ten pages, one endpoint
+    /// the prefix and a thousand keys a page for up to a thousand pages, one endpoint
     /// per object format each a lister feeding a manifest that reads a
     /// thousand objects a tick by key with the object envelope stamped on
     /// every row and the object's key and time as its checkpoint, and a
@@ -1060,7 +1060,7 @@ mod tests {
             profile.defaults.query.get("max-keys").map(String::as_str),
             Some("1000")
         );
-        assert_eq!(profile.defaults.max_pages, Some(10));
+        assert_eq!(profile.defaults.max_pages, Some(1000));
         let formats = [
             (
                 "json_gz",

@@ -486,18 +486,25 @@ impl RestShape {
         // position boundary.
         let max_items = endpoint.lookup.as_ref().and_then(|l| l.max_items);
         let listing = lister
-            .list(cutoff, max_items, endpoint.max_pages, &mut pages)
-            .await?;
-        if listing.truncated {
+            .list(
+                &endpoint.unit.name,
+                cutoff,
+                max_items,
+                endpoint.max_pages,
+                &mut pages,
+            )
+            .await;
+        if let Err(Error::PageCeiling { .. }) = &listing {
             let source = &self.bound.connection_id;
             metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => source.clone(), "unit" => endpoint.unit.name.to_string()).increment(1);
             tracing::warn!(
                 source,
                 unit = %endpoint.unit.name,
                 max_pages = endpoint.max_pages,
-                "object listing ended on a continuation token; the keys past it wait for the next tick"
+                "object listing still continuing at max_pages; the unit fails so its checkpoint never passes objects on pages not read"
             );
         }
+        let listing = listing?;
         Ok(Page {
             rows: futures::stream::iter(listing.items.into_iter().map(Ok)).boxed(),
             state: Pager::None.first(),
@@ -997,16 +1004,42 @@ impl<'a> Tick<'a> {
     }
 
     /// A page row of a lookup unit is an id: buffer it, and flush a full
-    /// batch. `true` when a lookup is now in flight. A manifest past its
-    /// item cap for the key takes no more and asks for no more pages.
+    /// batch. `true` when a lookup is now in flight.
+    ///
+    /// A manifest past its item cap for the key takes no more and asks for
+    /// no more pages. Where the items carry a checkpoint mark the rest wait
+    /// for the next tick, and a unit that reads no window is cut short. A
+    /// unit that reads the window or is a dump fails instead, through the
+    /// same path as a page ceiling, because nothing records the items it did
+    /// not read.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PageCeiling`] for an item past the cap on a windowed or dump
+    /// unit with no item mark, or the lookup's own error.
     async fn take_id(&mut self, payload: &[u8]) -> Result<bool> {
         let Some(lookup) = &self.endpoint.lookup else {
             return Ok(false);
         };
-        if lookup
+        if let Some(max) = lookup
             .max_items
-            .is_some_and(|max| self.items_taken >= max as usize)
+            .filter(|max| self.items_taken >= *max as usize)
         {
+            if lookup.item_mark.is_none() && self.must_read_every_page() {
+                let unit = &self.endpoint.unit.name;
+                metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => self.shape.bound.connection_id.clone(), "unit" => unit.to_string()).increment(1);
+                tracing::warn!(
+                    source = %self.shape.bound.connection_id,
+                    unit = %unit,
+                    max_items = max,
+                    "manifest item cap reached with items unread; the unit fails so they are not skipped"
+                );
+                return Err(Error::PageCeiling {
+                    unit: unit.to_string(),
+                    ceiling: "max_items",
+                    limit: max,
+                });
+            }
             self.current = None;
             self.pending = None;
             return Ok(false);
@@ -1090,6 +1123,13 @@ impl<'a> Tick<'a> {
         Ok(true)
     }
 
+    /// Whether a cut-short page sequence loses rows: a unit that reads the
+    /// window commits past them when the tick succeeds, and a dump closes its
+    /// snapshot without them.
+    fn must_read_every_page(&self) -> bool {
+        self.endpoint.unit.is_dump() || self.endpoint.windowed
+    }
+
     /// The next page of a finished page: the pager's answer under the
     /// stage's ceiling, or `None` when the sequence ends.
     ///
@@ -1097,7 +1137,9 @@ impl<'a> Tick<'a> {
     /// window fails on it: the rows past the ceiling belong to THIS window,
     /// so the driver reads it again in narrower halves rather than skipping
     /// them, and the scheduler advances the window only on a successful
-    /// tick. A dump or a unit that reads no window is cut short and says so.
+    /// tick. A dump fails too, so its snapshot never closes on part of the
+    /// store. A unit that reads no window is the provider's current state
+    /// and is cut short.
     fn advance(&self, stage: Stage<'a>, page: &Page<'a>) -> Result<Option<PageState>> {
         if page.ignored {
             return Ok(None);
@@ -1112,23 +1154,24 @@ impl<'a> Tick<'a> {
                 let source = &self.shape.bound.connection_id;
                 let unit = &self.endpoint.unit.name;
                 metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => source.clone(), "unit" => unit.to_string()).increment(1);
-                if self.endpoint.windowed && !self.endpoint.unit.is_dump() {
+                if self.must_read_every_page() {
                     tracing::warn!(
                         source,
                         unit = %unit,
                         max_pages = stage.max_pages,
-                        "page ceiling reached with rows of the window unfetched; the unit fails so the window is not advanced past them"
+                        "page ceiling reached with rows unfetched; the unit fails so they are not skipped"
                     );
                     return Err(Error::PageCeiling {
                         unit: unit.to_string(),
-                        max_pages: stage.max_pages,
+                        ceiling: "max_pages",
+                        limit: stage.max_pages,
                     });
                 }
                 tracing::debug!(
                     source,
                     unit = %unit,
                     max_pages = stage.max_pages,
-                    "page ceiling reached; the rest of the store is cut from this tick"
+                    "page ceiling reached; the rest of the current state is cut from this tick"
                 );
                 Ok(None)
             }

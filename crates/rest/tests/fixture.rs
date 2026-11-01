@@ -277,10 +277,11 @@ async fn a_transport_failure_never_carries_the_query_key() {
 }
 
 /// The page ceiling on a unit that reads the window is a failed tick, so the
-/// scheduler does not advance the window past the pages never fetched; on a
-/// dump, which has no window to lose, the sequence is cut short.
+/// scheduler does not advance the window past the pages never fetched. A dump
+/// fails too: its `end` marker tells a consumer the snapshot is complete, and
+/// the pages past the ceiling are rows of that snapshot.
 #[tokio::test]
-async fn the_page_ceiling_fails_a_windowed_unit_and_cuts_a_dump_short() {
+async fn the_page_ceiling_fails_a_windowed_unit_and_a_dump() {
     let fx = common::start().await;
     let p = format!(
         "{PLAIN}window: {{ format: epoch_secs }}\nendpoints:\n  - unit: events\n    path: /link/page\n    query: {{ page: 1, since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: link_header }}\n    max_pages: 2\n  - unit: store\n    shape: dump\n    path: /link/page\n    query: {{ page: 1 }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: link_header }}\n    max_pages: 2\n"
@@ -294,7 +295,7 @@ async fn the_page_ceiling_fails_a_windowed_unit_and_cuts_a_dump_short() {
         .await
         .expect_err("three pages under a ceiling of two");
     assert!(
-        matches!(err, Error::PageCeiling { ref unit, max_pages: 2 } if unit == "events"),
+        matches!(err, Error::PageCeiling { ref unit, ceiling: "max_pages", limit: 2 } if unit == "events"),
         "{err}"
     );
     assert_eq!(err.api_error_code(), "page_ceiling");
@@ -304,10 +305,55 @@ async fn the_page_ceiling_fails_a_windowed_unit_and_cuts_a_dump_short() {
         "the third page is never asked for"
     );
 
-    let rows = fetch(&s, "store", None)
+    let err = fetch(&s, "store", None)
         .await
-        .expect("a dump is cut at the ceiling, not failed");
-    assert_eq!(rows.len(), 4, "two pages of two");
+        .expect_err("a dump with a page past the ceiling is not a complete snapshot");
+    assert!(
+        matches!(err, Error::PageCeiling { ref unit, ceiling: "max_pages", limit: 2 } if unit == "store"),
+        "{err}"
+    );
+}
+
+/// A manifest's item cap fails a unit that reads the window, or a dump, when
+/// an item past the cap is listed: the scheduler would advance the window
+/// past it, or the snapshot would close without it. A cap the listing does
+/// not exceed reads every item.
+#[tokio::test]
+async fn a_manifest_item_cap_fails_a_windowed_unit_and_a_dump_rather_than_skip_items() {
+    let fx = common::start().await;
+    let manifest = |max_items: u32| {
+        format!(
+            "{PLAIN}window: {{ format: epoch_secs }}\nendpoints:\n  - unit: logs\n    path: /manifest/list\n    query: {{ since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n  - unit: inventory\n    shape: dump\n    path: /manifest/list\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n"
+        )
+    };
+    let window = FetchWindow {
+        start: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        end: Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+    };
+    let capped = shape(&fx, &manifest(2), BEARER_INSTANCE);
+    for (unit, window) in [("logs", Some(&window)), ("inventory", None)] {
+        let err = fetch(&capped, unit, window)
+            .await
+            .expect_err("four items listed under a cap of two");
+        assert!(
+            matches!(err, Error::PageCeiling { unit: ref u, ceiling: "max_items", limit: 2 } if u == unit),
+            "{unit}: {err}"
+        );
+    }
+    assert!(
+        fx.requests_to("/manifest/blob/c").is_empty(),
+        "no item past the cap is read"
+    );
+
+    let whole = shape(&fx, &manifest(4), BEARER_INSTANCE);
+    let rows = fetch(&whole, "logs", Some(&window))
+        .await
+        .expect("a cap the listing does not pass reads every item");
+    assert_eq!(
+        rows.len(),
+        6,
+        "three blobs of two, the expired one answering 404"
+    );
 }
 
 /// The page sequence is LAZY: page N+1 is requested only once the driver has

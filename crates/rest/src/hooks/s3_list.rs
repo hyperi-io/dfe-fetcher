@@ -88,15 +88,11 @@ impl Listed {
     }
 }
 
-/// What one listing produced: the item rows, and whether the walk stopped on
-/// a continuation token rather than the end of the listing.
+/// What one complete listing produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
     /// The items, oldest first, ready for the unit's manifest.
     pub items: Vec<Bytes>,
-    /// The page ceiling was reached with more keys to list; the rest of the
-    /// prefix waits for the next tick.
-    pub truncated: bool,
 }
 
 /// Whether an object sits past the checkpoint: later than its position, or at
@@ -145,16 +141,25 @@ impl Lister {
     }
 
     /// The listing as item rows: `pages` fetches one listing page per
-    /// continuation token, walked up to `max_pages` times; the keys past
-    /// `cutoff` come back sorted by `last_modified` then key, oldest first,
-    /// cut to `max_items` at a position boundary.
+    /// continuation token until the listing ends; the keys past `cutoff`
+    /// come back sorted by `last_modified` then key, oldest first, cut to
+    /// `max_items` at a position boundary.
+    ///
+    /// The listing is in key order, not time order, so every page has to be
+    /// seen before the oldest objects are known. The cut is applied after
+    /// each page, which holds memory to `max_items` plus one page and gives
+    /// the same items as one cut over the whole listing.
     ///
     /// # Errors
     ///
-    /// Returns the page fetch's error, or [`Error::Decode`] for a page that
-    /// is not the XML the protocol documents.
+    /// Returns the page fetch's error, [`Error::Decode`] for a page that is
+    /// not the XML the protocol documents, or [`Error::PageCeiling`] naming
+    /// `unit` when a continuation token is still pending after `max_pages`
+    /// pages: a checkpoint taken from part of a listing could pass objects
+    /// on the pages not read.
     pub async fn list<P: ListingPages>(
         self,
+        unit: &str,
         cutoff: Option<(DateTime<Utc>, String)>,
         max_items: Option<u32>,
         max_pages: u32,
@@ -163,9 +168,8 @@ impl Lister {
         let Lister::S3 = self;
         let mut out: Vec<Listed> = Vec::new();
         let mut continuation: Option<String> = None;
-        let mut truncated = false;
         for page in 0..max_pages {
-            let Some(body) = pages.page(continuation.clone()).await? else {
+            let Some(body) = pages.page(continuation.take()).await? else {
                 break;
             };
             let (objects, next) = parse_list_objects_v2(&body)?;
@@ -174,19 +178,22 @@ impl Lister {
                     .into_iter()
                     .filter(|o| past_cutoff(o, cutoff.as_ref())),
             );
+            out.sort_by(|a, b| (a.last_modified, &a.key).cmp(&(b.last_modified, &b.key)));
+            out = cut_at_a_position_boundary(out, max_items);
             match next {
-                Some(token) => {
-                    continuation = Some(token);
-                    truncated = page + 1 == max_pages;
+                Some(_) if page + 1 == max_pages => {
+                    return Err(Error::PageCeiling {
+                        unit: unit.to_owned(),
+                        ceiling: "max_pages",
+                        limit: max_pages,
+                    });
                 }
+                Some(token) => continuation = Some(token),
                 None => break,
             }
         }
-        out.sort_by(|a, b| (a.last_modified, &a.key).cmp(&(b.last_modified, &b.key)));
-        let out = cut_at_a_position_boundary(out, max_items);
         Ok(Listing {
             items: out.iter().map(Listed::item).collect(),
-            truncated,
         })
     }
 }
@@ -380,6 +387,7 @@ mod tests {
         };
         let items: Vec<Value> = Lister::S3
             .list(
+                "json_gz",
                 Some((
                     Utc.with_ymd_and_hms(2026, 5, 20, 12, 0, 0).unwrap(),
                     String::new(),
@@ -413,25 +421,63 @@ mod tests {
         assert_eq!(items[0]["size"], 4321);
     }
 
+    /// A listing still continuing at the page ceiling is refused rather than
+    /// cut: the keys past the ceiling may be older than the ones read, and a
+    /// checkpoint taken from part of a listing would pass them for good. An
+    /// ignored status ends the listing with nothing.
     #[tokio::test]
-    async fn the_page_ceiling_bounds_the_walk_and_an_ignored_status_ends_it() {
-        let mut one = Scripted {
-            asked: Vec::new(),
-            answer: |_| Some(PAGE_ONE.as_bytes()),
-        };
-        let listing = Lister::S3.list(None, None, 1, &mut one).await.unwrap();
-        assert_eq!(listing.items.len(), 2, "one page, its token not followed");
-        assert!(
-            listing.truncated,
-            "the walk stopped on a token, so the prefix has more keys"
-        );
+    async fn the_page_ceiling_refuses_a_cut_listing_and_an_ignored_status_ends_it() {
+        for max_pages in [1, 3] {
+            let mut endless = Scripted {
+                asked: Vec::new(),
+                answer: |_| Some(PAGE_ONE.as_bytes()),
+            };
+            let err = Lister::S3
+                .list("json_gz", None, None, max_pages, &mut endless)
+                .await
+                .expect_err("a listing cut at the ceiling is refused");
+            assert!(
+                matches!(&err, Error::PageCeiling { unit, ceiling: "max_pages", limit } if unit == "json_gz" && *limit == max_pages),
+                "{err:?}"
+            );
+            assert_eq!(
+                endless.asked.len(),
+                max_pages as usize,
+                "the walk stops at the ceiling"
+            );
+        }
         let mut ignored = Scripted {
             asked: Vec::new(),
             answer: |_| None,
         };
-        let listing = Lister::S3.list(None, None, 5, &mut ignored).await.unwrap();
+        let listing = Lister::S3
+            .list("json_gz", None, None, 5, &mut ignored)
+            .await
+            .unwrap();
         assert_eq!(listing.items, [] as [bytes::Bytes; 0]);
-        assert!(!listing.truncated);
+    }
+
+    /// The item cut is applied to the whole listing, so an object on a later
+    /// page that is older than every object on the first is still the one read
+    /// first.
+    #[tokio::test]
+    async fn the_item_cut_sees_every_page_of_the_listing() {
+        let mut pages = Scripted {
+            asked: Vec::new(),
+            answer: |token| {
+                Some(match token {
+                    None => PAGE_ONE.as_bytes(),
+                    Some(_) => PAGE_TWO.as_bytes(),
+                })
+            },
+        };
+        let listing = Lister::S3
+            .list("json_gz", None, Some(1), 10, &mut pages)
+            .await
+            .unwrap();
+        let first: Value = serde_json::from_slice(&listing.items[0]).unwrap();
+        assert_eq!(listing.items.len(), 1);
+        assert_eq!(first["key"], "logs/2026/05/20/old.json.gz");
     }
 
     /// A key carrying XML entities is unescaped to what the bucket really
