@@ -1612,6 +1612,8 @@ pub struct SigV4 {
     keys: SigV4Keys,
     resolved: OnceCell<(String, SensitiveString)>,
     assume_role: Option<AssumeRole>,
+    /// Built once: its HTTP client serves only an assumed role's STS calls.
+    context: reqsign::Context,
 }
 
 impl SigV4 {
@@ -1651,7 +1653,7 @@ impl SigV4 {
                 .clone()
                 .with_request_signer(request_signer),
             None => reqsign::Signer::new(
-                reqsign::default_context(),
+                self.context.clone(),
                 StaticCredentialProvider::new(access_key_id, secret_access_key.expose()),
                 request_signer,
             ),
@@ -2292,6 +2294,7 @@ impl AuthMode {
                         ));
                     }
                 };
+                let context = reqsign::default_context();
                 AuthMode::SigV4(Box::new(SigV4 {
                     service: Template::compile(&spec.sigv4.service)?,
                     region: Template::compile(&spec.sigv4.region)?,
@@ -2299,9 +2302,10 @@ impl AuthMode {
                     resolved: OnceCell::new(),
                     assume_role: identity.assume_role_arn.clone().map(|role_arn| AssumeRole {
                         role_arn,
-                        context: reqsign::default_context(),
+                        context: context.clone(),
                         session: OnceCell::new(),
                     }),
+                    context,
                 }))
             }
             AuthKind::Credentials => AuthMode::Credentials(build_credentials(spec, identity)?),
@@ -3766,6 +3770,7 @@ mod tests {
                 context: reqsign::Context::new().with_http_send(sts.clone()),
                 session: OnceCell::new(),
             }),
+            context: reqsign::Context::new(),
         }));
         let mut ctx = TemplateCtx::new();
         ctx.set("vars", serde_json::json!({"service": "cloudtrail"}));
@@ -4060,6 +4065,7 @@ mod tests {
                         keys: SigV4Keys::Json(Secret::new("s3cr3t-do-not-print".into())),
                         resolved: OnceCell::new(),
                         assume_role: None,
+                        context: reqsign::Context::new(),
                     },
                     ctx: &ctx,
                 }
