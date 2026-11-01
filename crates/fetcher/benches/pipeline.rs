@@ -23,7 +23,9 @@ use dfe_fetcher::pipeline::PipelineState;
 
 /// Create a PipelineState with no output transport (enrichment-only).
 fn make_pipeline_state() -> PipelineState {
-    let config = Config::default();
+    let mut config = Config::default();
+    // No DLQ: its default spool is the container's mount.
+    config.dlq.enabled = false;
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
     PipelineState::new(

@@ -1520,6 +1520,7 @@ mod tests {
         let _recording = recorder.install();
         let (_rx, endpoint) = grpc_listener().await;
         let mut config = Config::default();
+        config.dlq.enabled = false;
         config.output.output_type = "grpc".into();
         config.output.grpc = Some(scalo::transport::GrpcConfig::client(&endpoint));
         let grpc = OutputManager::new(&config.output, &config.kafka)

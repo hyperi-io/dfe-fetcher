@@ -68,7 +68,10 @@ fn test_container_config(
 
 /// Create a PipelineState with no output (delivery disabled).
 fn test_pipeline_state() -> Arc<PipelineState> {
-    let config = Config::default();
+    let mut config = Config::default();
+    // The default DLQ spools to the container's mount, which a build host
+    // cannot create.
+    config.dlq.enabled = false;
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
     Arc::new(

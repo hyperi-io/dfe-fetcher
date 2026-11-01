@@ -864,10 +864,7 @@ mod tests {
         let app_config = Config::default();
         let shared = SharedConfig::new(app_config);
         let metrics = Arc::new(Metrics::new());
-        let pipeline = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
-                .expect("default config should work"),
-        );
+        let pipeline = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
 
         let shutdown = CancellationToken::new();
         let result = run_ingest_server(&config, pipeline, metrics, shutdown).await;
@@ -888,10 +885,7 @@ mod tests {
 
         let shared = SharedConfig::new(Config::default());
         let metrics = Arc::new(Metrics::new());
-        let pipeline = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
-                .expect("default config should work"),
-        );
+        let pipeline = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
 
         let err = run_ingest_server(&config, pipeline, metrics, CancellationToken::new())
             .await

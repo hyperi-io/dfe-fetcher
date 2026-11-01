@@ -96,7 +96,8 @@ async fn test_pipeline_deliver_enriches_and_filters() {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    let config = Config::default();
+    let mut config = Config::default();
+    config.dlq.enabled = false;
     let shared = dfe_fetcher::config::SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
     let state = dfe_fetcher::pipeline::PipelineState::new(
@@ -218,7 +219,11 @@ async fn test_cursor_file_store_incremental_window() {
 fn make_pipeline_state(
     shared: dfe_fetcher::config::SharedConfig,
 ) -> dfe_fetcher::pipeline::PipelineState {
-    // PipelineState::new with None output for tests (no Kafka/gRPC needed)
+    // No output and no DLQ: the default spool path is the container's mount,
+    // which a build host cannot create.
+    let mut config = shared.get();
+    config.dlq.enabled = false;
+    shared.update(config);
     let metrics = std::sync::Arc::new(Metrics::new());
     dfe_fetcher::pipeline::PipelineState::new(
         shared,

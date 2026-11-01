@@ -826,15 +826,11 @@ mod tests {
         connection_id: &str,
         source: Box<dyn RowSource>,
     ) -> Arc<Driver> {
-        let state = Arc::new(
-            PipelineState::new(
-                shared.clone(),
-                Arc::clone(metrics),
-                None,
-                CancellationToken::new(),
-            )
-            .expect("pipeline state"),
-        );
+        let state = Arc::new(PipelineState::for_tests(
+            shared.clone(),
+            Arc::clone(metrics),
+            None,
+        ));
         let oversize = OversizePolicy::default();
         Arc::new(Driver::new(DriverParts {
             shape: Shape::Custom(source),
