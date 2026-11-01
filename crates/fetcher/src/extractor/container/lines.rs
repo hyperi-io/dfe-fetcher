@@ -87,7 +87,7 @@ mod tests {
     /// no newline still comes out.
     #[tokio::test]
     async fn lines_are_bounded_and_the_read_carries_on() {
-        let long = [b"abc\n".as_slice(), &[b'x'; 3 * READ_BYTES], b"\n\nxyz"].concat();
+        let long = [b"abc\n".as_slice(), &vec![b'x'; 3 * READ_BYTES], b"\n\nxyz"].concat();
         let mut lines = BoundedLines::new(long.as_slice(), 8);
         let mut got = Vec::new();
         while let Some(line) = lines.next_line().await.unwrap() {
