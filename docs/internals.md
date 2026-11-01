@@ -274,7 +274,7 @@ in place is read again and a file dropped in by rename is never skipped. A
 `tail` unit follows growing files through rotation and truncation on the
 vendored Vector tailer and commits `(file fingerprint, end offset)` per line
 after the acknowledgement; it needs the `file-tail` feature and is refused at
-load without it.
+load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
 
 | Shape | Unit kind | Checkpoint mark | Lands on |
 |-------|-----------|-----------------|----------|

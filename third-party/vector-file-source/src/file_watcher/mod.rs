@@ -67,6 +67,9 @@ pub struct FileWatcher {
     max_line_bytes: usize,
     line_delimiter: Bytes,
     buf: BytesMut,
+    // dfe-fetcher: whether the reader reads the file's bytes as they are, so
+    // the read position can be compared with the file's length.
+    plain: bool,
 }
 
 impl FileWatcher {
@@ -140,6 +143,14 @@ impl FileWatcher {
                     let pos = reader.seek(SeekFrom::End(0)).await.unwrap();
                     (Box::new(reader), pos)
                 }
+                // dfe-fetcher: a checkpoint past the end means the file was
+                // truncated while it was not watched, so it is read from its start.
+                (false, false, ReadFrom::Checkpoint(file_position))
+                    if file_position > metadata.len() =>
+                {
+                    let pos = reader.seek(SeekFrom::Start(0)).await.unwrap();
+                    (Box::new(reader), pos)
+                }
                 (false, false, ReadFrom::Checkpoint(file_position)) => {
                     let pos = reader.seek(SeekFrom::Start(file_position)).await.unwrap();
                     (Box::new(reader), pos)
@@ -177,7 +188,36 @@ impl FileWatcher {
             max_line_bytes,
             line_delimiter,
             buf: BytesMut::new(),
+            plain: !gzipped,
         })
+    }
+
+    // dfe-fetcher: whether a copytruncate left this watcher's inode shorter
+    // than its read position (`&mut`: the reader is not `Sync`).
+    pub(super) async fn is_truncated(&mut self) -> bool {
+        if !self.plain || self.file_position == 0 {
+            return false;
+        }
+        let Ok(file) = File::open(&self.path).await else {
+            return false;
+        };
+        let (Ok(info), Ok(meta)) = (file.file_info().await, file.metadata().await) else {
+            return false;
+        };
+        (info.portable_dev(), info.portable_ino()) == (self.devno, self.inode)
+            && meta.len() < self.file_position
+    }
+
+    // dfe-fetcher: read the file again from its first byte, as a new
+    // generation of it.
+    pub(super) async fn read_from_start(&mut self) -> io::Result<()> {
+        let file = File::open(&self.path).await?;
+        debug!(message = "File truncated in place, reading it from the start.", path = ?self.path);
+        self.reader = Box::new(BufReader::new(file));
+        self.file_position = 0;
+        self.buf.clear();
+        self.track_read_success();
+        Ok(())
     }
 
     pub async fn update_path(&mut self, path: PathBuf) -> io::Result<()> {
@@ -187,6 +227,8 @@ impl FileWatcher {
         if (file_info.portable_dev(), file_info.portable_ino()) != (self.devno, self.inode) {
             let mut reader = BufReader::new(File::open(&path).await?);
             let gzipped = is_gzipped(&mut reader).await?;
+            // dfe-fetcher: track whether the new reader reads the file's bytes as they are.
+            self.plain = !gzipped;
             let new_reader: Box<dyn AsyncBufRead + Send + Unpin> = if gzipped {
                 if self.file_position != 0 {
                     Box::new(null_reader())

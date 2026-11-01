@@ -246,6 +246,59 @@ mod tailer {
         }
     }
 
+    /// The id the lines of one generation of a file carry. A file truncated in
+    /// place keeps its fingerprint and starts its offsets again, so each
+    /// generation needs an id of its own: under one id the driver's fold keeps
+    /// the old generation's higher offset and commits it over the new one.
+    fn generation_id(fingerprint: FileFingerprint, generation: u32) -> u64 {
+        match generation {
+            0 => id_of(fingerprint),
+            n => id_of(fingerprint) ^ u64::from(n).wrapping_mul(0xD6E8_FEB8_6659_FD93),
+        }
+    }
+
+    /// One file's generation as this run of the tailer has seen it.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Generation {
+        number: u32,
+        /// The furthest offset handed out in this generation.
+        last_end: u64,
+    }
+
+    /// The fingerprint and generation behind each id this run handed out,
+    /// and each file's current generation.
+    #[derive(Debug, Default)]
+    struct Files {
+        ids: HashMap<u64, (FileFingerprint, u32)>,
+        generations: HashMap<FileFingerprint, Generation>,
+    }
+
+    impl Files {
+        /// The id for a line of `fingerprint` ending at `end_offset`. An
+        /// offset no further than the last one handed out starts a new
+        /// generation, and `true` says the file was truncated.
+        fn id_for(&mut self, fingerprint: FileFingerprint, end_offset: u64) -> (u64, bool) {
+            let generation = self.generations.entry(fingerprint).or_default();
+            let truncated = generation.last_end > 0 && end_offset <= generation.last_end;
+            if truncated {
+                generation.number += 1;
+            }
+            generation.last_end = end_offset;
+            let id = generation_id(fingerprint, generation.number);
+            self.ids.insert(id, (fingerprint, generation.number));
+            (id, truncated)
+        }
+
+        /// Whether `id` is an older generation of its file than the current one.
+        fn is_stale(&self, id: u64) -> bool {
+            self.ids.get(&id).is_some_and(|(fingerprint, number)| {
+                self.generations
+                    .get(fingerprint)
+                    .is_some_and(|current| current.number > *number)
+            })
+        }
+    }
+
     /// One read pass as the tailer sent it, its bytes leased until dropped.
     struct Pass {
         at: Instant,
@@ -387,8 +440,8 @@ mod tailer {
         task: tokio::task::JoinHandle<bool>,
         /// Stops this run of the tailer without ending the shape.
         stop: CancellationToken,
-        /// Fingerprints seen this process, by the id their marks carry.
-        ids: HashMap<u64, FileFingerprint>,
+        /// Fingerprints and generations seen this run, by the id their marks carry.
+        files: Files,
         /// The furthest offset handed out per file since the last tick whose
         /// checkpoint covered everything handed before it.
         handed: HashMap<u64, u64>,
@@ -479,7 +532,7 @@ mod tailer {
             self.shutdown.cancel();
             if let Some(running) = self.running.lock().await.take() {
                 match committed_lines(committed) {
-                    Ok(lines) => self.apply(&running.view, &running.ids, &lines),
+                    Ok(lines) => self.apply(&running.view, &running.files, &lines),
                     Err(e) => {
                         warn!(unit = %self.unit, error = %e, "file tail: the committed checkpoint is not a tail's; stopping without it");
                     }
@@ -490,29 +543,25 @@ mod tailer {
             }
         }
 
-        fn fingerprint_of(
-            &self,
-            ids: &HashMap<u64, FileFingerprint>,
-            id: u64,
-        ) -> Option<FileFingerprint> {
-            ids.get(&id)
-                .copied()
-                .or(match self.spec.fingerprint.strategy {
+        fn fingerprint_of(&self, files: &Files, id: u64) -> Option<FileFingerprint> {
+            files.ids.get(&id).map(|(fingerprint, _)| *fingerprint).or(
+                match self.spec.fingerprint.strategy {
                     FingerprintStrategy::Checksum => Some(FileFingerprint::FirstLinesChecksum(id)),
                     FingerprintStrategy::DeviceAndInode => None,
-                })
+                },
+            )
         }
 
         /// Hand the driver's committed positions to the tailer's view; only
-        /// ever forward, and only for fingerprints that can be named.
-        fn apply(
-            &self,
-            view: &CheckpointsView,
-            ids: &HashMap<u64, FileFingerprint>,
-            committed: &[(u64, u64)],
-        ) {
+        /// ever forward, only for fingerprints that can be named, and never
+        /// for a generation of a file older than the one being read.
+        fn apply(&self, view: &CheckpointsView, files: &Files, committed: &[(u64, u64)]) {
             for &(id, offset) in committed {
-                let Some(fingerprint) = self.fingerprint_of(ids, id) else {
+                if files.is_stale(id) {
+                    debug!(unit = %self.unit, id, offset, "file tail: committed offset of a truncated generation");
+                    continue;
+                }
+                let Some(fingerprint) = self.fingerprint_of(files, id) else {
                     debug!(unit = %self.unit, id, offset, "file tail: committed offset for a file this process has not seen");
                     continue;
                 };
@@ -541,8 +590,8 @@ mod tailer {
             let mut checkpointer = Checkpointer::new(&data_dir);
             checkpointer.read_checkpoints(None).await;
             let view = checkpointer.view();
-            let ids = HashMap::new();
-            self.apply(&view, &ids, committed);
+            let files = Files::default();
+            self.apply(&view, &files, committed);
             checkpointer.write_checkpoints().await.map_err(|e| {
                 Error::Cursor(format!(
                     "file tail: cannot write checkpoints under {}: {e}",
@@ -621,7 +670,7 @@ mod tailer {
                 view,
                 task,
                 stop,
-                ids,
+                files,
                 handed: HashMap::new(),
             })
         }
@@ -637,9 +686,7 @@ mod tailer {
         ) -> Result<()> {
             if let Some(running) = guard.as_mut() {
                 if running.covered_by(committed) {
-                    let ids = std::mem::take(&mut running.ids);
-                    self.apply(&running.view, &ids, committed);
-                    running.ids = ids;
+                    self.apply(&running.view, &running.files, committed);
                     running.handed.clear();
                     return Ok(());
                 }
@@ -743,8 +790,13 @@ mod tailer {
                     continue;
                 }
                 for line in pass.lines.drain(..) {
-                    let id = id_of(line.file_id);
-                    running.ids.entry(id).or_insert(line.file_id);
+                    let (id, truncated) = running.files.id_for(line.file_id, line.end_offset);
+                    if truncated {
+                        // The tailer reads the new generation from its first
+                        // byte, so a restart must too until it is committed.
+                        info!(unit = %self.tail.unit, "file tail: a file was truncated in place; reading it again from its start");
+                        running.view.update(line.file_id, 0);
+                    }
                     if let Some(payload) = self.tail.decode(&line.text) {
                         running
                             .handed
@@ -866,7 +918,7 @@ mod tailer {
             for offset in 0..50 {
                 let mut running = tail.start(&[]).await.expect("the tailer starts");
                 // A moved offset gives the run's checkpoint writer something to write.
-                tail.apply(&running.view, &running.ids, &[(1, offset)]);
+                tail.apply(&running.view, &running.files, &[(1, offset)]);
                 let drained = tokio::time::Instant::now() + Duration::from_millis(5);
                 while tokio::time::timeout_at(drained, running.rx.next())
                     .await
@@ -1085,6 +1137,81 @@ mod tailer_tests {
         };
         assert_eq!(files[0].1, 16, "offset just past the rewritten first line");
         tail.stop().await;
+    }
+
+    /// Truncate a file in place, keeping its inode, and write `lines`.
+    fn truncate_and_write(path: &std::path::Path, lines: &[&str]) {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        for line in lines {
+            writeln!(f, "{line}").unwrap();
+        }
+        f.flush().unwrap();
+    }
+
+    /// A copy-truncate rotation that leaves the fingerprint as it was -- the
+    /// same inode, or the same first line under the checksum -- is a new
+    /// generation of the file: it is read from its first byte, while the
+    /// tailer runs and across a restart from a checkpoint past its new end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_truncated_under_the_same_fingerprint_is_read_from_its_new_start() {
+        const OLD: [&str; 3] = [
+            r#"{"h":1}"#,
+            r#"{"n":1,"pad":"xxxxxxxx"}"#,
+            r#"{"n":2,"pad":"xxxxxxxx"}"#,
+        ];
+        const NEW: [&str; 2] = [r#"{"h":1}"#, r#"{"n":9}"#];
+        for strategy in [
+            FingerprintStrategy::Checksum,
+            FingerprintStrategy::DeviceAndInode,
+        ] {
+            for restart in [false, true] {
+                let dir = tempfile::TempDir::new().unwrap();
+                std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+                let log = dir.path().join("logs").join("app.log");
+                append(&log, &OLD);
+                let mut s = spec(&dir);
+                s.fingerprint.strategy = strategy;
+                let tail = FileTail::new("logs", s.clone(), no_lease()).unwrap();
+                let (rows, cp) = tick(&tail, None).await;
+                assert_eq!(rows.len(), 3, "{strategy:?}");
+
+                let tail = if restart {
+                    tail.stop_at(cp.as_ref()).await;
+                    truncate_and_write(&log, &NEW);
+                    FileTail::new("logs", s, no_lease()).unwrap()
+                } else {
+                    truncate_and_write(&log, &NEW);
+                    tail
+                };
+                let (rows, cp) = tick_until(&tail, cp.as_ref(), 2).await;
+                assert_eq!(texts(&rows), NEW, "{strategy:?} restart={restart}");
+                assert_eq!(
+                    cp,
+                    rows[1].mark.clone().map(|m| match m {
+                        Mark::Line {
+                            file_id,
+                            end_offset,
+                        } => {
+                            CheckpointValue::Lines(vec![(file_id, end_offset)])
+                        }
+                        other => panic!("{other:?}"),
+                    }),
+                    "the checkpoint is the new generation's offset"
+                );
+                append(&log, &[r#"{"n":10}"#]);
+                let (rows, _) = tick_until(&tail, cp.as_ref(), 1).await;
+                assert_eq!(
+                    texts(&rows),
+                    [r#"{"n":10}"#],
+                    "{strategy:?} restart={restart}: only the appended line"
+                );
+                tail.stop().await;
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
