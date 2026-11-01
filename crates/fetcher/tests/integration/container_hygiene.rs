@@ -96,3 +96,19 @@ async fn a_shared_container_carries_the_suite_name_and_labels() {
         "a second acquire joins the run's container"
     );
 }
+
+/// The setup script pulls every shared-service image at the pin a test starts,
+/// or a test pays its own pull and a registry 5xx fails it.
+#[test]
+fn the_pre_pull_script_names_every_shared_image() {
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/pull-test-images.sh"),
+    )
+    .expect("scripts/pull-test-images.sh");
+    for image in common::shared_images() {
+        assert!(
+            script.contains(&format!("\"{image}\"")),
+            "scripts/pull-test-images.sh does not pull {image}"
+        );
+    }
+}

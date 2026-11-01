@@ -455,6 +455,18 @@ fn test_labels(service: &str) -> Vec<(String, String)> {
     shared_service::labels(&SUITE, service, std::process::id())
 }
 
+/// Every image the shared services start, as `name:tag@digest`.
+#[must_use]
+pub fn shared_images() -> Vec<String> {
+    vec![
+        scalo::transport::kafka::test_support::KAFKA_IMAGE.to_owned(),
+        openbao_spec().image,
+        localstack_spec().image,
+        clickhouse_spec().image,
+        mongo_spec().image,
+    ]
+}
+
 /// The OpenBao dev server, root token `root`, KV v2 at `secret`.
 fn openbao_spec() -> ServiceSpec {
     // BAO_-prefixed: the VAULT_ spellings are ignored, so the server would
