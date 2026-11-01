@@ -124,7 +124,7 @@ async fn test_e2e_enriched_record_in_kafka() {
     let topic = common::test_topic("e2e-enriched");
 
     // Create a PipelineState with real Kafka output
-    let config = Config {
+    let mut config = Config {
         output: OutputConfig {
             output_type: "kafka".to_string(),
             kafka: Some(kf.to_scalo_config()),
@@ -134,6 +134,9 @@ async fn test_e2e_enriched_record_in_kafka() {
         },
         ..Default::default()
     };
+    // The test is of the output: the default DLQ spools to the container's
+    // mount, which a build host cannot create.
+    config.dlq.enabled = false;
 
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());

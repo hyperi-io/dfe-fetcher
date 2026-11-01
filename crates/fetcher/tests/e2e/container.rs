@@ -68,7 +68,10 @@ fn test_container_config(
 
 /// Create a PipelineState with no output (delivery disabled).
 fn test_pipeline_state() -> Arc<PipelineState> {
-    let config = Config::default();
+    let mut config = Config::default();
+    // The default DLQ spools to the container's mount, which a build host
+    // cannot create.
+    config.dlq.enabled = false;
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
     Arc::new(
@@ -180,13 +183,15 @@ async fn test_container_timeout_kills_process() {
 #[tokio::test]
 #[ignore = "requires Docker runtime"]
 async fn test_container_nonexistent_image_fails() {
-    let config = test_container_config(
+    let mut config = test_container_config(
         "bad-image",
         "nonexistent-image-12345:latest",
         None,
         Some(10),
         "always", // force pull attempt -- will fail
     );
+    // A scheduled extractor's first run comes one interval after it starts.
+    config.interval_secs = Some(1);
 
     let pipeline = test_pipeline_state();
     let metrics = Arc::new(Metrics::new());

@@ -147,13 +147,12 @@ fn driver(
     checkpoints: Option<Arc<dyn CursorStore>>,
     shutdown: CancellationToken,
 ) -> Driver {
+    set_bounds(h, accumulate, oversize);
     Driver::new(DriverParts {
         shape: Shape::Custom(Box::new(shape)),
         connection_id: "conn".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate,
-        oversize,
         emitter: Emitter::new(
             Arc::clone(&h.state),
             Arc::clone(&h.metrics),
@@ -183,6 +182,15 @@ async fn landed(transport: &MemoryTransport) -> Vec<(String, Value)> {
 
 fn rows(payloads: &[&str]) -> Vec<Row> {
     payloads.iter().map(|p| Row::new(p.to_string())).collect()
+}
+
+/// Put the batch bounds and oversize policy in the live config the driver
+/// reads each tick.
+fn set_bounds(h: &Harness, accumulate: AccumulateConfig, oversize: OversizePolicy) {
+    let mut config = h.shared.get();
+    config.accumulate = accumulate;
+    config.oversize = oversize;
+    h.shared.update(config);
 }
 
 fn small() -> AccumulateConfig {
@@ -658,8 +666,6 @@ async fn a_binary_unit_lands_byte_for_byte_and_a_json_unit_is_still_enriched() {
         connection_id: "conn".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: small(),
-        oversize: OversizePolicy::default(),
         emitter: Emitter::new(Arc::clone(&h.state), Arc::clone(&h.metrics), 4),
         pressure: None,
         memory_guard: Arc::clone(&h.guard),
@@ -817,13 +823,12 @@ async fn a_held_batch_is_flushed_so_memory_drains_while_the_source_waits() {
     let pressure = pressure_over(&h.guard);
     let mut acc = small();
     acc.window_ms = 60_000;
+    set_bounds(&h, acc, OversizePolicy::default());
     let d = Arc::new(Driver::new(DriverParts {
         shape: Shape::Custom(Box::new(shape)),
         connection_id: "conn".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: acc,
-        oversize: OversizePolicy::default(),
         emitter: Emitter::new(Arc::clone(&h.state), Arc::clone(&h.metrics), 4),
         pressure: Some(pressure),
         memory_guard: Arc::clone(&h.guard),
@@ -1241,8 +1246,6 @@ async fn a_filtered_queue_message_is_still_acknowledged_after_the_tick() {
         connection_id: "conn".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: small(),
-        oversize: OversizePolicy::default(),
         emitter: Emitter::new(Arc::clone(&h.state), Arc::clone(&h.metrics), 4),
         pressure: None,
         memory_guard: Arc::clone(&h.guard),
@@ -1498,13 +1501,12 @@ async fn the_window_deadline_flushes_a_partial_batch_before_the_next_row_arrives
     };
     let mut acc = small();
     acc.window_ms = 200;
+    set_bounds(&h, acc, OversizePolicy::default());
     let d = Arc::new(Driver::new(DriverParts {
         shape: Shape::Custom(Box::new(shape)),
         connection_id: "conn".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: acc,
-        oversize: OversizePolicy::default(),
         emitter: Emitter::new(Arc::clone(&h.state), Arc::clone(&h.metrics), 4),
         pressure: None,
         memory_guard: Arc::clone(&h.guard),
@@ -1706,8 +1708,6 @@ async fn the_window_is_passed_to_incremental_units_and_withheld_from_dumps() {
         connection_id: "conn".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: small(),
-        oversize: OversizePolicy::default(),
         emitter: Emitter::new(Arc::clone(&h.state), Arc::clone(&h.metrics), 4),
         pressure: None,
         memory_guard: Arc::clone(&h.guard),

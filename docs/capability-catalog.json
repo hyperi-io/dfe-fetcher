@@ -1138,6 +1138,12 @@
             "type": "string",
             "required": false,
             "description": "Secret reference ('vault:<mount>/<path>:<key>', e.g. vault:kv/aws/prod:credentials -- the first segment is the KV v2 mount, and a 'data/' segment after it is accepted and ignored) for this connection's credentials. ESO materialises it; the app resolves it at fetch time. Prefer this over inline credential fields in production."
+          },
+          {
+            "name": "settle_secs",
+            "type": "int",
+            "required": false,
+            "description": "Seconds an object ages before it is read where ListMultipartUploads is refused (default 300)."
           }
         ]
       },

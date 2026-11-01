@@ -1482,6 +1482,7 @@ fn object_store_s3_config() -> S3BackendConfig {
         access_key_id: Some(require("AWS_ACCESS_KEY_ID")),
         secret_access_key: Some(require("AWS_SECRET_ACCESS_KEY").into()),
         credential_secret: None,
+        settle_secs: None,
         buckets: vec![],
     }
 }

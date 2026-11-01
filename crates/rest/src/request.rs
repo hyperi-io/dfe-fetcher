@@ -20,8 +20,8 @@
 //! `retry.throttle_when`; nothing here matches on message text of its own.
 //!
 //! [`RateGate`] is the other half of staying inside a provider's limits: a
-//! unit that declares a rate claims a slot from its gate before each send,
-//! so it never has to be told to slow down.
+//! unit that declares a rate claims a slot from its gate before each attempt,
+//! a retry included, so it never has to be told to slow down.
 //!
 //! The credential goes on through scalo's [`RequestSigner`] hook, so a mode
 //! over a scalo credential source and a mode applying its own credential reach
@@ -219,6 +219,15 @@ impl RateGate {
         };
         tokio::time::sleep_until(at).await;
     }
+
+    /// When the next slot opens.
+    #[cfg(test)]
+    fn next_slot(&self) -> tokio::time::Instant {
+        *self
+            .next_allowed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// What one send needs beside the request: which source it counts against, the
@@ -240,6 +249,8 @@ pub struct Sending<'a> {
     pub idempotent: bool,
     /// Statuses that are the caller's expected answer rather than a failure.
     pub ignore: &'a [u16],
+    /// The unit's rate gate, which every attempt claims a slot from.
+    pub rate: Option<&'a RateGate>,
 }
 
 /// Builds, signs, sends and retries one instance's requests.
@@ -304,6 +315,7 @@ impl RequestExecutor {
             origins,
             idempotent,
             ignore,
+            rate,
         } = sending;
         let may_retry = idempotent || self.retry.retry_non_idempotent;
         let mut backoff = backon::ExponentialBuilder::default()
@@ -313,6 +325,9 @@ impl RequestExecutor {
             .with_jitter()
             .build();
         loop {
+            if let Some(gate) = rate {
+                gate.wait().await;
+            }
             let mut request = make()?;
             origins.check(request.url(), ctx.get("auth"))?;
             if let Err(e) = RequestSigner::sign(&auth.signer(ctx), &mut request).await {
@@ -497,6 +512,7 @@ mod tests {
                     origins: &origins,
                     idempotent: true,
                     ignore: &[],
+                    rate: None,
                 },
                 || {
                     Ok(reqwest::Request::new(
@@ -544,6 +560,7 @@ mod tests {
                     origins: &origins,
                     idempotent: true,
                     ignore: &[],
+                    rate: None,
                 },
                 || {
                     Ok(reqwest::Request::new(
@@ -603,6 +620,7 @@ mod tests {
                     origins: &origins,
                     idempotent: true,
                     ignore: &[],
+                    rate: None,
                 },
                 || {
                     Ok(reqwest::Request::new(
@@ -619,5 +637,70 @@ mod tests {
         assert_eq!(status, 500);
         assert_eq!(text.len(), ERROR_BODY_BYTES, "the first bytes, capped");
         assert!(text.bytes().all(|b| b == b'x'));
+    }
+
+    /// A retried attempt draws its own slot from the unit's rate gate: a
+    /// 503 then a 200 claims two slots, so the retry is paced like any other
+    /// request instead of skipping the gate.
+    #[tokio::test]
+    async fn every_attempt_of_a_retried_request_claims_a_rate_slot() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for status in ["503 Service Unavailable", "200 OK"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let _ = socket.read(&mut request).await;
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}"
+                );
+                socket.write_all(reply.as_bytes()).await.unwrap();
+                socket.flush().await.unwrap();
+            }
+        });
+
+        let executor = RequestExecutor::new(
+            reqwest::Client::new(),
+            RetrySpec {
+                min_backoff_ms: 1,
+                max_backoff_ms: 1,
+                ..RetrySpec::default()
+            },
+            None,
+            Vec::new(),
+        );
+        let mut origins = OriginSet::new();
+        let base = format!("http://{addr}");
+        assert!(origins.permit(&base));
+        let ctx = TemplateCtx::new();
+        let gate = RateGate::new(4.0).unwrap();
+        let created = gate.next_slot();
+        let response = executor
+            .send(
+                Sending {
+                    source: "paced",
+                    auth: &AuthMode::None,
+                    ctx: &ctx,
+                    origins: &origins,
+                    idempotent: true,
+                    ignore: &[],
+                    rate: Some(&gate),
+                },
+                || {
+                    Ok(reqwest::Request::new(
+                        reqwest::Method::GET,
+                        format!("{base}/x").parse().unwrap(),
+                    ))
+                },
+            )
+            .await
+            .expect("the retry succeeds");
+        assert!(response.is_some());
+        assert!(
+            gate.next_slot() >= created + 2 * gate.min_interval,
+            "two attempts, two slots"
+        );
     }
 }

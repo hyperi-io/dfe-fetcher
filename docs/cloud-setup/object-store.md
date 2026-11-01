@@ -84,11 +84,22 @@ mistake - `ListBucket` then silently fails.
 | Action | Resource ARN | Why |
 |--------|--------------|-----|
 | `s3:ListBucket` | `arn:aws:s3:::my-log-bucket` | List object keys + last-modified under each prefix |
+| `s3:ListBucketMultipartUploads` | `arn:aws:s3:::my-log-bucket` | Hold the listing behind uploads still in progress (see Multipart Uploads) |
 | `s3:GetObject` | `arn:aws:s3:::my-log-bucket/*` | Download each object body |
 
 All actions are read-only. No write, delete, or bucket-config actions are
 needed. For cross-account delivery buckets, the bucket policy on the
 target bucket must also allow the fetcher principal.
+
+### Multipart Uploads
+
+S3 lists an object written by multipart upload under the time the upload BEGAN, not when it completed. A large object can land behind newer ones the fetcher has already read, and a checkpoint alone would skip it. So before each listing the fetcher calls `ListMultipartUploads` on the prefix and reads nothing modified at or after the start of the oldest upload still in progress.
+
+Without `s3:ListBucketMultipartUploads` (a 403), or on a store that does not support the call, the fetcher logs one warning per prefix naming the permission and falls back to `settle_secs`: only objects older than that many seconds are read. The default is 300, one default fetch interval. An upload that takes longer than `settle_secs` can still be skipped on that path, so grant the permission or raise `settle_secs` past your longest upload.
+
+An upload that is never completed or aborted holds its prefix until it goes, and the fetcher warns once it has held for a day. Add an `AbortIncompleteMultipartUpload` lifecycle rule to the bucket so abandoned uploads are removed.
+
+MinIO lists a completed multipart object under its completion time, so this case does not arise there, and the hold only delays objects written while an upload runs.
 
 ### GCS (not implemented)
 
@@ -157,7 +168,7 @@ prefix at it.
        {
          "Sid": "ListLogBucket",
          "Effect": "Allow",
-         "Action": ["s3:ListBucket"],
+         "Action": ["s3:ListBucket", "s3:ListBucketMultipartUploads"],
          "Resource": ["arn:aws:s3:::my-log-bucket"]
        },
        {
@@ -228,6 +239,7 @@ Field reference (S3 backend):
 - `endpoint_override` - optional; for MinIO, R2, B2, or VPC endpoints.
 - `credential_secret` - optional; vault spec holding both keys as JSON
   (see Secrets Manager below). Wins over the inline key fields.
+- `settle_secs` - optional, default 300. How old an object must be before it is read, used only where `ListMultipartUploads` is refused (see Multipart Uploads).
 - `buckets[].bucket` - bucket name (container name for Azure Blob).
 - `buckets[].prefixes[].prefix` - key prefix to poll (may be empty to
   scan the whole bucket).
@@ -352,6 +364,12 @@ your own cloud agreement.
 
 ## References
 
+- S3 object metadata, multipart `Last-Modified` is the initiation time:
+  <https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html>
+- S3 ListMultipartUploads:
+  <https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListMultipartUploads.html>
+- S3 lifecycle rule to abort incomplete multipart uploads:
+  <https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html>
 - S3 read-only IAM policy (two-ARN pattern):
   <https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-bucket-policies.html>
 - AWS IAM example - read access to an S3 bucket:

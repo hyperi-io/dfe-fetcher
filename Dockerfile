@@ -15,24 +15,10 @@ FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20b
 
 LABEL io.hyperi.profile="production"
 
-# Runtime shared libraries for dynamically-linked Rust crates.
 # Apt versions are unpinned because Debian drops superseded ones, so the digest-pinned base is what fixes the release.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl gnupg \
-    && curl -fsSL https://packages.confluent.io/clients/deb/archive.key -o /tmp/repo-key.asc \
-    && gpg --show-keys --with-colons --with-fingerprint /tmp/repo-key.asc \
-       > /tmp/repo-key.info \
-    && grep -q "^fpr:::::::::CBBB821E8FAF364F79835C438B1DA6120C2BF624:" /tmp/repo-key.info \
-    && rm -f /tmp/repo-key.info \
-    && gpg --dearmor -o /usr/share/keyrings/confluent-clients.gpg /tmp/repo-key.asc \
-    && rm -f /tmp/repo-key.asc \
-    && echo "deb [signed-by=/usr/share/keyrings/confluent-clients.gpg] \
-       https://packages.confluent.io/clients/deb bookworm main" \
-       > /etc/apt/sources.list.d/confluent-clients.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
-       librdkafka1 libssl3t64 zlib1g libzstd1 \
-    && apt-get purge -y --auto-remove curl gnupg \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dfe-fetcher /usr/local/bin/dfe-fetcher
@@ -40,7 +26,7 @@ RUN chmod +x /usr/local/bin/dfe-fetcher
 
 # A base image may ship its own user at UID 1000 (Ubuntu's `ubuntu`), so remove it first.
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi && useradd --create-home --uid 1000 appuser
-RUN mkdir -p '/var/lib/dfe-fetcher' && chown 1000:1000 '/var/lib/dfe-fetcher'
+RUN mkdir -p '/var/lib/dfe-fetcher' '/var/spool/dfe/dlq' && chown 1000:1000 '/var/lib/dfe-fetcher' '/var/spool/dfe/dlq'
 WORKDIR /home/appuser
 # Numeric, so Kubernetes runAsNonRoot can verify it without reading /etc/passwd.
 USER 1000

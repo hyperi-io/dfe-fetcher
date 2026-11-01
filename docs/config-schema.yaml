@@ -2894,6 +2894,15 @@ $defs:
         type:
         - string
         - "null"
+      settle_secs:
+        description: |-
+          Seconds an object must age before it is read, used only where the
+          store refuses `ListMultipartUploads`. Default 300 (the profile's).
+        type:
+        - integer
+        - "null"
+        format: uint64
+        minimum: 0
       buckets:
         description: Buckets + prefixes to tail.
         type: array
@@ -3406,6 +3415,7 @@ $defs:
           format: rfc3339_secs
           step: null
           lookback: 3600s
+          delay: null
       probe:
         description: The health-check request, when the API has a cheap one.
         anyOf:
@@ -4197,6 +4207,14 @@ $defs:
         description: Window used when the scheduler passes none.
         $ref: "#/$defs/DurationText"
         default: 3600s
+      delay:
+        description: |-
+          How long after the fact the provider makes a record visible. Every
+          window ends at least this far before now.
+        anyOf:
+        - $ref: "#/$defs/DurationText"
+        - type: "null"
+        default: null
     additionalProperties: false
   WindowFormat:
     description: rfc3339_secs | rfc3339_millis | epoch_secs | epoch_millis | strftime:<pattern>
@@ -6618,11 +6636,11 @@ $defs:
         description: |-
           Consumer group ID.
 
-          Empty means [`KafkaTransport::new`](super::KafkaTransport::new) builds
-          no consumer, and [`KafkaTransport::receiver`](super::KafkaTransport::receiver)
-          refuses the config. The admin's offset-query consumer takes a group id
-          derived from this field, or from `client_id` when it is empty, so a
-          broker granting groups by prefix covers it too.
+          Empty means `KafkaTransport::new` (`transport-kafka` feature) builds no
+          consumer, and `KafkaTransport::receiver` refuses the config. The admin's
+          offset-query consumer takes a group id derived from this field, or from
+          `client_id` when it is empty, so a broker granting groups by prefix
+          covers it too.
         type: string
         default: scalo-consumer
       client_id:

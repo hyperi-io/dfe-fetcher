@@ -42,7 +42,6 @@ use dfe_fetcher::metrics::Metrics;
 use dfe_fetcher::pipeline::{IntakeAcks, Orchestrator};
 use dfe_fetcher::scheduler::Scheduler;
 use dfe_fetcher_core::SourceMaturity;
-use dfe_fetcher_core::batch::AccumulateConfig;
 use dfe_fetcher_db::DbShape;
 use dfe_fetcher_file::FileShape;
 use scalo::governor::{MemoryPressureSource, PressureSource, UnifiedPressure};
@@ -524,22 +523,16 @@ async fn run_fetcher_service(
     // Each driver takes its source's OWN cancel token, not the global one, so
     // dropping the source from the config aborts its in-flight tick through
     // the driver's non-alerting shutdown path.
-    let framework_driver = |shape: Shape,
-                            id: &str,
-                            accumulate: Option<AccumulateConfig>,
-                            cancel: CancellationToken| {
-        let accumulate = accumulate.unwrap_or(config.accumulate);
+    let framework_driver = |shape: Shape, id: &str, cancel: CancellationToken| {
         Driver::new(DriverParts {
             shape,
             connection_id: id.to_owned(),
             instance_id: instance_id.clone(),
             shared_config: orchestrator.shared_config(),
-            accumulate,
-            oversize: config.oversize,
             emitter: Emitter::new(
                 Arc::clone(&pipeline_state),
                 Arc::clone(&metrics),
-                accumulate.in_flight,
+                config.accumulate.in_flight,
             ),
             pressure: pressure.clone(),
             memory_guard: Arc::clone(pipeline_state.memory_guard()),
@@ -582,12 +575,7 @@ async fn run_fetcher_service(
         )?;
         let cancel = shutdown_token.child_token();
         entries.push(SpawnEntry {
-            driver: Arc::new(framework_driver(
-                shape,
-                id,
-                instance.accumulate,
-                cancel.clone(),
-            )),
+            driver: Arc::new(framework_driver(shape, id, cancel.clone())),
             interval_secs: instance.interval_secs,
             cancel,
         });
@@ -609,7 +597,6 @@ async fn run_fetcher_service(
             driver: Arc::new(framework_driver(
                 Shape::Db(Box::new(shape)),
                 id,
-                instance.accumulate,
                 cancel.clone(),
             )),
             interval_secs: instance.interval_secs,
@@ -633,7 +620,6 @@ async fn run_fetcher_service(
             driver: Arc::new(framework_driver(
                 Shape::File(Box::new(shape)),
                 id,
-                instance.accumulate,
                 cancel.clone(),
             )),
             interval_secs: instance.interval_secs,
@@ -698,25 +684,27 @@ async fn run_fetcher_service(
     // from the config stops fetching without a restart.
     scheduler.spawn_source_watch(running, shutdown_token.clone());
 
-    // Start ingest HTTP server (for container extractors using HTTP communication)
+    // Start ingest HTTP server (for container extractors using HTTP
+    // communication). A listener that cannot start leaves the intake dead
+    // while the pod reads Ready, so the process drains, stops and exits
+    // non-zero to be restarted.
+    let mut intake_failed: Option<anyhow::Error> = None;
+    let ingest_server = match ingest::spawn_ingest_server(
+        &config.ingest,
+        Arc::clone(&pipeline_state),
+        Arc::clone(&metrics),
+        shutdown_token.clone(),
+    )
+    .await
     {
-        let ingest_config = config.ingest.clone();
-        let ingest_pipeline = Arc::clone(&pipeline_state);
-        let ingest_metrics = Arc::clone(&metrics);
-        let ingest_shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
-            if let Err(e) = ingest::run_ingest_server(
-                &ingest_config,
-                ingest_pipeline,
-                ingest_metrics,
-                ingest_shutdown,
-            )
-            .await
-            {
-                error!(error = %e, "Ingest server error");
-            }
-        });
-    }
+        Ok(server) => server,
+        Err(e) => {
+            error!(error = %e, "The ingest listener failed to start: shutting down to exit non-zero");
+            shutdown_token.cancel();
+            intake_failed = Some(e);
+            None
+        }
+    };
 
     // Start container extractors
     for container_config in &config.extractors.containers {
@@ -788,6 +776,18 @@ async fn run_fetcher_service(
     }
     if let Some(e) = vector_failed {
         return Err(anyhow::anyhow!("the Vector extractor failed to start: {e}"));
+    }
+    if let Some(server) = ingest_server {
+        match server.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => intake_failed = intake_failed.or(Some(e)),
+            Err(e) => {
+                intake_failed = intake_failed.or(Some(anyhow::anyhow!("ingest server task: {e}")));
+            }
+        }
+    }
+    if let Some(e) = intake_failed {
+        return Err(e);
     }
 
     info!("Shutdown complete");

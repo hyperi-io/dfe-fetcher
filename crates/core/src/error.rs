@@ -60,17 +60,20 @@ pub enum Error {
         max: usize,
     },
 
-    /// An event-window unit hit its page ceiling with rows of the window
-    /// still unfetched; the unit's run fails so the window is not advanced
-    /// past them, and the driver reads the window again in narrower halves.
+    /// A unit that must read every page -- one that reads the window, a
+    /// dump, a listing -- hit its page or item ceiling with rows still
+    /// unread. The unit's run fails so nothing is committed past them, and a
+    /// windowed run is read again in narrower halves.
     #[error(
-        "unit `{unit}` hit max_pages ({max_pages}) with rows of the window still unfetched; raise max_pages or shorten the window"
+        "unit `{unit}` hit {ceiling} ({limit}) with rows still unread; raise {ceiling}, shorten the window or narrow the store"
     )]
     PageCeiling {
         /// The unit.
         unit: String,
-        /// The ceiling in force.
-        max_pages: u32,
+        /// The setting that bounded the run: `max_pages` or `max_items`.
+        ceiling: &'static str,
+        /// Its value.
+        limit: u32,
     },
 
     /// One item of a per-item unit failed, named so the driver can close the
@@ -256,7 +259,8 @@ mod tests {
     fn the_typed_ceilings_and_an_item_failure_classify_without_reading_text() {
         let ceiling = Error::PageCeiling {
             unit: "sign_ins".into(),
-            max_pages: 10,
+            ceiling: "max_pages",
+            limit: 10,
         };
         assert_eq!(ceiling.api_error_code(), "page_ceiling");
         assert!(ceiling.to_string().contains("max_pages (10)"), "{ceiling}");

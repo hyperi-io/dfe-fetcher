@@ -17,6 +17,12 @@
 #![allow(dead_code)] // Shared utilities -- not all used by every test file
 
 use std::env;
+use std::sync::OnceLock;
+
+use scalo::deployment::test_support::shared_service::{
+    self, Ready, ServiceSpec, SharedContainer, Suite,
+};
+use scalo::transport::kafka::test_support::{require_docker, shared_kafka};
 
 /// Test backend mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,32 +284,23 @@ impl AppTestContract {
 }
 
 // =============================================================================
-// OpenBao / Vault config (live -> testcontainers fallback)
+// OpenBao / Vault config (live -> shared container fallback)
 // =============================================================================
 
 /// OpenBao/Vault connection config for tests.
-///
-/// Wraps an optional testcontainer that's auto-stopped when this struct is
-/// dropped (Drop impl for [`testcontainers::ContainerAsync`]).
 pub struct VaultTestConfig {
     pub address: String,
     pub token: String,
     pub mount_path: String,
-    /// Holds the testcontainer alive for the test's lifetime.
-    /// `None` when a live external Vault is being used.
-    _container: Option<TestcontainerHolder>,
+    /// The run's shared OpenBao, `None` when a live one is configured.
+    container: Option<SharedContainer>,
 }
 
 impl VaultTestConfig {
-    /// True when this config owns a container, false when it points at a live
-    /// external OpenBao. A naming assertion only applies to the former.
+    /// The run's shared OpenBao container, `None` when a live one is used.
     #[must_use]
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "_container exists to keep the container alive"
-    )]
-    pub fn manages_container(&self) -> bool {
-        self._container.is_some()
+    pub fn container(&self) -> Option<&SharedContainer> {
+        self.container.as_ref()
     }
 }
 
@@ -311,28 +308,8 @@ impl VaultTestConfig {
 // Test image pins
 // =============================================================================
 //
-// Pinned HERE rather than left to testcontainers-modules' defaults, which lag
-// badly: Kafka 3.8.0 and LocalStack 4.5, which predates its move to CalVer. A
-// tag baked into a dependency's source is invisible to dependency review --
-// Renovate reads Cargo.toml, correctly reports the crate current, and never
-// sees the image. Hoisting the tags out is what puts them back under review,
-// hence the annotations.
-
-/// The Kafka DFE deploys, held equal to dfe-infra `versions.yaml` `kafka-version`
-/// for the current stack: a test proving broker behaviour on another version
-/// proves it against something nobody runs.
-///
-/// The JVM image: `apache/kafka-native` before 4.4.0 segfaults in `getpwuid` on ~2% of starts.
-///
-/// renovate: datasource=docker depName=apache/kafka
-const KAFKA_TAG: &str = "4.3.1";
-
-/// Digest of `KAFKA_TAG`, apart from it because the Renovate regex stops at a colon.
-const KAFKA_DIGEST: &str =
-    "sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837";
-
-/// A JVM broker takes 5-12 s to become ready, longer on a busy runner, so 60 s is too tight.
-const KAFKA_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+// Each tag carries a Renovate annotation so the image stays under dependency
+// review. The Kafka image is scalo's `KAFKA_IMAGE`, the one the fleet tests on.
 
 /// SEMVER line only -- do NOT move this to the CalVer tags (`2026.07.0` etc).
 /// The CalVer images on `localstack/localstack` require a licence: they exit 55
@@ -422,142 +399,191 @@ const ORACLE_TAG: &str = "23.26.3-slim-faststart";
 const ORACLE_DIGEST: &str =
     "sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093";
 
-/// Holder for any auto-managed testcontainer. Drop stops the container.
+/// Holder for a container one test starts for itself. Drop stops it.
+///
+/// Only the ODBC engines' suites start one: each seeds its own database at
+/// start, and none of them runs where the ODBC drivers are not installed.
 pub enum TestcontainerHolder {
-    GenericVault(testcontainers::ContainerAsync<testcontainers::GenericImage>),
-    LocalStack(testcontainers::ContainerAsync<testcontainers_modules::localstack::LocalStack>),
-    Kafka(testcontainers::ContainerAsync<testcontainers_modules::kafka::apache::Kafka>),
     Postgres(testcontainers::ContainerAsync<testcontainers_modules::postgres::Postgres>),
     Mariadb(testcontainers::ContainerAsync<testcontainers_modules::mariadb::Mariadb>),
-    ClickHouse(testcontainers::ContainerAsync<testcontainers_modules::clickhouse::ClickHouse>),
     Generic(testcontainers::ContainerAsync<testcontainers::GenericImage>),
 }
 
 // ============================================================================
 // Container naming and cleanup
 // ============================================================================
-//
-// Every container this suite starts carries a name that says which repo, which
-// suite and which backing service it is, so an operator looking at `docker ps`
-// can tell what left it behind. testcontainers' default is a random hex name,
-// which is untraceable the moment one survives.
-//
-// Naming: `dfe-fetcher-test-integration-<test>-<service>`, because every
-// container here is owned by exactly ONE test. nextest runs each test in its own
-// process, so nothing is shared even when it looks like it should be -- four
-// tests calling `acquire_kafka()` start four brokers. That was already true with
-// testcontainers' random names; the only thing a single shared name would add is
-// a collision, where the first test wins and the rest fail with "name is already
-// in use" and skip. `container_name` still takes `None` for a container started
-// once for a whole binary, but no suite does that today.
-//
-// Cleanup is belt AND braces, because `Drop` alone is not enough:
-//
-//   - Normal completion and a panic both unwind, so `Drop` stops the container.
-//   - A SIGKILL, an abort, or Ctrl-C on the test run does NOT. `Drop` never
-//     runs and the container survives.
-//
-// testcontainers-rs 0.27 has no resource reaper (no Ryuk), so the second case
-// is the one that leaves crap behind. A deterministic name would then make it
-// WORSE than a random one -- the leaked container holds the name and every
-// later run fails with "name already in use". `reap_stale` closes that: remove
-// any container already holding the name before starting, so a leak costs the
-// next run nothing and self-heals.
-//
-// The label goes on as well, so a sweep can find these regardless of name:
-//   docker rm -f $(docker ps -aq --filter label=io.hyperi.test.suite=dfe-fetcher-integration)
 
-/// Label marking every container this suite starts, for bulk cleanup.
-pub const TEST_SUITE_LABEL: (&str, &str) = ("io.hyperi.test.suite", "dfe-fetcher-integration");
+/// The suite every container here is named and labelled for: names start
+/// `dfe-fetcher-test-integration-`, and every container carries the
+/// `io.hyperi.test.*` labels with `io.hyperi.test.suite=dfe-fetcher-integration`.
+pub const SUITE: Suite = Suite {
+    repo: "dfe-fetcher",
+    manifest_dir: env!("CARGO_MANIFEST_DIR"),
+    tmp_dir: option_env!("CARGO_TARGET_TMPDIR"),
+};
 
-/// Labels for a container this suite starts: what it is, and whose run owns it.
-///
-/// The name says what and why; these say WHO, which is what you need when
-/// several runs share a machine and one has left something behind. The pid is
-/// the owning test process -- `ps -p <pid>` answers "is that run still alive, or
-/// is this rubbish I can remove?".
+/// The run's one container for `spec`: the first test process to ask creates
+/// it, the rest join it by name, and a watcher removes it when the run ends.
+/// `None` (a skip outside CI, a failure in CI) when no Docker daemon answers.
+async fn shared(
+    cell: &'static OnceLock<SharedContainer>,
+    spec: fn() -> ServiceSpec,
+) -> Option<SharedContainer> {
+    if let Some(container) = cell.get() {
+        return Some(container.clone());
+    }
+    if !require_docker() {
+        return None;
+    }
+    let container = tokio::task::spawn_blocking(move || {
+        cell.get_or_init(|| shared_service::acquire(&SUITE, &spec()))
+            .clone()
+    })
+    .await
+    .unwrap_or_else(|e| panic!("acquire a shared container: {e}"));
+    Some(container)
+}
+
+/// Container name for a database one ODBC test starts for itself.
+#[must_use]
+pub fn container_name(test: &str, service: &str) -> String {
+    shared_service::container_name(&SUITE, Some(test), service)
+}
+
+/// Labels for a container one ODBC test starts for itself.
 fn test_labels(service: &str) -> Vec<(String, String)> {
+    shared_service::labels(&SUITE, service, std::process::id())
+}
+
+/// Every image the shared services start, as `name:tag@digest`.
+#[must_use]
+pub fn shared_images() -> Vec<String> {
     vec![
-        (
-            TEST_SUITE_LABEL.0.to_string(),
-            TEST_SUITE_LABEL.1.to_string(),
-        ),
-        ("io.hyperi.test.repo".to_string(), "dfe-fetcher".to_string()),
-        ("io.hyperi.test.service".to_string(), service.to_string()),
-        (
-            "io.hyperi.test.owner-pid".to_string(),
-            std::process::id().to_string(),
-        ),
+        scalo::transport::kafka::test_support::KAFKA_IMAGE.to_owned(),
+        openbao_spec().image,
+        localstack_spec().image,
+        clickhouse_spec().image,
+        mongo_spec().image,
     ]
 }
 
-/// Container name for a backing service in this suite.
-///
-/// Pass `Some(test)` -- the owning test -- for anything a test starts for itself,
-/// which is everything here. `None` is for a container started once for a whole
-/// test binary; nothing does that today, and using it from several tests would
-/// make them collide on the name rather than share the container.
-///
-/// Names are lowercased and non-alphanumerics collapse to `-`, because Docker
-/// only accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, and a Rust test path
-/// (`credentials::test_vault_resolve`) has colons in it.
-#[must_use]
-pub fn container_name(test: Option<&str>, service: &str) -> String {
-    let slug = |s: &str| {
-        s.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect::<String>()
-    };
-    match test {
-        Some(t) => format!("dfe-fetcher-test-integration-{}-{}", slug(t), slug(service)),
-        None => format!("dfe-fetcher-test-integration-{}", slug(service)),
+/// The OpenBao dev server, root token `root`, KV v2 at `secret`.
+fn openbao_spec() -> ServiceSpec {
+    // BAO_-prefixed: the VAULT_ spellings are ignored, so the server would
+    // issue a random root token and never log the readiness line.
+    ServiceSpec {
+        ports: vec![8200],
+        env: vec![
+            ("BAO_DEV_ROOT_TOKEN_ID".into(), "root".into()),
+            ("BAO_DEV_LISTEN_ADDRESS".into(), "0.0.0.0:8200".into()),
+        ],
+        args: vec!["server".into(), "-dev".into()],
+        ready: Ready::Log("OpenBao server started"),
+        ..ServiceSpec::new(
+            "openbao",
+            format!("openbao/openbao:{OPENBAO_TAG}@{OPENBAO_DIGEST}"),
+            std::time::Duration::from_secs(120),
+        )
     }
 }
 
-/// Remove a DEAD container holding `name`, so a leak from a killed run cannot
-/// block this one.
-///
-/// Never touches a RUNNING container. Two concurrent runs of this suite on one
-/// machine share these names, and force-removing a live one would sabotage the
-/// other run -- a confusing mid-test failure in a process that did nothing
-/// wrong. Leaving it means the start below fails with "name is already in use",
-/// which says what actually happened.
-///
-/// Best-effort otherwise: no Docker, nothing to remove, or an already-gone
-/// container are all fine. A failure here must not fail the test -- the start
-/// that follows reports the real problem.
-pub fn reap_stale(name: &str) {
-    let running = std::process::Command::new("docker")
-        .args(["ps", "--quiet", "--filter", &format!("name=^{name}$")])
-        .output();
-    // Non-empty stdout means a container by this name is up. Leave it alone.
-    if let Ok(out) = &running
-        && !out.stdout.is_empty()
-    {
-        return;
+/// LocalStack on its edge port.
+fn localstack_spec() -> ServiceSpec {
+    ServiceSpec {
+        ports: vec![4566],
+        ready: Ready::Log("Ready."),
+        ..ServiceSpec::new(
+            "localstack",
+            format!("localstack/localstack:{LOCALSTACK_TAG}@{LOCALSTACK_DIGEST}"),
+            std::time::Duration::from_secs(180),
+        )
     }
-    let _ = std::process::Command::new("docker")
-        .args(["rm", "--force", "--volumes", name])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+}
+
+/// ClickHouse over HTTP, user `default` with no password.
+fn clickhouse_spec() -> ServiceSpec {
+    ServiceSpec {
+        ports: vec![8123],
+        env: vec![("CLICKHOUSE_SKIP_USER_SETUP".into(), "1".into())],
+        ready: Ready::Http {
+            port: 8123,
+            path: "/ping",
+            body: "Ok.",
+        },
+        ..ServiceSpec::new(
+            "clickhouse",
+            format!("clickhouse/clickhouse-server:{CLICKHOUSE_TAG}@{CLICKHOUSE_DIGEST}"),
+            std::time::Duration::from_secs(180),
+        )
+    }
+}
+
+/// A standalone MongoDB server, no auth.
+fn mongo_spec() -> ServiceSpec {
+    ServiceSpec {
+        ports: vec![27017],
+        env: vec![(
+            MONGO_KERNEL_WORKAROUND.0.into(),
+            MONGO_KERNEL_WORKAROUND.1.into(),
+        )],
+        ready: Ready::Log("Waiting for connections"),
+        ..ServiceSpec::new(
+            "mongo",
+            format!("mongo:{MONGO_TAG}@{MONGO_DIGEST}"),
+            std::time::Duration::from_secs(120),
+        )
+    }
+}
+
+/// A one-member MongoDB replica set: `--replSet rs`, `rs.initiate()` once the
+/// server listens, ready once the member is primary.
+fn mongo_replica_set_spec() -> ServiceSpec {
+    ServiceSpec {
+        args: vec!["--replSet".into(), "rs".into()],
+        after_start: initiate_replica_set,
+        ready: Ready::Log("Transition to primary complete; database writes are now permitted"),
+        ..ServiceSpec {
+            service: "mongo-rs",
+            ..mongo_spec()
+        }
+    }
+}
+
+/// `rs.initiate()` through `mongosh`, retried until the server accepts it:
+/// the hook runs before the readiness wait, so the server may not listen yet.
+fn initiate_replica_set(container: &SharedContainer) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let out = std::process::Command::new("docker")
+            .args([
+                "exec",
+                &container.name,
+                "mongosh",
+                "--quiet",
+                "--eval",
+                "rs.initiate()",
+            ])
+            .output()
+            .expect("docker exec");
+        if out.status.success() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "rs.initiate() in {}: {}",
+            container.name,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 }
 
 impl VaultTestConfig {
-    /// Acquire a Vault test config: live (env) if available, else start a
-    /// throwaway OpenBao container that is auto-stopped on `Drop`.
-    ///
-    /// `test` names the calling test and goes into the container name, so
-    /// concurrent tests do not collide on it.
+    /// Acquire a Vault test config: live (env) if available, else the run's
+    /// shared OpenBao container. Tests keep apart by writing their own paths.
     ///
     /// Returns `None` if no live Vault is configured AND Docker is unavailable.
-    pub async fn acquire(test: &str) -> Option<Self> {
+    pub async fn acquire(_test: &str) -> Option<Self> {
         load_dotenv();
 
         // Live mode: env vars present -> use them, no container managed
@@ -569,63 +595,17 @@ impl VaultTestConfig {
                 address,
                 token,
                 mount_path,
-                _container: None,
+                container: None,
             });
         }
 
-        // Fallback: start an OpenBao testcontainer
-        use testcontainers::core::{IntoContainerPort, WaitFor};
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers::{GenericImage, ImageExt};
-
-        // BAO_-prefixed, and the readiness line reads "OpenBao server started!".
-        // The VAULT_ spellings this used to carry are silently ignored: the
-        // server issues a RANDOM root token instead of the one asked for, and
-        // the wait strategy never matches, so the container start just times
-        // out. Neither failure names OpenBao as the cause.
-        let name = container_name(Some(test), "openbao");
-        reap_stale(&name);
-        let image = GenericImage::new(
-            "openbao/openbao".to_string(),
-            format!("{OPENBAO_TAG}@{OPENBAO_DIGEST}"),
-        )
-        .with_exposed_port(8200u16.tcp())
-        .with_wait_for(WaitFor::message_on_stdout("OpenBao server started"))
-        .with_env_var("BAO_DEV_ROOT_TOKEN_ID", "root")
-        .with_env_var("BAO_DEV_LISTEN_ADDRESS", "0.0.0.0:8200")
-        .with_cmd(["server", "-dev"])
-        .with_container_name(&name)
-        .with_labels(test_labels("openbao"));
-
-        let container = match image.start().await {
-            Ok(c) => c,
-            Err(e) => {
-                require_container_path_in_ci("OpenBao", &e.to_string());
-                return None;
-            }
-        };
-        let host = match container.get_host().await {
-            Ok(h) => h,
-            Err(e) => {
-                require_container_path_in_ci("OpenBao", &format!("get_host: {e}"));
-                return None;
-            }
-        };
-        let port = match container.get_host_port_ipv4(8200u16).await {
-            Ok(p) => p,
-            Err(e) => {
-                require_container_path_in_ci("OpenBao", &format!("get_host_port: {e}"));
-                return None;
-            }
-        };
-        let address = format!("http://{host}:{port}");
-
-        #[allow(clippy::used_underscore_binding)]
+        static OPENBAO: OnceLock<SharedContainer> = OnceLock::new();
+        let container = shared(&OPENBAO, openbao_spec).await?;
         Some(Self {
-            address,
+            address: format!("http://{}", container.addr(8200)),
             token: "root".to_string(),
             mount_path: "secret".to_string(),
-            _container: Some(TestcontainerHolder::GenericVault(container)),
+            container: Some(container),
         })
     }
 }
@@ -635,24 +615,19 @@ impl VaultTestConfig {
 // =============================================================================
 
 /// LocalStack endpoint config for AWS source tests.
-///
-/// Wraps an optional testcontainer that's auto-stopped on `Drop`.
 pub struct LocalStackConfig {
     pub endpoint: String,
     pub region: String,
     pub access_key_id: String,
     pub secret_access_key: String,
-    _container: Option<TestcontainerHolder>,
 }
 
 impl LocalStackConfig {
-    /// Acquire a LocalStack endpoint: live first, else start a testcontainer.
-    ///
-    /// `test` names the calling test and goes into the container name, so
-    /// concurrent tests do not collide on it.
+    /// Acquire a LocalStack endpoint: live first, else the run's shared
+    /// container.
     ///
     /// Returns `None` if neither is available.
-    pub async fn acquire(test: &str) -> Option<Self> {
+    pub async fn acquire(_test: &str) -> Option<Self> {
         load_dotenv();
 
         // Live mode
@@ -664,132 +639,45 @@ impl LocalStackConfig {
                     .unwrap_or_else(|_| "test".to_string()),
                 secret_access_key: env::var("LOCALSTACK_AWS_SECRET_ACCESS_KEY")
                     .unwrap_or_else(|_| "test".to_string()),
-                _container: None,
             });
         }
 
-        // Fallback: testcontainer
-        use testcontainers::ImageExt;
-        use testcontainers::runners::AsyncRunner;
-        use testcontainers_modules::localstack::LocalStack;
-
-        // Carry the start error through rather than `.ok()?`: a container that
-        // refuses to boot is indistinguishable from an absent Docker daemon
-        // once the reason is dropped, and both turn every test here into a
-        // silent no-op.
-        let name = container_name(Some(test), "localstack");
-        reap_stale(&name);
-        let container = match LocalStack::default()
-            .with_tag(format!("{LOCALSTACK_TAG}@{LOCALSTACK_DIGEST}"))
-            .with_container_name(&name)
-            .with_labels(test_labels("localstack"))
-            .start()
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                require_container_path_in_ci("LocalStack", &e.to_string());
-                return None;
-            }
-        };
-        let host = match container.get_host().await {
-            Ok(h) => h,
-            Err(e) => {
-                require_container_path_in_ci("LocalStack", &format!("get_host: {e}"));
-                return None;
-            }
-        };
-        let port = match container.get_host_port_ipv4(4566).await {
-            Ok(p) => p,
-            Err(e) => {
-                require_container_path_in_ci("LocalStack", &format!("get_host_port: {e}"));
-                return None;
-            }
-        };
-        let endpoint = format!("http://{host}:{port}");
-
+        static LOCALSTACK: OnceLock<SharedContainer> = OnceLock::new();
+        let container = shared(&LOCALSTACK, localstack_spec).await?;
         Some(Self {
-            endpoint,
+            endpoint: format!("http://{}", container.addr(4566)),
             region: "us-east-1".to_string(),
             access_key_id: "test".to_string(),
             secret_access_key: "test".to_string(),
-            _container: Some(TestcontainerHolder::LocalStack(container)),
         })
     }
 }
 
 // =============================================================================
-// Kafka testcontainer (live -> docker fallback)
+// Kafka (live -> shared container fallback)
 // =============================================================================
 
-/// Acquire a Kafka config: live (env) if reachable, else testcontainer.
+/// Acquire a Kafka config: live (env) if reachable, else the run's shared
+/// broker. Tests keep apart by their own topics and consumer groups.
 ///
-/// `test` names the calling test and goes into the container name, so concurrent
-/// tests do not collide on it.
-///
-/// Returns `(KafkaTestConfig, holder)` -- the holder must be kept alive for
-/// the test's duration; dropping it stops the container.
-pub async fn acquire_kafka(test: &str) -> Option<(KafkaTestConfig, Option<TestcontainerHolder>)> {
-    // Live: existing TestMode pattern
+/// The second half is the container, `None` for a live broker.
+pub async fn acquire_kafka(_test: &str) -> Option<(KafkaTestConfig, Option<SharedContainer>)> {
     let live = kafka_test_config();
     if live.is_usable() {
         return Some((live, None));
     }
-
-    // Fallback: start an Apache Kafka testcontainer
-    use testcontainers::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::kafka::apache::Kafka;
-
-    let name = container_name(Some(test), "kafka");
-    // A start on a busy runner fails transiently while sibling tests start theirs;
-    // retry before deciding the runtime has no Kafka to offer.
-    let mut container = None;
-    let mut last_error = String::new();
-    for attempt in 1..=3 {
-        reap_stale(&name);
-        match Kafka::default()
-            .with_jvm_image()
-            .with_tag(format!("{KAFKA_TAG}@{KAFKA_DIGEST}"))
-            .with_container_name(&name)
-            .with_labels(test_labels("kafka"))
-            .with_startup_timeout(KAFKA_STARTUP_TIMEOUT)
-            .start()
-            .await
-        {
-            Ok(started) => {
-                container = Some(started);
-                break;
-            }
-            Err(error) => {
-                last_error = format!("attempt {attempt}: {error}");
-                eprintln!("kafka testcontainer {name}: {last_error}");
-                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
-            }
-        }
-    }
-    let Some(container) = container else {
-        require_container_path_in_ci(
-            "Kafka",
-            &format!("testcontainer start failed, {last_error}"),
-        );
+    if !require_docker() {
         return None;
-    };
-    let host = container.get_host().await.ok()?;
-    let port = container
-        .get_host_port_ipv4(testcontainers_modules::kafka::apache::KAFKA_PORT)
-        .await
-        .ok()?;
-    let brokers = format!("{host}:{port}");
-
+    }
+    let container = shared_kafka(SUITE).await;
     let cfg = KafkaTestConfig {
-        brokers,
+        brokers: container.addr(9092),
         security_protocol: "PLAINTEXT".to_string(),
         sasl_mechanism: None,
         sasl_user: None,
         sasl_password: None,
     };
-    Some((cfg, Some(TestcontainerHolder::Kafka(container))))
+    Some((cfg, Some(container)))
 }
 
 /// Panic if NEITHER a live service nor a container is available while in CI.
@@ -1031,12 +919,13 @@ macro_rules! skip_if_no_kafka {
 // Database containers for the database-shape tests
 // =============================================================================
 
-/// A database a test can dump: where it listens, and the container that
-/// backs it (kept alive for the test's duration).
+/// A database a test can dump: where it listens, and the container a test
+/// started for itself (kept alive for the test's duration), `None` for the
+/// run's shared one.
 pub struct DatabaseTestConfig {
     pub host: String,
     pub port: u16,
-    pub _container: TestcontainerHolder,
+    pub _container: Option<TestcontainerHolder>,
 }
 
 /// Start a PostgreSQL container seeded with `init_sql`; user, password and
@@ -1049,8 +938,7 @@ pub async fn acquire_postgres(test: &str, init_sql: &str) -> Option<DatabaseTest
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::postgres::Postgres;
 
-    let name = container_name(Some(test), "postgres");
-    reap_stale(&name);
+    let name = container_name(test, "postgres");
     let container = match Postgres::default()
         .with_init_sql(init_sql.to_owned().into_bytes())
         .with_tag(format!("{POSTGRES_TAG}@{POSTGRES_DIGEST}"))
@@ -1070,7 +958,7 @@ pub async fn acquire_postgres(test: &str, init_sql: &str) -> Option<DatabaseTest
     Some(DatabaseTestConfig {
         host,
         port,
-        _container: TestcontainerHolder::Postgres(container),
+        _container: Some(TestcontainerHolder::Postgres(container)),
     })
 }
 
@@ -1081,8 +969,7 @@ pub async fn acquire_mariadb(test: &str, init_sql: &str) -> Option<DatabaseTestC
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::mariadb::Mariadb;
 
-    let name = container_name(Some(test), "mariadb");
-    reap_stale(&name);
+    let name = container_name(test, "mariadb");
     let container = match Mariadb::default()
         .with_init_sql(init_sql.to_owned().into_bytes())
         .with_tag(format!("{MARIADB_TAG}@{MARIADB_DIGEST}"))
@@ -1102,93 +989,49 @@ pub async fn acquire_mariadb(test: &str, init_sql: &str) -> Option<DatabaseTestC
     Some(DatabaseTestConfig {
         host,
         port,
-        _container: TestcontainerHolder::Mariadb(container),
+        _container: Some(TestcontainerHolder::Mariadb(container)),
     })
 }
 
-/// Start a ClickHouse container; user `default` with no password, HTTP on
-/// the returned port.
-pub async fn acquire_clickhouse(test: &str) -> Option<DatabaseTestConfig> {
-    use testcontainers::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::clickhouse::ClickHouse;
-
-    let name = container_name(Some(test), "clickhouse");
-    reap_stale(&name);
-    let container = match ClickHouse::default()
-        .with_tag(format!("{CLICKHOUSE_TAG}@{CLICKHOUSE_DIGEST}"))
-        .with_env_var("CLICKHOUSE_SKIP_USER_SETUP", "1")
-        .with_container_name(&name)
-        .with_labels(test_labels("clickhouse"))
-        .with_startup_timeout(std::time::Duration::from_secs(180))
-        .start()
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            require_container_path_in_ci("ClickHouse", &e.to_string());
-            return None;
-        }
-    };
-    let host = container.get_host().await.ok()?.to_string();
-    let port = container.get_host_port_ipv4(8123).await.ok()?;
+/// The run's shared ClickHouse; user `default` with no password, HTTP on
+/// the returned port. Tests keep apart by their own tables.
+pub async fn acquire_clickhouse(_test: &str) -> Option<DatabaseTestConfig> {
+    static CLICKHOUSE: OnceLock<SharedContainer> = OnceLock::new();
+    let container = shared(&CLICKHOUSE, clickhouse_spec).await?;
     Some(DatabaseTestConfig {
-        host,
-        port,
-        _container: TestcontainerHolder::ClickHouse(container),
+        host: container.host.clone(),
+        port: container.port(8123),
+        _container: None,
     })
 }
 
-/// Start a MongoDB container: a standalone server, or a one-member replica
-/// set (`--replSet rs`, then `rs.initiate()` through `mongosh`, ready when
-/// the log says writes are permitted) when `replica_set` is set, which is
-/// what a change stream needs. No auth; the returned config's `host:port`
-/// is the driver's address, and a replica set needs `?directConnection=true`
-/// on the URI because the member advertises its container hostname, which
-/// the host cannot resolve.
-pub async fn acquire_mongo(test: &str, replica_set: bool) -> Option<DatabaseTestConfig> {
-    use testcontainers::core::{CmdWaitFor, ExecCommand, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
-
-    let name = container_name(Some(test), "mongo");
-    reap_stale(&name);
-    let mut image = GenericImage::new("mongo".to_string(), format!("{MONGO_TAG}@{MONGO_DIGEST}"))
-        .with_wait_for(WaitFor::message_on_stdout("Waiting for connections"))
-        .with_env_var(MONGO_KERNEL_WORKAROUND.0, MONGO_KERNEL_WORKAROUND.1)
-        .with_container_name(&name)
-        .with_labels(test_labels("mongo"))
-        .with_startup_timeout(std::time::Duration::from_secs(120));
-    if replica_set {
-        image = image.with_cmd(["--replSet", "rs"]);
-    }
-    let container = match image.start().await {
-        Ok(c) => c,
-        Err(e) => {
-            require_container_path_in_ci("MongoDB", &e.to_string());
-            return None;
-        }
+/// The run's shared MongoDB: a standalone server, or a one-member replica set
+/// when `replica_set` is set, which is what a change stream needs. No auth.
+/// Tests keep apart by their own database ([`mongo_database`]). A replica set
+/// needs `?directConnection=true` on the URI because the member advertises
+/// its container hostname, which the host cannot resolve.
+pub async fn acquire_mongo(_test: &str, replica_set: bool) -> Option<DatabaseTestConfig> {
+    static MONGO: OnceLock<SharedContainer> = OnceLock::new();
+    static MONGO_RS: OnceLock<SharedContainer> = OnceLock::new();
+    let container = if replica_set {
+        shared(&MONGO_RS, mongo_replica_set_spec).await?
+    } else {
+        shared(&MONGO, mongo_spec).await?
     };
-    if replica_set {
-        let initiate = ExecCommand::new(["mongosh", "--quiet", "--eval", "rs.initiate()"])
-            .with_cmd_ready_condition(CmdWaitFor::message_on_stdout(
-                "Using a default configuration for the set",
-            ))
-            .with_container_ready_conditions(vec![WaitFor::message_on_stdout(
-                "Transition to primary complete; database writes are now permitted",
-            )]);
-        if let Err(e) = container.exec(initiate).await {
-            require_container_path_in_ci("MongoDB replica set", &e.to_string());
-            return None;
-        }
-    }
-    let host = container.get_host().await.ok()?.to_string();
-    let port = container.get_host_port_ipv4(27017).await.ok()?;
     Some(DatabaseTestConfig {
-        host,
-        port,
-        _container: TestcontainerHolder::Generic(container),
+        host: container.host.clone(),
+        port: container.port(27017),
+        _container: None,
     })
+}
+
+/// The database a MongoDB test owns on the shared server.
+#[must_use]
+pub fn mongo_database(test: &str) -> String {
+    format!(
+        "inventory_{}",
+        test.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    )
 }
 
 /// The MongoDB URI for a container `acquire_mongo` started.
@@ -1209,8 +1052,7 @@ pub async fn acquire_mssql(test: &str, sa_password: &str) -> Option<DatabaseTest
     use testcontainers::runners::AsyncRunner;
     use testcontainers::{GenericImage, ImageExt};
 
-    let name = container_name(Some(test), "mssql");
-    reap_stale(&name);
+    let name = container_name(test, "mssql");
     let image = GenericImage::new(
         "mcr.microsoft.com/mssql/server".to_string(),
         format!("{MSSQL_TAG}@{MSSQL_DIGEST}"),
@@ -1235,7 +1077,7 @@ pub async fn acquire_mssql(test: &str, sa_password: &str) -> Option<DatabaseTest
     Some(DatabaseTestConfig {
         host,
         port,
-        _container: TestcontainerHolder::Generic(container),
+        _container: Some(TestcontainerHolder::Generic(container)),
     })
 }
 
@@ -1246,8 +1088,7 @@ pub async fn acquire_oracle(test: &str, password: &str) -> Option<DatabaseTestCo
     use testcontainers::runners::AsyncRunner;
     use testcontainers::{GenericImage, ImageExt};
 
-    let name = container_name(Some(test), "oracle");
-    reap_stale(&name);
+    let name = container_name(test, "oracle");
     let image = GenericImage::new(
         "gvenzl/oracle-free".to_string(),
         format!("{ORACLE_TAG}@{ORACLE_DIGEST}"),
@@ -1271,7 +1112,7 @@ pub async fn acquire_oracle(test: &str, password: &str) -> Option<DatabaseTestCo
     Some(DatabaseTestConfig {
         host,
         port,
-        _container: TestcontainerHolder::Generic(container),
+        _container: Some(TestcontainerHolder::Generic(container)),
     })
 }
 

@@ -69,6 +69,30 @@ fn classify_fatal(what: &str, e: &TransportError) -> Error {
     }
 }
 
+/// How far up the caller's handling a send failure goes: a refusal of the
+/// record is dead-lettered, backpressure re-sends the record, and anything
+/// else aborts the tick.
+fn retry_rank(e: &Error) -> u8 {
+    match e {
+        Error::TransportRecord(_) => 0,
+        Error::Backpressured(_) => 1,
+        Error::Config(_)
+        | Error::Source(_)
+        | Error::Credential(_)
+        | Error::Kafka(_)
+        | Error::Io(_)
+        | Error::Scheduler(_)
+        | Error::Pipeline(_)
+        | Error::Transport(_)
+        | Error::Cursor(_)
+        | Error::Filter(_)
+        | Error::Shutdown
+        | Error::Secrets(_)
+        | Error::Dlq(_)
+        | Error::Framework(_) => 2,
+    }
+}
+
 /// Wrapper enum for transport backends.
 ///
 /// Needed because scalo's `Transport` traits carry an associated `Token`
@@ -379,11 +403,15 @@ impl OutputManager {
     ///
     /// Attempts delivery to every transport even if one fails, so that a
     /// Kafka failure does not prevent gRPC from receiving the message (and
-    /// vice versa). Returns the first error encountered for DLQ routing.
+    /// vice versa).
     ///
     /// # Errors
     ///
-    /// Returns the first transport error, after every transport has been tried.
+    /// After every transport has been tried, the failure the caller must act
+    /// on: a transport-wide failure (the tick aborts and refetches) over
+    /// backpressure (the record is re-sent) over a refusal of the record
+    /// itself (it is dead-lettered). A refusal reported over either of the
+    /// others would dead-letter a record an output never received.
     pub async fn send_all(&self, key: &str, payload: Bytes) -> Result<()> {
         let mut first_error: Option<Error> = None;
 
@@ -402,7 +430,10 @@ impl OutputManager {
                         );
                     }
                 }
-                if first_error.is_none() {
+                if first_error
+                    .as_ref()
+                    .is_none_or(|held| retry_rank(&e) > retry_rank(held))
+                {
                     first_error = Some(e);
                 }
             }
@@ -1489,6 +1520,7 @@ mod tests {
         let _recording = recorder.install();
         let (_rx, endpoint) = grpc_listener().await;
         let mut config = Config::default();
+        config.dlq.enabled = false;
         config.output.output_type = "grpc".into();
         config.output.grpc = Some(scalo::transport::GrpcConfig::client(&endpoint));
         let grpc = OutputManager::new(&config.output, &config.kafka)
@@ -1584,6 +1616,78 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    /// A default output that refuses the record must not hide one that is
+    /// backpressured or down: the caller dead-letters a refusal and moves on,
+    /// so the record would never reach the output that could still take it.
+    /// A transport-wide failure outranks backpressure, which outranks a
+    /// refusal, whichever order the outputs are declared in.
+    #[tokio::test]
+    async fn the_default_fan_out_reports_the_failure_that_must_be_retried() {
+        use scalo::transport::filter::{FilterAction, FilterRule};
+        use scalo::transport::{MemoryConfig, TransportSender};
+
+        #[derive(Clone, Copy, Debug)]
+        enum Output {
+            Refusing,
+            Full,
+            Closed,
+        }
+        async fn transport(kind: Output) -> OutputTransport {
+            let config = match kind {
+                Output::Refusing => MemoryConfig {
+                    filters_out: vec![FilterRule {
+                        expression: r#"id == "r""#.into(),
+                        action: FilterAction::Dlq,
+                    }],
+                    ..MemoryConfig::default()
+                },
+                Output::Full | Output::Closed => MemoryConfig {
+                    buffer_size: 1,
+                    ..MemoryConfig::default()
+                },
+            };
+            let memory = Arc::new(MemoryTransport::new(&config).unwrap());
+            match kind {
+                Output::Full => {
+                    assert!(matches!(
+                        memory.send("t", Bytes::from_static(b"{}")).await,
+                        SendResult::Ok
+                    ));
+                }
+                Output::Closed => memory.close().await.unwrap(),
+                Output::Refusing => {}
+            }
+            OutputTransport::Memory(memory)
+        }
+
+        for (outputs, want) in [
+            ([Output::Refusing, Output::Full], "backpressured"),
+            ([Output::Full, Output::Refusing], "backpressured"),
+            ([Output::Refusing, Output::Closed], "transport"),
+            ([Output::Full, Output::Closed], "transport"),
+            ([Output::Closed, Output::Full], "transport"),
+        ] {
+            let mut transports = Vec::new();
+            for kind in outputs {
+                transports.push(transport(kind).await);
+            }
+            let output = OutputManager {
+                transports,
+                destinations: None,
+            };
+            let got = match output
+                .send_all("t", Bytes::from_static(br#"{"id":"r"}"#))
+                .await
+            {
+                Err(Error::Backpressured(_)) => "backpressured",
+                Err(Error::Transport(_)) => "transport",
+                Err(Error::TransportRecord(_)) => "refused",
+                other => panic!("{outputs:?}: {other:?}"),
+            };
+            assert_eq!(got, want, "{outputs:?}");
+        }
     }
 
     /// A record over a bus destination's `message.max.bytes` is refused by

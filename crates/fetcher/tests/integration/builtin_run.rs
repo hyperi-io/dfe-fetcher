@@ -178,8 +178,6 @@ fn driver_with(
         connection_id: built.connection_id.clone(),
         instance_id: "test".into(),
         shared_config: h.shared.clone(),
-        accumulate: config.accumulate,
-        oversize: config.oversize,
         emitter: Emitter::new(
             Arc::clone(&h.state),
             Arc::clone(&h.metrics),

@@ -752,6 +752,9 @@ impl ObjectStoreSourceConfig {
                 Value::String(url.trim_end_matches('/').to_owned()),
             );
         }
+        if let Some(settle) = backend.settle_secs {
+            vars.insert("settle_secs".into(), Value::from(settle));
+        }
         let formats: Vec<&str> = crate::profiles::shipped()["object_store"]
             .endpoints
             .iter()
@@ -2650,6 +2653,7 @@ mod tests {
                 access_key_id: Some("AKIA".into()),
                 secret_access_key: Some("sekrit".to_string().into()),
                 credential_secret: None,
+                settle_secs: Some(60),
                 buckets: vec![ObjectStoreBucket {
                     bucket: "audit".into(),
                     prefixes,
@@ -2696,6 +2700,7 @@ mod tests {
             "sekrit"
         );
         assert_eq!(i.vars["region"], "ap-southeast-2");
+        assert_eq!(i.vars["settle_secs"], 60);
         assert_eq!(
             i.vars["endpoint_url"], "http://localhost:9000",
             "trailing slash trimmed"

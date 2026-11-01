@@ -327,6 +327,19 @@ impl Batcher {
         }
         self.rows.push(row);
         if let Some(mark) = mark {
+            self.hold(mark);
+        }
+    }
+
+    /// Hold a mark for the next flush, folded into the last held one where
+    /// the checkpoint fold would collapse the two anyway: the batch flushes
+    /// whole, so only the folded value of its marks is ever observed.
+    fn hold(&mut self, mark: Mark) {
+        let unfolded = match self.marks.last_mut() {
+            Some(last) => fold_into(last, mark),
+            None => Some(mark),
+        };
+        if let Some(mark) = unfolded {
             self.marks.push(mark);
         }
     }
@@ -337,14 +350,18 @@ impl Batcher {
     /// a buffered row's.
     pub fn consume(&mut self, mark: Option<Mark>) {
         if let Some(mark) = mark {
-            self.marks.push(mark);
+            self.hold(mark);
         }
     }
 
-    /// Whether the batch has reached a bound and must flush.
+    /// Whether the batch has reached a bound and must flush. Held marks count
+    /// against `max_rows` too: acknowledgement ids do not fold, so a run of
+    /// consumed queue messages would otherwise grow until the tick ends.
     #[must_use]
     pub fn full(&self) -> bool {
-        self.rows.len() >= self.cfg.max_rows || self.bytes >= self.cfg.max_bytes
+        self.rows.len() >= self.cfg.max_rows
+            || self.marks.len() >= self.cfg.max_rows
+            || self.bytes >= self.cfg.max_bytes
     }
 
     /// When the window closes on the current batch, if one is open.
@@ -372,6 +389,45 @@ impl Batcher {
                 bytes: bytes as u64,
             },
         }
+    }
+}
+
+/// Fold `mark` into `last` when the two collapse under the checkpoint fold
+/// (the later keyset, the greater item, one file's furthest offset), handing
+/// it back when they do not.
+fn fold_into(last: &mut Mark, mark: Mark) -> Option<Mark> {
+    match (last, mark) {
+        (last @ Mark::Keyset(_), mark @ Mark::Keyset(_)) => {
+            *last = mark;
+            None
+        }
+        (
+            Mark::Item {
+                key: seen_key,
+                position: seen,
+            },
+            Mark::Item { key, position },
+        ) => {
+            if (position, &*key) > (*seen, &**seen_key) {
+                *seen_key = key;
+                *seen = position;
+            }
+            None
+        }
+        (
+            Mark::Line {
+                file_id: seen_file,
+                end_offset: seen,
+            },
+            Mark::Line {
+                file_id,
+                end_offset,
+            },
+        ) if *seen_file == file_id => {
+            *seen = (*seen).max(end_offset);
+            None
+        }
+        (_, mark) => Some(mark),
     }
 }
 
@@ -574,6 +630,86 @@ mod tests {
             ]
         );
         assert!(b.is_settled());
+    }
+
+    /// A run of consumed rows holds one mark per kind position, not one per
+    /// row: a filter that drops every row of a long tick keeps the batcher's
+    /// memory flat, and the folded value is the one the full run would give.
+    #[test]
+    fn consumed_marks_of_one_position_kind_fold_forward() {
+        let mut b = Batcher::new(cfg(100, 100, 1000), Arc::new(NoLease));
+        for i in 0..10_000 {
+            b.consume(Some(Mark::Keyset(smallvec::smallvec![serde_json::json!(
+                i
+            )])));
+        }
+        b.push(
+            row(1),
+            Some(Mark::Keyset(smallvec::smallvec![serde_json::json!(10_000)])),
+        );
+        b.consume(Some(Mark::Keyset(smallvec::smallvec![serde_json::json!(
+            10_001
+        )])));
+        assert_eq!(
+            b.take().marks,
+            vec![Mark::Keyset(smallvec::smallvec![serde_json::json!(10_001)])],
+            "the last keyset wins, as the checkpoint fold would"
+        );
+
+        let at = |s: i64| chrono::DateTime::from_timestamp(s, 0).unwrap();
+        for (key, position) in [("b", 5), ("a", 9), ("c", 9), ("z", 2)] {
+            b.consume(Some(Mark::Item {
+                key: key.into(),
+                position: at(position),
+            }));
+        }
+        assert_eq!(
+            b.take().marks,
+            vec![Mark::Item {
+                key: "c".into(),
+                position: at(9)
+            }],
+            "the greatest (position, key) wins"
+        );
+
+        for (file_id, end_offset) in [(1, 10), (1, 30), (2, 5), (2, 4)] {
+            b.consume(Some(Mark::Line {
+                file_id,
+                end_offset,
+            }));
+        }
+        assert_eq!(
+            b.take().marks,
+            vec![
+                Mark::Line {
+                    file_id: 1,
+                    end_offset: 30
+                },
+                Mark::Line {
+                    file_id: 2,
+                    end_offset: 5
+                }
+            ],
+            "a file's offsets fold to its furthest; files stay apart"
+        );
+    }
+
+    /// Acknowledgement ids cannot fold, so held marks count against
+    /// `max_rows`: a run of consumed queue messages flushes (and acks) at the
+    /// bound instead of growing until the tick ends.
+    #[test]
+    fn held_marks_count_against_max_rows() {
+        let mut b = Batcher::new(cfg(3, 100, 1000), Arc::new(NoLease));
+        b.consume(Some(Mark::Ack("a".into())));
+        b.consume(Some(Mark::Ack("b".into())));
+        assert!(!b.full());
+        b.consume(Some(Mark::Ack("c".into())));
+        assert!(
+            b.full(),
+            "three held marks reach max_rows with no row buffered"
+        );
+        assert_eq!(b.take().marks.len(), 3);
+        assert!(!b.full());
     }
 
     #[tokio::test(start_paused = true)]

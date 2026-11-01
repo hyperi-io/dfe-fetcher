@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::io::{AsyncBufReadExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdout, Command};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -27,6 +26,10 @@ use crate::error::{Error, Result};
 use crate::extractor::{Extractor, ExtractorSink};
 use crate::metrics::{ExtractorFailure, Metrics};
 use crate::pipeline::PipelineState;
+
+mod lines;
+
+use lines::{BoundedLines, Line};
 
 /// How long a stopped or killed container's stdout is read before it is given
 /// up on: the grace `docker stop --time 10` gives the container.
@@ -38,12 +41,14 @@ const HOLD_PAUSE_MIN: Duration = Duration::from_secs(1);
 const HOLD_PAUSE_MAX: Duration = Duration::from_secs(30);
 /// Least time between two warnings that a line is still held.
 const HOLD_WARN_EVERY_MS: u64 = 60_000;
+/// Longest stderr line logged; a longer one is discarded to its newline.
+const STDERR_LINE_MAX: usize = 16 * 1024;
 
 /// What ended one read of the container's stdout.
 enum Next {
     Shutdown,
     TimedOut,
-    Line(std::io::Result<Option<String>>),
+    Line(std::io::Result<Option<Line>>),
 }
 
 /// What one stdout pump delivered, and whether the run's timeout ended it.
@@ -105,7 +110,8 @@ impl ContainerExtractor {
         child: &mut Child,
         deadline: Option<tokio::time::Instant>,
     ) -> Pumped {
-        let mut lines = BufReader::new(stdout).lines();
+        let max_line = self.sink.state().config().oversize.max_record_bytes;
+        let mut lines = BoundedLines::new(stdout, max_line);
         let mut delivered = 0;
         loop {
             let next = tokio::select! {
@@ -167,7 +173,7 @@ impl ContainerExtractor {
 
     /// Deliver every line left on stdout, until it closes, counting each one
     /// delivered into `delivered`.
-    async fn drain_stdout(&self, lines: &mut Lines<BufReader<ChildStdout>>, delivered: &mut u64) {
+    async fn drain_stdout(&self, lines: &mut BoundedLines<ChildStdout>, delivered: &mut u64) {
         while let Ok(Some(line)) = lines.next_line().await {
             if self.deliver_counted(&line).await {
                 *delivered += 1;
@@ -200,15 +206,21 @@ impl ContainerExtractor {
     /// own writes until the outputs recover. Only a failure no retry can clear
     /// (no output configured) drops the line, and at shutdown a held line gets
     /// one more attempt before it is dropped. Either way it is counted.
-    async fn deliver_counted(&self, line: &str) -> bool {
-        let line = line.trim();
+    async fn deliver_counted(&self, line: &Line) -> bool {
+        let line = match line {
+            Line::Whole(bytes) => bytes.trim_ascii(),
+            Line::TooLong => {
+                self.refuse_long_line();
+                return false;
+            }
+        };
         if line.is_empty() {
             return false;
         }
         let mut pause = HOLD_PAUSE_MIN;
         let mut held = false;
         loop {
-            let e = match self.deliver_line(line.to_owned()).await {
+            let e = match self.deliver_line(Bytes::copy_from_slice(line)).await {
                 Ok(()) => {
                     self.metrics.add_extractor_records(1);
                     if held {
@@ -252,6 +264,21 @@ impl ContainerExtractor {
         }
     }
 
+    /// Count a stdout line past `oversize.max_record_bytes` dropped: the pipe
+    /// cannot be re-read, and no output takes a record that size.
+    fn refuse_long_line(&self) {
+        self.metrics
+            .add_extractor_records_failed("container", ExtractorFailure::Dropped, 1);
+        if scalo::logger::log_sampled(&self.drop_samples, 100) {
+            error!(
+                name = %self.config.name,
+                max_record_bytes = self.sink.state().config().oversize.max_record_bytes,
+                dropped = self.drop_samples.load(Ordering::Relaxed),
+                "Container stdout line longer than oversize.max_record_bytes dropped (sampled 1/100)"
+            );
+        }
+    }
+
     /// Stop the container, giving it 10 s to exit.
     async fn stop_container(&self) {
         let container_name = self.container_name();
@@ -262,17 +289,22 @@ impl ContainerExtractor {
     }
 
     /// Deliver one stdout line as a record on the extractor's topic.
-    async fn deliver_line(&self, line: String) -> Result<()> {
+    async fn deliver_line(&self, line: Bytes) -> Result<()> {
         let topic = format!("{}{}", self.config.topic, self.sink.state().topic_suffix());
         let fetcher_source = format!("container.{}", self.config.name);
         self.sink
-            .deliver(
-                &self.config.topic,
-                &fetcher_source,
-                &topic,
-                Bytes::from(line),
-            )
+            .deliver(&self.config.topic, &fetcher_source, &topic, line)
             .await
+    }
+
+    /// Stdout is piped only when the extractor reads it: a pipe nobody drains
+    /// fills, and the container then blocks on its own writes.
+    fn stdout_pipe(&self) -> std::process::Stdio {
+        if self.config.communication == "stdout" {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        }
     }
 
     fn runtime_cmd(&self) -> &str {
@@ -394,13 +426,17 @@ impl ContainerExtractor {
                 use std::sync::atomic::AtomicU64;
                 static STDERR_SAMPLES: AtomicU64 = AtomicU64::new(0);
 
-                let reader = BufReader::new(stderr);
-                let mut lines = reader.lines();
+                let mut lines = BoundedLines::new(stderr, STDERR_LINE_MAX);
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() && scalo::logger::log_sampled(&STDERR_SAMPLES, 100) {
+                    let text = match &line {
+                        Line::Whole(bytes) if bytes.trim_ascii().is_empty() => continue,
+                        Line::Whole(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                        Line::TooLong => format!("<line over {STDERR_LINE_MAX} bytes discarded>"),
+                    };
+                    if scalo::logger::log_sampled(&STDERR_SAMPLES, 100) {
                         warn!(
                             container = %name,
-                            stderr = %line,
+                            stderr = %text,
                             total = STDERR_SAMPLES.load(std::sync::atomic::Ordering::Relaxed),
                             "Container stderr (sampled 1/100)"
                         );
@@ -417,7 +453,7 @@ impl ContainerExtractor {
         debug!(name = %self.config.name, "Running scheduled container extraction");
 
         let mut child = command
-            .stdout(std::process::Stdio::piped())
+            .stdout(self.stdout_pipe())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
@@ -479,7 +515,7 @@ impl ContainerExtractor {
         info!(name = %self.config.name, "Starting continuous container extractor");
 
         let mut child = command
-            .stdout(std::process::Stdio::piped())
+            .stdout(self.stdout_pipe())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
@@ -754,10 +790,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         let pipeline_config = crate::config::Config::default();
         let shared = crate::config::SharedConfig::new(pipeline_config);
-        let state = Arc::new(
-            PipelineState::new(shared, metrics.clone(), None, CancellationToken::new())
-                .expect("pipeline"),
-        );
+        let state = Arc::new(PipelineState::for_tests(shared, metrics.clone(), None));
         let ext = ContainerExtractor::new(config, state, metrics, shutdown);
         assert_eq!(ext.container_name(), "dfe-fetcher-my-tool");
     }
@@ -774,10 +807,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         let pipeline_config = crate::config::Config::default();
         let shared = crate::config::SharedConfig::new(pipeline_config);
-        let state = Arc::new(
-            PipelineState::new(shared, metrics.clone(), None, CancellationToken::new())
-                .expect("pipeline"),
-        );
+        let state = Arc::new(PipelineState::for_tests(shared, metrics.clone(), None));
         let ext = ContainerExtractor::new(config, state, metrics, shutdown);
         let args = ext.build_run_args();
 
@@ -803,10 +833,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         let pipeline_config = crate::config::Config::default();
         let shared = crate::config::SharedConfig::new(pipeline_config);
-        let state = Arc::new(
-            PipelineState::new(shared, metrics.clone(), None, CancellationToken::new())
-                .expect("pipeline"),
-        );
+        let state = Arc::new(PipelineState::for_tests(shared, metrics.clone(), None));
         let ext = ContainerExtractor::new(config, state, metrics, shutdown);
         let args = ext.build_run_args();
 
@@ -960,6 +987,11 @@ mod tests {
         assert!(!started.exists(), "no container was started");
     }
 
+    /// A stdout line within the bound.
+    fn whole(text: &str) -> Line {
+        Line::Whole(Bytes::copy_from_slice(text.as_bytes()))
+    }
+
     /// An extractor over a pipeline whose only output is `output` (or none).
     fn extractor_over(
         output: Option<&Arc<scalo::transport::MemoryTransport>>,
@@ -1008,7 +1040,7 @@ mod tests {
         let ext = Arc::new(ext);
         let held = tokio::spawn({
             let ext = Arc::clone(&ext);
-            async move { ext.deliver_counted(r#"{"n":1}"#).await }
+            async move { ext.deliver_counted(&whole(r#"{"n":1}"#)).await }
         });
 
         tokio::time::sleep(Duration::from_secs(30)).await;
@@ -1035,8 +1067,11 @@ mod tests {
     async fn an_undelivered_line_is_counted_dropped_not_received() {
         let (ext, metrics) = extractor_over(None, CancellationToken::new());
 
-        assert!(!ext.deliver_counted(r#"{"event":"x"}"#).await);
-        assert!(!ext.deliver_counted("   ").await, "a blank line is skipped");
+        assert!(!ext.deliver_counted(&whole(r#"{"event":"x"}"#)).await);
+        assert!(
+            !ext.deliver_counted(&whole("   ")).await,
+            "a blank line is skipped"
+        );
 
         assert_eq!(metrics.extractor_records_failed(), 1);
         assert!(
@@ -1090,6 +1125,95 @@ mod tests {
             .await
             .expect("recv");
         assert_eq!(batch.records.len(), 3);
+    }
+
+    /// A stdout line longer than `oversize.max_record_bytes` is refused and
+    /// counted dropped without being held whole, and the pump reads on: the
+    /// line after it is delivered.
+    #[tokio::test]
+    async fn a_stdout_line_past_max_record_bytes_is_refused_and_the_pump_reads_on() {
+        let output = Arc::new(
+            scalo::transport::MemoryTransport::new(&scalo::transport::MemoryConfig::default())
+                .expect("memory transport"),
+        );
+        let mut pipeline_config = crate::config::Config::default();
+        pipeline_config.oversize.max_record_bytes = 64;
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(pipeline_config),
+            Arc::clone(&metrics),
+            Some(crate::output::OutputManager::memory(Arc::clone(&output))),
+        ));
+        let config = ContainerExtractorConfig {
+            name: "long".to_string(),
+            image: "unused".to_string(),
+            runtime: Some("true".to_string()),
+            ..default_container_config()
+        };
+        let ext = ContainerExtractor::new(
+            config,
+            state,
+            Arc::clone(&metrics),
+            CancellationToken::new(),
+        );
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                r#"printf '{"blob":"'; head -c 200000 /dev/zero | tr '\0' x; printf '"}\n{"n":2}\n'"#,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh");
+        let stdout = child.stdout.take().expect("stdout");
+
+        let pumped = ext.pump_stdout(stdout, &mut child, None).await;
+        let _ = child.wait().await;
+
+        assert_eq!(pumped.delivered, 1, "only the line within the bound");
+        assert_eq!(
+            metrics.extractor_records_failed(),
+            1,
+            "the long line, counted"
+        );
+        let batch = scalo::transport::TransportReceiver::recv(&*output, 10)
+            .await
+            .expect("recv");
+        assert_eq!(batch.records.len(), 1);
+        let row: serde_json::Value =
+            serde_json::from_slice(&batch.records[0].payload).expect("json");
+        assert_eq!(row["n"], 2);
+    }
+
+    /// A container posting to the ingest listener has nobody reading its
+    /// stdout, so stdout is not piped: a tool that writes more than a pipe
+    /// holds still runs to its exit instead of blocking on the write.
+    #[tokio::test]
+    async fn an_http_container_writing_to_stdout_is_not_blocked_on_the_pipe() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = crate::extractor::fake_runtime::write(
+            dir.path(),
+            "case \"$1\" in\n  run) dd if=/dev/zero bs=65536 count=256 2>/dev/null ;;\nesac\n",
+        );
+        let (_, metrics) = extractor_over(None, CancellationToken::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let config = ContainerExtractorConfig {
+            name: "chatty".to_string(),
+            image: "unused".to_string(),
+            runtime: Some(runtime),
+            pull_policy: "never".to_string(),
+            communication: "http".to_string(),
+            timeout_secs: Some(3),
+            ..default_container_config()
+        };
+        let ext = ContainerExtractor::new(config, state, metrics, CancellationToken::new());
+
+        ext.run_scheduled()
+            .await
+            .expect("the run exits before its timeout");
     }
 
     /// A container runtime stand-in: `run` writes one line and keeps stdout

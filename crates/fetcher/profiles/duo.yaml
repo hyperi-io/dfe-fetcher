@@ -35,6 +35,9 @@ headers:
 window:
   format: epoch_millis
   lookback: 1h
+  # Duo returns no authentication under two minutes old, so a window ending
+  # at the clock would commit past events not yet published.
+  delay: 2m
 retry:
   never_retry: [401, 403]
 error:

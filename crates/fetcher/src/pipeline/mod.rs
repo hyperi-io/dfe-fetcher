@@ -537,7 +537,8 @@ impl PipelineState {
     ///
     /// # Errors
     ///
-    /// Returns an error when the pipeline components cannot be built from the config.
+    /// Returns an error when the pipeline components cannot be built from the
+    /// config, including [`Error::Dlq`] when the DLQ's config is refused.
     pub fn new(
         shared_config: SharedConfig,
         metrics: Arc<Metrics>,
@@ -547,16 +548,16 @@ impl PipelineState {
         let config = shared_config.get();
         let memory_guard = Arc::new(MemoryGuard::new(memory_guard_config(&config)));
 
-        // Initialise DLQ if enabled.
+        // A backend that cannot start is left out. With none running, every
+        // dead-letter write fails, so its records stay unacknowledged.
         let dlq = if config.dlq.enabled {
             let (dlq_config, dlq_kafka) = dlq_backends(&config);
-            match Dlq::spawn(&dlq_config, "dfe-fetcher", dlq_kafka.as_ref(), shutdown) {
-                Ok(d) => Some(d),
-                Err(e) => {
-                    warn!(error = %e, "Failed to initialise DLQ, continuing without it");
-                    None
-                }
-            }
+            Some(Dlq::spawn(
+                &dlq_config,
+                "dfe-fetcher",
+                dlq_kafka.as_ref(),
+                shutdown,
+            )?)
         } else {
             None
         };
@@ -1085,27 +1086,7 @@ mod tests {
 
     #[test]
     fn test_enrich_record_injects_metadata() {
-        let config = Config::default();
-        let shared = SharedConfig::new(config);
-        let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None, CancellationToken::new())
-            .unwrap_or_else(|_| {
-                // No output configured, create minimal state
-                let config = Config::default();
-                let shared = SharedConfig::new(config);
-                PipelineState {
-                    shared_config: shared,
-                    output: None,
-                    memory_guard: Arc::new(MemoryGuard::new(scalo::memory::MemoryGuardConfig {
-                        limit_bytes: 1_073_741_824, // 1 GiB for tests
-                        ..Default::default()
-                    })),
-                    dlq: None,
-                    metrics: Arc::new(Metrics::new()),
-                    ready: AtomicBool::new(true),
-                    intake: TaskTracker::new(),
-                }
-            });
+        let state = make_pipeline_state();
 
         let payload = Bytes::from(r#"{"key": "value"}"#);
         let enriched = stamped(state.enrich_record(payload, "cloudtrail", "aws.cloudtrail"));
@@ -1552,7 +1533,7 @@ mod tests {
         let shared = SharedConfig::new(config);
         let initial_version = shared.version();
         let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None, CancellationToken::new()).unwrap();
+        let state = PipelineState::for_tests(shared, metrics, None);
 
         let mut new_config = Config::default();
         new_config.scheduler.default_interval_secs = 999;
@@ -1576,9 +1557,17 @@ mod tests {
 
     // -- Orchestrator tests --
 
+    /// The default config with the DLQ off: its default spool path is the
+    /// container's mount and cannot be created on a build host.
+    fn config_without_dlq() -> Config {
+        let mut config = Config::default();
+        config.dlq.enabled = false;
+        config
+    }
+
     #[tokio::test]
     async fn test_orchestrator_new_without_output_succeeds() {
-        let config = Config::default(); // No brokers, no output.kafka, no output.grpc
+        let config = config_without_dlq(); // No brokers, no output.kafka, no output.grpc
         let metrics = Arc::new(Metrics::new());
         let shutdown = CancellationToken::new();
         let orchestrator = Box::pin(Orchestrator::new(config, metrics, shutdown))
@@ -1595,7 +1584,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_run_exits_on_shutdown() {
-        let config = Config::default();
+        let config = config_without_dlq();
         let metrics = Arc::new(Metrics::new());
         let shutdown = CancellationToken::new();
         let orchestrator = Box::pin(Orchestrator::new(config, metrics, shutdown.clone()))
@@ -1616,7 +1605,7 @@ mod tests {
     async fn shutdown_waits_for_the_intake_to_drain() {
         let shutdown = CancellationToken::new();
         let orchestrator = Box::pin(Orchestrator::new(
-            Config::default(),
+            config_without_dlq(),
             Arc::new(Metrics::new()),
             shutdown.clone(),
         ))
@@ -1646,7 +1635,7 @@ mod tests {
     async fn shutdown_closes_the_outputs_at_the_drain_deadline() {
         let shutdown = CancellationToken::new();
         let orchestrator = Box::pin(Orchestrator::new(
-            Config::default(),
+            config_without_dlq(),
             Arc::new(Metrics::new()),
             shutdown.clone(),
         ))
@@ -2308,6 +2297,37 @@ mod tests {
             .expect("state creation must succeed");
 
         assert!(state.dlq.is_some(), "the DLQ init branch ran");
+    }
+
+    /// An enabled DLQ whose only backend cannot start still starts the
+    /// pipeline, and a dead letter it cannot hold fails its write, so the
+    /// records stay unacknowledged rather than dropped.
+    #[tokio::test]
+    async fn a_dlq_with_no_backend_running_fails_its_dead_letter_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("file");
+        std::fs::write(&not_a_dir, b"").unwrap();
+        let mut config = Config::default();
+        config.dlq.enabled = true;
+        config.dlq.mode = scalo::dlq::DlqMode::FileOnly;
+        config.dlq.file.path = not_a_dir.join("dlq");
+
+        let state = PipelineState::new(
+            SharedConfig::new(config),
+            Arc::new(Metrics::new()),
+            None,
+            CancellationToken::new(),
+        )
+        .expect("the pipeline starts with its DLQ backend left out");
+        let err = state
+            .dead_letter(vec![DeadLetter {
+                topic: Arc::from("t"),
+                payload: Bytes::from_static(b"{}"),
+                reason: "refused".into(),
+            }])
+            .await
+            .expect_err("no backend holds the dead letter");
+        assert!(err.to_string().contains("DLQ"), "{err}");
     }
 
     /// Exercise shared_config() getter.

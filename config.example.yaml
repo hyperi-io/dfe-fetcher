@@ -396,6 +396,9 @@ sources:
       #   secret_access_key: "env:AWS_SECRET_ACCESS_KEY"
       #   # credential_secret: "vault:kv/data/aws-s3-reader:credentials"
       #   # endpoint_override: "http://localhost:9000"  # for MinIO / R2 / B2
+      #   # Seconds an object ages before it is read, used only where the
+      #   # credential lacks s3:ListBucketMultipartUploads (default 300).
+      #   # settle_secs: 300
       #   buckets:
       #     - bucket: my-cloudtrail-bucket
       #       prefixes:

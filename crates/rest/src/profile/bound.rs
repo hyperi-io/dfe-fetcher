@@ -46,8 +46,8 @@ pub struct BoundRequest {
     pub query: TemplateMap,
     /// Headers in the same precedence.
     pub headers: TemplateMap,
-    /// POST body with template leaves.
-    pub body: Option<Value>,
+    /// POST body with its template leaves compiled.
+    pub body: Option<BodyTemplate>,
     /// Non-2xx statuses that are not failures for this request.
     pub ignore_status: Vec<u16>,
     /// A total bound on the request, body included, when the profile sets
@@ -69,7 +69,80 @@ impl BoundRequest {
         self.path.references(var)
             || self.query.references(var)
             || self.headers.references(var)
-            || self.body.as_ref().is_some_and(|b| body_references(b, var))
+            || self.body.as_ref().is_some_and(|b| b.references(var))
+    }
+}
+
+/// A JSON value whose string leaves are templates, compiled once at bind and
+/// rendered per request by [`BodyTemplate::render`].
+#[derive(Debug)]
+pub enum BodyTemplate {
+    /// A string leaf.
+    Leaf(Template),
+    /// An object, members in order.
+    Object(Vec<(String, BodyTemplate)>),
+    /// An array.
+    Array(Vec<BodyTemplate>),
+    /// A number, bool or null, kept as written.
+    Literal(Value),
+}
+
+impl BodyTemplate {
+    /// Compile every string leaf of `body`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when a leaf does not compile.
+    pub fn compile(body: &Value) -> Result<Self> {
+        Ok(match body {
+            Value::String(s) => Self::Leaf(Template::compile(s)?),
+            Value::Object(map) => Self::Object(
+                map.iter()
+                    .map(|(k, v)| Self::compile(v).map(|t| (k.clone(), t)))
+                    .collect::<Result<_>>()?,
+            ),
+            Value::Array(items) => {
+                Self::Array(items.iter().map(Self::compile).collect::<Result<_>>()?)
+            }
+            other => Self::Literal(other.clone()),
+        })
+    }
+
+    /// Render against `ctx`. A leaf that is exactly one `{{ expr }}` keeps the
+    /// expression's type, so a page size stays a number and an id list stays a
+    /// list. An object member whose leaf renders `null` is left out, which is
+    /// how a profile writes an optional member
+    /// (`"{{ vars.pattern != '' ? vars.pattern : null }}"`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when a leaf does not render.
+    pub fn render(&self, ctx: &TemplateCtx) -> Result<Value> {
+        Ok(match self {
+            Self::Leaf(template) => template.render_value(ctx)?,
+            Self::Object(members) => Value::Object(
+                members
+                    .iter()
+                    .map(|(k, v)| v.render(ctx).map(|v| (k.clone(), v)))
+                    .filter(|entry| !matches!(entry, Ok((_, Value::Null))))
+                    .collect::<Result<_>>()?,
+            ),
+            Self::Array(items) => {
+                Value::Array(items.iter().map(|v| v.render(ctx)).collect::<Result<_>>()?)
+            }
+            Self::Literal(value) => value.clone(),
+        })
+    }
+
+    /// Whether any leaf reads the top-level variable `var`.
+    #[must_use]
+    pub fn references(&self, var: &str) -> bool {
+        match self {
+            Self::Leaf(template) => template.references(var),
+            Self::Object(members) => members.iter().any(|(_, v)| v.references(var)),
+            Self::Array(items) => items.iter().any(|v| v.references(var)),
+            Self::Literal(_) => false,
+        }
     }
 }
 
@@ -143,9 +216,8 @@ pub struct BoundEndpoint {
     pub ctx: TemplateCtx,
     /// The keys the unit fetches once each, when it is a keyset.
     pub keyset: Option<KeySource>,
-    /// Fields rendered once per key and stamped on every row of that key:
-    /// JSON values whose string leaves are templates.
-    pub key_fields: Vec<(String, Value)>,
+    /// Fields rendered once per key and stamped on every row of that key.
+    pub key_fields: Vec<(String, BodyTemplate)>,
     /// The second stage, when the pages carry ids or items rather than rows.
     pub lookup: Option<BoundLookup>,
     /// The acknowledgement the unit's rows earn, when it is a queue.
@@ -201,9 +273,9 @@ pub struct BoundLookup {
     pub item_mark: Option<ItemMark>,
     /// Items fetched per key per tick on a manifest; unbounded when unset.
     pub max_items: Option<u32>,
-    /// Fields rendered per item and stamped on every row of it: JSON values
-    /// whose string leaves are templates and may read `item`.
-    pub item_fields: Vec<(String, Value)>,
+    /// Fields rendered per item and stamped on every row of it, which may
+    /// read `item`.
+    pub item_fields: Vec<(String, BodyTemplate)>,
     /// Row framing of the response.
     pub decoder: Decoder,
     /// The transform each framed row of the response goes through.
@@ -290,32 +362,13 @@ fn compile_map(
     Ok(())
 }
 
-/// Render every string leaf of a JSON body against `ctx`. A leaf that is
-/// exactly one `{{ expr }}` keeps the expression's type, so a page size
-/// stays a number and an id list stays a list; an object member whose leaf
-/// renders `null` is left out, which is how a profile writes an optional
-/// member (`"{{ vars.pattern != '' ? vars.pattern : null }}"`).
+/// Render a JSON body once against `ctx`, as [`BodyTemplate::render`] does.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Config`] when a leaf does not compile or render.
 pub fn render_body(body: &Value, ctx: &TemplateCtx) -> Result<Value> {
-    Ok(match body {
-        Value::String(s) => Template::compile(s)?.render_value(ctx)?,
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| render_body(v, ctx).map(|v| (k.clone(), v)))
-                .filter(|entry| !matches!(entry, Ok((_, Value::Null))))
-                .collect::<Result<_>>()?,
-        ),
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .map(|v| render_body(v, ctx))
-                .collect::<Result<_>>()?,
-        ),
-        other => other.clone(),
-    })
+    BodyTemplate::compile(body)?.render(ctx)
 }
 
 /// Permit the origin of each `allow_hosts` entry at `field`.
@@ -496,7 +549,9 @@ fn bind_endpoint(
                     "{field}: reads `key` but the unit declares no `construct.keyset`"
                 )));
             }
-            key_fields.push((field_name.clone(), value.clone()));
+            let compiled =
+                BodyTemplate::compile(value).map_err(|e| Error::Config(format!("{field}: {e}")))?;
+            key_fields.push((field_name.clone(), compiled));
             continue;
         }
         let rendered =
@@ -561,8 +616,14 @@ fn bind_endpoint(
                 item_fields: spec
                     .add_fields
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
+                    .map(|(k, v)| {
+                        BodyTemplate::compile(v)
+                            .map(|t| (k.clone(), t))
+                            .map_err(|e| {
+                                Error::Config(format!("{}: {e}", mat(&format!("add_fields.{k}"))))
+                            })
+                    })
+                    .collect::<Result<_>>()?,
                 request,
                 decoder: Decoder::build(&spec.rows),
                 builder: RowBuilder::build(spec.rows.builder),
@@ -601,7 +662,11 @@ fn bind_endpoint(
             .map_err(|e| Error::Config(format!("{}: {e}", at("path"))))?,
         query,
         headers,
-        body: profile.body_of(endpoint).cloned(),
+        body: profile
+            .body_of(endpoint)
+            .map(BodyTemplate::compile)
+            .transpose()
+            .map_err(|e| Error::Config(format!("{}: {e}", at("body"))))?,
         ignore_status: endpoint.ignore_status.clone(),
         timeout: endpoint.timeout_secs.map(std::time::Duration::from_secs),
     };
@@ -718,7 +783,12 @@ fn bind_request(field: &str, request: &LookupRequest, default: Method) -> Result
             .map_err(|e| Error::Config(format!("{field}.path: {e}")))?,
         query,
         headers,
-        body: request.body.clone(),
+        body: request
+            .body
+            .as_ref()
+            .map(BodyTemplate::compile)
+            .transpose()
+            .map_err(|e| Error::Config(format!("{field}.body: {e}")))?,
         ignore_status: request.ignore_status.clone(),
         timeout: request.timeout_secs.map(std::time::Duration::from_secs),
     })

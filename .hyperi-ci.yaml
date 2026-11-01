@@ -15,11 +15,10 @@ language: rust
 # so they are built and tested here -- without them CI compiles none of the
 # database or file-tail proofs and clippy never reads those engines.
 #
-# `db-odbc` is absent on purpose: it links unixODBC (`libodbc.so.2`) and its
-# tests need `unixodbc-dev`, `odbc-postgresql` and `odbc-mariadb` installed on
-# the runner. This config cannot declare apt packages, so a runner asked for it
-# fails at link time; it joins the lists when the runner image carries those
-# packages. Never ask a runner for `--all-features`.
+# `db-odbc` links unixODBC (`libodbc.so.2`). hyperi-ci installs `unixodbc-dev`
+# for it, so quality lints it. Its tests also need the `odbc-postgresql` and
+# `odbc-mariadb` drivers, which the runner lacks, so the test lists leave it
+# out. Never ask a runner for `--all-features`.
 quality:
   enabled: true
   # The docs lint clean, so a new warning fails the run rather than piling up.
@@ -43,15 +42,25 @@ quality:
       - "default"
       - "jemalloc"
       - "db-clickhouse,db-mongodb,file-tail"
+      - "db-odbc"
 
 test:
   enabled: true
   rust:
+    # Required, not auto: the tests that set `SSL_CERT_FILE` or a credential's
+    # env var rely on one process per test, which only nextest gives.
+    nextest: true
     tier: all
     features:
       - "default"
       - "jemalloc"
       - "db-clickhouse,db-mongodb,file-tail"
+  # A release runs the full tier. docs/testing.md says which tests are which.
+  full:
+    required_for_release: true
+    rust:
+      # The live-provider suites need tenant credentials no runner holds.
+      filter: "not (test(/^smoke_remote::/) | test(/^runzero::/))"
 
 build:
   enabled: true
@@ -59,6 +68,9 @@ build:
     - native
   rust:
     glibc_max: "2.41"
+    # librdkafka, OpenSSL, zstd and zlib link from hyperi-ci's static prefix,
+    # so the image installs none of them. rdkafka keeps `dynamic-linking`.
+    static_libs: true
     optimize:
       pgo:
         # Built before the workload clock starts: an uncached arm64 runner takes longer than the workload timeout to compile it.

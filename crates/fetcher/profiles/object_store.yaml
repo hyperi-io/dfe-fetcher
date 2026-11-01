@@ -18,8 +18,8 @@
 #
 # Every unit is the same flow under a different framing: the bucket is
 # listed with `ListObjectsV2` (path-style, the prefix and up to a thousand
-# keys a page, the continuation token followed for at most ten pages), the
-# objects modified after the unit's checkpoint -- or, on a first tick,
+# keys a page, the continuation token followed to the end of the listing),
+# the objects modified after the unit's checkpoint -- or, on a first tick,
 # after the start of the day-long window -- are read oldest first, a
 # thousand a tick, each one a manifest item fetched by its key and framed by
 # the format (a gzip member sequence inflates whole, a line that is not
@@ -27,8 +27,18 @@
 # record carries the object envelope under `_dfe_fetcher_object`. Each row
 # is marked with its object's key and `last_modified`, which the driver
 # commits once the row is delivered, so an object is read exactly once and
-# the rest of a backlog waits for the next tick. There is no probe: the
-# health check is the key pair resolving.
+# the rest of a backlog waits for the next tick. The listing is in key
+# order, so it is walked whole before the oldest objects are known. A
+# prefix still listing past a million keys fails the unit rather than
+# checkpoint past keys it never saw, and wants a narrower prefix. There is
+# no probe: the health check is the key pair resolving.
+#
+# S3 lists a multipart upload's object under the time the upload began, so
+# each listing first asks `ListMultipartUploads` for the oldest upload in
+# progress under the prefix and reads nothing modified at or after its
+# start. A store that refuses it (no `s3:ListBucketMultipartUploads`) gets
+# `settle_secs` instead: only objects older than that are read, one
+# scheduler interval by default.
 profile: object_store
 maturity: alpha
 base_url: "{{ vars.endpoint_url != '' ? vars.endpoint_url : 'https://s3.' + vars.region + '.amazonaws.com' }}"
@@ -47,10 +57,11 @@ vars:
   region: us-east-1
   bucket: ""
   prefix: ""
+  settle_secs: 300
 defaults:
   path: "{{ vars.bucket }}/"
   query: { list-type: 2, prefix: "{{ vars.prefix }}", max-keys: 1000 }
-  max_pages: 10
+  max_pages: 1000
 endpoints:
   - unit: json_gz
     lister: s3

@@ -24,8 +24,9 @@
 # window at the configured interval (and event types, when narrowed),
 # ascending by `LogDate`, and each file's `LogFile` is a CSV with a header
 # row whose rows land as objects stamped with the file's event type and
-# log date; at most two hundred files are read a tick. The health check is
-# the token exchange.
+# log date. A window listing more than two hundred files fails and is read
+# again in halves, so no file is skipped. The health check is the token
+# exchange.
 profile: salesforce
 maturity: alpha
 base_url: "{{ vars.login_url }}"

@@ -43,6 +43,7 @@ mod framework;
 mod framework_kafka;
 mod generics_gates;
 mod kafka_consume;
+mod kafka_tls;
 mod output_kafka;
 mod pipeline;
 mod saas_provider;

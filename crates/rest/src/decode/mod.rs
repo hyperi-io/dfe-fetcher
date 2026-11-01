@@ -134,13 +134,30 @@ impl Decoder {
         }
     }
 
-    /// Frame a page the caller already holds; rows are slices of `page`.
+    /// The body as the framer reads it: inflated for each gzip layer, so a
+    /// caller that buffers a page whole for [`Decoder::frame_page`] (or for
+    /// its pager) bounds and reads the inflated bytes.
+    pub fn inflate<'a>(&self, body: ByteStream<'a>) -> ByteStream<'a> {
+        match self {
+            Decoder::Gzip(inner) => inner.inflate(gunzip(body)),
+            Decoder::Quoted(inner) => inner.inflate(body),
+            Decoder::Ndjson
+            | Decoder::JsonArray
+            | Decoder::JsonAt(_)
+            | Decoder::Document
+            | Decoder::Json
+            | Decoder::Lines
+            | Decoder::Csv { .. } => body,
+        }
+    }
+
+    /// Frame a page the caller already holds, already passed through
+    /// [`Decoder::inflate`]; rows are slices of `page`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Decode`] when the page does not have the shape the
-    /// decoder expects (not an array at the pointer, malformed CSV, a gzip
-    /// decoder, which cannot frame an already-buffered page).
+    /// decoder expects (not an array at the pointer, malformed CSV).
     pub fn frame_page(&self, page: &Bytes) -> Result<Vec<Bytes>> {
         match self {
             Decoder::Ndjson => Ok(split_lines(page, false)),
@@ -164,9 +181,7 @@ impl Decoder {
                 }
             }
             Decoder::Csv { header } => csv_rows(page, *header),
-            Decoder::Gzip(_) => Err(Error::Decode(
-                "gzip frames a body stream, not a buffered page".into(),
-            )),
+            Decoder::Gzip(inner) => inner.frame_page(page),
             Decoder::Quoted(inner) => inner
                 .frame_page(page)?
                 .iter()

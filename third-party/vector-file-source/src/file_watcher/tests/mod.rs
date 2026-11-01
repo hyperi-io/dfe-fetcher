@@ -239,6 +239,8 @@ fn watcher_for_timing() -> FileWatcher {
         max_line_bytes: 1024,
         line_delimiter: Bytes::from_static(b"\n"),
         buf: BytesMut::new(),
+        // dfe-fetcher: the null reader reads no file.
+        plain: false,
     }
 }
 

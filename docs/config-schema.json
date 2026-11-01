@@ -3260,6 +3260,15 @@
             "null"
           ]
         },
+        "settle_secs": {
+          "description": "Seconds an object must age before it is read, used only where the\nstore refuses `ListMultipartUploads`. Default 300 (the profile's).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "buckets": {
           "description": "Buckets + prefixes to tail.",
           "type": "array",
@@ -3848,7 +3857,8 @@
           "default": {
             "format": "rfc3339_secs",
             "step": null,
-            "lookback": "3600s"
+            "lookback": "3600s",
+            "delay": null
           }
         },
         "probe": {
@@ -4745,6 +4755,18 @@
           "description": "Window used when the scheduler passes none.",
           "$ref": "#/$defs/DurationText",
           "default": "3600s"
+        },
+        "delay": {
+          "description": "How long after the fact the provider makes a record visible. Every\nwindow ends at least this far before now.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurationText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
@@ -7559,7 +7581,7 @@
           ]
         },
         "group": {
-          "description": "Consumer group ID.\n\nEmpty means [`KafkaTransport::new`](super::KafkaTransport::new) builds\nno consumer, and [`KafkaTransport::receiver`](super::KafkaTransport::receiver)\nrefuses the config. The admin's offset-query consumer takes a group id\nderived from this field, or from `client_id` when it is empty, so a\nbroker granting groups by prefix covers it too.",
+          "description": "Consumer group ID.\n\nEmpty means `KafkaTransport::new` (`transport-kafka` feature) builds no\nconsumer, and `KafkaTransport::receiver` refuses the config. The admin's\noffset-query consumer takes a group id derived from this field, or from\n`client_id` when it is empty, so a broker granting groups by prefix\ncovers it too.",
           "type": "string",
           "default": "scalo-consumer"
         },

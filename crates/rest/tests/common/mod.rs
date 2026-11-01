@@ -21,6 +21,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -94,6 +95,8 @@ pub struct Recorded {
     pub acked: Vec<Vec<String>>,
     /// Pulls served by `/queue/pull` so far.
     pub pulls: u32,
+    /// `ListObjectsV2` calls `/s3mp/{bucket}` has answered, by bucket.
+    pub multipart_listings: HashMap<String, u32>,
 }
 
 #[derive(Clone)]
@@ -575,6 +578,21 @@ async fn s3_list(
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
+    if query.contains_key("uploads") {
+        record(
+            &state,
+            &format!("/s3/{bucket}?uploads"),
+            &query,
+            &headers,
+            None,
+        );
+        return (
+            [(header::CONTENT_TYPE, "application/xml")],
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>logs</Bucket><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>"#,
+        )
+            .into_response();
+    }
     record(&state, &format!("/s3/{bucket}"), &query, &headers, None);
     if !headers
         .get(header::AUTHORIZATION)
@@ -633,6 +651,96 @@ async fn s3_object(
         )
             .into_response(),
     }
+}
+
+/// A bucket where `old.jsonl` is a multipart upload begun before
+/// `newer.jsonl` was written and completed after it. The upload is listed
+/// in progress until the second listing, from which `old.jsonl` is listed
+/// with the upload's start as its `LastModified`.
+///
+/// Bucket `held` answers `ListMultipartUploads`; bucket `refused` refuses it
+/// `AccessDenied`, its times sit just behind the clock, and from the third
+/// listing the clock has moved two minutes on.
+async fn s3mp_list(
+    State(state): State<Shared>,
+    Path(bucket): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let xml = |body: String| ([(header::CONTENT_TYPE, "application/xml")], body).into_response();
+    let contents = |objects: &[(&str, String)]| {
+        objects.iter().fold(String::new(), |mut out, (key, at)| {
+            let _ = write!(
+                out,
+                "<Contents><Key>{key}</Key><LastModified>{at}</LastModified><Size>9</Size></Contents>"
+            );
+            out
+        })
+    };
+    let listed = state
+        .lock()
+        .unwrap()
+        .multipart_listings
+        .get(&bucket)
+        .copied()
+        .unwrap_or(0);
+    if query.contains_key("uploads") {
+        record(
+            &state,
+            &format!("/s3mp/{bucket}?uploads"),
+            &query,
+            &headers,
+            None,
+        );
+        if bucket == "refused" {
+            return (
+                StatusCode::FORBIDDEN,
+                "<Error><Code>AccessDenied</Code></Error>",
+            )
+                .into_response();
+        }
+        let upload = if listed == 0 {
+            "<Upload><Key>old.jsonl</Key><UploadId>u-1</UploadId><Initiated>2026-05-21T10:00:00.000Z</Initiated></Upload>"
+        } else {
+            ""
+        };
+        return xml(format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult><Bucket>held</Bucket><IsTruncated>false</IsTruncated>{upload}</ListMultipartUploadsResult>"#
+        ));
+    }
+    record(&state, &format!("/s3mp/{bucket}"), &query, &headers, None);
+    state
+        .lock()
+        .unwrap()
+        .multipart_listings
+        .insert(bucket.clone(), listed + 1);
+    let objects: Vec<(&str, String)> = if bucket == "refused" {
+        let ago = |secs: i64| {
+            (chrono::Utc::now() - chrono::Duration::seconds(secs))
+                .format("%Y-%m-%dT%H:%M:%S.000Z")
+                .to_string()
+        };
+        let moved_on = if listed >= 2 { 120 } else { 0 };
+        let newer = ("newer.jsonl", ago(5 + moved_on));
+        match listed {
+            0 => vec![newer],
+            _ => vec![("old.jsonl", ago(10 + moved_on)), newer],
+        }
+    } else {
+        let newer = ("newer.jsonl", "2026-05-21T10:05:00.000Z".to_owned());
+        match listed {
+            0 => vec![newer],
+            _ => vec![("old.jsonl", "2026-05-21T10:00:00.000Z".to_owned()), newer],
+        }
+    };
+    xml(format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>{bucket}</Name><IsTruncated>false</IsTruncated>{}</ListBucketResult>"#,
+        contents(&objects)
+    ))
+}
+
+async fn s3mp_object(Path((_bucket, key)): Path<(String, String)>) -> Response {
+    format!("{{\"object\":\"{key}\"}}\n").into_response()
 }
 
 /// The Pub/Sub shape: the first pull answers two messages, every later
@@ -855,6 +963,16 @@ async fn ndjson(
         "raw.jsonl.gz" => (
             [(header::CONTENT_TYPE, "application/gzip")],
             gzip(format!("{two}\n").as_bytes()),
+        )
+            .into_response(),
+        "raw.csv.gz" => (
+            [(header::CONTENT_TYPE, "application/gzip")],
+            gzip(b"id,name\n1,a\n2,b\n"),
+        )
+            .into_response(),
+        "raw.json.gz" => (
+            [(header::CONTENT_TYPE, "application/gzip")],
+            gzip(br#"[{"id":1},{"id":2}]"#),
         )
             .into_response(),
         "encoded.jsonl" => (
@@ -1567,6 +1685,8 @@ pub async fn start() -> Fixture {
         .route("/goproxy/{module}/@v/{version}", get(goproxy_info))
         .route("/s3/{bucket}", get(s3_list))
         .route("/s3/{bucket}/{*key}", get(s3_object))
+        .route("/s3mp/{bucket}", get(s3mp_list))
+        .route("/s3mp/{bucket}/{*key}", get(s3mp_object))
         .route("/queue/pull", post(queue_pull))
         .route("/queue/ack", post(queue_ack))
         .route("/appliance/login/{shape}", post(appliance_login))

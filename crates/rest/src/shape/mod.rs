@@ -24,8 +24,8 @@
 pub mod queue;
 pub mod window;
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -43,9 +43,12 @@ use crate::auth::AuthMode;
 use crate::decode::{ByteStream, Decoder, RowBytes, collect_page};
 use crate::hooks::RowBuilder;
 use crate::hooks::s3_list::{CONTINUATION_PARAM, ListingPages};
+use crate::hooks::s3_uploads::{
+    Horizon, UPLOADS_PARAM, UPLOADS_UNAVAILABLE, UploadsAnswer, UploadsMarker,
+};
 use crate::page::{Inject, PageMeta, PageState, Pager};
 use crate::profile::bound::{
-    BoundEndpoint, BoundLookup, BoundProfile, BoundRequest, KeySource, bind, render_body,
+    BoundEndpoint, BoundLookup, BoundProfile, BoundRequest, KeySource, bind,
 };
 use crate::profile::template::TemplateCtx;
 use crate::profile::{AuthKind, Method, RestInstance, RestProfile};
@@ -62,7 +65,19 @@ pub struct RestShape {
     scoped_auth: BTreeMap<String, AuthMode>,
     executor: RequestExecutor,
     maturity: SourceMaturity,
+    /// The once-per-unit warnings already logged.
+    warned: Mutex<HashSet<String>>,
 }
+
+/// The settle window of a lister unit whose profile sets no `settle_secs`:
+/// the scheduler's default interval, so one tick passes before an object is
+/// read.
+const DEFAULT_SETTLE_SECS: u64 = 300;
+
+/// How long an upload may hold a unit's listing before the hold is logged:
+/// an upload neither completed nor aborted stops the unit reading anything
+/// newer until the bucket's lifecycle rule removes it.
+const STALE_UPLOAD_HOLD: chrono::TimeDelta = chrono::TimeDelta::days(1);
 
 impl RestShape {
     /// Bind `profile` to `instance` and build its auth mode over `exchange`,
@@ -159,7 +174,16 @@ impl RestShape {
             scoped_auth,
             executor,
             maturity,
+            warned: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Whether `key` is warned of for the first time, recording it.
+    fn first_warning(&self, key: String) -> bool {
+        self.warned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key)
     }
 
     /// The mode a unit's requests carry: the one for its scope when it names
@@ -258,6 +282,7 @@ impl RestShape {
                     origins: &self.bound.origins,
                     idempotent: probe.method == Method::Get,
                     ignore: &[],
+                    rate: None,
                 },
                 make,
             )
@@ -337,7 +362,7 @@ impl RestShape {
                     (Some(Inject::BodyReplace(_)), Some(_)) => {
                         Value::Object(serde_json::Map::new())
                     }
-                    _ => render_body(body, ctx)?,
+                    _ => body.render(ctx)?,
                 };
                 if let (Some(Inject::Body(pointer) | Inject::BodyReplace(pointer)), Some(token)) =
                     (pager.inject(), &state.token)
@@ -424,7 +449,78 @@ impl RestShape {
         bytes: metrics::Counter,
     ) -> Result<Option<Bytes>> {
         let request = &endpoint.request;
-        let path = request.path.render(ctx)?;
+        let mut pairs: Vec<(String, String)> = request.query.render(ctx)?;
+        if let Some(token) = token {
+            pairs.push((CONTINUATION_PARAM.to_owned(), token));
+        }
+        let url = Self::listing_url(endpoint, ctx, &pairs)?;
+        let headers = self.render_headers(ctx, Some(&request.headers))?;
+        let Some(response) = self
+            .send_request(endpoint, ctx, request, url, headers, None)
+            .await?
+        else {
+            return Ok(None);
+        };
+        collect_page(body_stream(response, bytes), endpoint.max_page_bytes)
+            .await
+            .map(Some)
+    }
+
+    /// One `ListMultipartUploads` page of a lister unit's bucket, under the
+    /// listing's `prefix`, continued at `marker`.
+    async fn uploads_page(
+        &self,
+        endpoint: &BoundEndpoint,
+        ctx: &TemplateCtx,
+        marker: Option<UploadsMarker>,
+        bytes: metrics::Counter,
+    ) -> Result<UploadsAnswer> {
+        let request = &endpoint.request;
+        let mut pairs = vec![(UPLOADS_PARAM.to_owned(), String::new())];
+        pairs.extend(
+            request
+                .query
+                .render(ctx)?
+                .into_iter()
+                .filter(|(k, _)| k == "prefix"),
+        );
+        if let Some((key, upload)) = marker {
+            pairs.push(("key-marker".to_owned(), key));
+            pairs.push(("upload-id-marker".to_owned(), upload));
+        }
+        let url = Self::listing_url(endpoint, ctx, &pairs)?;
+        let headers = self.render_headers(ctx, Some(&request.headers))?;
+        let Some(response) = self
+            .send_with(
+                endpoint,
+                ctx,
+                request,
+                &UPLOADS_UNAVAILABLE,
+                url,
+                headers,
+                None,
+            )
+            .await?
+        else {
+            return Ok(UploadsAnswer::Unavailable);
+        };
+        let date = response
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+            .and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok())
+            .map(|d| d.with_timezone(&chrono::Utc));
+        let body = collect_page(body_stream(response, bytes), endpoint.max_page_bytes).await?;
+        Ok(UploadsAnswer::Page { body, date })
+    }
+
+    /// The bucket URL of a lister unit with `pairs` as its query.
+    fn listing_url(
+        endpoint: &BoundEndpoint,
+        ctx: &TemplateCtx,
+        pairs: &[(String, String)],
+    ) -> Result<reqwest::Url> {
+        let path = endpoint.request.path.render(ctx)?;
         let joined = if path.starts_with("http://") || path.starts_with("https://") {
             path
         } else {
@@ -434,10 +530,6 @@ impl RestShape {
             .map_err(|e| Error::Config(format!("listing URL `{joined}`: {e}")))?;
         // S3 signs and decodes the query as RFC 3986 (a space is `%20`), so
         // the pairs are encoded by hand rather than as a form.
-        let mut pairs: Vec<(String, String)> = request.query.render(ctx)?;
-        if let Some(token) = token {
-            pairs.push((CONTINUATION_PARAM.to_owned(), token));
-        }
         let query: Vec<String> = pairs
             .iter()
             .map(|(k, v)| {
@@ -449,16 +541,54 @@ impl RestShape {
             })
             .collect();
         url.set_query((!query.is_empty()).then(|| query.join("&")).as_deref());
-        let headers = self.render_headers(ctx, Some(&request.headers))?;
-        let Some(response) = self
-            .send_request(endpoint, ctx, request, url, headers, None)
-            .await?
-        else {
-            return Ok(None);
-        };
-        collect_page(body_stream(response, bytes), endpoint.max_page_bytes)
-            .await
-            .map(Some)
+        Ok(url)
+    }
+
+    /// The newest `LastModified` a lister unit's listing may read: behind
+    /// the oldest upload in progress, else `settle_secs` behind now where
+    /// the store will not list uploads.
+    async fn listing_horizon(
+        &self,
+        endpoint: &BoundEndpoint,
+        ctx: &TemplateCtx,
+        pages: &mut ListingRequests<'_>,
+    ) -> Result<chrono::DateTime<chrono::Utc>> {
+        let unit = &endpoint.unit.name;
+        let source = &self.bound.connection_id;
+        let asked = chrono::Utc::now();
+        match crate::hooks::s3_uploads::horizon(unit, endpoint.max_pages, asked, pages).await? {
+            Horizon::Held { at, upload } => {
+                if let Some(key) = upload
+                    && asked - at > STALE_UPLOAD_HOLD
+                    && self.first_warning(format!("upload {unit} {key}"))
+                {
+                    tracing::warn!(
+                        source,
+                        unit = %unit,
+                        upload = %key,
+                        initiated = %at,
+                        "a multipart upload begun over a day ago holds this unit's listing; nothing newer is read until it completes or is aborted"
+                    );
+                }
+                Ok(at)
+            }
+            Horizon::Unavailable => {
+                let settle = settle_secs(ctx);
+                if self.first_warning(format!("settle {unit}")) {
+                    tracing::warn!(
+                        source,
+                        unit = %unit,
+                        settle_secs = settle,
+                        "ListMultipartUploads refused or unsupported (grant s3:ListBucketMultipartUploads); reading only objects older than settle_secs, so an upload longer than that can be skipped"
+                    );
+                }
+                let settle = i64::try_from(settle).unwrap_or(i64::MAX);
+                Ok(
+                    asked
+                        - chrono::TimeDelta::try_seconds(settle).unwrap_or(chrono::TimeDelta::MAX),
+                )
+            }
+        }
     }
 
     /// The listing of a lister unit as its one page of items: the objects
@@ -485,19 +615,31 @@ impl RestShape {
         // The lister applies the manifest's item cap, so the cut lands on a
         // position boundary.
         let max_items = endpoint.lookup.as_ref().and_then(|l| l.max_items);
-        let listing = lister
-            .list(cutoff, max_items, endpoint.max_pages, &mut pages)
-            .await?;
-        if listing.truncated {
+        let listing = async {
+            let horizon = self.listing_horizon(endpoint, ctx, &mut pages).await?;
+            lister
+                .list(
+                    &endpoint.unit.name,
+                    cutoff,
+                    Some(horizon),
+                    max_items,
+                    endpoint.max_pages,
+                    &mut pages,
+                )
+                .await
+        }
+        .await;
+        if let Err(Error::PageCeiling { .. }) = &listing {
             let source = &self.bound.connection_id;
             metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => source.clone(), "unit" => endpoint.unit.name.to_string()).increment(1);
             tracing::warn!(
                 source,
                 unit = %endpoint.unit.name,
                 max_pages = endpoint.max_pages,
-                "object listing ended on a continuation token; the keys past it wait for the next tick"
+                "object listing still continuing at max_pages; the unit fails so its checkpoint never passes objects on pages not read"
             );
         }
+        let listing = listing?;
         Ok(Page {
             rows: futures::stream::iter(listing.items.into_iter().map(Ok)).boxed(),
             state: Pager::None.first(),
@@ -525,28 +667,29 @@ impl RestShape {
         let stream = body_stream(response, bytes);
 
         let needs_tree = stage.pager.reads_body() || stage.fail_when.is_some();
-        let (rows, tree): (RowBytes<'a>, Option<Value>) =
-            if stage.decoder.is_page_bounded() || needs_tree {
-                let body = collect_page(stream, endpoint.max_page_bytes).await?;
-                let tree = if needs_tree {
-                    Some(
-                        serde_json::from_slice::<Value>(&body)
-                            .map_err(|e| Error::Decode(format!("page body is not JSON: {e}")))?,
-                    )
-                } else {
-                    None
-                };
-                if let (Some(predicate), Some(value)) = (stage.fail_when, &tree) {
-                    self.check_failure(predicate, value, &response_headers)?;
-                }
-                let framed = stage.decoder.frame_page(&body)?;
-                (
-                    futures::stream::iter(framed.into_iter().map(Ok)).boxed(),
-                    tree,
+        let (rows, tree): (RowBytes<'a>, Option<Value>) = if stage.decoder.is_page_bounded()
+            || needs_tree
+        {
+            let body = collect_page(stage.decoder.inflate(stream), endpoint.max_page_bytes).await?;
+            let tree = if needs_tree {
+                Some(
+                    serde_json::from_slice::<Value>(&body)
+                        .map_err(|e| Error::Decode(format!("page body is not JSON: {e}")))?,
                 )
             } else {
-                (stage.decoder.frame(stream, endpoint.max_page_bytes), None)
+                None
             };
+            if let (Some(predicate), Some(value)) = (stage.fail_when, &tree) {
+                self.check_failure(predicate, value, &response_headers)?;
+            }
+            let framed = stage.decoder.frame_page(&body)?;
+            (
+                futures::stream::iter(framed.into_iter().map(Ok)).boxed(),
+                tree,
+            )
+        } else {
+            (stage.decoder.frame(stream, endpoint.max_page_bytes), None)
+        };
         let rows = match stage.builder {
             Some(builder) => builder.expand_stream(rows, ctx.clone()),
             None => rows,
@@ -564,8 +707,8 @@ impl RestShape {
     }
 
     /// Build and send one request of `endpoint` through the executor, with
-    /// the credential that unit signs with and after its rate gate hands out
-    /// a slot; a `reqwest::Request` is single-use, so the builder runs per
+    /// the credential that unit signs with and a slot from its rate gate per
+    /// attempt; a `reqwest::Request` is single-use, so the builder runs per
     /// attempt. `ctx` is the request's own context, which a signing mode
     /// reads for its scope. `None` is a status the request ignores.
     async fn send_request(
@@ -577,9 +720,34 @@ impl RestShape {
         headers: HeaderMap,
         body: Option<&Value>,
     ) -> Result<Option<reqwest::Response>> {
-        if let Some(gate) = &endpoint.rate {
-            gate.wait().await;
-        }
+        self.send_with(
+            endpoint,
+            ctx,
+            request,
+            &request.ignore_status,
+            url,
+            headers,
+            body,
+        )
+        .await
+    }
+
+    /// [`Self::send_request`] answering `None` for the statuses in `ignore`
+    /// rather than the request's own.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "send_request's parts plus the statuses to ignore"
+    )]
+    async fn send_with(
+        &self,
+        endpoint: &BoundEndpoint,
+        ctx: &TemplateCtx,
+        request: &BoundRequest,
+        ignore: &[u16],
+        url: reqwest::Url,
+        headers: HeaderMap,
+        body: Option<&Value>,
+    ) -> Result<Option<reqwest::Response>> {
         let client = self.executor.client().clone();
         let wire = reqwest_method(request.method);
         let make = || {
@@ -604,7 +772,8 @@ impl RestShape {
                     ctx,
                     origins: &endpoint.origins,
                     idempotent: request.idempotent(),
-                    ignore: &request.ignore_status,
+                    ignore,
+                    rate: endpoint.rate.as_ref(),
                 },
                 make,
             )
@@ -663,6 +832,23 @@ impl ListingPages for ListingRequests<'_> {
             .list_page(self.endpoint, self.ctx, token, self.bytes.clone())
             .boxed()
     }
+
+    fn uploads(&mut self, marker: Option<UploadsMarker>) -> BoxFuture<'_, Result<UploadsAnswer>> {
+        self.shape
+            .uploads_page(self.endpoint, self.ctx, marker, self.bytes.clone())
+            .boxed()
+    }
+}
+
+/// A lister unit's `vars.settle_secs`, a number or a numeric string, else
+/// [`DEFAULT_SETTLE_SECS`].
+fn settle_secs(ctx: &TemplateCtx) -> u64 {
+    match ctx.get("vars").and_then(|v| v.get("settle_secs")) {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(s)) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .unwrap_or(DEFAULT_SETTLE_SECS)
 }
 
 /// The request, framing and paging of one stage of a unit: its page
@@ -829,7 +1015,7 @@ impl<'a> LookupBatch<'a> {
             let item = ids.first().cloned().unwrap_or(Value::Null);
             ctx.set("item", item);
             for (name, value) in &lookup.item_fields {
-                fields.push((name.clone(), render_body(value, &ctx)?));
+                fields.push((name.clone(), value.render(&ctx)?));
             }
             if let Some(templates) = &lookup.item_mark {
                 let key = templates.key.render(&ctx)?;
@@ -997,16 +1183,42 @@ impl<'a> Tick<'a> {
     }
 
     /// A page row of a lookup unit is an id: buffer it, and flush a full
-    /// batch. `true` when a lookup is now in flight. A manifest past its
-    /// item cap for the key takes no more and asks for no more pages.
+    /// batch. `true` when a lookup is now in flight.
+    ///
+    /// A manifest past its item cap for the key takes no more and asks for
+    /// no more pages. Where the items carry a checkpoint mark the rest wait
+    /// for the next tick, and a unit that reads no window is cut short. A
+    /// unit that reads the window or is a dump fails instead, through the
+    /// same path as a page ceiling, because nothing records the items it did
+    /// not read.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PageCeiling`] for an item past the cap on a windowed or dump
+    /// unit with no item mark, or the lookup's own error.
     async fn take_id(&mut self, payload: &[u8]) -> Result<bool> {
         let Some(lookup) = &self.endpoint.lookup else {
             return Ok(false);
         };
-        if lookup
+        if let Some(max) = lookup
             .max_items
-            .is_some_and(|max| self.items_taken >= max as usize)
+            .filter(|max| self.items_taken >= *max as usize)
         {
+            if lookup.item_mark.is_none() && self.must_read_every_page() {
+                let unit = &self.endpoint.unit.name;
+                metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => self.shape.bound.connection_id.clone(), "unit" => unit.to_string()).increment(1);
+                tracing::warn!(
+                    source = %self.shape.bound.connection_id,
+                    unit = %unit,
+                    max_items = max,
+                    "manifest item cap reached with items unread; the unit fails so they are not skipped"
+                );
+                return Err(Error::PageCeiling {
+                    unit: unit.to_string(),
+                    ceiling: "max_items",
+                    limit: max,
+                });
+            }
             self.current = None;
             self.pending = None;
             return Ok(false);
@@ -1083,11 +1295,18 @@ impl<'a> Tick<'a> {
             .endpoint
             .key_fields
             .iter()
-            .map(|(name, value)| render_body(value, &self.ctx).map(|v| (name.clone(), v)))
+            .map(|(name, value)| value.render(&self.ctx).map(|v| (name.clone(), v)))
             .collect::<Result<_>>()?;
         self.steps = self.window_steps.clone().into_iter();
         self.items_taken = 0;
         Ok(true)
+    }
+
+    /// Whether a cut-short page sequence loses rows: a unit that reads the
+    /// window commits past them when the tick succeeds, and a dump closes its
+    /// snapshot without them.
+    fn must_read_every_page(&self) -> bool {
+        self.endpoint.unit.is_dump() || self.endpoint.windowed
     }
 
     /// The next page of a finished page: the pager's answer under the
@@ -1097,7 +1316,9 @@ impl<'a> Tick<'a> {
     /// window fails on it: the rows past the ceiling belong to THIS window,
     /// so the driver reads it again in narrower halves rather than skipping
     /// them, and the scheduler advances the window only on a successful
-    /// tick. A dump or a unit that reads no window is cut short and says so.
+    /// tick. A dump fails too, so its snapshot never closes on part of the
+    /// store. A unit that reads no window is the provider's current state
+    /// and is cut short.
     fn advance(&self, stage: Stage<'a>, page: &Page<'a>) -> Result<Option<PageState>> {
         if page.ignored {
             return Ok(None);
@@ -1112,23 +1333,24 @@ impl<'a> Tick<'a> {
                 let source = &self.shape.bound.connection_id;
                 let unit = &self.endpoint.unit.name;
                 metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => source.clone(), "unit" => unit.to_string()).increment(1);
-                if self.endpoint.windowed && !self.endpoint.unit.is_dump() {
+                if self.must_read_every_page() {
                     tracing::warn!(
                         source,
                         unit = %unit,
                         max_pages = stage.max_pages,
-                        "page ceiling reached with rows of the window unfetched; the unit fails so the window is not advanced past them"
+                        "page ceiling reached with rows unfetched; the unit fails so they are not skipped"
                     );
                     return Err(Error::PageCeiling {
                         unit: unit.to_string(),
-                        max_pages: stage.max_pages,
+                        ceiling: "max_pages",
+                        limit: stage.max_pages,
                     });
                 }
                 tracing::debug!(
                     source,
                     unit = %unit,
                     max_pages = stage.max_pages,
-                    "page ceiling reached; the rest of the store is cut from this tick"
+                    "page ceiling reached; the rest of the current state is cut from this tick"
                 );
                 Ok(None)
             }
@@ -1308,6 +1530,14 @@ impl RowSource for RestShape {
         &self.bound.units
     }
 
+    fn window_delay(&self) -> std::time::Duration {
+        self.bound
+            .window
+            .delay
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |delay| delay.0)
+    }
+
     // SHORTCUT: pages are requested one at a time per unit and a connection's
     // units run sequentially; fan pages out with `buffer_unordered(n)` for the
     // offset and page-number pagers only when a store's page count x page
@@ -1329,12 +1559,9 @@ impl RowSource for RestShape {
         if !endpoint.windowed {
             window_spec.step = None;
         }
-        let window_steps = window::steps(
-            &window_spec,
-            endpoint.unit.shape,
-            tick.window,
-            chrono::Utc::now(),
-        );
+        let settled = chrono::Utc::now()
+            - chrono::Duration::from_std(self.window_delay()).unwrap_or(chrono::Duration::zero());
+        let window_steps = window::steps(&window_spec, endpoint.unit.shape, tick.window, settled);
         let source = self.bound.connection_id.clone();
         let state = Tick {
             shape: self,

@@ -74,6 +74,7 @@ fn s3_config(server: &MockServer, prefixes: Vec<ObjectStorePrefix>) -> ObjectSto
             access_key_id: Some(ACCESS_KEY.into()),
             secret_access_key: Some("test-secret-key".to_string().into()),
             credential_secret: None,
+            settle_secs: None,
             buckets: vec![ObjectStoreBucket {
                 bucket: BUCKET.into(),
                 prefixes,
@@ -160,8 +161,23 @@ fn listing_page(objects: &[String], next: Option<&str>) -> String {
 }
 
 /// Mount the listing under the bucket, answering `page` for a request
-/// carrying `token` (none for the first page).
+/// carrying `token` (none for the first page, which also mounts an empty
+/// `ListMultipartUploads`).
 async fn mount_listing(server: &MockServer, token: Option<&str>, page: String) {
+    if token.is_none() {
+        Mock::given(method("GET"))
+            .and(path(format!("/{BUCKET}/")))
+            .and(query_param("uploads", ""))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(
+                        "<ListMultipartUploadsResult><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>",
+                    )
+                    .insert_header("Content-Type", "application/xml"),
+            )
+            .mount(server)
+            .await;
+    }
     let mock = Mock::given(method("GET"))
         .and(path(format!("/{BUCKET}/")))
         .and(query_param("list-type", "2"));
@@ -205,13 +221,14 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     enc.finish().unwrap()
 }
 
+/// The requests to `at`, the `ListMultipartUploads` calls left out.
 async fn requests_to(server: &MockServer, at: &str) -> Vec<Request> {
     server
         .received_requests()
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| r.url.path() == at)
+        .filter(|r| r.url.path() == at && !r.url.query_pairs().any(|(k, _)| k == "uploads"))
         .collect()
 }
 
@@ -318,11 +335,20 @@ async fn each_new_object_lands_as_its_records_with_the_object_envelope_oldest_fi
         paths(&server).await,
         [
             format!("/{BUCKET}/"),
+            format!("/{BUCKET}/"),
             format!("/{BUCKET}/logs/2026/b.jsonl.gz"),
             format!("/{BUCKET}/logs/2026/a.jsonl.gz"),
         ],
-        "the listing, then each object oldest first"
+        "the uploads in progress, the listing, then each object oldest first"
     );
+    let uploads = server.received_requests().await.unwrap_or_default();
+    assert_eq!(
+        query_value(&uploads[0], "uploads").as_deref(),
+        Some(""),
+        "ListMultipartUploads before the listing"
+    );
+    assert_eq!(query_value(&uploads[0], "prefix").as_deref(), Some("logs/"));
+    assert_signed(&uploads[0]);
     for object in requests_to(&server, &format!("/{BUCKET}/logs/2026/a.jsonl.gz")).await {
         assert_signed(&object);
     }

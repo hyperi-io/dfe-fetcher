@@ -277,10 +277,11 @@ async fn a_transport_failure_never_carries_the_query_key() {
 }
 
 /// The page ceiling on a unit that reads the window is a failed tick, so the
-/// scheduler does not advance the window past the pages never fetched; on a
-/// dump, which has no window to lose, the sequence is cut short.
+/// scheduler does not advance the window past the pages never fetched. A dump
+/// fails too: its `end` marker tells a consumer the snapshot is complete, and
+/// the pages past the ceiling are rows of that snapshot.
 #[tokio::test]
-async fn the_page_ceiling_fails_a_windowed_unit_and_cuts_a_dump_short() {
+async fn the_page_ceiling_fails_a_windowed_unit_and_a_dump() {
     let fx = common::start().await;
     let p = format!(
         "{PLAIN}window: {{ format: epoch_secs }}\nendpoints:\n  - unit: events\n    path: /link/page\n    query: {{ page: 1, since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: link_header }}\n    max_pages: 2\n  - unit: store\n    shape: dump\n    path: /link/page\n    query: {{ page: 1 }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: link_header }}\n    max_pages: 2\n"
@@ -294,7 +295,7 @@ async fn the_page_ceiling_fails_a_windowed_unit_and_cuts_a_dump_short() {
         .await
         .expect_err("three pages under a ceiling of two");
     assert!(
-        matches!(err, Error::PageCeiling { ref unit, max_pages: 2 } if unit == "events"),
+        matches!(err, Error::PageCeiling { ref unit, ceiling: "max_pages", limit: 2 } if unit == "events"),
         "{err}"
     );
     assert_eq!(err.api_error_code(), "page_ceiling");
@@ -304,10 +305,55 @@ async fn the_page_ceiling_fails_a_windowed_unit_and_cuts_a_dump_short() {
         "the third page is never asked for"
     );
 
-    let rows = fetch(&s, "store", None)
+    let err = fetch(&s, "store", None)
         .await
-        .expect("a dump is cut at the ceiling, not failed");
-    assert_eq!(rows.len(), 4, "two pages of two");
+        .expect_err("a dump with a page past the ceiling is not a complete snapshot");
+    assert!(
+        matches!(err, Error::PageCeiling { ref unit, ceiling: "max_pages", limit: 2 } if unit == "store"),
+        "{err}"
+    );
+}
+
+/// A manifest's item cap fails a unit that reads the window, or a dump, when
+/// an item past the cap is listed: the scheduler would advance the window
+/// past it, or the snapshot would close without it. A cap the listing does
+/// not exceed reads every item.
+#[tokio::test]
+async fn a_manifest_item_cap_fails_a_windowed_unit_and_a_dump_rather_than_skip_items() {
+    let fx = common::start().await;
+    let manifest = |max_items: u32| {
+        format!(
+            "{PLAIN}window: {{ format: epoch_secs }}\nendpoints:\n  - unit: logs\n    path: /manifest/list\n    query: {{ since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n  - unit: inventory\n    shape: dump\n    path: /manifest/list\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n"
+        )
+    };
+    let window = FetchWindow {
+        start: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        end: Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+    };
+    let capped = shape(&fx, &manifest(2), BEARER_INSTANCE);
+    for (unit, window) in [("logs", Some(&window)), ("inventory", None)] {
+        let err = fetch(&capped, unit, window)
+            .await
+            .expect_err("four items listed under a cap of two");
+        assert!(
+            matches!(err, Error::PageCeiling { unit: ref u, ceiling: "max_items", limit: 2 } if u == unit),
+            "{unit}: {err}"
+        );
+    }
+    assert!(
+        fx.requests_to("/manifest/blob/c").is_empty(),
+        "no item past the cap is read"
+    );
+
+    let whole = shape(&fx, &manifest(4), BEARER_INSTANCE);
+    let rows = fetch(&whole, "logs", Some(&window))
+        .await
+        .expect("a cap the listing does not pass reads every item");
+    assert_eq!(
+        rows.len(),
+        6,
+        "three blobs of two, the expired one answering 404"
+    );
 }
 
 /// The page sequence is LAZY: page N+1 is requested only once the driver has
@@ -469,7 +515,7 @@ async fn a_window_step_splits_the_tick_into_chunked_requests() {
 async fn ndjson_edge_cases_over_http() {
     let fx = common::start().await;
     let p = format!(
-        "{PLAIN}defaults: {{ rows: {{ decoder: ndjson }} }}\nendpoints:\n  - {{ unit: trailing, path: /ndjson/trailing.jsonl }}\n  - {{ unit: notrailing, path: /ndjson/notrailing.jsonl }}\n  - {{ unit: empty, path: /ndjson/empty.jsonl }}\n  - {{ unit: single, path: /ndjson/single.jsonl }}\n  - {{ unit: raw_gzip, path: /ndjson/raw.jsonl.gz, rows: {{ decoder: ndjson, gzip: true }} }}\n  - {{ unit: encoded, path: /ndjson/encoded.jsonl }}\n"
+        "{PLAIN}defaults: {{ rows: {{ decoder: ndjson }} }}\nendpoints:\n  - {{ unit: trailing, path: /ndjson/trailing.jsonl }}\n  - {{ unit: notrailing, path: /ndjson/notrailing.jsonl }}\n  - {{ unit: empty, path: /ndjson/empty.jsonl }}\n  - {{ unit: single, path: /ndjson/single.jsonl }}\n  - {{ unit: raw_gzip, path: /ndjson/raw.jsonl.gz, rows: {{ decoder: ndjson, gzip: true }} }}\n  - {{ unit: gzip_csv, path: /ndjson/raw.csv.gz, rows: {{ decoder: csv, header: true, gzip: true }} }}\n  - {{ unit: gzip_json, path: /ndjson/raw.json.gz, rows: {{ decoder: json, gzip: true }} }}\n  - {{ unit: encoded, path: /ndjson/encoded.jsonl }}\n"
     );
     let s = shape(&fx, &p, BEARER_INSTANCE);
     assert_eq!(fetch(&s, "trailing", None).await.unwrap().len(), 2);
@@ -485,6 +531,18 @@ async fn ndjson_edge_cases_over_http() {
         2,
         "explicit gzip body"
     );
+    for (unit, second) in [
+        ("gzip_csv", serde_json::json!({"id": "2", "name": "b"})),
+        ("gzip_json", serde_json::json!({"id": 2})),
+    ] {
+        let rows = fetch(&s, unit, None).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "{unit}: a page-bounded decoder reads the inflated body"
+        );
+        assert_eq!(rows[1], second, "{unit}");
+    }
     assert_eq!(
         fetch(&s, "encoded", None).await.unwrap().len(),
         2,
@@ -2700,4 +2758,67 @@ async fn an_exposed_credential_field_permits_the_host_it_names() {
         [format!("localhost:{}", fx.addr.port())],
         "the exchange really did go to the other host string"
     );
+}
+
+/// One tick of a lister unit from `checkpoint`: the objects read, and the
+/// checkpoint the driver would fold from their marks.
+async fn lister_tick(
+    shape: &RestShape,
+    checkpoint: Option<dfe_fetcher_core::CheckpointValue>,
+) -> (Vec<String>, Option<dfe_fetcher_core::CheckpointValue>) {
+    let spec = shape.units()[0].clone();
+    let tick = TickCtx {
+        window: None,
+        connection_id: "conn",
+        unit: &spec,
+        checkpoint: checkpoint.as_ref(),
+    };
+    let mut fold = dfe_fetcher_core::checkpoint::Checkpoint::new("k");
+    let mut read = Vec::new();
+    let mut rows = shape.rows(tick);
+    while let Some(row) = rows.next().await {
+        let row = row.unwrap();
+        let value: Value = serde_json::from_slice(&row.payload).unwrap();
+        read.push(value["object"].as_str().unwrap().to_owned());
+        if let Some(mark) = row.mark {
+            fold.fold(mark);
+        }
+    }
+    drop(rows);
+    (read, fold.value().cloned().or(checkpoint))
+}
+
+/// A multipart upload begun before a newer object and completed after it is
+/// listed with its start as `LastModified`, which sorts before a checkpoint
+/// the newer object moved past. The lister reads nothing at or after the
+/// oldest upload still in progress, so the upload is read once it lands; and
+/// where `ListMultipartUploads` is refused, it reads nothing newer than the
+/// settle window, which covers an upload shorter than the window.
+#[tokio::test]
+async fn an_object_from_a_multipart_upload_is_read_not_skipped() {
+    let fx = common::start().await;
+    let p = "profile: s3\nbase_url: \"{{ vars.base_url }}/s3mp\"\nauth:\n  accepts: [sigv4]\n  sigv4: { service: s3, region: ap-southeast-2 }\nwindow: { lookback: 3650d }\nvars: { settle_secs: 60 }\nendpoints:\n  - unit: objects\n    lister: s3\n    path: \"{{ vars.bucket }}\"\n    query: { list-type: 2 }\n    construct:\n      manifest:\n        item_request: { path: \"{{ vars.bucket }}/{{ item.path }}\" }\n        rows: { decoder: ndjson }\n        key: \"{{ item.key }}\"\n        position: \"{{ item.last_modified }}\"\n";
+    for (bucket, ticks) in [
+        ("held", vec![vec![], vec!["old.jsonl", "newer.jsonl"]]),
+        (
+            "refused",
+            vec![vec![], vec![], vec!["old.jsonl", "newer.jsonl"]],
+        ),
+    ] {
+        let i = format!(
+            "profile: x\ntopic: t\nauth: {{ mode: sigv4, access_key_id: AKIATEST, secret_access_key: sekrit }}\nvars: {{ bucket: {bucket} }}\n"
+        );
+        let s = shape(&fx, p, &i);
+        let mut checkpoint = None;
+        for (n, want) in ticks.iter().enumerate() {
+            let (read, next) = lister_tick(&s, checkpoint).await;
+            assert_eq!(&read, want, "{bucket}: tick {n}");
+            checkpoint = next;
+        }
+        assert_eq!(
+            fx.requests_to(&format!("/s3mp/{bucket}?uploads")).len(),
+            ticks.len(),
+            "{bucket}: the uploads are asked for before every listing"
+        );
+    }
 }

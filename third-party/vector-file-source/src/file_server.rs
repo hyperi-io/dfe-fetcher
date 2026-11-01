@@ -331,6 +331,20 @@ where
                 }
                 stats.record("reading", start.elapsed());
 
+                // dfe-fetcher: a copytruncate that kept this watcher's
+                // fingerprint is a new generation, read from its start.
+                if bytes_read == 0
+                    && watcher.is_truncated().await
+                    && self
+                        .fingerprinter
+                        .fingerprint_or_emit(&watcher.path, &mut known_small_files, &self.emitter)
+                        .await
+                        == Some(file_id)
+                    && let Err(error) = watcher.read_from_start().await
+                {
+                    self.emitter.emit_file_watch_error(&watcher.path, error);
+                }
+
                 if bytes_read > 0 {
                     global_bytes_read = global_bytes_read.saturating_add(bytes_read);
                 } else {

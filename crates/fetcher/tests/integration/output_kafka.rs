@@ -109,6 +109,9 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
         ..Default::default()
     };
 
+    // The test is of the output: the default DLQ spools to the container's
+    // mount, which a build host cannot create.
+    config.dlq.enabled = false;
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
 
@@ -197,6 +200,9 @@ async fn a_routed_record_lands_on_the_destinations_topic() {
         },
     );
 
+    // The test is of the output: the default DLQ spools to the container's
+    // mount, which a build host cannot create.
+    config.dlq.enabled = false;
     let shared = SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
     let output = dfe_fetcher::output::OutputManager::new(&shared.get().output, &shared.get().kafka)

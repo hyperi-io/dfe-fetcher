@@ -19,6 +19,13 @@
 //! encoded for a URL path. Nothing here sends: the shape renders and signs
 //! the listing request, the lister only decides what to ask for next and
 //! what the pages hold.
+//!
+//! A multipart upload's object is listed with the time the upload BEGAN, so
+//! one still in progress lands behind objects written while it ran, and
+//! behind a checkpoint they moved. Before each listing the lister asks
+//! `ListMultipartUploads` for the oldest upload in progress and reads
+//! nothing modified at or after its start: the
+//! [`Horizon`](super::s3_uploads::Horizon).
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -54,6 +61,13 @@ pub enum Lister {
 pub trait ListingPages: Send {
     /// The page for `token` (the first page for `None`).
     fn page(&mut self, token: Option<String>) -> BoxFuture<'_, Result<Option<Bytes>>>;
+
+    /// The `ListMultipartUploads` page at `marker` (the first for `None`),
+    /// under the listing's prefix.
+    fn uploads(
+        &mut self,
+        marker: Option<super::s3_uploads::UploadsMarker>,
+    ) -> BoxFuture<'_, Result<super::s3_uploads::UploadsAnswer>>;
 }
 
 /// One object of a listing.
@@ -88,15 +102,11 @@ impl Listed {
     }
 }
 
-/// What one listing produced: the item rows, and whether the walk stopped on
-/// a continuation token rather than the end of the listing.
+/// What one complete listing produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listing {
     /// The items, oldest first, ready for the unit's manifest.
     pub items: Vec<Bytes>,
-    /// The page ceiling was reached with more keys to list; the rest of the
-    /// prefix waits for the next tick.
-    pub truncated: bool,
 }
 
 /// Whether an object sits past the checkpoint: later than its position, or at
@@ -104,6 +114,10 @@ pub struct Listing {
 ///
 /// `LastModified` is second-resolution, so a run of objects shares one
 /// position and only the key orders them.
+fn before_horizon(object: &Listed, horizon: Option<DateTime<Utc>>) -> bool {
+    horizon.is_none_or(|at| object.last_modified < at)
+}
+
 fn past_cutoff(object: &Listed, cutoff: Option<&(DateTime<Utc>, String)>) -> bool {
     match cutoff {
         None => true,
@@ -145,17 +159,27 @@ impl Lister {
     }
 
     /// The listing as item rows: `pages` fetches one listing page per
-    /// continuation token, walked up to `max_pages` times; the keys past
-    /// `cutoff` come back sorted by `last_modified` then key, oldest first,
-    /// cut to `max_items` at a position boundary.
+    /// continuation token until the listing ends; the keys past `cutoff`
+    /// and before `horizon` come back sorted by `last_modified` then key,
+    /// oldest first, cut to `max_items` at a position boundary.
+    ///
+    /// The listing is in key order, not time order, so every page has to be
+    /// seen before the oldest objects are known. The cut is applied after
+    /// each page, which holds memory to `max_items` plus one page and gives
+    /// the same items as one cut over the whole listing.
     ///
     /// # Errors
     ///
-    /// Returns the page fetch's error, or [`Error::Decode`] for a page that
-    /// is not the XML the protocol documents.
+    /// Returns the page fetch's error, [`Error::Decode`] for a page that is
+    /// not the XML the protocol documents, or [`Error::PageCeiling`] naming
+    /// `unit` when a continuation token is still pending after `max_pages`
+    /// pages: a checkpoint taken from part of a listing could pass objects
+    /// on the pages not read.
     pub async fn list<P: ListingPages>(
         self,
+        unit: &str,
         cutoff: Option<(DateTime<Utc>, String)>,
+        horizon: Option<DateTime<Utc>>,
         max_items: Option<u32>,
         max_pages: u32,
         pages: &mut P,
@@ -163,31 +187,65 @@ impl Lister {
         let Lister::S3 = self;
         let mut out: Vec<Listed> = Vec::new();
         let mut continuation: Option<String> = None;
-        let mut truncated = false;
         for page in 0..max_pages {
-            let Some(body) = pages.page(continuation.clone()).await? else {
+            let Some(body) = pages.page(continuation.take()).await? else {
                 break;
             };
             let (objects, next) = parse_list_objects_v2(&body)?;
             out.extend(
                 objects
                     .into_iter()
-                    .filter(|o| past_cutoff(o, cutoff.as_ref())),
+                    .filter(|o| past_cutoff(o, cutoff.as_ref()) && before_horizon(o, horizon)),
             );
+            out.sort_by(|a, b| (a.last_modified, &a.key).cmp(&(b.last_modified, &b.key)));
+            out = cut_at_a_position_boundary(out, max_items);
             match next {
-                Some(token) => {
-                    continuation = Some(token);
-                    truncated = page + 1 == max_pages;
+                Some(_) if page + 1 == max_pages => {
+                    return Err(Error::PageCeiling {
+                        unit: unit.to_owned(),
+                        ceiling: "max_pages",
+                        limit: max_pages,
+                    });
                 }
+                Some(token) => continuation = Some(token),
                 None => break,
             }
         }
-        out.sort_by(|a, b| (a.last_modified, &a.key).cmp(&(b.last_modified, &b.key)));
-        let out = cut_at_a_position_boundary(out, max_items);
         Ok(Listing {
             items: out.iter().map(Listed::item).collect(),
-            truncated,
         })
+    }
+}
+
+/// Every element of an S3 XML answer as `(name, text)` at its closing tag, in
+/// document order. `protocol` names the call in errors.
+///
+/// An element's text arrives in one event per run between entity references,
+/// so it is accumulated untrimmed and handed over whole: a key carrying `&` or
+/// `<` would otherwise keep only its last fragment, or lose a space beside one.
+pub(super) fn each_element(
+    xml: &[u8],
+    protocol: &str,
+    mut close: impl FnMut(&str, String) -> Result<()>,
+) -> Result<()> {
+    let text = std::str::from_utf8(xml)
+        .map_err(|e| Error::Decode(format!("{protocol} page is not UTF-8: {e}")))?;
+    let mut reader = Reader::from_str(text);
+    let mut value = String::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(_)) => value.clear(),
+            Ok(Event::End(e)) => close(e.name().into_inner(), std::mem::take(&mut value))?,
+            Ok(Event::Text(t)) => value.push_str(&t),
+            Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
+            Ok(Event::Eof) => return Ok(()),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::Decode(format!(
+                    "{protocol} page is not the XML the protocol documents: {e}"
+                )));
+            }
+        }
     }
 }
 
@@ -199,74 +257,30 @@ impl Lister {
 ///
 /// Returns [`Error::Decode`] when the body is not well-formed XML.
 pub fn parse_list_objects_v2(xml: &[u8]) -> Result<(Vec<Listed>, Option<String>)> {
-    let text = std::str::from_utf8(xml)
-        .map_err(|e| Error::Decode(format!("ListObjectsV2 page is not UTF-8: {e}")))?;
-    let mut reader = Reader::from_str(text);
-    // Text is not trimmed per event: an element's text arrives in one event per
-    // run between entity references, so trimming each run would drop a space
-    // that sits beside one.
     let mut objects = Vec::new();
-    let mut next_token = None;
-    let mut key: Option<String> = None;
-    let mut modified: Option<DateTime<Utc>> = None;
-    let mut size: u64 = 0;
-    let mut in_contents = false;
-    let mut tag: Option<String> = None;
-    // An element's text arrives in one event per run between entity
-    // references, so it is accumulated here and read at the closing tag; a key
-    // carrying `&` or `<` would otherwise keep only its last fragment and be
-    // fetched under a name the bucket does not have.
-    let mut value = String::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let name = e.name().into_inner().to_owned();
-                if name == "Contents" {
-                    in_contents = true;
-                    key = None;
-                    modified = None;
-                    size = 0;
+    let mut token = None;
+    let (mut key, mut modified, mut size) = (None, None, 0);
+    each_element(xml, "ListObjectsV2", |name, value| {
+        match name {
+            "Key" => key = Some(value),
+            "LastModified" => modified = value.trim().parse::<DateTime<Utc>>().ok(),
+            "Size" => size = value.trim().parse().unwrap_or(0),
+            "NextContinuationToken" => token = Some(value),
+            "Contents" => {
+                if let (Some(key), Some(last_modified)) = (key.take(), modified.take()) {
+                    objects.push(Listed {
+                        key,
+                        last_modified,
+                        size,
+                    });
                 }
-                tag = Some(name);
-                value.clear();
+                size = 0;
             }
-            Ok(Event::End(e)) => {
-                if e.name().into_inner() == "Contents" {
-                    if let (Some(key), Some(last_modified)) = (key.take(), modified.take()) {
-                        objects.push(Listed {
-                            key,
-                            last_modified,
-                            size,
-                        });
-                    }
-                    in_contents = false;
-                }
-                match tag.as_deref() {
-                    Some("Key") if in_contents => key = Some(std::mem::take(&mut value)),
-                    Some("LastModified") if in_contents => {
-                        modified = value.trim().parse::<DateTime<Utc>>().ok();
-                    }
-                    Some("Size") if in_contents => size = value.trim().parse().unwrap_or(0),
-                    Some("NextContinuationToken") => {
-                        next_token = Some(std::mem::take(&mut value));
-                    }
-                    _ => {}
-                }
-                tag = None;
-                value.clear();
-            }
-            Ok(Event::Text(t)) => value.push_str(&t),
-            Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => {
-                return Err(Error::Decode(format!(
-                    "ListObjectsV2 page is not the XML the protocol documents: {e}"
-                )));
-            }
+            _ => {}
         }
-    }
-    Ok((objects, next_token))
+        Ok(())
+    })?;
+    Ok((objects, token))
 }
 
 /// The character a `&name;` or `&#nn;` reference stands for.
@@ -294,6 +308,9 @@ fn entity_char(reference: &BytesRef<'_>) -> Result<char> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::s3_uploads::{
+        Horizon, UploadsAnswer, UploadsMarker, horizon, parse_list_multipart_uploads,
+    };
     use super::*;
     use chrono::TimeZone;
     use futures::FutureExt;
@@ -311,6 +328,22 @@ mod tests {
             self.asked.push(token.clone());
             let body = (self.answer)(token.as_deref()).map(Bytes::from_static);
             async move { Ok(body) }.boxed()
+        }
+
+        /// The script's answer for the token `uploads`, `None` a refusal.
+        fn uploads(
+            &mut self,
+            marker: Option<UploadsMarker>,
+        ) -> BoxFuture<'_, Result<UploadsAnswer>> {
+            self.asked.push(marker.map(|(key, _)| key));
+            let answer = match (self.answer)(Some("uploads")) {
+                Some(body) => UploadsAnswer::Page {
+                    body: Bytes::from_static(body),
+                    date: None,
+                },
+                None => UploadsAnswer::Unavailable,
+            };
+            async move { Ok(answer) }.boxed()
         }
     }
 
@@ -380,10 +413,12 @@ mod tests {
         };
         let items: Vec<Value> = Lister::S3
             .list(
+                "json_gz",
                 Some((
                     Utc.with_ymd_and_hms(2026, 5, 20, 12, 0, 0).unwrap(),
                     String::new(),
                 )),
+                None,
                 None,
                 10,
                 &mut pages,
@@ -413,25 +448,63 @@ mod tests {
         assert_eq!(items[0]["size"], 4321);
     }
 
+    /// A listing still continuing at the page ceiling is refused rather than
+    /// cut: the keys past the ceiling may be older than the ones read, and a
+    /// checkpoint taken from part of a listing would pass them for good. An
+    /// ignored status ends the listing with nothing.
     #[tokio::test]
-    async fn the_page_ceiling_bounds_the_walk_and_an_ignored_status_ends_it() {
-        let mut one = Scripted {
-            asked: Vec::new(),
-            answer: |_| Some(PAGE_ONE.as_bytes()),
-        };
-        let listing = Lister::S3.list(None, None, 1, &mut one).await.unwrap();
-        assert_eq!(listing.items.len(), 2, "one page, its token not followed");
-        assert!(
-            listing.truncated,
-            "the walk stopped on a token, so the prefix has more keys"
-        );
+    async fn the_page_ceiling_refuses_a_cut_listing_and_an_ignored_status_ends_it() {
+        for max_pages in [1, 3] {
+            let mut endless = Scripted {
+                asked: Vec::new(),
+                answer: |_| Some(PAGE_ONE.as_bytes()),
+            };
+            let err = Lister::S3
+                .list("json_gz", None, None, None, max_pages, &mut endless)
+                .await
+                .expect_err("a listing cut at the ceiling is refused");
+            assert!(
+                matches!(&err, Error::PageCeiling { unit, ceiling: "max_pages", limit } if unit == "json_gz" && *limit == max_pages),
+                "{err:?}"
+            );
+            assert_eq!(
+                endless.asked.len(),
+                max_pages as usize,
+                "the walk stops at the ceiling"
+            );
+        }
         let mut ignored = Scripted {
             asked: Vec::new(),
             answer: |_| None,
         };
-        let listing = Lister::S3.list(None, None, 5, &mut ignored).await.unwrap();
+        let listing = Lister::S3
+            .list("json_gz", None, None, None, 5, &mut ignored)
+            .await
+            .unwrap();
         assert_eq!(listing.items, [] as [bytes::Bytes; 0]);
-        assert!(!listing.truncated);
+    }
+
+    /// The item cut is applied to the whole listing, so an object on a later
+    /// page that is older than every object on the first is still the one read
+    /// first.
+    #[tokio::test]
+    async fn the_item_cut_sees_every_page_of_the_listing() {
+        let mut pages = Scripted {
+            asked: Vec::new(),
+            answer: |token| {
+                Some(match token {
+                    None => PAGE_ONE.as_bytes(),
+                    Some(_) => PAGE_TWO.as_bytes(),
+                })
+            },
+        };
+        let listing = Lister::S3
+            .list("json_gz", None, None, Some(1), 10, &mut pages)
+            .await
+            .unwrap();
+        let first: Value = serde_json::from_slice(&listing.items[0]).unwrap();
+        assert_eq!(listing.items.len(), 1);
+        assert_eq!(first["key"], "logs/2026/05/20/old.json.gz");
     }
 
     /// A key carrying XML entities is unescaped to what the bucket really
@@ -515,5 +588,112 @@ mod tests {
         );
         assert!(past_cutoff(&object("a", 200), cutoff.as_ref()));
         assert!(past_cutoff(&object("a", 100), None), "no cutoff, read it");
+    }
+
+    const UPLOADS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Bucket>my-bucket</Bucket>
+    <IsTruncated>false</IsTruncated>
+    <Upload>
+        <Key>logs/b.json</Key>
+        <UploadId>u-2</UploadId>
+        <Initiator><ID>arn</ID></Initiator>
+        <Initiated>2026-05-21T10:30:00.000Z</Initiated>
+    </Upload>
+    <Upload>
+        <Key>logs/a.json</Key>
+        <UploadId>u-1</UploadId>
+        <Initiated>2026-05-21T10:00:00.000Z</Initiated>
+    </Upload>
+</ListMultipartUploadsResult>"#;
+
+    /// The horizon is the oldest upload in progress, or when the store was
+    /// asked if none is older; a refusal says the store will not list them;
+    /// the listing then reads nothing at or after the horizon.
+    #[tokio::test]
+    async fn the_horizon_holds_the_listing_behind_the_oldest_upload_in_progress() {
+        let at = |h: u32, m: u32| Utc.with_ymd_and_hms(2026, 5, 21, h, m, 0).unwrap();
+        let page = parse_list_multipart_uploads(UPLOADS.as_bytes()).unwrap();
+        assert_eq!(page.oldest, Some((at(10, 0), "logs/a.json".to_owned())));
+        assert_eq!(page.next, None);
+        let truncated = UPLOADS.replace(
+            "<IsTruncated>false</IsTruncated>",
+            "<IsTruncated>true</IsTruncated><NextKeyMarker>logs/b.json</NextKeyMarker><NextUploadIdMarker>u-2</NextUploadIdMarker>",
+        );
+        assert_eq!(
+            parse_list_multipart_uploads(truncated.as_bytes())
+                .unwrap()
+                .next,
+            Some(("logs/b.json".to_owned(), "u-2".to_owned()))
+        );
+        assert!(
+            parse_list_multipart_uploads(b"<R><Upload><Key>k</Key></Upload></R>").is_err(),
+            "an upload with no start cannot be held behind"
+        );
+
+        let mut held = Scripted {
+            asked: Vec::new(),
+            answer: |token| {
+                Some(match token {
+                    Some("uploads") => UPLOADS.as_bytes(),
+                    _ => PAGE_ONE.as_bytes(),
+                })
+            },
+        };
+        assert_eq!(
+            horizon("u", 5, at(12, 0), &mut held).await.unwrap(),
+            Horizon::Held {
+                at: at(10, 0),
+                upload: Some("logs/a.json".to_owned())
+            }
+        );
+        let mut idle = Scripted {
+            asked: Vec::new(),
+            answer: |_| Some(PAGE_TWO.as_bytes()),
+        };
+        assert_eq!(
+            horizon("u", 5, at(9, 0), &mut idle).await.unwrap(),
+            Horizon::Held {
+                at: at(9, 0),
+                upload: None
+            },
+            "no upload in progress: the bound is when the store was asked"
+        );
+        let mut refused = Scripted {
+            asked: Vec::new(),
+            answer: |_| None,
+        };
+        assert_eq!(
+            horizon("u", 5, at(9, 0), &mut refused).await.unwrap(),
+            Horizon::Unavailable
+        );
+
+        let mut pages = Scripted {
+            asked: Vec::new(),
+            answer: |token| {
+                Some(if token.is_none() {
+                    PAGE_ONE.as_bytes()
+                } else {
+                    PAGE_TWO.as_bytes()
+                })
+            },
+        };
+        let items: Vec<Value> = Lister::S3
+            .list("u", None, Some(at(11, 30)), None, 10, &mut pages)
+            .await
+            .unwrap()
+            .items
+            .iter()
+            .map(|row| serde_json::from_slice(row).unwrap())
+            .collect();
+        let keys: Vec<&str> = items.iter().map(|i| i["key"].as_str().unwrap()).collect();
+        assert_eq!(
+            keys,
+            [
+                "logs/2026/05/20/old.json.gz",
+                "logs/2026/05/21/file 001.json.gz"
+            ],
+            "the object at 11:30:45 is past the horizon"
+        );
     }
 }

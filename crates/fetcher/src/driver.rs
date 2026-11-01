@@ -34,7 +34,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use scalo::governor::{
-    Admit, GateActuator, InboundGate, NoopActuator, ObservingActuator, UnifiedPressure,
+    Admit, GateActuator, Hysteresis, InboundGate, MemoryPressureSource, NoopActuator,
+    ObservingActuator, PressureSource, UnifiedPressure,
 };
 use scalo::memory::MemoryGuard;
 use tokio_util::sync::CancellationToken;
@@ -152,6 +153,15 @@ impl RowSource for Shape {
         }
     }
 
+    fn window_delay(&self) -> Duration {
+        match self {
+            Shape::Rest(s) => s.window_delay(),
+            Shape::Db(s) => s.window_delay(),
+            Shape::File(s) => s.window_delay(),
+            Shape::Custom(s) => s.window_delay(),
+        }
+    }
+
     fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a> {
         match self {
             Shape::Rest(s) => s.rows(tick),
@@ -197,6 +207,13 @@ impl Lease for GuardLease {
     }
 }
 
+/// An admission gate on `pressure` that reports its pauses under `source`.
+fn gate_over(source: &'static str, pressure: Arc<UnifiedPressure>) -> InboundGate {
+    let actuator: Box<dyn GateActuator> =
+        Box::new(ObservingActuator::new(source, Box::new(NoopActuator)));
+    InboundGate::new(pressure, actuator)
+}
+
 /// Everything a driver is built from.
 pub struct DriverParts {
     /// The shape.
@@ -205,15 +222,13 @@ pub struct DriverParts {
     pub connection_id: String,
     /// The fetcher instance, the first half of every cursor key.
     pub instance_id: String,
-    /// Live config, for the per-tick filter, routes and topic suffix.
+    /// Live config, read each tick for the filter, routes, topic suffix,
+    /// batch bounds, oversize policy and pressure brake.
     pub shared_config: SharedConfig,
-    /// Batch bounds.
-    pub accumulate: AccumulateConfig,
-    /// Oversize policy.
-    pub oversize: OversizePolicy,
-    /// The emit path.
+    /// The emit path; its in-flight bound is reset from the config each tick.
     pub emitter: Emitter,
-    /// The shared pressure latch, when self-regulation is on.
+    /// The shared pressure latch, when self-regulation is on at startup. A
+    /// reload that changes the band builds the driver a latch of its own.
     pub pressure: Option<Arc<UnifiedPressure>>,
     /// The memory guard buffered bytes are leased on.
     pub memory_guard: Arc<MemoryGuard>,
@@ -230,6 +245,12 @@ struct RulesCache {
     rules: Arc<RowRules>,
 }
 
+/// The pressure brake and the self-regulation band it was built for.
+struct Brake {
+    band: Option<(f64, f64)>,
+    gate: Option<Arc<InboundGate>>,
+}
+
 /// What one tick takes from the live config: read once per tick so a reload
 /// mid-tick cannot change the rules between two rows.
 struct TickSettings {
@@ -242,6 +263,12 @@ struct TickSettings {
     unwrap_nested_json: bool,
     /// The longest the admission gate may hold the unit before it polls on.
     max_hold: Duration,
+    /// The admission gate, when the brake is on.
+    gate: Option<Arc<InboundGate>>,
+    /// The batch bounds of this source.
+    accumulate: AccumulateConfig,
+    /// When a row is replaced by an oversize stub.
+    oversize: OversizePolicy,
 }
 
 /// The state of one unit's tick that every step of the loop touches: the
@@ -252,6 +279,8 @@ struct UnitRun {
     report: TickReport,
     /// The org the unit's records carry, which their flush is counted under.
     org: Arc<str>,
+    /// The emit path at this tick's in-flight bound.
+    emitter: Emitter,
 }
 
 /// What one unit stamps on its records: its own source, or the source a
@@ -297,10 +326,9 @@ pub struct Driver {
     instance_id: String,
     shared_config: SharedConfig,
     rules: parking_lot::Mutex<RulesCache>,
-    accumulate: AccumulateConfig,
-    oversize: OversizePolicy,
     emitter: Emitter,
-    gate: Option<InboundGate>,
+    brake: parking_lot::Mutex<Brake>,
+    memory_guard: Arc<MemoryGuard>,
     lease: Arc<dyn Lease>,
     checkpoints: Option<Arc<dyn CursorStore>>,
     metrics: Arc<Metrics>,
@@ -313,11 +341,13 @@ impl Driver {
     #[must_use]
     pub fn new(parts: DriverParts) -> Self {
         let name: &'static str = Box::leak(parts.connection_id.clone().into_boxed_str());
-        let gate = parts.pressure.map(|pressure| {
-            let actuator: Box<dyn GateActuator> =
-                Box::new(ObservingActuator::new(name, Box::new(NoopActuator)));
-            InboundGate::new(pressure, actuator)
-        });
+        let band = parts
+            .shared_config
+            .with(|c| c.self_regulation.hysteresis().ok().flatten())
+            .map(|h| (h.pause_above, h.resume_below));
+        let gate = parts
+            .pressure
+            .map(|pressure| Arc::new(gate_over(name, pressure)));
         Self {
             shape: parts.shape,
             connection_id: parts.connection_id,
@@ -328,11 +358,10 @@ impl Driver {
                 version: None,
                 rules: Arc::new(RowRules::empty()),
             }),
-            accumulate: parts.accumulate,
-            oversize: parts.oversize,
             emitter: parts.emitter,
-            gate,
-            lease: Arc::new(GuardLease(parts.memory_guard)),
+            brake: parking_lot::Mutex::new(Brake { band, gate }),
+            lease: Arc::new(GuardLease(Arc::clone(&parts.memory_guard))),
+            memory_guard: parts.memory_guard,
             checkpoints: parts.checkpoints,
             metrics: parts.metrics,
             shutdown: parts.shutdown,
@@ -356,6 +385,13 @@ impl Driver {
     #[must_use]
     pub fn units(&self) -> &[UnitSpec] {
         self.shape.units()
+    }
+
+    /// How far behind the clock the shape's provider publishes records. The
+    /// scheduler ends every window at least this long before now.
+    #[must_use]
+    pub fn window_delay(&self) -> Duration {
+        self.shape.window_delay()
     }
 
     /// The shape itself, for a caller that must stop what it runs (a file
@@ -389,10 +425,19 @@ impl Driver {
         &self.connection_id
     }
 
-    /// The instance's filter and the deployment's routes, compiled once per
-    /// config version and reused until a reload changes it.
-    fn rules_for(&self, config: &Config) -> Result<Arc<RowRules>> {
+    /// The live config and the version it is at least as new as. The version
+    /// is read first: a reload writes the config before it bumps the version,
+    /// so the config read after can be newer than the version, never older.
+    fn config_snapshot(&self) -> (u64, Config) {
         let version = self.shared_config.version();
+        (version, self.shared_config.get())
+    }
+
+    /// The instance's filter and the deployment's routes, compiled once per
+    /// config version and reused until a reload changes it. `version` is the
+    /// one [`Driver::config_snapshot`] read with `config`, so stale rules are
+    /// never cached under a newer version.
+    fn rules_for(&self, version: u64, config: &Config) -> Result<Arc<RowRules>> {
         let mut cache = self.rules.lock();
         if cache.version == Some(version) {
             return Ok(Arc::clone(&cache.rules));
@@ -402,6 +447,30 @@ impl Driver {
         cache.version = Some(version);
         cache.rules = Arc::clone(&rules);
         Ok(rules)
+    }
+
+    /// The admission gate for the band the live config sets, rebuilt over the
+    /// memory guard when a reload changed it. A band the config cannot state
+    /// was refused at load, so it keeps the gate in force.
+    fn gate_for(&self, config: &Config) -> Option<Arc<InboundGate>> {
+        let Ok(hysteresis) = config.self_regulation.hysteresis() else {
+            return self.brake.lock().gate.clone();
+        };
+        let band = hysteresis.map(|h| (h.pause_above, h.resume_below));
+        let mut brake = self.brake.lock();
+        if brake.band != band {
+            brake.gate = hysteresis.map(|h| Arc::new(self.memory_gate(h)));
+            brake.band = band;
+        }
+        brake.gate.clone()
+    }
+
+    /// A gate over a latch of the driver's own on the memory guard.
+    fn memory_gate(&self, band: Hysteresis) -> InboundGate {
+        let sources: Vec<Arc<dyn PressureSource>> = vec![Arc::new(MemoryPressureSource::new(
+            Arc::clone(&self.memory_guard),
+        ))];
+        gate_over(self.name, Arc::new(UnifiedPressure::new(sources, band)))
     }
 
     /// The unit's checkpoint key: `{instance}.{connection}.{unit}`.
@@ -425,8 +494,14 @@ impl Driver {
     /// `max_hold` ends anyway: memory the pause cannot release (a pumped
     /// cursor, a file chunk, an open row) would otherwise hold the unit for
     /// ever with only the paused gauge to say so.
-    async fn admit(&self, unit: &UnitSpec, run: &mut UnitRun, max_hold: Duration) -> Result<()> {
-        let Some(gate) = &self.gate else {
+    async fn admit(
+        &self,
+        unit: &UnitSpec,
+        run: &mut UnitRun,
+        gate: Option<&InboundGate>,
+        max_hold: Duration,
+    ) -> Result<()> {
+        let Some(gate) = gate else {
             return Ok(());
         };
         if gate.evaluate() == Admit::Yes {
@@ -474,7 +549,7 @@ impl Driver {
         let emitted = if rows == 0 {
             EmitReport::default()
         } else {
-            self.emitter.emit_for_org(taken, &run.org).await?
+            run.emitter.emit_for_org(taken, &run.org).await?
         };
         let acks = run.pending.take_acks();
         if !acks.is_empty() {
@@ -502,6 +577,16 @@ impl Driver {
             trigger = trigger.as_str(),
             "batch flushed"
         );
+        Ok(())
+    }
+
+    /// Hold the mark of a row consumed without being buffered, flushing once
+    /// held marks reach the batch bound so their acknowledgements go out.
+    async fn consume(&self, unit: &UnitSpec, run: &mut UnitRun, mark: Option<Mark>) -> Result<()> {
+        run.batch.consume(mark);
+        if run.batch.full() {
+            self.flush(unit, run, Trigger::Rows).await?;
+        }
         Ok(())
     }
 
@@ -587,16 +672,17 @@ impl Driver {
         unit: &UnitSpec,
         topic: &str,
         raw: &Bytes,
+        oversize: &OversizePolicy,
         run: &mut UnitRun,
     ) -> Result<()> {
         run.report.oversize += 1;
         let letter = DeadLetter {
             topic: Arc::from(topic),
-            payload: self.oversize.truncate(raw),
+            payload: oversize.truncate(raw),
             reason: format!(
                 "row exceeds max_record_bytes ({} > {})",
                 raw.len(),
-                self.oversize.max_record_bytes
+                oversize.max_record_bytes
             ),
         };
         match self.emitter.state().dead_letter(vec![letter]).await? {
@@ -644,10 +730,11 @@ impl Driver {
         let per_item = unit.snapshots_per_item();
         let binary = unit.is_binary();
         let mut run = UnitRun {
-            batch: Batcher::new(self.accumulate, Arc::clone(&self.lease)),
+            batch: Batcher::new(settings.accumulate, Arc::clone(&self.lease)),
             pending: Checkpoint::new(self.unit_key(unit)),
             report: TickReport::default(),
             org: Arc::clone(&settings.org),
+            emitter: self.emitter.with_in_flight(settings.accumulate.in_flight),
         };
         let source = self.name;
         let mut snap = (unit.is_dump() && !per_item)
@@ -655,7 +742,8 @@ impl Driver {
         let mut item: Option<Box<str>> = None;
 
         loop {
-            self.admit(unit, &mut run, settings.max_hold).await?;
+            self.admit(unit, &mut run, settings.gate.as_deref(), settings.max_hold)
+                .await?;
             let next = match run.batch.window_deadline() {
                 Some(deadline) => tokio::select! {
                     biased;
@@ -690,7 +778,7 @@ impl Driver {
                 }
             };
             if row.is_mark_only() {
-                run.batch.consume(row.mark);
+                self.consume(unit, &mut run, row.mark).await?;
                 continue;
             }
             let Row { payload: raw, mark } = row;
@@ -717,21 +805,21 @@ impl Driver {
             } else {
                 raw
             };
-            let oversize = self.oversize.is_oversize(&raw);
+            let oversize = settings.oversize.is_oversize(&raw);
             let (payload, stub) = match &mut snap {
                 Some(s) if oversize => {
                     let key = unit.row_key.as_deref().and_then(|p| row_key_at(&raw, p));
                     let stub = s.oversize(key.as_deref(), raw.len());
                     metrics::counter!(metric_names::SNAPSHOT_ROWS_OVERSIZE_TOTAL, "store" => store.clone()).increment(1);
-                    self.dead_letter_oversize(unit, &topic, &raw, &mut run)
+                    self.dead_letter_oversize(unit, &topic, &raw, &settings.oversize, &mut run)
                         .await?;
                     (stub, true)
                 }
                 Some(s) => (s.row(&raw), false),
                 None if oversize => {
-                    self.dead_letter_oversize(unit, &topic, &raw, &mut run)
+                    self.dead_letter_oversize(unit, &topic, &raw, &settings.oversize, &mut run)
                         .await?;
-                    run.batch.consume(mark);
+                    self.consume(unit, &mut run, mark).await?;
                     continue;
                 }
                 None => (raw, false),
@@ -755,7 +843,7 @@ impl Driver {
                         if let Some(s) = &mut snap {
                             s.retract();
                         }
-                        run.batch.consume(mark);
+                        self.consume(unit, &mut run, mark).await?;
                         continue;
                     }
                     Verdict::Keep { payload, route } => (payload, route),
@@ -765,7 +853,7 @@ impl Driver {
             };
             let mut rows = enriched.into_rows(&topic, ingested, route).peekable();
             if rows.peek().is_none() {
-                run.batch.consume(mark);
+                self.consume(unit, &mut run, mark).await?;
                 continue;
             }
             let mut mark = mark;
@@ -831,13 +919,19 @@ impl Driver {
     /// `dfe_fetcher_api_errors_total`. The first unit's error is returned once
     /// the rest have run, and [`Error::Shutdown`] returns at once.
     pub async fn run_tick(&self, window: Option<&FetchWindow>) -> Result<TickReport> {
-        let config = self.shared_config.get();
+        let (version, config) = self.config_snapshot();
         let settings = TickSettings {
-            rules: self.rules_for(&config)?,
+            rules: self.rules_for(version, &config)?,
             topic_suffix: config.topic_suffix().to_owned(),
             org: Arc::from(config.stamped_org()),
             unwrap_nested_json: config.unwrap_nested_json,
             max_hold: config.self_regulation.max_hold(),
+            gate: self.gate_for(&config),
+            accumulate: config
+                .sources
+                .accumulate_for_source(&self.connection_id)
+                .unwrap_or(config.accumulate),
+            oversize: config.oversize,
         };
         let mut total = TickReport::default();
         let mut first_error: Option<Error> = None;
@@ -1084,8 +1178,6 @@ mod tests {
             connection_id: "conn".into(),
             instance_id: "inst".into(),
             shared_config: shared,
-            accumulate,
-            oversize: OversizePolicy::default(),
             emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
             pressure: None,
             memory_guard: Arc::new(MemoryGuard::with_usage_source(
@@ -1475,6 +1567,9 @@ mod tests {
             max_rows: 1,
             ..AccumulateConfig::default()
         };
+        let mut live = shared.get();
+        live.accumulate = accumulate;
+        shared.update(live);
         let acked = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let d = Driver::new(DriverParts {
             shape: Shape::Custom(Box::new(Acking {
@@ -1489,8 +1584,6 @@ mod tests {
             connection_id: "conn".into(),
             instance_id: "inst".into(),
             shared_config: shared,
-            accumulate,
-            oversize: OversizePolicy::default(),
             emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
             pressure: None,
             memory_guard: Arc::new(MemoryGuard::with_usage_source(
@@ -1517,6 +1610,191 @@ mod tests {
                 vec![Box::<str>::from("ndjson")]
             ],
             "one row per batch: a split's first row acks nothing of its own"
+        );
+    }
+
+    /// The rules cache is keyed by the version of the config the rules were
+    /// compiled from: a reload landing between a tick's config read and its
+    /// version read cannot pin the old filter under the new version.
+    #[tokio::test]
+    async fn rules_compiled_from_a_stale_config_are_not_kept_past_a_reload() {
+        let (rx, endpoint) = listener().await;
+        let with_filter = |filter: &str| {
+            let (mut config, _) = Config::parse_yaml(
+                &format!("sources:\n  rest:\n    conn:\n      profile: x\n      topic: t\n      filter: '{filter}'\n"),
+                "fetcher.yaml",
+            )
+            .unwrap();
+            config.dlq.enabled = false;
+            config.output.output_type = "grpc".into();
+            config.output.grpc = Some(GrpcConfig::client(&endpoint));
+            config
+        };
+        let d = Box::pin(driver_over(
+            with_filter("id == \"keep\""),
+            vec![Row::new(r#"{"id":"keep"}"#), Row::new(r#"{"id":"drop"}"#)],
+        ))
+        .await;
+        let (version, stale) = d.config_snapshot();
+        d.shared_config.update(with_filter("id == \"none\""));
+        d.rules_for(version, &stale).unwrap();
+
+        let report = d.run_tick(None).await.expect("tick");
+
+        assert_eq!(report.filtered, 2, "the reloaded filter applies");
+        assert_eq!(received_raw(&rx).await.len(), 0, "every row filtered");
+    }
+
+    /// The batch bounds and the oversize policy are read from the live config
+    /// each tick, so a reload changes them without a restart.
+    #[tokio::test]
+    async fn batch_and_oversize_bounds_reload_between_ticks() {
+        let (rx, endpoint) = listener().await;
+        let (mut config, _) = Config::parse_yaml("{}\n", "fetcher.yaml").unwrap();
+        config.dlq.enabled = false;
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(GrpcConfig::client(&endpoint));
+        let big = format!(r#"{{"id":"big","blob":"{}"}}"#, "x".repeat(200));
+        let d = Box::pin(driver_over(
+            config.clone(),
+            vec![
+                Row::new(r#"{"id":"a"}"#),
+                Row::new(big),
+                Row::new(r#"{"id":"c"}"#),
+            ],
+        ))
+        .await;
+        config.accumulate.max_rows = 1;
+        config.oversize.max_record_bytes = 64;
+        d.shared_config.update(config);
+
+        let report = d.run_tick(None).await.expect("tick");
+
+        assert_eq!(report.oversize, 1, "the reloaded record bound");
+        assert_eq!(
+            report.flushes, 2,
+            "one row per batch under the reloaded max_rows"
+        );
+        assert_eq!(received_raw(&rx).await.len(), 2);
+    }
+
+    /// The memory-pressure brake follows the live config too: switched on by
+    /// a reload, it holds the next tick while the guard is over its band.
+    #[tokio::test(start_paused = true)]
+    async fn the_pressure_brake_reloads_between_ticks() {
+        let (mut config, _) = Config::parse_yaml(
+            "self_regulation:\n  enabled: false\n  max_hold_secs: 5\n",
+            "fetcher.yaml",
+        )
+        .unwrap();
+        let shared = SharedConfig::new(config.clone());
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            shared.clone(),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let accumulate = AccumulateConfig::default();
+        let d = Driver::new(DriverParts {
+            shape: Shape::Custom(Box::new(Fixed {
+                units: vec![UnitSpec::new(
+                    "events",
+                    UnitShape::Incremental,
+                    "okta-audit",
+                )],
+                rows: Vec::new(),
+            })),
+            connection_id: "braked".into(),
+            instance_id: "inst".into(),
+            shared_config: shared,
+            emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
+            pressure: None,
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                MemoryGuardConfig {
+                    limit_bytes: 1 << 20,
+                    ..MemoryGuardConfig::default()
+                },
+                UsageSource::Reservations,
+            )),
+            checkpoints: None,
+            metrics,
+            shutdown: CancellationToken::new(),
+        });
+        d.lease.add(1 << 20);
+        config.self_regulation.enabled = true;
+        d.shared_config.update(config);
+
+        let started = tokio::time::Instant::now();
+        d.run_tick(None).await.expect("tick");
+
+        assert!(
+            started.elapsed() >= Duration::from_secs(5),
+            "held to max_hold_secs: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Rows consumed without being sent still flush their acknowledgements at
+    /// `max_rows`, so a queue whose every message is filtered acks as it goes
+    /// rather than holding every id until the tick ends.
+    #[tokio::test]
+    async fn consumed_rows_ack_in_batches_of_max_rows() {
+        let (config, _) = Config::parse_yaml("{}\n", "fetcher.yaml").unwrap();
+        let unit = UnitSpec::new("events", UnitShape::Incremental, "okta-audit");
+        let shared = SharedConfig::new(config);
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            shared.clone(),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let accumulate = AccumulateConfig {
+            max_rows: 2,
+            ..AccumulateConfig::default()
+        };
+        let mut live = shared.get();
+        live.accumulate = accumulate;
+        shared.update(live);
+        let acked = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mark_only = |id: &str| Row {
+            payload: Bytes::new(),
+            mark: Some(Mark::Ack(id.into())),
+        };
+        let d = Driver::new(DriverParts {
+            shape: Shape::Custom(Box::new(Acking {
+                units: vec![unit],
+                rows: ["a", "b", "c", "d", "e"].map(mark_only).to_vec(),
+                acked: Arc::clone(&acked),
+            })),
+            connection_id: "conn".into(),
+            instance_id: "inst".into(),
+            shared_config: shared,
+            emitter: Emitter::new(state, Arc::clone(&metrics), accumulate.in_flight),
+            pressure: None,
+            memory_guard: Arc::new(MemoryGuard::with_usage_source(
+                MemoryGuardConfig {
+                    limit_bytes: 1 << 30,
+                    ..MemoryGuardConfig::default()
+                },
+                UsageSource::Reservations,
+            )),
+            checkpoints: None,
+            metrics,
+            shutdown: CancellationToken::new(),
+        });
+
+        d.run_tick(None).await.expect("tick");
+
+        let ids = |batch: &[&str]| {
+            batch
+                .iter()
+                .map(|&id| Box::<str>::from(id))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            *acked.lock(),
+            [ids(&["a", "b"]), ids(&["c", "d"]), ids(&["e"])],
+            "acked at the bound, the remainder at the end"
         );
     }
 

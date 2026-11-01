@@ -99,7 +99,7 @@ impl DumpDecoder {
                 Box::new(LineFramer::new(false).bounded(max_row_bytes))
             }
             DumpDecoder::JsonArray => Box::new(ArrayFramer::default().bounded(max_row_bytes)),
-            DumpDecoder::Csv => Box::new(CsvFramer::new(true)),
+            DumpDecoder::Csv => Box::new(CsvFramer::new(true).bounded(max_row_bytes)),
         }
     }
 }
@@ -412,24 +412,36 @@ impl FileSource for FileDump {
             Ok(marker) => marker,
             Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
         };
-        let files = match list(&self.spec.paths, marker.as_ref()) {
-            Ok(files) => files,
-            Err(e) => return futures::stream::once(async move { Err(e) }).boxed(),
+        // The glob walk and its stats block, so they run on the blocking pool.
+        let patterns = self.spec.paths.clone();
+        let listed = async move {
+            tokio::task::spawn_blocking(move || list(&patterns, marker.as_ref()))
+                .await
+                .map_err(|e| Error::Source(format!("file dump: listing task failed: {e}")))?
         };
-        debug!(unit = %self.unit, files = files.len(), "file dump: tick");
+        let unit = Arc::clone(&self.unit);
         let decoder = self.spec.decoder;
         let chunk_bytes = self.spec.chunk_bytes;
         let max_row_bytes = self.spec.max_row_bytes;
         let lease = Arc::clone(&self.lease);
-        futures::stream::iter(files)
-            .flat_map(move |candidate| {
-                file_rows(
-                    candidate,
-                    decoder,
-                    chunk_bytes,
-                    max_row_bytes,
-                    Arc::clone(&lease),
-                )
+        futures::stream::once(listed)
+            .flat_map(move |listing| match listing {
+                Ok(files) => {
+                    debug!(unit = %unit, files = files.len(), "file dump: tick");
+                    let lease = Arc::clone(&lease);
+                    futures::stream::iter(files)
+                        .flat_map(move |candidate| {
+                            file_rows(
+                                candidate,
+                                decoder,
+                                chunk_bytes,
+                                max_row_bytes,
+                                Arc::clone(&lease),
+                            )
+                        })
+                        .boxed()
+                }
+                Err(e) => futures::stream::once(async move { Err(e) }).boxed(),
             })
             .boxed()
     }
@@ -438,7 +450,8 @@ impl FileSource for FileDump {
         async move {
             for pattern in &self.spec.paths {
                 let base = glob_base(pattern);
-                if !base.is_dir() {
+                let is_dir = tokio::fs::metadata(&base).await.is_ok_and(|m| m.is_dir());
+                if !is_dir {
                     warn!(unit = %self.unit, pattern, base = %base.display(), "file dump: base directory absent");
                     return Err(Error::Source(format!(
                         "file dump: base directory of `{pattern}` does not exist"
@@ -487,6 +500,28 @@ mod tests {
 
     async fn collect(dump: &FileDump, cp: Option<&CheckpointValue>) -> Result<Vec<Row>> {
         dump.rows(cp).try_collect().await
+    }
+
+    /// The glob walk and the stats are blocking filesystem calls, so they
+    /// run when the stream is first polled, on the blocking pool, never in
+    /// the call that builds the stream on a runtime worker: a file landing
+    /// between the two is still listed.
+    #[tokio::test]
+    async fn files_are_listed_when_the_stream_is_polled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.jsonl"), "{\"id\":\"a\"}\n").unwrap();
+        let dump = FileDump::new(
+            "u",
+            DumpSpec {
+                paths: vec![format!("{}/*.jsonl", dir.path().display())],
+                ..DumpSpec::default()
+            },
+            no_lease(),
+        );
+        let rows = dump.rows(None);
+        std::fs::write(dir.path().join("b.jsonl"), "{\"id\":\"b\"}\n").unwrap();
+        let rows: Vec<Row> = rows.try_collect().await.unwrap();
+        assert_eq!(rows.len(), 2, "both files, listed at the first poll");
     }
 
     #[test]
@@ -776,29 +811,35 @@ mod tests {
         assert!(err.to_string().contains("cut.jsonl.gz"), "{err}");
     }
 
-    /// A line longer than `max_row_bytes` (a `.json` document renamed
-    /// `.jsonl`, a log line that never ends) fails the file at the bound,
-    /// named as that file's failure, rather than being read whole.
+    /// A row longer than `max_row_bytes` (a `.json` document renamed
+    /// `.jsonl`, a log line that never ends, a CSV field whose quote never
+    /// closes) fails the file at the bound, named as that file's failure,
+    /// rather than being read whole.
     #[tokio::test]
     async fn a_row_longer_than_max_row_bytes_fails_the_file_at_the_bound() {
         let dir = tempfile::TempDir::new().unwrap();
-        let mut long = b"{\"id\":1}\n{\"blob\":\"".to_vec();
-        long.extend(vec![b'x'; 1024 * 1024]);
-        std::fs::write(dir.path().join("long.jsonl"), long).unwrap();
-        let dump = FileDump::new(
-            "u",
-            DumpSpec {
-                paths: vec![format!("{}/*.jsonl", dir.path().display())],
-                max_row_bytes: 64,
-                ..DumpSpec::default()
-            },
-            no_lease(),
-        );
-        let err = collect(&dump, None).await.unwrap_err();
-        assert!(
-            matches!(err, Error::Item { ref key, ref source } if key.ends_with("long.jsonl") && matches!(**source, Error::OversizePage { max: 64 })),
-            "{err:?}"
-        );
+        for (name, head) in [
+            ("long.jsonl", &b"{\"id\":1}\n{\"blob\":\""[..]),
+            ("open.csv", &b"id,blob\n1,\"never closed "[..]),
+        ] {
+            let mut long = head.to_vec();
+            long.extend(vec![b'x'; 1024 * 1024]);
+            std::fs::write(dir.path().join(name), long).unwrap();
+            let dump = FileDump::new(
+                "u",
+                DumpSpec {
+                    paths: vec![format!("{}/{name}", dir.path().display())],
+                    max_row_bytes: 64,
+                    ..DumpSpec::default()
+                },
+                no_lease(),
+            );
+            let err = collect(&dump, None).await.unwrap_err();
+            assert!(
+                matches!(err, Error::Item { ref key, ref source } if key.ends_with(name) && matches!(**source, Error::OversizePage { max: 64 })),
+                "{name}: {err:?}"
+            );
+        }
     }
 
     #[tokio::test]

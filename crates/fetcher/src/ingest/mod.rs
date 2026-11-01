@@ -227,23 +227,28 @@ async fn auth_middleware(
     }
 }
 
-/// Start the ingest HTTP server.
+/// Start the ingest HTTP server: bind its listener, then serve on its own
+/// task until `shutdown`. `None` when the listener is disabled.
 ///
-/// Binds to the configured address and serves the ingest endpoints.
-/// Returns when the shutdown token is cancelled.
+/// The bind happens before this returns, so a port that is taken fails the
+/// fetcher's startup instead of leaving it ready with no intake. A server
+/// that stops before `shutdown` cancels it, so the process exits non-zero to
+/// be restarted.
 ///
 /// # Errors
 ///
-/// Returns an error when the listener cannot bind or the server fails.
-pub async fn run_ingest_server(
+/// Returns an error when the token resolves empty without
+/// `ingest.allow_unauthenticated`, or the listener cannot bind; the task's
+/// result is the server's own failure.
+pub async fn spawn_ingest_server(
     config: &IngestConfig,
     pipeline: Arc<PipelineState>,
     metrics: Arc<Metrics>,
     shutdown: CancellationToken,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<tokio::task::JoinHandle<anyhow::Result<()>>>> {
     if !config.enabled {
         info!("Ingest server disabled");
-        return Ok(());
+        return Ok(None);
     }
     // With acknowledgements on, a POST is answered only once its record is
     // delivered or dead-lettered.
@@ -289,18 +294,29 @@ pub async fn run_ingest_server(
         .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
         .layer(axum::extract::DefaultBodyLimit::max(config.max_body_size));
 
-    let http_config = HttpServerConfig::new(&config.bind_address);
-
+    let server = HttpServer::new(HttpServerConfig::new(&config.bind_address));
+    let (handle, serving) = server
+        .serve_with_handle(app)
+        .await
+        .map_err(|e| anyhow::anyhow!("ingest listener cannot bind {}: {e}", config.bind_address))?;
     info!(addr = %config.bind_address, "Ingest server listening");
 
-    let server = HttpServer::new(http_config);
-    server
-        .serve_with_shutdown(app, shutdown.cancelled_owned())
-        .await
-        .map_err(|e| anyhow::anyhow!("Ingest server error: {e}"))?;
-
-    info!("Ingest server stopped");
-    Ok(())
+    Ok(Some(tokio::spawn(async move {
+        let mut serving = std::pin::pin!(serving);
+        tokio::select! {
+            ended = &mut serving => {
+                shutdown.cancel();
+                let reason = ended.err().map_or_else(|| "stopped".to_owned(), |e| e.to_string());
+                return Err(anyhow::anyhow!("ingest server ended before shutdown: {reason}"));
+            }
+            () = shutdown.cancelled() => handle.shutdown(),
+        }
+        serving
+            .await
+            .map_err(|e| anyhow::anyhow!("Ingest server error: {e}"))?;
+        info!("Ingest server stopped");
+        Ok(())
+    })))
 }
 
 /// Handle POST /ingest/{source}
@@ -852,10 +868,9 @@ mod tests {
         assert!(!constant_time_eq(b"aaaaaaaa", b"aaaaaaab"));
     }
 
-    /// `run_ingest_server` with `enabled = false` must return Ok immediately
-    /// without binding any socket.
+    /// A disabled listener starts nothing and binds no socket.
     #[tokio::test]
-    async fn test_run_ingest_server_disabled() {
+    async fn a_disabled_listener_starts_nothing() {
         let config = IngestConfig {
             enabled: false,
             ..Default::default()
@@ -864,15 +879,15 @@ mod tests {
         let app_config = Config::default();
         let shared = SharedConfig::new(app_config);
         let metrics = Arc::new(Metrics::new());
-        let pipeline = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
-                .expect("default config should work"),
-        );
+        let pipeline = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
 
         let shutdown = CancellationToken::new();
-        let result = run_ingest_server(&config, pipeline, metrics, shutdown).await;
+        let result = spawn_ingest_server(&config, pipeline, metrics, shutdown).await;
 
-        assert!(result.is_ok(), "disabled server should return Ok");
+        assert!(
+            result.expect("disabled is not an error").is_none(),
+            "nothing is served"
+        );
     }
 
     /// A token that resolves empty refuses to start the listener, rather than
@@ -888,18 +903,53 @@ mod tests {
 
         let shared = SharedConfig::new(Config::default());
         let metrics = Arc::new(Metrics::new());
-        let pipeline = Arc::new(
-            PipelineState::new(shared, Arc::clone(&metrics), None, CancellationToken::new())
-                .expect("default config should work"),
-        );
+        let pipeline = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
 
-        let err = run_ingest_server(&config, pipeline, metrics, CancellationToken::new())
+        let err = spawn_ingest_server(&config, pipeline, metrics, CancellationToken::new())
             .await
             .expect_err("an empty token must not run the listener open");
         assert!(
             err.to_string().contains("allow_unauthenticated"),
             "the error names the opt-in: {err}"
         );
+    }
+
+    /// A listener that cannot bind is an error before the server task
+    /// starts, so startup refuses rather than running with no intake while
+    /// readiness reads ready; a free port serves until shutdown.
+    #[tokio::test]
+    async fn a_listener_that_cannot_bind_fails_the_start() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let shared = SharedConfig::new(Config::default());
+        let metrics = Arc::new(Metrics::new());
+        let pipeline = Arc::new(PipelineState::for_tests(shared, Arc::clone(&metrics), None));
+        let config = IngestConfig {
+            enabled: true,
+            bind_address: taken.local_addr().unwrap().to_string(),
+            allow_unauthenticated: true,
+            ..Default::default()
+        };
+        let err = spawn_ingest_server(
+            &config,
+            Arc::clone(&pipeline),
+            Arc::clone(&metrics),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("the port is taken");
+        assert!(err.to_string().contains("bind"), "{err}");
+
+        let free = IngestConfig {
+            bind_address: "127.0.0.1:0".to_string(),
+            ..config
+        };
+        let shutdown = CancellationToken::new();
+        let server = spawn_ingest_server(&free, pipeline, metrics, shutdown.clone())
+            .await
+            .expect("a free port starts")
+            .expect("enabled");
+        shutdown.cancel();
+        server.await.unwrap().expect("a clean stop");
     }
 
     /// `Authorization: Bearer ` (with trailing space, empty token) must be

@@ -202,6 +202,8 @@ takes over.
 
 A dead letter counts only once the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ refuses or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
 
+An enabled DLQ whose backends cannot start (an unwritable spool directory, a Kafka backend with no client config) fails startup, so the process never runs believing refused records are held when they are dropped.
+
 With no DLQ configured, or a disabled one, a record the transport refuses is still refused for good, so fetching it again would only hold the source back. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, an oversize row in `{reason="too_large"}` and a row enrichment refused in `{reason="unstampable"}`, and the tick carries on. A dead letter no DLQ backend can ever hold (scalo's `Dlq::refusal`: over the Kafka DLQ's ceiling once encoded, which a Vector or ingest record over about 12 MiB can be) is left out of the DLQ write and dropped the same way, counted under scalo's reason. Any other DLQ failure can clear, so it still aborts the tick.
 
 Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{listener, guarantee, reason}`, from scalo's `EffectiveGuarantee::publish_for` against what the outputs confirm. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. The ingest listener and Vector follow their `acknowledgements` setting, and a container's stdout is `best_effort` (`source_cannot_ack`).
@@ -272,7 +274,7 @@ in place is read again and a file dropped in by rename is never skipped. A
 `tail` unit follows growing files through rotation and truncation on the
 vendored Vector tailer and commits `(file fingerprint, end offset)` per line
 after the acknowledgement; it needs the `file-tail` feature and is refused at
-load without it.
+load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
 
 | Shape | Unit kind | Checkpoint mark | Lands on |
 |-------|-----------|-----------------|----------|
@@ -445,7 +447,9 @@ One fetcher per tenant, each with its own config, `instance_id` (the first half
 of every cursor key) and credentials. Several accounts of one provider type
 can share a fetcher: the typed blocks take a `connections` list, and
 `sources.rest` takes any number of instances of one profile, each with its own
-connection id.
+connection id. The connection id is the second part of every cursor key, so
+ids must differ across every source once case is ignored, and no id may be
+another followed by `.`.
 
 ## Decision Framework: Profile vs Container vs Vector
 

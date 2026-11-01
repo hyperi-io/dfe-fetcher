@@ -139,8 +139,6 @@ async fn a_rest_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id() {
             connection_id: "fixture_dump".into(),
             instance_id: "inst".into(),
             shared_config: shared.clone(),
-            accumulate: config.accumulate,
-            oversize: config.oversize,
             emitter: Emitter::new(
                 Arc::clone(&state),
                 Arc::clone(&metrics),

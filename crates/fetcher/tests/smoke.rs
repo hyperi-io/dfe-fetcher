@@ -12,6 +12,15 @@ use bytes::Bytes;
 use dfe_fetcher::config::Config;
 use dfe_fetcher::metrics::Metrics;
 
+/// The default config with its DLQ spool under `dir`. The default spool path
+/// is the container's mount, which a build host cannot create, and an enabled
+/// DLQ that cannot start fails the pipeline.
+fn default_config_spooling_under(dir: &std::path::Path) -> Config {
+    let mut config = Config::default();
+    config.dlq.file.path = dir.join("dlq");
+    config
+}
+
 /// Verify Orchestrator::new() completes without panic for a default config.
 /// This catches init-time panics (missing fields, bad defaults, type mismatches)
 /// that would cause a production outage on deploy.
@@ -20,7 +29,8 @@ async fn test_startup_orchestrator_boots_with_default_config() {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
-    let config = Config::default();
+    let spool = tempfile::tempdir().unwrap();
+    let config = default_config_spooling_under(spool.path());
     let metrics = Arc::new(Metrics::new());
     let shutdown = CancellationToken::new();
 
@@ -56,7 +66,8 @@ async fn test_startup_orchestrator_boots_with_default_config() {
 async fn test_startup_pipeline_state_no_output() {
     use std::sync::Arc;
 
-    let config = Config::default();
+    let spool = tempfile::tempdir().unwrap();
+    let config = default_config_spooling_under(spool.path());
     let shared = dfe_fetcher::config::SharedConfig::new(config);
     let metrics = Arc::new(Metrics::new());
 

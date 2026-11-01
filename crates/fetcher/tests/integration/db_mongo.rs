@@ -121,8 +121,6 @@ fn driver(h: &Harness, shape: DbShape, checkpoints: Option<Arc<dyn CursorStore>>
         connection_id: "inv".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: h.config.accumulate,
-        oversize: h.config.oversize,
         emitter: Emitter::new(
             Arc::clone(&h.state),
             Arc::clone(&h.metrics),
@@ -151,7 +149,10 @@ async fn landed(transport: &MemoryTransport) -> Vec<(String, Value)> {
         .collect()
 }
 
-fn instance_yaml(uri: &str, stores: &str) -> String {
+/// The instance over `stores`, each store reading `database` on the shared
+/// server.
+fn instance_yaml(uri: &str, database: &str, stores: &str) -> String {
+    let stores = stores.replace("database: inventory", &format!("database: {database}"));
     format!(
         "engine: mongodb\nconnection_string: '{uri}'\ntopic: inventory\nbatch: {{ max_rows: 2 }}\nstores:\n{stores}"
     )
@@ -165,12 +166,13 @@ fn file_store() -> (tempfile::TempDir, Arc<dyn CursorStore>) {
     (dir, store)
 }
 
-/// The collection the tests seed, through the same driver the engine uses.
-async fn collection(uri: &str) -> Collection<Document> {
+/// The collection a test seeds in its own database, through the same driver
+/// the engine uses.
+async fn collection(uri: &str, database: &str) -> Collection<Document> {
     Client::with_uri_str(uri)
         .await
         .expect("client")
-        .database("inventory")
+        .database(database)
         .collection("hosts")
 }
 
@@ -198,11 +200,13 @@ async fn a_mongodb_dump_streams_relaxed_extended_json_through_the_driver_into_th
         return;
     };
     let uri = common::mongo_uri(&db, false);
-    let coll = collection(&uri).await;
+    let database = common::mongo_database("db-mongo-dump");
+    let coll = collection(&uri, &database).await;
     coll.insert_many(hosts(7)).await.expect("seed");
 
     let yaml = instance_yaml(
         &uri,
+        &database,
         "  - { unit: hosts, shape: dump, row_key: '/_id/$oid', mongodb: { database: inventory, collection: hosts, filter: { alive: true } } }\n",
     );
     let h = harness(&yaml);
@@ -280,10 +284,12 @@ async fn a_mongodb_change_stream_tail_resumes_from_the_committed_token_across_a_
         return;
     };
     let uri = common::mongo_uri(&db, true);
-    let coll = collection(&uri).await;
+    let database = common::mongo_database("db-mongo-change-stream");
+    let coll = collection(&uri, &database).await;
 
     let yaml = instance_yaml(
         &uri,
+        &database,
         "  - { unit: changes, shape: tail, limit: 3, max_pages_per_tick: 1, mongodb: { database: inventory, collection: hosts } }\n",
     );
     let h = harness(&yaml);
@@ -313,7 +319,7 @@ async fn a_mongodb_change_stream_tail_resumes_from_the_committed_token_across_a_
     // committed the last one's token, then the rest drain tick by tick.
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let probes = {
-        let writer = collection(&uri).await;
+        let writer = collection(&uri, &database).await;
         let stop = Arc::clone(&stop);
         tokio::spawn(async move {
             let mut inserted = 0_u32;
@@ -428,7 +434,7 @@ async fn a_mongodb_change_stream_tail_resumes_from_the_committed_token_across_a_
     for v in &frames {
         let v = &v.1;
         assert!(v["_id"]["_data"].is_string(), "{v}");
-        assert_eq!(v["ns"]["db"], "inventory");
+        assert_eq!(v["ns"]["db"], database.as_str());
         assert_eq!(v["ns"]["coll"], "hosts");
         assert!(v["documentKey"]["_id"]["$oid"].is_string(), "{v}");
         assert!(v.get("kind").is_none(), "a tail carries no envelope");
@@ -463,9 +469,11 @@ async fn an_idle_change_stream_tick_commits_a_token_that_still_sees_later_writes
         return;
     };
     let uri = common::mongo_uri(&db, true);
-    let coll = collection(&uri).await;
+    let database = common::mongo_database("db-mongo-idle-advance");
+    let coll = collection(&uri, &database).await;
     let yaml = instance_yaml(
         &uri,
+        &database,
         "  - { unit: changes, shape: tail, limit: 3, max_pages_per_tick: 1, mongodb: { database: inventory, collection: hosts } }\n",
     );
     let h = harness(&yaml);
@@ -514,12 +522,14 @@ async fn a_mongodb_keyset_tail_follows_id_on_a_standalone_server_across_a_restar
         return;
     };
     let uri = common::mongo_uri(&db, false);
-    let coll = collection(&uri).await;
+    let database = common::mongo_database("db-mongo-keyset");
+    let coll = collection(&uri, &database).await;
     coll.insert_many(hosts(5)).await.expect("seed");
 
     // The default tail on a standalone server is refused naming the fallback.
     let yaml = instance_yaml(
         &uri,
+        &database,
         "  - { unit: changes, shape: tail, limit: 2, mongodb: { database: inventory, collection: hosts } }\n",
     );
     let h = harness(&yaml);
@@ -537,6 +547,7 @@ async fn a_mongodb_keyset_tail_follows_id_on_a_standalone_server_across_a_restar
 
     let yaml = instance_yaml(
         &uri,
+        &database,
         "  - { unit: rows, shape: tail, limit: 2, max_pages_per_tick: 1, mongodb: { database: inventory, collection: hosts, tail: keyset, filter: { n: { $ne: 3 } } } }\n",
     );
     let h = harness(&yaml);

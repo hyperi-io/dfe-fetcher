@@ -50,8 +50,10 @@ grants it log-read permission, and hands dfe-fetcher three values: the
 The v2 endpoint takes `mintime`/`maxtime` as **millisecond** Unix timestamps,
 returns up to `limit` records (default 100, max 1000), and paginates with
 `metadata.next_offset`, the two-element list the API documents, sent back
-comma-joined until it is null. Note Duo enforces a deliberate **two-minute
-delay**: authentications less than two minutes old are not yet returned.
+comma-joined until it is null. Duo enforces a deliberate **two-minute
+delay**: authentications less than two minutes old are not yet returned. The
+profile's `window.delay: 2m` ends every window two minutes before now, so the
+cursor never passes events Duo has not yet published.
 
 The source is the shipped `duo` profile (`crates/fetcher/profiles/duo.yaml`)
 on the `signature` auth mode; the `sources.duo` block below maps onto an

@@ -1,0 +1,20 @@
+# Project:      dfe-fetcher
+# File:         .config/nextest.toml
+# Purpose:      Configuration for cargo-nextest test runner
+# Language:     TOML
+#
+# License:      BUSL-1.1
+# Copyright:    (c) 2026 HYPERI PTY LIMITED
+
+# Setup scripts are still experimental in nextest, and pull-test-images is one.
+experimental = ["setup-scripts"]
+
+# Pulls every image the tests start, retrying a failed pull, before any test runs.
+[scripts.setup.pull-test-images]
+command = { command-line = "scripts/pull-test-images.sh", relative-to = "workspace-root" }
+# Ends a pull that hangs, rather than holding the run until the CI job times out.
+slow-timeout = { period = "60s", terminate-after = 15 }
+
+[[profile.default.scripts]]
+filter = "binary_id(dfe-fetcher::integration) | binary_id(dfe-fetcher::e2e)"
+setup = "pull-test-images"
