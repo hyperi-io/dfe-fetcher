@@ -20,13 +20,16 @@
 //!
 //! In-memory cache serves reads without file I/O. Writes update the
 //! cache then atomically and durably persist the individual file (write
-//! and sync `.tmp`, rename, sync the directory). If the directory is not
+//! and sync `.tmp`, rename, sync the directory) on the blocking pool, one
+//! write per key at a time, each writing the key's newest cached value so
+//! the file never ends on an older one. If the directory is not
 //! writable, the store operates in
 //! degraded mode -- cache works for the current process but state is
 //! lost on restart.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -46,6 +49,8 @@ const READ_ONLY_WARN_EVERY_MS: u64 = 60_000;
 pub struct FileCursorStore {
     directory: PathBuf,
     cache: RwLock<HashMap<String, CursorValue>>,
+    /// One disk write per key at a time, held until the blocking write ends.
+    writers: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     read_only: bool,
     /// When a write the read-only store could not persist was last warned of.
     read_only_warned_at: std::sync::atomic::AtomicU64,
@@ -74,6 +79,7 @@ impl FileCursorStore {
             return Ok(Self {
                 directory: dir_path,
                 cache: RwLock::new(HashMap::new()),
+                writers: parking_lot::Mutex::new(HashMap::new()),
                 read_only: true,
                 read_only_warned_at: std::sync::atomic::AtomicU64::new(0),
             });
@@ -142,6 +148,7 @@ impl FileCursorStore {
         Ok(Self {
             directory: dir_path,
             cache: RwLock::new(cache),
+            writers: parking_lot::Mutex::new(HashMap::new()),
             read_only,
             read_only_warned_at: std::sync::atomic::AtomicU64::new(0),
         })
@@ -163,36 +170,56 @@ impl FileCursorStore {
             .join(format!("{normalised_key}.{CURSOR_EXTENSION}.tmp"))
     }
 
-    /// Persist a single cursor to its file atomically and durably: write
-    /// `.tmp` and sync it, rename it over the cursor file, then sync the
-    /// directory, so a crash leaves either the old cursor or the new one and
-    /// never an empty file that reads as a cold start.
-    ///
-    /// SHORTCUT: the two syncs block the calling runtime worker for a disk
-    /// flush each, on every commit (a tick per connection, an item per
-    /// per-item dump); move the write onto `spawn_blocking` when commits
-    /// show in a tick's duration.
-    fn persist_one(&self, normalised_key: &str, value: &CursorValue) -> Result<()> {
-        let path = self.cursor_path(normalised_key);
-        let tmp_path = self.tmp_path(normalised_key);
-
-        let json = serde_json::to_string_pretty(value)
-            .map_err(|e| Error::Cursor(format!("failed to serialise cursor: {e}")))?;
-
-        persist_durably(&tmp_path, &path, &self.directory, &json)
+    /// The write lock of one key.
+    fn writer(&self, normalised_key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut writers = self.writers.lock();
+        Arc::clone(writers.entry(normalised_key.to_owned()).or_default())
     }
 
-    /// Remove a cursor file from disk.
-    fn remove_file(&self, normalised_key: &str) {
+    /// Persist the key's newest cached value atomically and durably on the
+    /// blocking pool: write `.tmp` and sync it, rename it over the cursor
+    /// file, then sync the directory, so a crash leaves either the old cursor
+    /// or the new one and never an empty file that reads as a cold start.
+    ///
+    /// The key's write lock moves into the blocking task, so a caller that is
+    /// cancelled mid-write still leaves the next writer waiting for this one.
+    async fn persist_one(&self, normalised_key: &str) -> Result<()> {
+        let turn = self.writer(normalised_key).lock_owned().await;
+        let Some(value) = self.cache.read().get(normalised_key).cloned() else {
+            return Ok(());
+        };
+        let json = serde_json::to_string_pretty(&value)
+            .map_err(|e| Error::Cursor(format!("failed to serialise cursor: {e}")))?;
         let path = self.cursor_path(normalised_key);
-        if let Err(e) = std::fs::remove_file(&path)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            warn!(
+        let tmp_path = self.tmp_path(normalised_key);
+        let directory = self.directory.clone();
+        tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            persist_durably(&tmp_path, &path, &directory, &json)
+        })
+        .await
+        .map_err(|e| Error::Cursor(format!("cursor write task failed: {e}")))?
+    }
+
+    /// Remove a cursor file from disk on the blocking pool, under the key's
+    /// write lock so a write in flight cannot put it back after.
+    async fn remove_file(&self, normalised_key: &str) {
+        let turn = self.writer(normalised_key).lock_owned().await;
+        let path = self.cursor_path(normalised_key);
+        let removed = tokio::task::spawn_blocking(move || {
+            let _turn = turn;
+            std::fs::remove_file(&path).map_err(|e| (path, e))
+        })
+        .await;
+        match removed {
+            Ok(Ok(())) => {}
+            Ok(Err((_, e))) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(Err((path, e))) => warn!(
                 path = %path.display(),
                 error = %e,
                 "Failed to remove cursor file"
-            );
+            ),
+            Err(e) => warn!(error = %e, "cursor remove task failed"),
         }
     }
 }
@@ -273,7 +300,7 @@ impl CursorStore for FileCursorStore {
             return Ok(());
         }
 
-        self.persist_one(&normalised, value)?;
+        self.persist_one(&normalised).await?;
         debug!(
             key = normalised,
             path = %self.cursor_path(&normalised).display(),
@@ -291,7 +318,7 @@ impl CursorStore for FileCursorStore {
         }
 
         if !self.read_only {
-            self.remove_file(&normalised);
+            self.remove_file(&normalised).await;
         }
 
         debug!(key = normalised, "Cursor deleted");
@@ -827,5 +854,84 @@ mod tests {
                 expected_file.display()
             );
         }
+    }
+
+    /// A write's disk work runs off the runtime thread: its temp file is a
+    /// FIFO with no reader, which blocks the open until one arrives, and a
+    /// second task on the same single-threaded runtime still runs meanwhile.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_does_not_block_the_runtime_thread() {
+        use std::io::Read as _;
+
+        let tmp = TempDir::new().unwrap();
+        let fifo = tmp.path().join("k.cursor.json.tmp");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let store =
+            std::sync::Arc::new(FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap());
+        let (ran, ran_rx) = std::sync::mpsc::channel();
+        let runtime = std::thread::spawn({
+            let store = std::sync::Arc::clone(&store);
+            move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async move {
+                    let write = tokio::spawn({
+                        let store = std::sync::Arc::clone(&store);
+                        async move { store.set("k", &make_cursor("k")).await }
+                    });
+                    tokio::task::yield_now().await;
+                    ran.send(()).unwrap();
+                    write.await.unwrap()
+                })
+            }
+        });
+
+        // Bounded so a blocked runtime fails the test rather than hanging it.
+        let other_task_ran = ran_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok();
+        let mut written = String::new();
+        std::fs::File::open(&fifo)
+            .unwrap()
+            .read_to_string(&mut written)
+            .unwrap();
+        // A FIFO refuses the sync (EINVAL), so the write's own result says
+        // nothing here; the bytes reaching the reader do.
+        let _ = runtime.join().unwrap();
+
+        assert!(
+            other_task_ran,
+            "the runtime thread was free while the write waited on disk"
+        );
+        assert!(written.contains("\"cursor_key\": \"k\""), "{written}");
+    }
+
+    /// Writes of one key racing each other leave the file on the newest
+    /// value the cache took, whichever write reaches the disk last.
+    #[tokio::test]
+    async fn racing_writes_of_one_key_leave_the_newest_value_on_disk() {
+        let tmp = TempDir::new().unwrap();
+        let store = FileCursorStore::new(tmp.path().to_str().unwrap()).unwrap();
+        let writes = (0..20_u64).map(|n| {
+            let mut cursor = make_cursor("k");
+            cursor.last_fetch_records = n;
+            let store = &store;
+            async move { store.set("k", &cursor).await }
+        });
+        for written in futures::future::join_all(writes).await {
+            written.unwrap();
+        }
+        let on_disk: CursorValue = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("k.cursor.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(on_disk.last_fetch_records, 19);
     }
 }
