@@ -405,10 +405,19 @@ impl Driver {
         &self.connection_id
     }
 
-    /// The instance's filter and the deployment's routes, compiled once per
-    /// config version and reused until a reload changes it.
-    fn rules_for(&self, config: &Config) -> Result<Arc<RowRules>> {
+    /// The live config and the version it is at least as new as. The version
+    /// is read first: a reload writes the config before it bumps the version,
+    /// so the config read after can be newer than the version, never older.
+    fn config_snapshot(&self) -> (u64, Config) {
         let version = self.shared_config.version();
+        (version, self.shared_config.get())
+    }
+
+    /// The instance's filter and the deployment's routes, compiled once per
+    /// config version and reused until a reload changes it. `version` is the
+    /// one [`Driver::config_snapshot`] read with `config`, so stale rules are
+    /// never cached under a newer version.
+    fn rules_for(&self, version: u64, config: &Config) -> Result<Arc<RowRules>> {
         let mut cache = self.rules.lock();
         if cache.version == Some(version) {
             return Ok(Arc::clone(&cache.rules));
@@ -857,9 +866,9 @@ impl Driver {
     /// `dfe_fetcher_api_errors_total`. The first unit's error is returned once
     /// the rest have run, and [`Error::Shutdown`] returns at once.
     pub async fn run_tick(&self, window: Option<&FetchWindow>) -> Result<TickReport> {
-        let config = self.shared_config.get();
+        let (version, config) = self.config_snapshot();
         let settings = TickSettings {
-            rules: self.rules_for(&config)?,
+            rules: self.rules_for(version, &config)?,
             topic_suffix: config.topic_suffix().to_owned(),
             org: Arc::from(config.stamped_org()),
             unwrap_nested_json: config.unwrap_nested_json,
@@ -1544,6 +1553,38 @@ mod tests {
             ],
             "one row per batch: a split's first row acks nothing of its own"
         );
+    }
+
+    /// The rules cache is keyed by the version of the config the rules were
+    /// compiled from: a reload landing between a tick's config read and its
+    /// version read cannot pin the old filter under the new version.
+    #[tokio::test]
+    async fn rules_compiled_from_a_stale_config_are_not_kept_past_a_reload() {
+        let (rx, endpoint) = listener().await;
+        let with_filter = |filter: &str| {
+            let (mut config, _) = Config::parse_yaml(
+                &format!("sources:\n  rest:\n    conn:\n      profile: x\n      topic: t\n      filter: '{filter}'\n"),
+                "fetcher.yaml",
+            )
+            .unwrap();
+            config.dlq.enabled = false;
+            config.output.output_type = "grpc".into();
+            config.output.grpc = Some(GrpcConfig::client(&endpoint));
+            config
+        };
+        let d = Box::pin(driver_over(
+            with_filter("id == \"keep\""),
+            vec![Row::new(r#"{"id":"keep"}"#), Row::new(r#"{"id":"drop"}"#)],
+        ))
+        .await;
+        let (version, stale) = d.config_snapshot();
+        d.shared_config.update(with_filter("id == \"none\""));
+        d.rules_for(version, &stale).unwrap();
+
+        let report = d.run_tick(None).await.expect("tick");
+
+        assert_eq!(report.filtered, 2, "the reloaded filter applies");
+        assert!(received_raw(&rx).await.is_empty());
     }
 
     /// Rows consumed without being sent still flush their acknowledgements at
