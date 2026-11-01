@@ -99,7 +99,7 @@ impl DumpDecoder {
                 Box::new(LineFramer::new(false).bounded(max_row_bytes))
             }
             DumpDecoder::JsonArray => Box::new(ArrayFramer::default().bounded(max_row_bytes)),
-            DumpDecoder::Csv => Box::new(CsvFramer::new(true)),
+            DumpDecoder::Csv => Box::new(CsvFramer::new(true).bounded(max_row_bytes)),
         }
     }
 }
@@ -776,29 +776,35 @@ mod tests {
         assert!(err.to_string().contains("cut.jsonl.gz"), "{err}");
     }
 
-    /// A line longer than `max_row_bytes` (a `.json` document renamed
-    /// `.jsonl`, a log line that never ends) fails the file at the bound,
-    /// named as that file's failure, rather than being read whole.
+    /// A row longer than `max_row_bytes` (a `.json` document renamed
+    /// `.jsonl`, a log line that never ends, a CSV field whose quote never
+    /// closes) fails the file at the bound, named as that file's failure,
+    /// rather than being read whole.
     #[tokio::test]
     async fn a_row_longer_than_max_row_bytes_fails_the_file_at_the_bound() {
         let dir = tempfile::TempDir::new().unwrap();
-        let mut long = b"{\"id\":1}\n{\"blob\":\"".to_vec();
-        long.extend(vec![b'x'; 1024 * 1024]);
-        std::fs::write(dir.path().join("long.jsonl"), long).unwrap();
-        let dump = FileDump::new(
-            "u",
-            DumpSpec {
-                paths: vec![format!("{}/*.jsonl", dir.path().display())],
-                max_row_bytes: 64,
-                ..DumpSpec::default()
-            },
-            no_lease(),
-        );
-        let err = collect(&dump, None).await.unwrap_err();
-        assert!(
-            matches!(err, Error::Item { ref key, ref source } if key.ends_with("long.jsonl") && matches!(**source, Error::OversizePage { max: 64 })),
-            "{err:?}"
-        );
+        for (name, head) in [
+            ("long.jsonl", &b"{\"id\":1}\n{\"blob\":\""[..]),
+            ("open.csv", &b"id,blob\n1,\"never closed "[..]),
+        ] {
+            let mut long = head.to_vec();
+            long.extend(vec![b'x'; 1024 * 1024]);
+            std::fs::write(dir.path().join(name), long).unwrap();
+            let dump = FileDump::new(
+                "u",
+                DumpSpec {
+                    paths: vec![format!("{}/{name}", dir.path().display())],
+                    max_row_bytes: 64,
+                    ..DumpSpec::default()
+                },
+                no_lease(),
+            );
+            let err = collect(&dump, None).await.unwrap_err();
+            assert!(
+                matches!(err, Error::Item { ref key, ref source } if key.ends_with(name) && matches!(**source, Error::OversizePage { max: 64 })),
+                "{name}: {err:?}"
+            );
+        }
     }
 
     #[tokio::test]

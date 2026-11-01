@@ -341,7 +341,9 @@ pub fn split_array(page: &Bytes, start: usize, end: usize) -> Result<Vec<Bytes>>
 /// Streams CSV records as JSON objects keyed by the header row (or `col_<n>`
 /// without one). Quoting, escaped quotes and newlines inside quotes follow
 /// RFC 4180 as `csv-core` reads them; a record split across blocks is carried
-/// by the parser itself, so no input is buffered here.
+/// by the parser itself; the open record is bounded by
+/// [`CsvFramer::bounded`], so a quote that never closes fails at the bound
+/// instead of growing the field buffers.
 ///
 /// SHORTCUT: each record becomes a `serde_json::Map` before it is written,
 /// one allocation per field. Lift (write the object bytes straight from the
@@ -354,6 +356,7 @@ pub struct CsvFramer {
     fields_len: usize,
     ends: Vec<usize>,
     ends_len: usize,
+    max: usize,
 }
 
 impl std::fmt::Debug for CsvFramer {
@@ -377,7 +380,25 @@ impl CsvFramer {
             fields_len: 0,
             ends: vec![0; 64],
             ends_len: 0,
+            max: usize::MAX,
         }
+    }
+
+    /// Refuse an open record longer than `max` bytes. Each field end counts
+    /// as the delimiter that closed it, so a record of empty fields is bounded
+    /// too.
+    #[must_use]
+    pub fn bounded(mut self, max: usize) -> Self {
+        self.max = max;
+        self
+    }
+
+    /// Fail once the open record holds more than the bound.
+    fn fits(&self) -> Result<()> {
+        if self.fields_len.saturating_add(self.ends_len) > self.max {
+            return Err(Error::OversizePage { max: self.max });
+        }
+        Ok(())
     }
 
     /// Turn the completed record in the field buffers into a row (or the
@@ -409,7 +430,7 @@ impl CsvFramer {
 
     /// Run the parser over `input` (empty means end of input) until it asks
     /// for more.
-    fn drive(&mut self, input: &[u8], out: &mut Vec<Bytes>) {
+    fn drive(&mut self, input: &[u8], out: &mut Vec<Bytes>) -> Result<()> {
         let mut pos = 0;
         loop {
             let (result, read, written, ended) = self.reader.read_record(
@@ -421,12 +442,16 @@ impl CsvFramer {
             self.fields_len += written;
             self.ends_len += ended;
             match result {
-                csv_core::ReadRecordResult::InputEmpty | csv_core::ReadRecordResult::End => return,
+                csv_core::ReadRecordResult::InputEmpty | csv_core::ReadRecordResult::End => {
+                    return self.fits();
+                }
                 csv_core::ReadRecordResult::OutputFull => {
+                    self.fits()?;
                     let grown = self.fields.len() * 2;
                     self.fields.resize(grown, 0);
                 }
                 csv_core::ReadRecordResult::OutputEndsFull => {
+                    self.fits()?;
                     let grown = self.ends.len() * 2;
                     self.ends.resize(grown, 0);
                 }
@@ -439,14 +464,13 @@ impl CsvFramer {
 impl Framer for CsvFramer {
     fn feed(&mut self, chunk: &Bytes, out: &mut Vec<Bytes>) -> Result<()> {
         if !chunk.is_empty() {
-            self.drive(chunk, out);
+            self.drive(chunk, out)?;
         }
         Ok(())
     }
 
     fn finish(&mut self, out: &mut Vec<Bytes>) -> Result<()> {
-        self.drive(&[], out);
-        Ok(())
+        self.drive(&[], out)
     }
 }
 
@@ -764,6 +788,32 @@ mod tests {
         assert_eq!(
             rows(CsvFramer::new(true), &[b""]).await.unwrap(),
             [] as [std::string::String; 0]
+        );
+    }
+
+    /// The open CSV record is bounded like an open line: a quote that never
+    /// closes, or a record of empty fields that never ends, fails at the
+    /// bound instead of growing the field buffers; a record under it frames.
+    #[tokio::test]
+    async fn an_open_csv_record_past_the_bound_fails() {
+        let open_quote = [&b"a,b\n1,\""[..], &[b'x'; 4096][..]].concat();
+        let empty_fields = [&b"a\n"[..], &[b','; 4096][..]].concat();
+        for (case, body) in [("open quote", open_quote), ("empty fields", empty_fields)] {
+            let err = rows(CsvFramer::new(true).bounded(64), &[&body])
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::OversizePage { max: 64 }),
+                "{case}: {err:?}"
+            );
+        }
+        let fits = [&b"a,b\n1,\""[..], &[b'x'; 40][..], b"\"\n"].concat();
+        assert_eq!(
+            rows(CsvFramer::new(true).bounded(64), &[&fits])
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 
