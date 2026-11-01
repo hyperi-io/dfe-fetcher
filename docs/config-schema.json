@@ -7581,7 +7581,7 @@
           ]
         },
         "group": {
-          "description": "Consumer group ID.\n\nEmpty means [`KafkaTransport::new`](super::KafkaTransport::new) builds\nno consumer, and [`KafkaTransport::receiver`](super::KafkaTransport::receiver)\nrefuses the config. The admin's offset-query consumer takes a group id\nderived from this field, or from `client_id` when it is empty, so a\nbroker granting groups by prefix covers it too.",
+          "description": "Consumer group ID.\n\nEmpty means `KafkaTransport::new` (`transport-kafka` feature) builds no\nconsumer, and `KafkaTransport::receiver` refuses the config. The admin's\noffset-query consumer takes a group id derived from this field, or from\n`client_id` when it is empty, so a broker granting groups by prefix\ncovers it too.",
           "type": "string",
           "default": "scalo-consumer"
         },

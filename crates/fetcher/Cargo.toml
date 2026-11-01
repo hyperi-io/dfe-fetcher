@@ -70,8 +70,8 @@ scalo = { workspace = true, features = [
     # scalo predecessor's `credential` feature carried vault support.
     "secrets-vault",
     "dlq",
-    # dlq-kafka: the file backend is an EROFS no-op on the charts' read-only
-    # rootfs, so kafka is the only DLQ backend that works deployed.
+    # dlq-kafka: the DLQ's primary backend. The file backend is its fallback,
+    # on the writable path `.with_dlq` adds to the contract.
     "dlq-kafka",
     "deployment",
     # Reflectable config schema + capability catalog (scalo-rs#6): derive
@@ -167,12 +167,12 @@ tower = { version = "0.5.3", features = ["util"] }
 # The CloudWatch metrics test decodes the OTLP record the profile lands.
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
-# Auto-managed Docker containers for integration tests (start + stop lifecycle).
+# One container per backing service per test run (`shared_service`), and the
+# fleet's pinned Kafka broker (`shared_kafka`).
+scalo = { workspace = true, features = ["transport-kafka-test-support"] }
+# The ODBC engines' suites start a database per test, seeded at start.
 testcontainers = "0.27"
-# postgres / mariadb / clickhouse back the database-shape integration tests;
-# the MongoDB container is a GenericImage because the module's replica-set
-# readiness line predates MongoDB 8.
-testcontainers-modules = { version = "0.15", features = ["localstack", "kafka", "postgres", "mariadb", "clickhouse"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "mariadb"] }
 # A snapshotting recorder so a test can read the framework's `metrics` series.
 metrics-util = { workspace = true }
 smallvec = { workspace = true }

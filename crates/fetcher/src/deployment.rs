@@ -155,6 +155,7 @@ pub fn contract() -> DeploymentContract {
         },
         ..DeploymentContract::default()
     }
+    .with_dlq(&crate::config::Config::default().dlq)
 }
 
 /// The config keys the contract advertises as the deployment default. Each
@@ -485,6 +486,23 @@ mod tests {
                 && writable.when.is_none()
                 && std::path::Path::new(directory).starts_with(&writable.path)),
             "no persistent writable path covers {directory}: {:?}",
+            c.writable_paths
+        );
+    }
+
+    /// The DLQ's file backend is its fallback when Kafka is down, so its
+    /// directory is writable on the read-only root filesystem.
+    #[test]
+    fn the_dlq_file_directory_is_writable() {
+        let c = contract();
+        let dlq = crate::config::Config::default().dlq;
+        assert!(dlq.enabled && dlq.file.enabled);
+        assert!(
+            c.writable_paths
+                .iter()
+                .any(|writable| dlq.file.path.starts_with(&writable.path)),
+            "no writable path covers {}: {:?}",
+            dlq.file.path.display(),
             c.writable_paths
         );
     }

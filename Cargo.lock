@@ -1806,9 +1806,9 @@ dependencies = [
 
 [[package]]
 name = "dfe-clickhouse"
-version = "0.1.4"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59325ab2a05b008f27f2342a0bcab5c14ea7049626744b1be60b85dfc1194155"
+checksum = "1a602c8c4a6cefdc95ecef465c371806fe384aa1cc451c85606176aeb9b9ca5f"
 dependencies = [
  "bytes",
  "clickhouse",
@@ -3595,18 +3595,6 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.9.5",
-]
-
-[[package]]
-name = "libz-sys"
-version = "1.1.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
 ]
 
 [[package]]
@@ -5754,7 +5742,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e234cf318915c1059d4921ef7f75616b5219b10b46e9f3a511a15eb4b56a3f77"
 dependencies = [
  "libc",
- "libz-sys",
  "num_enum",
  "pkg-config",
 ]
@@ -6313,9 +6300,9 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.14.22"
+version = "2.14.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dea871e3663df6c7e3501460dad6fa4db5ff87cdf58dd13f3940b4cd39d124e1"
+checksum = "2427c709e6c0b213b7424ba349f1cbe230b93af3e37b38f481c5d3fa27fa289a"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -8018,12 +8005,6 @@ dependencies = [
  "tracing",
  "url",
 ]
-
-[[package]]
-name = "vcpkg"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version_check"

@@ -59,6 +59,9 @@ build:
     - native
   rust:
     glibc_max: "2.41"
+    # librdkafka, OpenSSL, zstd and zlib link from hyperi-ci's static prefix,
+    # so the image installs none of them. rdkafka keeps `dynamic-linking`.
+    static_libs: true
     optimize:
       pgo:
         # Built before the workload clock starts: an uncached arm64 runner takes longer than the workload timeout to compile it.
