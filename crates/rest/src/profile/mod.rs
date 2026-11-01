@@ -1218,6 +1218,9 @@ pub struct WindowSpec {
     pub step: Option<DurationText>,
     /// Window used when the scheduler passes none.
     pub lookback: DurationText,
+    /// How long after the fact the provider makes a record visible. Every
+    /// window ends at least this far before now.
+    pub delay: Option<DurationText>,
 }
 
 impl Default for WindowSpec {
@@ -1226,6 +1229,7 @@ impl Default for WindowSpec {
             format: WindowFormat::default(),
             step: None,
             lookback: DurationText(Duration::from_secs(3600)),
+            delay: None,
         }
     }
 }

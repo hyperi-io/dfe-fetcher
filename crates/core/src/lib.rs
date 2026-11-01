@@ -337,6 +337,13 @@ pub trait RowSource: Send + Sync {
     /// The units this source fetches, in tick order.
     fn units(&self) -> &[UnitSpec];
 
+    /// How far behind the clock the provider's records become visible. A
+    /// window never ends later than now minus this, so the cursor never
+    /// passes records the provider has not yet published.
+    fn window_delay(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
     /// The rows of one unit for one tick.
     fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a>;
 

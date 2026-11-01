@@ -186,7 +186,7 @@ impl Scheduler {
                 )
                 .await
                 {
-                    Ok(window) => window,
+                    Ok(window) => settled(&window, Utc::now(), driver.window_delay()),
                     // Logged, debounced by cause, where it is built.
                     Err(_) => {
                         metrics.inc_fetches_error_for(label);
@@ -628,6 +628,23 @@ fn window_from(
     FetchWindow { start, end }
 }
 
+/// `window` ending no later than `now - delay`, the newest moment the
+/// provider has published everything up to. Empty rather than inverted when
+/// it starts after that moment.
+fn settled(
+    window: &FetchWindow,
+    now: chrono::DateTime<Utc>,
+    delay: std::time::Duration,
+) -> FetchWindow {
+    let end = chrono::Duration::from_std(delay)
+        .map_or(window.start, |delay| window.end.min(now - delay))
+        .max(window.start);
+    FetchWindow {
+        start: window.start,
+        end,
+    }
+}
+
 /// Write cursor after a successful fetch. Logs warning on failure but does
 /// not propagate the error -- cursor failures must not block the pipeline.
 async fn write_cursor(
@@ -730,6 +747,7 @@ mod tests {
         seen: Arc<Mutex<Vec<FetchWindow>>>,
         ticks: Arc<AtomicU64>,
         fail_ticks: u64,
+        delay: Duration,
     }
 
     impl RowSource for Recording {
@@ -741,6 +759,9 @@ mod tests {
         }
         fn units(&self) -> &[UnitSpec] {
             &self.units
+        }
+        fn window_delay(&self) -> Duration {
+            self.delay
         }
         fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a> {
             if let Some(window) = tick.window {
@@ -884,13 +905,14 @@ mod tests {
     }
 
     /// A driver over [`Recording`] under `connection_id`, failing its first
-    /// `fail_ticks` ticks.
+    /// `fail_ticks` ticks, its provider publishing `delay` behind the clock.
     fn recording_driver(
         shared: &SharedConfig,
         metrics: &Arc<Metrics>,
         connection_id: &str,
         seen: &Arc<Mutex<Vec<FetchWindow>>>,
         fail_ticks: u64,
+        delay: Duration,
     ) -> Arc<Driver> {
         driver_over(
             shared,
@@ -901,6 +923,7 @@ mod tests {
                 seen: Arc::clone(seen),
                 ticks: Arc::new(AtomicU64::new(0)),
                 fail_ticks,
+                delay,
             }),
         )
     }
@@ -1249,7 +1272,7 @@ mod tests {
 
         let metrics = Arc::new(Metrics::new());
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let driver = recording_driver(&shared, &metrics, "recording", &seen, 0);
+        let driver = recording_driver(&shared, &metrics, "recording", &seen, 0, Duration::ZERO);
         let shutdown = CancellationToken::new();
         scheduler.spawn_source_task(
             driver,
@@ -1764,11 +1787,13 @@ mod tests {
 
     /// Spawn a paced source over a cursor store seeded at `last_end` (empty
     /// when `None`), whose shape records each window and fails its first
-    /// `fail_ticks` ticks. Returns the windows the shape saw and the store,
-    /// after `intervals` one-second ticks.
+    /// `fail_ticks` ticks and whose provider publishes `delay` behind the
+    /// clock. Returns the windows the shape saw and the store, after
+    /// `intervals` one-second ticks.
     async fn run_recorded_ticks(
         last_end: Option<chrono::DateTime<Utc>>,
         fail_ticks: u64,
+        delay: Duration,
         intervals: usize,
     ) -> (Vec<FetchWindow>, Arc<crate::cursor::file::FileCursorStore>) {
         let mut cfg = test_config_no_jitter();
@@ -1798,7 +1823,7 @@ mod tests {
 
         let metrics = Arc::new(Metrics::new());
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let driver = recording_driver(&shared, &metrics, "recording", &seen, fail_ticks);
+        let driver = recording_driver(&shared, &metrics, "recording", &seen, fail_ticks, delay);
         let shutdown = CancellationToken::new();
         scheduler.spawn_source_task(
             driver,
@@ -1903,7 +1928,7 @@ mod tests {
         tokio::time::pause();
 
         let last_end = Utc::now() - chrono::Duration::hours(6);
-        let (seen, _store) = run_recorded_ticks(Some(last_end), u64::MAX, 10).await;
+        let (seen, _store) = run_recorded_ticks(Some(last_end), u64::MAX, Duration::ZERO, 10).await;
 
         assert!(
             seen.len() >= 2,
@@ -1918,6 +1943,31 @@ mod tests {
         );
     }
 
+    /// A provider that publishes records two minutes behind the clock is
+    /// never asked past now minus two minutes, from a cold start or from a
+    /// cursor, so the cursor never passes a record not yet published.
+    #[tokio::test]
+    async fn a_window_ends_the_providers_delay_before_now() {
+        tokio::time::pause();
+        let delay = chrono::Duration::minutes(2);
+
+        for last_end in [None, Some(Utc::now() - chrono::Duration::minutes(30))] {
+            let (seen, _store) = run_recorded_ticks(last_end, 0, delay.to_std().unwrap(), 10).await;
+            assert!(seen.len() >= 2, "{last_end:?}: ticked {}", seen.len());
+            for window in &seen {
+                assert!(
+                    window.end <= Utc::now() - delay,
+                    "{last_end:?}: {window:?} ends inside the provider's delay"
+                );
+                assert!(window.end >= window.start, "{window:?}");
+            }
+            assert_eq!(
+                seen[1].start, seen[0].end,
+                "the next window starts where the settled one ended"
+            );
+        }
+    }
+
     /// A cold start that fails is retried over the window that failed, not a
     /// lookback that has slid on with the clock: the records at the start of
     /// the first window were never delivered, and a sliding retry would leave
@@ -1927,14 +1977,17 @@ mod tests {
     async fn a_failed_cold_start_is_retried_over_the_window_that_failed() {
         tokio::time::pause();
 
-        let (seen, store) = run_recorded_ticks(None, 2, 10).await;
+        let (seen, store) = run_recorded_ticks(None, 2, Duration::ZERO, 10).await;
 
         assert!(
             seen.len() >= 4,
             "the source should have ticked at least four times, got {}",
             seen.len()
         );
-        assert_eq!(seen[1], seen[0], "the first retry repeats the failed window");
+        assert_eq!(
+            seen[1], seen[0],
+            "the first retry repeats the failed window"
+        );
         assert_eq!(seen[2], seen[0], "and so does the retry that succeeds");
         assert_eq!(
             seen[3].start, seen[0].end,
@@ -2101,7 +2154,7 @@ mod tests {
 
         let span = chrono::Duration::hours(1);
         let last_end = Utc::now() - chrono::Duration::hours(30);
-        let (seen, store) = run_recorded_ticks(Some(last_end), 1, 20).await;
+        let (seen, store) = run_recorded_ticks(Some(last_end), 1, Duration::ZERO, 20).await;
 
         assert!(
             seen.len() >= 3,

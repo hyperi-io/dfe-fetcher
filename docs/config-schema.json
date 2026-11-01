@@ -3848,7 +3848,8 @@
           "default": {
             "format": "rfc3339_secs",
             "step": null,
-            "lookback": "3600s"
+            "lookback": "3600s",
+            "delay": null
           }
         },
         "probe": {
@@ -4745,6 +4746,18 @@
           "description": "Window used when the scheduler passes none.",
           "$ref": "#/$defs/DurationText",
           "default": "3600s"
+        },
+        "delay": {
+          "description": "How long after the fact the provider makes a record visible. Every\nwindow ends at least this far before now.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurationText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

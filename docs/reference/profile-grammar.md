@@ -571,6 +571,7 @@ counted as an API error.
 | `window.format` | How `window.start` and `window.end` render: `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis` or `strftime:<pattern>`. |
 | `window.step` | Split the window into steps of at most this length (`<n>s\|m\|h\|d`), one page sequence each. |
 | `window.lookback` | Window used when the scheduler passes none. |
+| `window.delay` | How long after the fact the provider publishes a record (`<n>s\|m\|h\|d`). Every window ends at least this long before now, so the cursor never passes a record not yet visible. Duo's is `2m`. |
 | `endpoints[].window.format` | A unit's own rendering when its API differs from the profile's. |
 
 A unit whose templates read no `window` runs once per tick, whatever the

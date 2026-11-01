@@ -152,6 +152,15 @@ impl RowSource for Shape {
         }
     }
 
+    fn window_delay(&self) -> Duration {
+        match self {
+            Shape::Rest(s) => s.window_delay(),
+            Shape::Db(s) => s.window_delay(),
+            Shape::File(s) => s.window_delay(),
+            Shape::Custom(s) => s.window_delay(),
+        }
+    }
+
     fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a> {
         match self {
             Shape::Rest(s) => s.rows(tick),
@@ -356,6 +365,13 @@ impl Driver {
     #[must_use]
     pub fn units(&self) -> &[UnitSpec] {
         self.shape.units()
+    }
+
+    /// How far behind the clock the shape's provider publishes records. The
+    /// scheduler ends every window at least this long before now.
+    #[must_use]
+    pub fn window_delay(&self) -> Duration {
+        self.shape.window_delay()
     }
 
     /// The shape itself, for a caller that must stop what it runs (a file

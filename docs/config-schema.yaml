@@ -3406,6 +3406,7 @@ $defs:
           format: rfc3339_secs
           step: null
           lookback: 3600s
+          delay: null
       probe:
         description: The health-check request, when the API has a cheap one.
         anyOf:
@@ -4197,6 +4198,14 @@ $defs:
         description: Window used when the scheduler passes none.
         $ref: "#/$defs/DurationText"
         default: 3600s
+      delay:
+        description: |-
+          How long after the fact the provider makes a record visible. Every
+          window ends at least this far before now.
+        anyOf:
+        - $ref: "#/$defs/DurationText"
+        - type: "null"
+        default: null
     additionalProperties: false
   WindowFormat:
     description: rfc3339_secs | rfc3339_millis | epoch_secs | epoch_millis | strftime:<pattern>

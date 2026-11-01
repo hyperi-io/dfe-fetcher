@@ -1351,6 +1351,14 @@ impl RowSource for RestShape {
         &self.bound.units
     }
 
+    fn window_delay(&self) -> std::time::Duration {
+        self.bound
+            .window
+            .delay
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |delay| delay.0)
+    }
+
     // SHORTCUT: pages are requested one at a time per unit and a connection's
     // units run sequentially; fan pages out with `buffer_unordered(n)` for the
     // offset and page-number pagers only when a store's page count x page
@@ -1372,12 +1380,9 @@ impl RowSource for RestShape {
         if !endpoint.windowed {
             window_spec.step = None;
         }
-        let window_steps = window::steps(
-            &window_spec,
-            endpoint.unit.shape,
-            tick.window,
-            chrono::Utc::now(),
-        );
+        let settled = chrono::Utc::now()
+            - chrono::Duration::from_std(self.window_delay()).unwrap_or(chrono::Duration::zero());
+        let window_steps = window::steps(&window_spec, endpoint.unit.shape, tick.window, settled);
         let source = self.bound.connection_id.clone();
         let state = Tick {
             shape: self,

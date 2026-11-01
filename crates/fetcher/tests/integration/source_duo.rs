@@ -287,8 +287,12 @@ async fn the_limit_knob_is_capped_at_1000_and_a_non_integer_limit_is_ignored() {
     );
 }
 
+/// Duo withholds authentications under two minutes old, so a window ending
+/// at the clock would commit past events not yet visible. The lookback hour
+/// ends two minutes before now.
 #[tokio::test]
-async fn without_a_window_the_last_hour_is_fetched() {
+async fn without_a_window_the_last_settled_hour_is_fetched() {
+    const SETTLE_MS: i64 = 120_000;
     let provider = crate::saas_provider::start().await;
     provider.serve(vec![vec![]]);
     let before = Utc::now();
@@ -301,8 +305,9 @@ async fn without_a_window_the_last_hour_is_fetched() {
     let maxtime: i64 = seen[0].query_value("maxtime").unwrap().parse().unwrap();
     assert_eq!(maxtime - mintime, 3_600_000, "one hour of lookback, in ms");
     assert!(
-        maxtime >= before.timestamp_millis() - 1000 && maxtime <= Utc::now().timestamp_millis(),
-        "the window ends now: {maxtime} vs {before}"
+        maxtime >= before.timestamp_millis() - SETTLE_MS - 1000
+            && maxtime <= Utc::now().timestamp_millis() - SETTLE_MS,
+        "the window ends two minutes before now: {maxtime} vs {before}"
     );
 }
 

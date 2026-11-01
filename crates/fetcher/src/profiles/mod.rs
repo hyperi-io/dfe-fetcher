@@ -2029,6 +2029,11 @@ mod tests {
         );
         assert_eq!(profile.window.format, WindowFormat::EpochMillis);
         assert_eq!(profile.window.lookback.0.as_secs(), 3600);
+        assert_eq!(
+            profile.window.delay.as_ref().map(|d| d.0.as_secs()),
+            Some(120),
+            "Duo withholds authentications under two minutes old"
+        );
         assert_eq!(profile.error.at.as_deref(), Some("/message"));
         let probe = profile.probe.as_ref().expect("a probe");
         assert_eq!(probe.path, "/admin/v1/check");
