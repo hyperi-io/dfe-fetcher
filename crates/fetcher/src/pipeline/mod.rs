@@ -538,8 +538,7 @@ impl PipelineState {
     /// # Errors
     ///
     /// Returns an error when the pipeline components cannot be built from the
-    /// config, including [`Error::Dlq`] when the DLQ is enabled and a backend
-    /// it names cannot start.
+    /// config, including [`Error::Dlq`] when the DLQ's config is refused.
     pub fn new(
         shared_config: SharedConfig,
         metrics: Arc<Metrics>,
@@ -549,8 +548,8 @@ impl PipelineState {
         let config = shared_config.get();
         let memory_guard = Arc::new(MemoryGuard::new(memory_guard_config(&config)));
 
-        // An enabled DLQ that cannot start is fatal: without it every refused
-        // record is dropped and acknowledged.
+        // A backend that cannot start is left out. With none running, every
+        // dead-letter write fails, so its records stay unacknowledged.
         let dlq = if config.dlq.enabled {
             let (dlq_config, dlq_kafka) = dlq_backends(&config);
             Some(Dlq::spawn(
@@ -1087,27 +1086,7 @@ mod tests {
 
     #[test]
     fn test_enrich_record_injects_metadata() {
-        let config = Config::default();
-        let shared = SharedConfig::new(config);
-        let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::new(shared, metrics, None, CancellationToken::new())
-            .unwrap_or_else(|_| {
-                // No output configured, create minimal state
-                let config = Config::default();
-                let shared = SharedConfig::new(config);
-                PipelineState {
-                    shared_config: shared,
-                    output: None,
-                    memory_guard: Arc::new(MemoryGuard::new(scalo::memory::MemoryGuardConfig {
-                        limit_bytes: 1_073_741_824, // 1 GiB for tests
-                        ..Default::default()
-                    })),
-                    dlq: None,
-                    metrics: Arc::new(Metrics::new()),
-                    ready: AtomicBool::new(true),
-                    intake: TaskTracker::new(),
-                }
-            });
+        let state = make_pipeline_state();
 
         let payload = Bytes::from(r#"{"key": "value"}"#);
         let enriched = stamped(state.enrich_record(payload, "cloudtrail", "aws.cloudtrail"));
@@ -2320,11 +2299,11 @@ mod tests {
         assert!(state.dlq.is_some(), "the DLQ init branch ran");
     }
 
-    /// An enabled DLQ that cannot start fails the pipeline: running on
-    /// without it would drop and acknowledge every refused record while the
-    /// operator believes they are held.
+    /// An enabled DLQ whose only backend cannot start still starts the
+    /// pipeline, and a dead letter it cannot hold fails its write, so the
+    /// records stay unacknowledged rather than dropped.
     #[tokio::test]
-    async fn a_dlq_that_cannot_start_fails_the_pipeline() {
+    async fn a_dlq_with_no_backend_running_fails_its_dead_letter_writes() {
         let tmp = tempfile::tempdir().unwrap();
         let not_a_dir = tmp.path().join("file");
         std::fs::write(&not_a_dir, b"").unwrap();
@@ -2333,14 +2312,21 @@ mod tests {
         config.dlq.mode = scalo::dlq::DlqMode::FileOnly;
         config.dlq.file.path = not_a_dir.join("dlq");
 
-        let err = PipelineState::new(
+        let state = PipelineState::new(
             SharedConfig::new(config),
             Arc::new(Metrics::new()),
             None,
             CancellationToken::new(),
         )
-        .err()
-        .expect("the DLQ directory cannot be created under a file");
+        .expect("the pipeline starts with its DLQ backend left out");
+        let err = state
+            .dead_letter(vec![DeadLetter {
+                topic: Arc::from("t"),
+                payload: Bytes::from_static(b"{}"),
+                reason: "refused".into(),
+            }])
+            .await
+            .expect_err("no backend holds the dead letter");
         assert!(err.to_string().contains("DLQ"), "{err}");
     }
 
