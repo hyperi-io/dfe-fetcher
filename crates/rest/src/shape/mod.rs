@@ -48,7 +48,7 @@ use crate::hooks::s3_list::{
 };
 use crate::page::{Inject, PageMeta, PageState, Pager};
 use crate::profile::bound::{
-    BoundEndpoint, BoundLookup, BoundProfile, BoundRequest, KeySource, bind, render_body,
+    BoundEndpoint, BoundLookup, BoundProfile, BoundRequest, KeySource, bind,
 };
 use crate::profile::template::TemplateCtx;
 use crate::profile::{AuthKind, Method, RestInstance, RestProfile};
@@ -362,7 +362,7 @@ impl RestShape {
                     (Some(Inject::BodyReplace(_)), Some(_)) => {
                         Value::Object(serde_json::Map::new())
                     }
-                    _ => render_body(body, ctx)?,
+                    _ => body.render(ctx)?,
                 };
                 if let (Some(Inject::Body(pointer) | Inject::BodyReplace(pointer)), Some(token)) =
                     (pager.inject(), &state.token)
@@ -1021,7 +1021,7 @@ impl<'a> LookupBatch<'a> {
             let item = ids.first().cloned().unwrap_or(Value::Null);
             ctx.set("item", item);
             for (name, value) in &lookup.item_fields {
-                fields.push((name.clone(), render_body(value, &ctx)?));
+                fields.push((name.clone(), value.render(&ctx)?));
             }
             if let Some(templates) = &lookup.item_mark {
                 let key = templates.key.render(&ctx)?;
@@ -1301,7 +1301,7 @@ impl<'a> Tick<'a> {
             .endpoint
             .key_fields
             .iter()
-            .map(|(name, value)| render_body(value, &self.ctx).map(|v| (name.clone(), v)))
+            .map(|(name, value)| value.render(&self.ctx).map(|v| (name.clone(), v)))
             .collect::<Result<_>>()?;
         self.steps = self.window_steps.clone().into_iter();
         self.items_taken = 0;

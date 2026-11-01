@@ -5618,7 +5618,8 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
 
     /// A body member whose leaf renders `null` is left out, so a profile
     /// writes an optional member as a ternary to null; a typed leaf and a
-    /// literal null in an array stay as they are.
+    /// literal null in an array stay as they are. One compiled body renders
+    /// each context it is given, and reports the variables it reads.
     #[test]
     fn a_body_member_that_renders_null_is_left_out() {
         let mut ctx = TemplateCtx::new();
@@ -5637,6 +5638,18 @@ units: { assets: { query: { fields: "id,alive" } }, nope: {} }
         assert_eq!(
             bound::render_body(&body, &ctx).unwrap()["filterPattern"],
             "ERROR"
+        );
+        let compiled = bound::BodyTemplate::compile(&body).unwrap();
+        assert_eq!(compiled.render(&ctx).unwrap()["filterPattern"], "ERROR");
+        ctx.set("vars", serde_json::json!({"pattern": "", "limit": 20}));
+        assert_eq!(
+            compiled.render(&ctx).unwrap(),
+            serde_json::json!({"logGroupName": "g", "limit": 20, "nested": {"kept": [null, 20]}})
+        );
+        assert!(compiled.references("vars") && !compiled.references("window"));
+        assert!(
+            bound::BodyTemplate::compile(&serde_json::json!({"q": "{{ 1 + }}"})).is_err(),
+            "a leaf that does not compile fails at bind"
         );
     }
 
