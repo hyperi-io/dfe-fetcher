@@ -4213,6 +4213,11 @@ pub struct S3BackendConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_secret: Option<String>,
 
+    /// Seconds an object must age before it is read, used only where the
+    /// store refuses `ListMultipartUploads`. Default 300 (the profile's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_secs: Option<u64>,
+
     /// Buckets + prefixes to tail.
     pub buckets: Vec<ObjectStoreBucket>,
 }

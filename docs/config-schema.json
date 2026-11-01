@@ -3260,6 +3260,15 @@
             "null"
           ]
         },
+        "settle_secs": {
+          "description": "Seconds an object must age before it is read, used only where the\nstore refuses `ListMultipartUploads`. Default 300 (the profile's).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "buckets": {
           "description": "Buckets + prefixes to tail.",
           "type": "array",

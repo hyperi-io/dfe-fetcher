@@ -2759,3 +2759,66 @@ async fn an_exposed_credential_field_permits_the_host_it_names() {
         "the exchange really did go to the other host string"
     );
 }
+
+/// One tick of a lister unit from `checkpoint`: the objects read, and the
+/// checkpoint the driver would fold from their marks.
+async fn lister_tick(
+    shape: &RestShape,
+    checkpoint: Option<dfe_fetcher_core::CheckpointValue>,
+) -> (Vec<String>, Option<dfe_fetcher_core::CheckpointValue>) {
+    let spec = shape.units()[0].clone();
+    let tick = TickCtx {
+        window: None,
+        connection_id: "conn",
+        unit: &spec,
+        checkpoint: checkpoint.as_ref(),
+    };
+    let mut fold = dfe_fetcher_core::checkpoint::Checkpoint::new("k");
+    let mut read = Vec::new();
+    let mut rows = shape.rows(tick);
+    while let Some(row) = rows.next().await {
+        let row = row.unwrap();
+        let value: Value = serde_json::from_slice(&row.payload).unwrap();
+        read.push(value["object"].as_str().unwrap().to_owned());
+        if let Some(mark) = row.mark {
+            fold.fold(mark);
+        }
+    }
+    drop(rows);
+    (read, fold.value().cloned().or(checkpoint))
+}
+
+/// A multipart upload begun before a newer object and completed after it is
+/// listed with its start as `LastModified`, which sorts before a checkpoint
+/// the newer object moved past. The lister reads nothing at or after the
+/// oldest upload still in progress, so the upload is read once it lands; and
+/// where `ListMultipartUploads` is refused, it reads nothing newer than the
+/// settle window, which covers an upload shorter than the window.
+#[tokio::test]
+async fn an_object_from_a_multipart_upload_is_read_not_skipped() {
+    let fx = common::start().await;
+    let p = "profile: s3\nbase_url: \"{{ vars.base_url }}/s3mp\"\nauth:\n  accepts: [sigv4]\n  sigv4: { service: s3, region: ap-southeast-2 }\nwindow: { lookback: 3650d }\nvars: { settle_secs: 60 }\nendpoints:\n  - unit: objects\n    lister: s3\n    path: \"{{ vars.bucket }}\"\n    query: { list-type: 2 }\n    construct:\n      manifest:\n        item_request: { path: \"{{ vars.bucket }}/{{ item.path }}\" }\n        rows: { decoder: ndjson }\n        key: \"{{ item.key }}\"\n        position: \"{{ item.last_modified }}\"\n";
+    for (bucket, ticks) in [
+        ("held", vec![vec![], vec!["old.jsonl", "newer.jsonl"]]),
+        (
+            "refused",
+            vec![vec![], vec![], vec!["old.jsonl", "newer.jsonl"]],
+        ),
+    ] {
+        let i = format!(
+            "profile: x\ntopic: t\nauth: {{ mode: sigv4, access_key_id: AKIATEST, secret_access_key: sekrit }}\nvars: {{ bucket: {bucket} }}\n"
+        );
+        let s = shape(&fx, p, &i);
+        let mut checkpoint = None;
+        for (n, want) in ticks.iter().enumerate() {
+            let (read, next) = lister_tick(&s, checkpoint).await;
+            assert_eq!(&read, want, "{bucket}: tick {n}");
+            checkpoint = next;
+        }
+        assert_eq!(
+            fx.requests_to(&format!("/s3mp/{bucket}?uploads")).len(),
+            ticks.len(),
+            "{bucket}: the uploads are asked for before every listing"
+        );
+    }
+}

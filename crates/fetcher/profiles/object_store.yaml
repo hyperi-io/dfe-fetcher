@@ -32,6 +32,13 @@
 # prefix still listing past a million keys fails the unit rather than
 # checkpoint past keys it never saw, and wants a narrower prefix. There is
 # no probe: the health check is the key pair resolving.
+#
+# S3 lists a multipart upload's object under the time the upload began, so
+# each listing first asks `ListMultipartUploads` for the oldest upload in
+# progress under the prefix and reads nothing modified at or after its
+# start. A store that refuses it (no `s3:ListBucketMultipartUploads`) gets
+# `settle_secs` instead: only objects older than that are read, one
+# scheduler interval by default.
 profile: object_store
 maturity: alpha
 base_url: "{{ vars.endpoint_url != '' ? vars.endpoint_url : 'https://s3.' + vars.region + '.amazonaws.com' }}"
@@ -50,6 +57,7 @@ vars:
   region: us-east-1
   bucket: ""
   prefix: ""
+  settle_secs: 300
 defaults:
   path: "{{ vars.bucket }}/"
   query: { list-type: 2, prefix: "{{ vars.prefix }}", max-keys: 1000 }

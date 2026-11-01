@@ -653,7 +653,8 @@ pub(crate) fn object_store() -> Capability {
                 .field(FieldSpec::string("endpoint_override").description("S3 endpoint override (S3-compatible / VPC endpoints)."))
                 .field(FieldSpec::string("access_key_id").description("Access key ID (or a vault:/env: spec)."))
                 .field(FieldSpec::secret("secret_access_key").description("AWS secret access key."))
-                .field(credential_secret()),
+                .field(credential_secret())
+                .field(FieldSpec::int("settle_secs").description("Seconds an object ages before it is read where ListMultipartUploads is refused (default 300).")),
         )
         .children(vec![
             Capability::service("gcs").description("Google Cloud Storage (Phase-2 stub).").maturity("alpha"),

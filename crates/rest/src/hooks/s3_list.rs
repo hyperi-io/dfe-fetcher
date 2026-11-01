@@ -19,6 +19,12 @@
 //! encoded for a URL path. Nothing here sends: the shape renders and signs
 //! the listing request, the lister only decides what to ask for next and
 //! what the pages hold.
+//!
+//! A multipart upload's object is listed with the time the upload BEGAN, so
+//! one still in progress lands behind objects written while it ran, and
+//! behind a checkpoint they moved. Before each listing the lister asks
+//! `ListMultipartUploads` for the oldest upload in progress and reads
+//! nothing modified at or after its start: the [`Horizon`].
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -42,6 +48,56 @@ pub(crate) const RFC3986: &AsciiSet = &NON_ALPHANUMERIC
 /// The query parameter the lister injects to continue a listing.
 pub const CONTINUATION_PARAM: &str = "continuation-token";
 
+/// The query parameter that makes a bucket GET `ListMultipartUploads`.
+pub const UPLOADS_PARAM: &str = "uploads";
+
+/// The statuses that say a store will not list uploads for this credential
+/// (`AccessDenied`) or at all (an S3-compatible store without the call).
+pub const UPLOADS_UNAVAILABLE: [u16; 5] = [400, 403, 404, 405, 501];
+
+/// Where `ListMultipartUploads` continues: its `NextKeyMarker` and
+/// `NextUploadIdMarker`.
+pub type UploadsMarker = (String, String);
+
+/// The shape's answer to one `ListMultipartUploads` request.
+#[derive(Debug, Clone)]
+pub enum UploadsAnswer {
+    /// The page, and the store's `Date` for it when it sent one.
+    Page {
+        /// The XML body.
+        body: Bytes,
+        /// When the store answered.
+        date: Option<DateTime<Utc>>,
+    },
+    /// A status in [`UPLOADS_UNAVAILABLE`].
+    Unavailable,
+}
+
+/// The newest `LastModified` a listing may read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Horizon {
+    /// Objects modified before `at` are complete: `at` is the start of the
+    /// oldest upload in progress, or when the store answered if none was.
+    Held {
+        /// The bound, exclusive.
+        at: DateTime<Utc>,
+        /// The key of the upload that set it, if one did.
+        upload: Option<String>,
+    },
+    /// The store would not list its uploads.
+    Unavailable,
+}
+
+/// One `ListMultipartUploads` page: the oldest upload on it as `(Initiated,
+/// Key)`, and where the listing continues.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadsPage {
+    /// The page's earliest `Initiated`, with its key.
+    pub oldest: Option<(DateTime<Utc>, String)>,
+    /// The markers for the next page, while `IsTruncated`.
+    pub next: Option<UploadsMarker>,
+}
+
 /// A listing protocol standing in for a unit's page fetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lister {
@@ -54,6 +110,10 @@ pub enum Lister {
 pub trait ListingPages: Send {
     /// The page for `token` (the first page for `None`).
     fn page(&mut self, token: Option<String>) -> BoxFuture<'_, Result<Option<Bytes>>>;
+
+    /// The `ListMultipartUploads` page at `marker` (the first for `None`),
+    /// under the listing's prefix.
+    fn uploads(&mut self, marker: Option<UploadsMarker>) -> BoxFuture<'_, Result<UploadsAnswer>>;
 }
 
 /// One object of a listing.
@@ -100,6 +160,10 @@ pub struct Listing {
 ///
 /// `LastModified` is second-resolution, so a run of objects shares one
 /// position and only the key orders them.
+fn before_horizon(object: &Listed, horizon: Option<DateTime<Utc>>) -> bool {
+    horizon.is_none_or(|at| object.last_modified < at)
+}
+
 fn past_cutoff(object: &Listed, cutoff: Option<&(DateTime<Utc>, String)>) -> bool {
     match cutoff {
         None => true,
@@ -140,10 +204,67 @@ impl Lister {
         })
     }
 
+    /// The bound of the next listing: the oldest `Initiated` across every
+    /// `ListMultipartUploads` page, else the store's `Date` for the first
+    /// page (`asked` when it sent none), so an upload begun after this call
+    /// is held too.
+    ///
+    /// # Errors
+    ///
+    /// Returns the request's error, [`Error::Decode`] for a page that is not
+    /// the documented XML, or [`Error::PageCeiling`] when the uploads still
+    /// continue after `max_pages`: the oldest may be on a page not read.
+    pub async fn horizon<P: ListingPages>(
+        self,
+        unit: &str,
+        max_pages: u32,
+        asked: DateTime<Utc>,
+        pages: &mut P,
+    ) -> Result<Horizon> {
+        let Lister::S3 = self;
+        let mut answered: Option<DateTime<Utc>> = None;
+        let mut oldest: Option<(DateTime<Utc>, String)> = None;
+        let mut marker = None;
+        for page in 0..max_pages {
+            let UploadsAnswer::Page { body, date } = pages.uploads(marker.take()).await? else {
+                return Ok(Horizon::Unavailable);
+            };
+            answered.get_or_insert(date.unwrap_or(asked));
+            let found = parse_list_multipart_uploads(&body)?;
+            if let Some(upload) = found.oldest
+                && oldest.as_ref().is_none_or(|o| upload < *o)
+            {
+                oldest = Some(upload);
+            }
+            match found.next {
+                Some(_) if page + 1 == max_pages => {
+                    return Err(Error::PageCeiling {
+                        unit: unit.to_owned(),
+                        ceiling: "max_pages",
+                        limit: max_pages,
+                    });
+                }
+                Some(next) => marker = Some(next),
+                None => break,
+            }
+        }
+        let answered = answered.unwrap_or(asked);
+        Ok(match oldest {
+            Some((at, key)) if at < answered => Horizon::Held {
+                at,
+                upload: Some(key),
+            },
+            _ => Horizon::Held {
+                at: answered,
+                upload: None,
+            },
+        })
+    }
+
     /// The listing as item rows: `pages` fetches one listing page per
     /// continuation token until the listing ends; the keys past `cutoff`
-    /// come back sorted by `last_modified` then key, oldest first, cut to
-    /// `max_items` at a position boundary.
+    /// and before `horizon` come back sorted by `last_modified` then key,
+    /// oldest first, cut to `max_items` at a position boundary.
     ///
     /// The listing is in key order, not time order, so every page has to be
     /// seen before the oldest objects are known. The cut is applied after
@@ -161,6 +282,7 @@ impl Lister {
         self,
         unit: &str,
         cutoff: Option<(DateTime<Utc>, String)>,
+        horizon: Option<DateTime<Utc>>,
         max_items: Option<u32>,
         max_pages: u32,
         pages: &mut P,
@@ -176,7 +298,7 @@ impl Lister {
             out.extend(
                 objects
                     .into_iter()
-                    .filter(|o| past_cutoff(o, cutoff.as_ref())),
+                    .filter(|o| past_cutoff(o, cutoff.as_ref()) && before_horizon(o, horizon)),
             );
             out.sort_by(|a, b| (a.last_modified, &a.key).cmp(&(b.last_modified, &b.key)));
             out = cut_at_a_position_boundary(out, max_items);
@@ -276,6 +398,88 @@ pub fn parse_list_objects_v2(xml: &[u8]) -> Result<(Vec<Listed>, Option<String>)
     Ok((objects, next_token))
 }
 
+/// The oldest upload of a `ListMultipartUploads` page and its continuation
+/// markers: only `Key`, `Initiated`, `IsTruncated` and the two `Next*Marker`s
+/// are read.
+///
+/// # Errors
+///
+/// Returns [`Error::Decode`] when the body is not well-formed XML, or an
+/// upload's `Initiated` is not a timestamp: an upload whose start is unknown
+/// cannot be held behind.
+pub fn parse_list_multipart_uploads(xml: &[u8]) -> Result<UploadsPage> {
+    let text = std::str::from_utf8(xml)
+        .map_err(|e| Error::Decode(format!("ListMultipartUploads page is not UTF-8: {e}")))?;
+    let mut reader = Reader::from_str(text);
+    let mut oldest: Option<(DateTime<Utc>, String)> = None;
+    let mut truncated = false;
+    let mut next_key = None;
+    let mut next_upload = None;
+    let mut key: Option<String> = None;
+    let mut initiated: Option<DateTime<Utc>> = None;
+    let mut in_upload = false;
+    let mut tag: Option<String> = None;
+    let mut value = String::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => {
+                let name = e.name().into_inner().to_owned();
+                if name == "Upload" {
+                    in_upload = true;
+                    key = None;
+                    initiated = None;
+                }
+                tag = Some(name);
+                value.clear();
+            }
+            Ok(Event::End(e)) => {
+                if e.name().into_inner() == "Upload" {
+                    in_upload = false;
+                    let at = initiated.take().ok_or_else(|| {
+                        Error::Decode(
+                            "ListMultipartUploads names an upload with no Initiated".into(),
+                        )
+                    })?;
+                    let upload = (at, key.take().unwrap_or_default());
+                    if oldest.as_ref().is_none_or(|o| upload < *o) {
+                        oldest = Some(upload);
+                    }
+                }
+                match tag.as_deref() {
+                    Some("Key") if in_upload => key = Some(std::mem::take(&mut value)),
+                    Some("Initiated") if in_upload => {
+                        initiated = Some(value.trim().parse::<DateTime<Utc>>().map_err(|e| {
+                            Error::Decode(format!("ListMultipartUploads Initiated `{value}`: {e}"))
+                        })?);
+                    }
+                    Some("IsTruncated") => truncated = value.trim() == "true",
+                    Some("NextKeyMarker") => next_key = Some(std::mem::take(&mut value)),
+                    Some("NextUploadIdMarker") => next_upload = Some(std::mem::take(&mut value)),
+                    _ => {}
+                }
+                tag = None;
+                value.clear();
+            }
+            Ok(Event::Text(t)) => value.push_str(&t),
+            Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::Decode(format!(
+                    "ListMultipartUploads page is not the XML the protocol documents: {e}"
+                )));
+            }
+        }
+    }
+    let next = truncated.then(|| {
+        (
+            next_key.unwrap_or_default(),
+            next_upload.unwrap_or_default(),
+        )
+    });
+    Ok(UploadsPage { oldest, next })
+}
+
 /// The character a `&name;` or `&#nn;` reference stands for.
 ///
 /// A listing carries no DTD, so the five predefined names and numeric
@@ -318,6 +522,22 @@ mod tests {
             self.asked.push(token.clone());
             let body = (self.answer)(token.as_deref()).map(Bytes::from_static);
             async move { Ok(body) }.boxed()
+        }
+
+        /// The script's answer for the token `uploads`, `None` a refusal.
+        fn uploads(
+            &mut self,
+            marker: Option<UploadsMarker>,
+        ) -> BoxFuture<'_, Result<UploadsAnswer>> {
+            self.asked.push(marker.map(|(key, _)| key));
+            let answer = match (self.answer)(Some("uploads")) {
+                Some(body) => UploadsAnswer::Page {
+                    body: Bytes::from_static(body),
+                    date: None,
+                },
+                None => UploadsAnswer::Unavailable,
+            };
+            async move { Ok(answer) }.boxed()
         }
     }
 
@@ -393,6 +613,7 @@ mod tests {
                     String::new(),
                 )),
                 None,
+                None,
                 10,
                 &mut pages,
             )
@@ -433,7 +654,7 @@ mod tests {
                 answer: |_| Some(PAGE_ONE.as_bytes()),
             };
             let err = Lister::S3
-                .list("json_gz", None, None, max_pages, &mut endless)
+                .list("json_gz", None, None, None, max_pages, &mut endless)
                 .await
                 .expect_err("a listing cut at the ceiling is refused");
             assert!(
@@ -451,7 +672,7 @@ mod tests {
             answer: |_| None,
         };
         let listing = Lister::S3
-            .list("json_gz", None, None, 5, &mut ignored)
+            .list("json_gz", None, None, None, 5, &mut ignored)
             .await
             .unwrap();
         assert_eq!(listing.items, [] as [bytes::Bytes; 0]);
@@ -472,7 +693,7 @@ mod tests {
             },
         };
         let listing = Lister::S3
-            .list("json_gz", None, Some(1), 10, &mut pages)
+            .list("json_gz", None, None, Some(1), 10, &mut pages)
             .await
             .unwrap();
         let first: Value = serde_json::from_slice(&listing.items[0]).unwrap();
@@ -561,5 +782,121 @@ mod tests {
         );
         assert!(past_cutoff(&object("a", 200), cutoff.as_ref()));
         assert!(past_cutoff(&object("a", 100), None), "no cutoff, read it");
+    }
+
+    const UPLOADS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Bucket>my-bucket</Bucket>
+    <IsTruncated>false</IsTruncated>
+    <Upload>
+        <Key>logs/b.json</Key>
+        <UploadId>u-2</UploadId>
+        <Initiator><ID>arn</ID></Initiator>
+        <Initiated>2026-05-21T10:30:00.000Z</Initiated>
+    </Upload>
+    <Upload>
+        <Key>logs/a.json</Key>
+        <UploadId>u-1</UploadId>
+        <Initiated>2026-05-21T10:00:00.000Z</Initiated>
+    </Upload>
+</ListMultipartUploadsResult>"#;
+
+    /// The horizon is the oldest upload in progress, or when the store was
+    /// asked if none is older; a refusal says the store will not list them;
+    /// the listing then reads nothing at or after the horizon.
+    #[tokio::test]
+    async fn the_horizon_holds_the_listing_behind_the_oldest_upload_in_progress() {
+        let at = |h: u32, m: u32| Utc.with_ymd_and_hms(2026, 5, 21, h, m, 0).unwrap();
+        let page = parse_list_multipart_uploads(UPLOADS.as_bytes()).unwrap();
+        assert_eq!(page.oldest, Some((at(10, 0), "logs/a.json".to_owned())));
+        assert_eq!(page.next, None);
+        let truncated = UPLOADS.replace(
+            "<IsTruncated>false</IsTruncated>",
+            "<IsTruncated>true</IsTruncated><NextKeyMarker>logs/b.json</NextKeyMarker><NextUploadIdMarker>u-2</NextUploadIdMarker>",
+        );
+        assert_eq!(
+            parse_list_multipart_uploads(truncated.as_bytes())
+                .unwrap()
+                .next,
+            Some(("logs/b.json".to_owned(), "u-2".to_owned()))
+        );
+        assert!(
+            parse_list_multipart_uploads(b"<R><Upload><Key>k</Key></Upload></R>").is_err(),
+            "an upload with no start cannot be held behind"
+        );
+
+        let mut held = Scripted {
+            asked: Vec::new(),
+            answer: |token| {
+                Some(match token {
+                    Some("uploads") => UPLOADS.as_bytes(),
+                    _ => PAGE_ONE.as_bytes(),
+                })
+            },
+        };
+        assert_eq!(
+            Lister::S3
+                .horizon("u", 5, at(12, 0), &mut held)
+                .await
+                .unwrap(),
+            Horizon::Held {
+                at: at(10, 0),
+                upload: Some("logs/a.json".to_owned())
+            }
+        );
+        let mut idle = Scripted {
+            asked: Vec::new(),
+            answer: |_| Some(PAGE_TWO.as_bytes()),
+        };
+        assert_eq!(
+            Lister::S3
+                .horizon("u", 5, at(9, 0), &mut idle)
+                .await
+                .unwrap(),
+            Horizon::Held {
+                at: at(9, 0),
+                upload: None
+            },
+            "no upload in progress: the bound is when the store was asked"
+        );
+        let mut refused = Scripted {
+            asked: Vec::new(),
+            answer: |_| None,
+        };
+        assert_eq!(
+            Lister::S3
+                .horizon("u", 5, at(9, 0), &mut refused)
+                .await
+                .unwrap(),
+            Horizon::Unavailable
+        );
+
+        let mut pages = Scripted {
+            asked: Vec::new(),
+            answer: |token| {
+                Some(if token.is_none() {
+                    PAGE_ONE.as_bytes()
+                } else {
+                    PAGE_TWO.as_bytes()
+                })
+            },
+        };
+        let items: Vec<Value> = Lister::S3
+            .list("u", None, Some(at(11, 30)), None, 10, &mut pages)
+            .await
+            .unwrap()
+            .items
+            .iter()
+            .map(|row| serde_json::from_slice(row).unwrap())
+            .collect();
+        let keys: Vec<&str> = items.iter().map(|i| i["key"].as_str().unwrap()).collect();
+        assert_eq!(
+            keys,
+            [
+                "logs/2026/05/20/old.json.gz",
+                "logs/2026/05/21/file 001.json.gz"
+            ],
+            "the object at 11:30:45 is past the horizon"
+        );
     }
 }

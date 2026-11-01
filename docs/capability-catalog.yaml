@@ -824,6 +824,12 @@
         accepted and ignored) for this connection's credentials. ESO materialises it; the
         app resolves it at fetch time. Prefer this over inline credential fields in
         production.
+    - name: settle_secs
+      type: int
+      required: false
+      description: >-
+        Seconds an object ages before it is read where ListMultipartUploads is refused
+        (default 300).
   - kind: service
     name: gcs
     description: Google Cloud Storage (Phase-2 stub).
