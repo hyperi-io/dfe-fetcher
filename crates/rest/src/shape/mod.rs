@@ -258,6 +258,7 @@ impl RestShape {
                     origins: &self.bound.origins,
                     idempotent: probe.method == Method::Get,
                     ignore: &[],
+                    rate: None,
                 },
                 make,
             )
@@ -572,8 +573,8 @@ impl RestShape {
     }
 
     /// Build and send one request of `endpoint` through the executor, with
-    /// the credential that unit signs with and after its rate gate hands out
-    /// a slot; a `reqwest::Request` is single-use, so the builder runs per
+    /// the credential that unit signs with and a slot from its rate gate per
+    /// attempt; a `reqwest::Request` is single-use, so the builder runs per
     /// attempt. `ctx` is the request's own context, which a signing mode
     /// reads for its scope. `None` is a status the request ignores.
     async fn send_request(
@@ -585,9 +586,6 @@ impl RestShape {
         headers: HeaderMap,
         body: Option<&Value>,
     ) -> Result<Option<reqwest::Response>> {
-        if let Some(gate) = &endpoint.rate {
-            gate.wait().await;
-        }
         let client = self.executor.client().clone();
         let wire = reqwest_method(request.method);
         let make = || {
@@ -613,6 +611,7 @@ impl RestShape {
                     origins: &endpoint.origins,
                     idempotent: request.idempotent(),
                     ignore: &request.ignore_status,
+                    rate: endpoint.rate.as_ref(),
                 },
                 make,
             )
