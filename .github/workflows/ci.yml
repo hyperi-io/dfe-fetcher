@@ -8,6 +8,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: '23 17 * * *'
   push:
     branches: ["**"]
     paths-ignore:

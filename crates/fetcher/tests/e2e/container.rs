@@ -183,13 +183,15 @@ async fn test_container_timeout_kills_process() {
 #[tokio::test]
 #[ignore = "requires Docker runtime"]
 async fn test_container_nonexistent_image_fails() {
-    let config = test_container_config(
+    let mut config = test_container_config(
         "bad-image",
         "nonexistent-image-12345:latest",
         None,
         Some(10),
         "always", // force pull attempt -- will fail
     );
+    // A scheduled extractor's first run comes one interval after it starts.
+    config.interval_secs = Some(1);
 
     let pipeline = test_pipeline_state();
     let metrics = Arc::new(Metrics::new());
