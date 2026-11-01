@@ -116,8 +116,6 @@ fn driver(h: &Harness, shape: FileShape, checkpoints: Option<Arc<dyn CursorStore
         connection_id: "exp".into(),
         instance_id: "inst".into(),
         shared_config: h.shared.clone(),
-        accumulate: h.config.accumulate,
-        oversize: h.config.oversize,
         emitter: Emitter::new(
             Arc::clone(&h.state),
             Arc::clone(&h.metrics),

@@ -121,8 +121,6 @@ async fn a_clickhouse_dump_streams_server_typed_rows_through_the_driver_into_the
         connection_id: "ch".into(),
         instance_id: "inst".into(),
         shared_config: shared,
-        accumulate: config.accumulate,
-        oversize: config.oversize,
         emitter: Emitter::new(
             Arc::clone(&state),
             Arc::clone(&metrics),
@@ -251,8 +249,6 @@ async fn a_clickhouse_tail_resumes_from_the_committed_keyset_through_typed_place
             connection_id: "ch".into(),
             instance_id: "inst".into(),
             shared_config: shared.clone(),
-            accumulate: config.accumulate,
-            oversize: config.oversize,
             emitter: Emitter::new(
                 Arc::clone(&state),
                 Arc::clone(&metrics),

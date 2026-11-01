@@ -1527,6 +1527,20 @@ impl SourcesConfig {
             .collect()
     }
 
+    /// The batch bounds a `sources.rest`, `sources.db` or `sources.file`
+    /// entry sets for itself, by its connection id; `None` when it sets none
+    /// and the deployment's `accumulate` applies.
+    #[must_use]
+    pub fn accumulate_for_source(&self, connection_id: &str) -> Option<AccumulateConfig> {
+        if let Some(instance) = self.rest.get(connection_id) {
+            return instance.accumulate;
+        }
+        if let Some(instance) = self.db.get(connection_id) {
+            return instance.accumulate;
+        }
+        self.file.get(connection_id).and_then(|i| i.accumulate)
+    }
+
     /// The CEL keep-filter of the source a driver runs, by its connection
     /// id: a `sources.rest`, `sources.db` or `sources.file` entry's own
     /// filter, or the type-wide filter of the typed block whose resolved

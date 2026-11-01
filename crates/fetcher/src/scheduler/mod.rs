@@ -702,8 +702,6 @@ mod tests {
     use crate::emit::Emitter;
     use crate::metrics::recorded::Recorder;
     use crate::pipeline::PipelineState;
-    use dfe_fetcher_core::batch::AccumulateConfig;
-    use dfe_fetcher_core::envelope::OversizePolicy;
     use dfe_fetcher_core::{RowSource, RowStream, SourceMaturity, TickCtx, UnitShape, UnitSpec};
 
     /// Build a test config with zero jitter for deterministic assertions.
@@ -869,14 +867,11 @@ mod tests {
             Arc::clone(metrics),
             None,
         ));
-        let oversize = OversizePolicy::default();
         Arc::new(Driver::new(DriverParts {
             shape: Shape::Custom(source),
             connection_id: connection_id.to_owned(),
             instance_id: "inst".into(),
             shared_config: shared.clone(),
-            accumulate: AccumulateConfig::default(),
-            oversize,
             emitter: Emitter::new(Arc::clone(&state), Arc::clone(metrics), 4),
             pressure: None,
             memory_guard: Arc::clone(state.memory_guard()),

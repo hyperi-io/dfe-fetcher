@@ -131,17 +131,14 @@ async fn the_batcher_and_concurrent_emit_measured_against_real_kafka() {
         .expect("pipeline state"),
     );
     let driver = |fake: Fake, in_flight: usize| {
-        let accumulate = dfe_fetcher_core::batch::AccumulateConfig {
-            in_flight,
-            ..config.accumulate
-        };
+        let mut live = shared.get();
+        live.accumulate.in_flight = in_flight;
+        shared.update(live);
         Driver::new(DriverParts {
             shape: Shape::Custom(Box::new(fake)),
             connection_id: "measure".into(),
             instance_id: "inst".into(),
             shared_config: shared.clone(),
-            accumulate,
-            oversize: config.oversize,
             emitter: Emitter::new(Arc::clone(&state), Arc::clone(&metrics), in_flight),
             pressure: None,
             memory_guard: Arc::clone(state.memory_guard()),

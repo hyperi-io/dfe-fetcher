@@ -263,8 +263,6 @@ async fn self_hosted_assets_dump_reaches_kafka_and_rebuilds_to_the_export_count(
         connection_id: connection_id.into(),
         instance_id: "e2e".into(),
         shared_config: shared.clone(),
-        accumulate: config.accumulate,
-        oversize: config.oversize,
         emitter: Emitter::new(
             Arc::clone(&state),
             Arc::clone(&metrics),

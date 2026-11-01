@@ -121,6 +121,15 @@ impl Emitter {
         }
     }
 
+    /// The same emitter with `in_flight` concurrent sends per flush.
+    #[must_use]
+    pub fn with_in_flight(&self, in_flight: usize) -> Self {
+        Self {
+            in_flight: in_flight.max(1),
+            ..self.clone()
+        }
+    }
+
     /// The pipeline state the emitter sends through.
     #[must_use]
     pub fn state(&self) -> &Arc<PipelineState> {
