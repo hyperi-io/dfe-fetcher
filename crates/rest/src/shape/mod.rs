@@ -42,9 +42,9 @@ use dfe_fetcher_core::{Mark, Row, RowSource, RowStream, SourceMaturity, TickCtx,
 use crate::auth::AuthMode;
 use crate::decode::{ByteStream, Decoder, RowBytes, collect_page};
 use crate::hooks::RowBuilder;
-use crate::hooks::s3_list::{
-    CONTINUATION_PARAM, Horizon, ListingPages, UPLOADS_PARAM, UPLOADS_UNAVAILABLE, UploadsAnswer,
-    UploadsMarker,
+use crate::hooks::s3_list::{CONTINUATION_PARAM, ListingPages};
+use crate::hooks::s3_uploads::{
+    Horizon, UPLOADS_PARAM, UPLOADS_UNAVAILABLE, UploadsAnswer, UploadsMarker,
 };
 use crate::page::{Inject, PageMeta, PageState, Pager};
 use crate::profile::bound::{
@@ -549,7 +549,6 @@ impl RestShape {
     /// the store will not list uploads.
     async fn listing_horizon(
         &self,
-        lister: crate::hooks::s3_list::Lister,
         endpoint: &BoundEndpoint,
         ctx: &TemplateCtx,
         pages: &mut ListingRequests<'_>,
@@ -557,10 +556,7 @@ impl RestShape {
         let unit = &endpoint.unit.name;
         let source = &self.bound.connection_id;
         let asked = chrono::Utc::now();
-        match lister
-            .horizon(unit, endpoint.max_pages, asked, pages)
-            .await?
-        {
+        match crate::hooks::s3_uploads::horizon(unit, endpoint.max_pages, asked, pages).await? {
             Horizon::Held { at, upload } => {
                 if let Some(key) = upload
                     && asked - at > STALE_UPLOAD_HOLD
@@ -620,9 +616,7 @@ impl RestShape {
         // position boundary.
         let max_items = endpoint.lookup.as_ref().and_then(|l| l.max_items);
         let listing = async {
-            let horizon = self
-                .listing_horizon(lister, endpoint, ctx, &mut pages)
-                .await?;
+            let horizon = self.listing_horizon(endpoint, ctx, &mut pages).await?;
             lister
                 .list(
                     &endpoint.unit.name,

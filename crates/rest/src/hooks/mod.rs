@@ -26,6 +26,7 @@ mod event_time;
 mod go_module_aggregate;
 mod pubsub_message;
 pub mod s3_list;
+pub mod s3_uploads;
 mod wrap_non_object;
 
 use bytes::Bytes;

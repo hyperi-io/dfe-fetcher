@@ -24,7 +24,8 @@
 //! one still in progress lands behind objects written while it ran, and
 //! behind a checkpoint they moved. Before each listing the lister asks
 //! `ListMultipartUploads` for the oldest upload in progress and reads
-//! nothing modified at or after its start: the [`Horizon`].
+//! nothing modified at or after its start: the
+//! [`Horizon`](super::s3_uploads::Horizon).
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -48,56 +49,6 @@ pub(crate) const RFC3986: &AsciiSet = &NON_ALPHANUMERIC
 /// The query parameter the lister injects to continue a listing.
 pub const CONTINUATION_PARAM: &str = "continuation-token";
 
-/// The query parameter that makes a bucket GET `ListMultipartUploads`.
-pub const UPLOADS_PARAM: &str = "uploads";
-
-/// The statuses that say a store will not list uploads for this credential
-/// (`AccessDenied`) or at all (an S3-compatible store without the call).
-pub const UPLOADS_UNAVAILABLE: [u16; 5] = [400, 403, 404, 405, 501];
-
-/// Where `ListMultipartUploads` continues: its `NextKeyMarker` and
-/// `NextUploadIdMarker`.
-pub type UploadsMarker = (String, String);
-
-/// The shape's answer to one `ListMultipartUploads` request.
-#[derive(Debug, Clone)]
-pub enum UploadsAnswer {
-    /// The page, and the store's `Date` for it when it sent one.
-    Page {
-        /// The XML body.
-        body: Bytes,
-        /// When the store answered.
-        date: Option<DateTime<Utc>>,
-    },
-    /// A status in [`UPLOADS_UNAVAILABLE`].
-    Unavailable,
-}
-
-/// The newest `LastModified` a listing may read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Horizon {
-    /// Objects modified before `at` are complete: `at` is the start of the
-    /// oldest upload in progress, or when the store answered if none was.
-    Held {
-        /// The bound, exclusive.
-        at: DateTime<Utc>,
-        /// The key of the upload that set it, if one did.
-        upload: Option<String>,
-    },
-    /// The store would not list its uploads.
-    Unavailable,
-}
-
-/// One `ListMultipartUploads` page: the oldest upload on it as `(Initiated,
-/// Key)`, and where the listing continues.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UploadsPage {
-    /// The page's earliest `Initiated`, with its key.
-    pub oldest: Option<(DateTime<Utc>, String)>,
-    /// The markers for the next page, while `IsTruncated`.
-    pub next: Option<UploadsMarker>,
-}
-
 /// A listing protocol standing in for a unit's page fetch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lister {
@@ -113,7 +64,10 @@ pub trait ListingPages: Send {
 
     /// The `ListMultipartUploads` page at `marker` (the first for `None`),
     /// under the listing's prefix.
-    fn uploads(&mut self, marker: Option<UploadsMarker>) -> BoxFuture<'_, Result<UploadsAnswer>>;
+    fn uploads(
+        &mut self,
+        marker: Option<super::s3_uploads::UploadsMarker>,
+    ) -> BoxFuture<'_, Result<super::s3_uploads::UploadsAnswer>>;
 }
 
 /// One object of a listing.
@@ -204,63 +158,6 @@ impl Lister {
         })
     }
 
-    /// The bound of the next listing: the oldest `Initiated` across every
-    /// `ListMultipartUploads` page, else the store's `Date` for the first
-    /// page (`asked` when it sent none), so an upload begun after this call
-    /// is held too.
-    ///
-    /// # Errors
-    ///
-    /// Returns the request's error, [`Error::Decode`] for a page that is not
-    /// the documented XML, or [`Error::PageCeiling`] when the uploads still
-    /// continue after `max_pages`: the oldest may be on a page not read.
-    pub async fn horizon<P: ListingPages>(
-        self,
-        unit: &str,
-        max_pages: u32,
-        asked: DateTime<Utc>,
-        pages: &mut P,
-    ) -> Result<Horizon> {
-        let Lister::S3 = self;
-        let mut answered: Option<DateTime<Utc>> = None;
-        let mut oldest: Option<(DateTime<Utc>, String)> = None;
-        let mut marker = None;
-        for page in 0..max_pages {
-            let UploadsAnswer::Page { body, date } = pages.uploads(marker.take()).await? else {
-                return Ok(Horizon::Unavailable);
-            };
-            answered.get_or_insert(date.unwrap_or(asked));
-            let found = parse_list_multipart_uploads(&body)?;
-            if let Some(upload) = found.oldest
-                && oldest.as_ref().is_none_or(|o| upload < *o)
-            {
-                oldest = Some(upload);
-            }
-            match found.next {
-                Some(_) if page + 1 == max_pages => {
-                    return Err(Error::PageCeiling {
-                        unit: unit.to_owned(),
-                        ceiling: "max_pages",
-                        limit: max_pages,
-                    });
-                }
-                Some(next) => marker = Some(next),
-                None => break,
-            }
-        }
-        let answered = answered.unwrap_or(asked);
-        Ok(match oldest {
-            Some((at, key)) if at < answered => Horizon::Held {
-                at,
-                upload: Some(key),
-            },
-            _ => Horizon::Held {
-                at: answered,
-                upload: None,
-            },
-        })
-    }
-
     /// The listing as item rows: `pages` fetches one listing page per
     /// continuation token until the listing ends; the keys past `cutoff`
     /// and before `horizon` come back sorted by `last_modified` then key,
@@ -320,6 +217,38 @@ impl Lister {
     }
 }
 
+/// Every element of an S3 XML answer as `(name, text)` at its closing tag, in
+/// document order. `protocol` names the call in errors.
+///
+/// An element's text arrives in one event per run between entity references,
+/// so it is accumulated untrimmed and handed over whole: a key carrying `&` or
+/// `<` would otherwise keep only its last fragment, or lose a space beside one.
+pub(super) fn each_element(
+    xml: &[u8],
+    protocol: &str,
+    mut close: impl FnMut(&str, String) -> Result<()>,
+) -> Result<()> {
+    let text = std::str::from_utf8(xml)
+        .map_err(|e| Error::Decode(format!("{protocol} page is not UTF-8: {e}")))?;
+    let mut reader = Reader::from_str(text);
+    let mut value = String::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(_)) => value.clear(),
+            Ok(Event::End(e)) => close(e.name().into_inner(), std::mem::take(&mut value))?,
+            Ok(Event::Text(t)) => value.push_str(&t),
+            Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
+            Ok(Event::Eof) => return Ok(()),
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::Decode(format!(
+                    "{protocol} page is not the XML the protocol documents: {e}"
+                )));
+            }
+        }
+    }
+}
+
 /// The objects of a `ListObjectsV2` page and its `NextContinuationToken`:
 /// only `Key`, `LastModified`, `Size` and the token are read, so an element
 /// the schema grows is ignored.
@@ -328,156 +257,30 @@ impl Lister {
 ///
 /// Returns [`Error::Decode`] when the body is not well-formed XML.
 pub fn parse_list_objects_v2(xml: &[u8]) -> Result<(Vec<Listed>, Option<String>)> {
-    let text = std::str::from_utf8(xml)
-        .map_err(|e| Error::Decode(format!("ListObjectsV2 page is not UTF-8: {e}")))?;
-    let mut reader = Reader::from_str(text);
-    // Text is not trimmed per event: an element's text arrives in one event per
-    // run between entity references, so trimming each run would drop a space
-    // that sits beside one.
     let mut objects = Vec::new();
-    let mut next_token = None;
-    let mut key: Option<String> = None;
-    let mut modified: Option<DateTime<Utc>> = None;
-    let mut size: u64 = 0;
-    let mut in_contents = false;
-    let mut tag: Option<String> = None;
-    // An element's text arrives in one event per run between entity
-    // references, so it is accumulated here and read at the closing tag; a key
-    // carrying `&` or `<` would otherwise keep only its last fragment and be
-    // fetched under a name the bucket does not have.
-    let mut value = String::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let name = e.name().into_inner().to_owned();
-                if name == "Contents" {
-                    in_contents = true;
-                    key = None;
-                    modified = None;
-                    size = 0;
+    let mut token = None;
+    let (mut key, mut modified, mut size) = (None, None, 0);
+    each_element(xml, "ListObjectsV2", |name, value| {
+        match name {
+            "Key" => key = Some(value),
+            "LastModified" => modified = value.trim().parse::<DateTime<Utc>>().ok(),
+            "Size" => size = value.trim().parse().unwrap_or(0),
+            "NextContinuationToken" => token = Some(value),
+            "Contents" => {
+                if let (Some(key), Some(last_modified)) = (key.take(), modified.take()) {
+                    objects.push(Listed {
+                        key,
+                        last_modified,
+                        size,
+                    });
                 }
-                tag = Some(name);
-                value.clear();
+                size = 0;
             }
-            Ok(Event::End(e)) => {
-                if e.name().into_inner() == "Contents" {
-                    if let (Some(key), Some(last_modified)) = (key.take(), modified.take()) {
-                        objects.push(Listed {
-                            key,
-                            last_modified,
-                            size,
-                        });
-                    }
-                    in_contents = false;
-                }
-                match tag.as_deref() {
-                    Some("Key") if in_contents => key = Some(std::mem::take(&mut value)),
-                    Some("LastModified") if in_contents => {
-                        modified = value.trim().parse::<DateTime<Utc>>().ok();
-                    }
-                    Some("Size") if in_contents => size = value.trim().parse().unwrap_or(0),
-                    Some("NextContinuationToken") => {
-                        next_token = Some(std::mem::take(&mut value));
-                    }
-                    _ => {}
-                }
-                tag = None;
-                value.clear();
-            }
-            Ok(Event::Text(t)) => value.push_str(&t),
-            Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => {
-                return Err(Error::Decode(format!(
-                    "ListObjectsV2 page is not the XML the protocol documents: {e}"
-                )));
-            }
+            _ => {}
         }
-    }
-    Ok((objects, next_token))
-}
-
-/// The oldest upload of a `ListMultipartUploads` page and its continuation
-/// markers: only `Key`, `Initiated`, `IsTruncated` and the two `Next*Marker`s
-/// are read.
-///
-/// # Errors
-///
-/// Returns [`Error::Decode`] when the body is not well-formed XML, or an
-/// upload's `Initiated` is not a timestamp: an upload whose start is unknown
-/// cannot be held behind.
-pub fn parse_list_multipart_uploads(xml: &[u8]) -> Result<UploadsPage> {
-    let text = std::str::from_utf8(xml)
-        .map_err(|e| Error::Decode(format!("ListMultipartUploads page is not UTF-8: {e}")))?;
-    let mut reader = Reader::from_str(text);
-    let mut oldest: Option<(DateTime<Utc>, String)> = None;
-    let mut truncated = false;
-    let mut next_key = None;
-    let mut next_upload = None;
-    let mut key: Option<String> = None;
-    let mut initiated: Option<DateTime<Utc>> = None;
-    let mut in_upload = false;
-    let mut tag: Option<String> = None;
-    let mut value = String::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let name = e.name().into_inner().to_owned();
-                if name == "Upload" {
-                    in_upload = true;
-                    key = None;
-                    initiated = None;
-                }
-                tag = Some(name);
-                value.clear();
-            }
-            Ok(Event::End(e)) => {
-                if e.name().into_inner() == "Upload" {
-                    in_upload = false;
-                    let at = initiated.take().ok_or_else(|| {
-                        Error::Decode(
-                            "ListMultipartUploads names an upload with no Initiated".into(),
-                        )
-                    })?;
-                    let upload = (at, key.take().unwrap_or_default());
-                    if oldest.as_ref().is_none_or(|o| upload < *o) {
-                        oldest = Some(upload);
-                    }
-                }
-                match tag.as_deref() {
-                    Some("Key") if in_upload => key = Some(std::mem::take(&mut value)),
-                    Some("Initiated") if in_upload => {
-                        initiated = Some(value.trim().parse::<DateTime<Utc>>().map_err(|e| {
-                            Error::Decode(format!("ListMultipartUploads Initiated `{value}`: {e}"))
-                        })?);
-                    }
-                    Some("IsTruncated") => truncated = value.trim() == "true",
-                    Some("NextKeyMarker") => next_key = Some(std::mem::take(&mut value)),
-                    Some("NextUploadIdMarker") => next_upload = Some(std::mem::take(&mut value)),
-                    _ => {}
-                }
-                tag = None;
-                value.clear();
-            }
-            Ok(Event::Text(t)) => value.push_str(&t),
-            Ok(Event::GeneralRef(r)) => value.push(entity_char(&r)?),
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => {
-                return Err(Error::Decode(format!(
-                    "ListMultipartUploads page is not the XML the protocol documents: {e}"
-                )));
-            }
-        }
-    }
-    let next = truncated.then(|| {
-        (
-            next_key.unwrap_or_default(),
-            next_upload.unwrap_or_default(),
-        )
-    });
-    Ok(UploadsPage { oldest, next })
+        Ok(())
+    })?;
+    Ok((objects, token))
 }
 
 /// The character a `&name;` or `&#nn;` reference stands for.
@@ -505,6 +308,9 @@ fn entity_char(reference: &BytesRef<'_>) -> Result<char> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::s3_uploads::{
+        Horizon, UploadsAnswer, UploadsMarker, horizon, parse_list_multipart_uploads,
+    };
     use super::*;
     use chrono::TimeZone;
     use futures::FutureExt;
@@ -835,10 +641,7 @@ mod tests {
             },
         };
         assert_eq!(
-            Lister::S3
-                .horizon("u", 5, at(12, 0), &mut held)
-                .await
-                .unwrap(),
+            horizon("u", 5, at(12, 0), &mut held).await.unwrap(),
             Horizon::Held {
                 at: at(10, 0),
                 upload: Some("logs/a.json".to_owned())
@@ -849,10 +652,7 @@ mod tests {
             answer: |_| Some(PAGE_TWO.as_bytes()),
         };
         assert_eq!(
-            Lister::S3
-                .horizon("u", 5, at(9, 0), &mut idle)
-                .await
-                .unwrap(),
+            horizon("u", 5, at(9, 0), &mut idle).await.unwrap(),
             Horizon::Held {
                 at: at(9, 0),
                 upload: None
@@ -864,10 +664,7 @@ mod tests {
             answer: |_| None,
         };
         assert_eq!(
-            Lister::S3
-                .horizon("u", 5, at(9, 0), &mut refused)
-                .await
-                .unwrap(),
+            horizon("u", 5, at(9, 0), &mut refused).await.unwrap(),
             Horizon::Unavailable
         );
 
