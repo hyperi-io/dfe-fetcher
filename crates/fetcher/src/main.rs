@@ -698,25 +698,27 @@ async fn run_fetcher_service(
     // from the config stops fetching without a restart.
     scheduler.spawn_source_watch(running, shutdown_token.clone());
 
-    // Start ingest HTTP server (for container extractors using HTTP communication)
+    // Start ingest HTTP server (for container extractors using HTTP
+    // communication). A listener that cannot start leaves the intake dead
+    // while the pod reads Ready, so the process drains, stops and exits
+    // non-zero to be restarted.
+    let mut intake_failed: Option<anyhow::Error> = None;
+    let ingest_server = match ingest::spawn_ingest_server(
+        &config.ingest,
+        Arc::clone(&pipeline_state),
+        Arc::clone(&metrics),
+        shutdown_token.clone(),
+    )
+    .await
     {
-        let ingest_config = config.ingest.clone();
-        let ingest_pipeline = Arc::clone(&pipeline_state);
-        let ingest_metrics = Arc::clone(&metrics);
-        let ingest_shutdown = shutdown_token.clone();
-        tokio::spawn(async move {
-            if let Err(e) = ingest::run_ingest_server(
-                &ingest_config,
-                ingest_pipeline,
-                ingest_metrics,
-                ingest_shutdown,
-            )
-            .await
-            {
-                error!(error = %e, "Ingest server error");
-            }
-        });
-    }
+        Ok(server) => server,
+        Err(e) => {
+            error!(error = %e, "The ingest listener failed to start: shutting down to exit non-zero");
+            shutdown_token.cancel();
+            intake_failed = Some(e);
+            None
+        }
+    };
 
     // Start container extractors
     for container_config in &config.extractors.containers {
@@ -788,6 +790,18 @@ async fn run_fetcher_service(
     }
     if let Some(e) = vector_failed {
         return Err(anyhow::anyhow!("the Vector extractor failed to start: {e}"));
+    }
+    if let Some(server) = ingest_server {
+        match server.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => intake_failed = intake_failed.or(Some(e)),
+            Err(e) => {
+                intake_failed = intake_failed.or(Some(anyhow::anyhow!("ingest server task: {e}")))
+            }
+        }
+    }
+    if let Some(e) = intake_failed {
+        return Err(e);
     }
 
     info!("Shutdown complete");
