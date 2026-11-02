@@ -18,7 +18,8 @@
 # the customer (`my_customer` unless the instance names one), the window
 # as `startTime`/`endTime` in RFC 3339 `+00:00`, 1000 activities a page,
 # an optional `eventName` per unit, `nextPageToken` fed back as
-# `pageToken`. Rows are the `items`. The token exchange is the health
+# `pageToken`. Rows are the `items`, which the API omits on an empty page
+# (`when_absent: empty`). The token exchange is the health
 # check.
 profile: google_workspace
 maturity: alpha
@@ -58,7 +59,7 @@ defaults:
     endTime: "{{ window.end }}"
     maxResults: 1000
     eventName: "{{ vars.event_name }}"
-  rows: { decoder: json_at, at: "/items" }
+  rows: { decoder: json_at, at: "/items", when_absent: empty }
   paginate: { strategy: cursor, from: "body:/nextPageToken", into: "query:pageToken" }
   max_pages: 50
 # The applicationName enum of activities.list, one unit each.

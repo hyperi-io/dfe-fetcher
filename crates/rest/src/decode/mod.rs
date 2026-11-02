@@ -30,7 +30,7 @@ use dfe_fetcher_core::frame::{
     ArrayFramer, Framer, LeasedBlock, LineFramer, csv_rows, framed, split_array, split_lines,
 };
 
-use crate::profile::{DecoderKind, RowsSpec};
+use crate::profile::{DecoderKind, RowsSpec, WhenAbsent};
 
 /// A response body as it arrives.
 pub type ByteStream<'a> = BoxStream<'a, Result<Bytes>>;
@@ -46,10 +46,19 @@ pub enum Decoder {
     JsonArray,
     /// A wrapped page read whole; rows at this JSON pointer.
     ///
+    /// A pointer that leads nowhere is a decode error, so a 2xx error body or
+    /// a changed response shape fails the unit instead of reading as an empty
+    /// page the checkpoint then passes. `null` at the pointer is an empty page.
+    ///
     /// SHORTCUT: the page is buffered up to `max_page_bytes`; a pointer-aware
     /// streaming framer lifts that when a provider's single page exceeds
     /// 16 MiB with no `.jsonl` or array form.
-    JsonAt(String),
+    JsonAt {
+        /// JSON pointer to the row array.
+        at: String,
+        /// What a pointer that leads nowhere means.
+        when_absent: WhenAbsent,
+    },
     /// The whole body is one row.
     Document,
     /// A JSON document read whole: a top-level array is one row per
@@ -76,7 +85,10 @@ impl Decoder {
         let mut decoder = match spec.decoder {
             DecoderKind::JsonArray => Decoder::JsonArray,
             DecoderKind::Ndjson => Decoder::Ndjson,
-            DecoderKind::JsonAt => Decoder::JsonAt(spec.at.clone().unwrap_or_default()),
+            DecoderKind::JsonAt => Decoder::JsonAt {
+                at: spec.at.clone().unwrap_or_default(),
+                when_absent: spec.when_absent,
+            },
             DecoderKind::Document => Decoder::Document,
             DecoderKind::Json => Decoder::Json,
             DecoderKind::Lines => Decoder::Lines,
@@ -98,7 +110,9 @@ impl Decoder {
     pub fn is_page_bounded(&self) -> bool {
         match self {
             Decoder::Ndjson | Decoder::JsonArray | Decoder::Lines => false,
-            Decoder::JsonAt(_) | Decoder::Document | Decoder::Json | Decoder::Csv { .. } => true,
+            Decoder::JsonAt { .. } | Decoder::Document | Decoder::Json | Decoder::Csv { .. } => {
+                true
+            }
             Decoder::Gzip(inner) | Decoder::Quoted(inner) => inner.is_page_bounded(),
         }
     }
@@ -118,7 +132,7 @@ impl Decoder {
                 .frame(body, max_page_bytes)
                 .map(|row| row.and_then(|row| unquote(&row)))
                 .boxed(),
-            Decoder::JsonAt(_) | Decoder::Document | Decoder::Json | Decoder::Csv { .. } => {
+            Decoder::JsonAt { .. } | Decoder::Document | Decoder::Json | Decoder::Csv { .. } => {
                 let page = async move {
                     let page = collect_page(body, max_page_bytes).await?;
                     self.frame_page(&page)
@@ -143,7 +157,7 @@ impl Decoder {
             Decoder::Quoted(inner) => inner.inflate(body),
             Decoder::Ndjson
             | Decoder::JsonArray
-            | Decoder::JsonAt(_)
+            | Decoder::JsonAt { .. }
             | Decoder::Document
             | Decoder::Json
             | Decoder::Lines
@@ -163,7 +177,7 @@ impl Decoder {
             Decoder::Ndjson => Ok(split_lines(page, false)),
             Decoder::Lines => Ok(split_lines(page, true)),
             Decoder::JsonArray => split_array(page, 0, page.len()),
-            Decoder::JsonAt(pointer) => match raw_at(page, pointer)? {
+            Decoder::JsonAt { at, when_absent } => match raw_at(page, at, *when_absent)? {
                 Some((start, end)) => split_array(page, start, end),
                 None => Ok(Vec::new()),
             },
@@ -238,8 +252,9 @@ fn stream_framed<'a, F: Framer + Unpin + 'a>(body: ByteStream<'a>, framer: F) ->
 /// Byte range of the array at a JSON pointer, without building a `Value` tree:
 /// each level is read as a map or list of raw slices.
 ///
-/// `None` when the pointer leads to nothing or to `null` (an empty page).
-fn raw_at(page: &Bytes, pointer: &str) -> Result<Option<(usize, usize)>> {
+/// `None` for `null` there (an empty page), and for a pointer that leads
+/// nowhere under [`WhenAbsent::Empty`]; under [`WhenAbsent::Fail`] that is an error.
+fn raw_at(page: &Bytes, pointer: &str, absent: WhenAbsent) -> Result<Option<(usize, usize)>> {
     let base = page.as_ptr() as usize;
     let mut current: &[u8] = page;
     for segment in pointer.split('/').skip(1) {
@@ -264,7 +279,12 @@ fn raw_at(page: &Bytes, pointer: &str) -> Result<Option<(usize, usize)>> {
         };
         match next {
             Some(raw) => current = raw.get().as_bytes(),
-            None => return Ok(None),
+            None if absent == WhenAbsent::Empty => return Ok(None),
+            None => {
+                return Err(Error::Decode(format!(
+                    "json_at `{pointer}`: nothing at the pointer"
+                )));
+            }
         }
     }
     let trimmed = trim_line(current);
@@ -293,6 +313,13 @@ mod tests {
             .map(|p| Ok(Bytes::copy_from_slice(p)))
             .collect();
         futures::stream::iter(owned).boxed()
+    }
+
+    fn json_at(at: &str) -> Decoder {
+        Decoder::JsonAt {
+            at: at.into(),
+            when_absent: WhenAbsent::Fail,
+        }
     }
 
     async fn rows(decoder: &Decoder, parts: &[&[u8]]) -> Result<Vec<String>> {
@@ -404,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn json_at_frames_the_array_at_a_pointer_as_slices_of_the_page() {
-        let d = Decoder::JsonAt("/assets".into());
+        let d = json_at("/assets");
         assert!(d.is_page_bounded());
         let page = Bytes::from_static(br#"{"assets": [{"id":"a"}, {"id":"b"}], "next_key": "k"}"#);
         let framed = d.frame_page(&page).unwrap();
@@ -415,21 +442,44 @@ mod tests {
             std::ptr::eq(page.as_ptr().wrapping_add(12), framed[0].as_ptr()),
             "a slice of the page buffer, not a copy"
         );
-        let nested = Decoder::JsonAt("/data/items".into());
+        let nested = json_at("/data/items");
         let page = Bytes::from_static(br#"{"data":{"items":[1,2]}}"#);
         assert_eq!(nested.frame_page(&page).unwrap().len(), 2);
     }
 
+    /// A pointer that leads nowhere fails the page, so a 2xx error body or a
+    /// changed response shape never reads as an empty page the checkpoint
+    /// then passes. `null` is the provider saying there is nothing.
     #[tokio::test]
-    async fn json_at_with_an_absent_or_null_pointer_is_an_empty_page() {
-        let d = Decoder::JsonAt("/users".into());
+    async fn json_at_with_an_absent_pointer_is_a_decode_error_and_null_is_an_empty_page() {
+        let d = json_at("/users");
+        for body in [
+            &br#"{"next_key":""}"#[..],
+            br#"{"error":{"message":"quota exceeded"}}"#,
+            br"[]",
+            b"",
+        ] {
+            let err = d.frame_page(&Bytes::copy_from_slice(body)).unwrap_err();
+            assert!(matches!(err, Error::Decode(_)), "{body:?}: {err}");
+        }
+        assert!(
+            rows(&d, &[br#"{"error":"x"}"#]).await.is_err(),
+            "the streamed page fails too"
+        );
+        let nested = json_at("/data/items");
+        assert!(
+            nested
+                .frame_page(&Bytes::from_static(br#"{"data":{}}"#))
+                .is_err(),
+            "a missing leaf under a present parent"
+        );
         assert_eq!(
-            d.frame_page(&Bytes::from_static(br#"{"next_key":""}"#))
+            d.frame_page(&Bytes::from_static(br#"{"users":null}"#))
                 .unwrap(),
             [] as [bytes::Bytes; 0]
         );
         assert_eq!(
-            d.frame_page(&Bytes::from_static(br#"{"users":null}"#))
+            d.frame_page(&Bytes::from_static(br#"{"users":[]}"#))
                 .unwrap(),
             [] as [bytes::Bytes; 0]
         );
@@ -437,6 +487,37 @@ mod tests {
             d.frame_page(&Bytes::from_static(br#"{"users":{}}"#))
                 .is_err(),
             "not an array"
+        );
+    }
+
+    /// A profile whose provider omits the key on an empty page opts in, and
+    /// then an absent pointer, a null and an empty body are all empty pages.
+    #[tokio::test]
+    async fn json_at_when_absent_empty_reads_an_absent_pointer_as_an_empty_page() {
+        let spec = RowsSpec {
+            decoder: DecoderKind::JsonAt,
+            at: Some("/receivedMessages".into()),
+            when_absent: WhenAbsent::Empty,
+            ..RowsSpec::default()
+        };
+        let d = Decoder::build(&spec);
+        for body in [&br"{}"[..], br#"{"nextPageToken":"t"}"#, b""] {
+            assert_eq!(
+                d.frame_page(&Bytes::copy_from_slice(body)).unwrap(),
+                [] as [bytes::Bytes; 0],
+                "{body:?}"
+            );
+        }
+        assert_eq!(
+            d.frame_page(&Bytes::from_static(br#"{"receivedMessages":[1]}"#))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            d.frame_page(&Bytes::from_static(br#"{"receivedMessages":{}}"#))
+                .is_err(),
+            "a present value that is not an array still fails"
         );
     }
 
@@ -568,7 +649,7 @@ mod tests {
     /// resource's document; the row is the document, not the string.
     #[tokio::test]
     async fn quoted_rows_are_unquoted_into_the_documents_they_hold() {
-        let d = Decoder::Quoted(Box::new(Decoder::JsonAt("/Results".into())));
+        let d = Decoder::Quoted(Box::new(json_at("/Results")));
         assert!(d.is_page_bounded());
         let page = Bytes::from_static(
             br#"{"Results": ["{\"resourceId\":\"i-1\",\"configuration\":{\"size\":100}}", "{\"resourceId\":\"vol-1\"}"], "NextToken": "t"}"#,
@@ -614,6 +695,9 @@ mod tests {
             at: Some("/value".into()),
             ..RowsSpec::default()
         };
-        assert!(matches!(Decoder::build(&at), Decoder::JsonAt(ref p) if p == "/value"));
+        assert!(matches!(
+            Decoder::build(&at),
+            Decoder::JsonAt { ref at, when_absent: WhenAbsent::Fail } if at == "/value"
+        ));
     }
 }

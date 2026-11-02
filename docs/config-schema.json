@@ -4971,6 +4971,11 @@
           ],
           "default": null
         },
+        "when_absent": {
+          "description": "What an `at` pointer that leads nowhere means (`json_at` only). `fail`\nis a decode error, so a 2xx error body or a changed response shape\nnever reads as an empty page the checkpoint then passes. Set `empty`\nonly where the provider documents omitting the key when there is\nnothing to list. A `null` at the pointer is an empty page either way.",
+          "$ref": "#/$defs/WhenAbsent",
+          "default": "fail"
+        },
         "gzip": {
           "description": "The body is a gzip member sequence to inflate before framing (a\n`Content-Encoding: gzip` response is inflated by the client regardless).",
           "type": "boolean",
@@ -5043,6 +5048,21 @@
           "description": "CSV with an optional header row, one object per record.",
           "type": "string",
           "const": "csv"
+        }
+      ]
+    },
+    "WhenAbsent": {
+      "description": "What a `json_at` pointer that leads nowhere means.",
+      "oneOf": [
+        {
+          "description": "A decode error: the unit fails and its checkpoint does not move.",
+          "type": "string",
+          "const": "fail"
+        },
+        {
+          "description": "An empty page, for a provider that omits the key when there is nothing\nto list.",
+          "type": "string",
+          "const": "empty"
         }
       ]
     },
@@ -5422,6 +5442,7 @@
           "default": {
             "decoder": "json_array",
             "at": null,
+            "when_absent": "fail",
             "gzip": false,
             "header": true,
             "quoted": false,
@@ -5477,6 +5498,7 @@
           "default": {
             "decoder": "json_array",
             "at": null,
+            "when_absent": "fail",
             "gzip": false,
             "header": true,
             "quoted": false,

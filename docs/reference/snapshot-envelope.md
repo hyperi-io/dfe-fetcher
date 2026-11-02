@@ -85,7 +85,11 @@ A row longer than `oversize.max_record_bytes` (the deployment's
 takes the next `seq`, so the count still reconciles, and a copy cut at
 `oversize.max_dlq_bytes` goes to the dead-letter queue with the reason. An
 oversize row of an incremental unit (no envelope) goes to the DLQ and is
-skipped.
+skipped. With no DLQ configured the row can never be sent, and holding the
+checkpoint for it would stall the unit for ever, so it is dropped: counted in
+`pipeline_dead_letters_dropped_total{reason="too_large"}` and warned of in the
+log (at most one line every 10 seconds a connection). The tick's `oversize`
+count includes it.
 
 ## Consuming a snapshot
 

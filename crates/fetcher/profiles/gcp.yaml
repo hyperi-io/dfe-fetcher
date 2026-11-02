@@ -64,7 +64,8 @@ defaults:
     filter: "{{ vars.log_filter }} AND timestamp >= \"{{ window.start }}\" AND timestamp < \"{{ window.end }}\""
     pageSize: 100
     orderBy: timestamp desc
-  rows: { decoder: json_at, at: "/entries" }
+  # proto3 JSON omits an empty repeated field, so an empty page has no `entries`.
+  rows: { decoder: json_at, at: "/entries", when_absent: empty }
   paginate: { strategy: cursor, from: "body:/nextPageToken", into: "body:/pageToken" }
   max_pages: 10
 endpoints:
@@ -82,5 +83,5 @@ endpoints:
     path: "/v1/organizations/{{ vars.organization_id }}/sources/-/findings"
     query:
       pageSize: 100
-    rows: { decoder: json_at, at: "/listFindingsResults" }
+    rows: { decoder: json_at, at: "/listFindingsResults", when_absent: empty }
     paginate: { strategy: cursor, from: "body:/nextPageToken", into: "query:pageToken" }
