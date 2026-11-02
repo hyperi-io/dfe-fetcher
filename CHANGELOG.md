@@ -3,6 +3,15 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.46](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.45...v1.4.46) (2026-11-02)
+
+### Bug Fixes
+
+* **fetcher:** fix cursor and resource bounds on scalo 2.14.25 ([#269](https://github.com/hyperi-io/dfe-fetcher/issues/269)) ([16b667c](https://github.com/hyperi-io/dfe-fetcher/commit/16b667c3ccaffeee776c9756e55a34119be76d21))
+* refuse zero intervals, keep numeric env secrets, stamp the CloudWatch account ([#265](https://github.com/hyperi-io/dfe-fetcher/issues/265)) ([1b7f365](https://github.com/hyperi-io/dfe-fetcher/commit/1b7f365db2ba2f2f610985abd97da53e79b7d4f2)), closes [#88](https://github.com/hyperi-io/dfe-fetcher/issues/88)
+* take dfe-clickhouse 0.1.4, the renamed clickhouse-dfe ([#264](https://github.com/hyperi-io/dfe-fetcher/issues/264)) ([c7271ab](https://github.com/hyperi-io/dfe-fetcher/commit/c7271ab5b0580e0015302b0347b608221e2ddf52))
+* take libz-sys 1.1.31 for RUSTSEC-2026-0418 ([#263](https://github.com/hyperi-io/dfe-fetcher/issues/263)) ([d29571f](https://github.com/hyperi-io/dfe-fetcher/commit/d29571f47540704a8b4f92b8f9a375e08670ff21))
+
 ## [1.4.45](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.44...v1.4.45) (2026-10-29)
 
 ### Bug Fixes
