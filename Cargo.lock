@@ -1849,7 +1849,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "opentelemetry-proto",
- "parking_lot 0.12.5",
+ "parking_lot 0.13.0",
  "prost",
  "reqwest 0.13.5",
  "scalo",
