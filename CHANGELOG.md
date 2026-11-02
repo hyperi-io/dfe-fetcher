@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.47](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.46...v1.4.47) (2026-11-02)
+
+### Bug Fixes
+
+* **image:** restore curl for wait-for-engine ([2254b94](https://github.com/hyperi-io/dfe-fetcher/commit/2254b94da47a85781f4376d7306ab63b6b00e74b))
+
 ## [1.4.46](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.45...v1.4.46) (2026-11-02)
 
 ### Bug Fixes
