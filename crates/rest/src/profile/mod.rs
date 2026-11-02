@@ -1334,6 +1334,20 @@ pub enum ListerKind {
     S3,
 }
 
+/// What a `json_at` pointer that leads nowhere means.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WhenAbsent {
+    /// A decode error: the unit fails and its checkpoint does not move.
+    #[default]
+    Fail,
+    /// An empty page, for a provider that omits the key when there is nothing
+    /// to list.
+    Empty,
+}
+
 /// Where the rows are in a response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -1342,6 +1356,12 @@ pub struct RowsSpec {
     pub decoder: DecoderKind,
     /// JSON pointer to the row array (`json_at` only).
     pub at: Option<String>,
+    /// What an `at` pointer that leads nowhere means (`json_at` only). `fail`
+    /// is a decode error, so a 2xx error body or a changed response shape
+    /// never reads as an empty page the checkpoint then passes. Set `empty`
+    /// only where the provider documents omitting the key when there is
+    /// nothing to list. A `null` at the pointer is an empty page either way.
+    pub when_absent: WhenAbsent,
     /// The body is a gzip member sequence to inflate before framing (a
     /// `Content-Encoding: gzip` response is inflated by the client regardless).
     pub gzip: bool,
@@ -1365,6 +1385,7 @@ impl Default for RowsSpec {
         Self {
             decoder: DecoderKind::JsonArray,
             at: None,
+            when_absent: WhenAbsent::Fail,
             gzip: false,
             header: true,
             quoted: false,
@@ -3205,6 +3226,12 @@ fn rows_issues(field: &str, rows: &RowsSpec) -> Vec<Issue> {
         )],
         (_, None) => Vec::new(),
     };
+    if rows.when_absent != WhenAbsent::Fail && rows.decoder != DecoderKind::JsonAt {
+        issues.push(Issue::new(
+            format!("{field}.when_absent"),
+            "only json_at reads a pointer",
+        ));
+    }
     if rows.builder.is_some_and(RowBuilderKind::folds) {
         issues.push(Issue::new(
             format!("{field}.builder"),
@@ -5182,6 +5209,34 @@ endpoints:
                 .validate()
                 .iter()
                 .any(|i| i.field == "endpoints[0].row_key")
+        );
+    }
+
+    #[test]
+    fn when_absent_belongs_to_json_at_alone() {
+        let mut profile = parse(RUNZERO);
+        let rows = profile.endpoints[2].rows.as_mut().unwrap();
+        assert_eq!(rows.decoder, DecoderKind::JsonAt);
+        assert_eq!(
+            rows.when_absent,
+            WhenAbsent::Fail,
+            "off unless a profile opts in"
+        );
+        rows.when_absent = WhenAbsent::Empty;
+        assert!(
+            !profile
+                .validate()
+                .iter()
+                .any(|i| i.field == "endpoints[2].rows.when_absent")
+        );
+        let rows = profile.endpoints[2].rows.as_mut().unwrap();
+        rows.decoder = DecoderKind::Json;
+        rows.at = None;
+        assert!(
+            profile
+                .validate()
+                .iter()
+                .any(|i| i.field == "endpoints[2].rows.when_absent")
         );
     }
 

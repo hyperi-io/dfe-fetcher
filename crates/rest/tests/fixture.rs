@@ -2488,7 +2488,7 @@ async fn a_queue_unit_marks_each_message_with_its_ack_id_and_acks_when_told() {
 
     let fx = common::start().await;
     let p = format!(
-        "{PLAIN}retry: {{ retry_non_idempotent: true }}\nendpoints:\n  - unit: pull\n    method: POST\n    path: /queue/pull\n    body: {{ maxMessages: 10, returnImmediately: true }}\n    rows: {{ decoder: json_at, at: /receivedMessages, builder: pubsub_message }}\n    max_pages: 3\n    construct:\n      queue:\n        ack_at: /ackId\n        ack_request: {{ path: /queue/ack, body: {{ ackIds: \"{{{{ ids }}}}\" }} }}\n        ack_batch: 1\n"
+        "{PLAIN}retry: {{ retry_non_idempotent: true }}\nendpoints:\n  - unit: pull\n    method: POST\n    path: /queue/pull\n    body: {{ maxMessages: 10, returnImmediately: true }}\n    rows: {{ decoder: json_at, at: /receivedMessages, when_absent: empty, builder: pubsub_message }}\n    max_pages: 3\n    construct:\n      queue:\n        ack_at: /ackId\n        ack_request: {{ path: /queue/ack, body: {{ ackIds: \"{{{{ ids }}}}\" }} }}\n        ack_batch: 1\n"
     );
     let i = "profile: x\ntopic: t\nauth: { mode: none }\nvars: { project_id: proj, subscription_id: sub }\n";
     let q = QueueShape::new(shape(&fx, &p, i)).unwrap();

@@ -64,7 +64,8 @@ endpoints:
     body:
       maxMessages: "{{ vars.max_messages }}"
       returnImmediately: "{{ vars.return_immediately }}"
-    rows: { decoder: json_at, at: /receivedMessages, builder: pubsub_message }
+    # The pull response "can be entirely empty" when the backlog is.
+    rows: { decoder: json_at, at: /receivedMessages, when_absent: empty, builder: pubsub_message }
     max_pages: 1
     construct:
       queue:

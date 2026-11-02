@@ -69,6 +69,9 @@ const NARROWED_WARN_EVERY_MS: u64 = 10_000;
 /// When a window halved under a page ceiling was last warned of.
 static NARROWED_WARNED_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Least time between two warnings of rows dropped over `max_record_bytes`.
+const OVERSIZE_WARN_EVERY_MS: u64 = 10_000;
+
 /// `window` split at a whole second into its earlier and later halves, or
 /// `None` when a half would be under one second.
 fn halve(window: &FetchWindow) -> Option<(FetchWindow, FetchWindow)> {
@@ -332,6 +335,8 @@ pub struct Driver {
     lease: Arc<dyn Lease>,
     checkpoints: Option<Arc<dyn CursorStore>>,
     metrics: Arc<Metrics>,
+    /// When rows dropped over `max_record_bytes` were last warned of.
+    oversize_warned_at: std::sync::atomic::AtomicU64,
     shutdown: CancellationToken,
 }
 
@@ -364,6 +369,7 @@ impl Driver {
             memory_guard: parts.memory_guard,
             checkpoints: parts.checkpoints,
             metrics: parts.metrics,
+            oversize_warned_at: std::sync::atomic::AtomicU64::new(0),
             shutdown: parts.shutdown,
         }
     }
@@ -663,6 +669,11 @@ impl Driver {
     /// Count an oversize row and put its truncated copy on the dead-letter
     /// queue; the caller decides what, if anything, stands in for the row.
     ///
+    /// With no queue the row is gone for good: it can never be sent, and
+    /// holding the checkpoint for it would stall the unit for ever. That loss
+    /// is counted in `pipeline_dead_letters_dropped_total{reason="too_large"}`
+    /// and warned of, debounced, never logged below warn.
+    ///
     /// # Errors
     ///
     /// A DLQ that refuses or cannot confirm the copy aborts the unit, so its
@@ -690,7 +701,16 @@ impl Driver {
             DeadLettered::NoQueue => {
                 self.metrics
                     .add_dead_letters_dropped(DroppedDeadLetter::TooLarge.as_str(), 1);
-                debug!(source = self.name, unit = %unit.name, bytes = raw.len(), "oversize row dropped; no dead-letter queue");
+                if scalo::logger::log_debounced(&self.oversize_warned_at, OVERSIZE_WARN_EVERY_MS) {
+                    warn!(
+                        source = self.name,
+                        unit = %unit.name,
+                        bytes = raw.len(),
+                        max_record_bytes = oversize.max_record_bytes,
+                        "Row over max_record_bytes dropped: no dead-letter queue is configured. \
+                         Counted in pipeline_dead_letters_dropped_total"
+                    );
+                }
             }
         }
         Ok(())
@@ -1676,6 +1696,50 @@ mod tests {
             "one row per batch under the reloaded max_rows"
         );
         assert_eq!(received_raw(&rx).await.len(), 2);
+    }
+
+    /// A row over `max_record_bytes` with no dead-letter queue can never be
+    /// sent, so the unit goes on past it, but never silently: every row is
+    /// counted and the loss is warned of, debounced to one line.
+    #[tokio::test]
+    async fn an_oversize_row_with_no_dlq_is_counted_and_warned_of() {
+        let warnings = crate::logged::Events::at(tracing::Level::WARN, "dfe_fetcher::driver");
+        let _guard = tracing::subscriber::set_default(warnings.clone());
+        let (rx, endpoint) = listener().await;
+        let (mut config, _) = Config::parse_yaml("{}\n", "fetcher.yaml").unwrap();
+        config.dlq.enabled = false;
+        config.output.output_type = "grpc".into();
+        config.output.grpc = Some(GrpcConfig::client(&endpoint));
+        config.oversize.max_record_bytes = 64;
+        let big = |id: &str| format!(r#"{{"id":"{id}","blob":"{}"}}"#, "x".repeat(200));
+        let d = Box::pin(driver_over(
+            config,
+            vec![
+                Row::new(r#"{"id":"a"}"#),
+                Row::new(big("big1")),
+                Row::new(big("big2")),
+            ],
+        ))
+        .await;
+
+        let report = d.run_tick(None).await.expect("tick");
+
+        assert_eq!(report.oversize, 2);
+        assert_eq!(
+            received_raw(&rx).await.len(),
+            1,
+            "only the small row is sent"
+        );
+        assert_eq!(
+            d.metrics.dead_letters_dropped(),
+            2,
+            "each dropped row is counted"
+        );
+        assert_eq!(
+            warnings.count(),
+            1,
+            "one WARN for the burst, not a debug line"
+        );
     }
 
     /// The memory-pressure brake follows the live config too: switched on by

@@ -621,7 +621,8 @@ opts out of the defaults'.
 | Field | Meaning |
 |-------|---------|
 | `rows.decoder` | The framing: `json_array`, `ndjson`, `json_at`, `document`, `json`, `lines`, `csv`. `json_at`, `document`, `json` and `csv` read the whole page into memory, bounded by `max_page_bytes`; the others stream. |
-| `rows.at` | JSON pointer to the row array (`json_at` only); an absent pointer is an empty page. |
+| `rows.at` | JSON pointer to the row array (`json_at` only). A pointer that leads nowhere fails the unit with a decode error and the checkpoint does not move, so a 2xx error body or a changed response shape cannot read as an empty page. `null` there is an empty page. |
+| `rows.when_absent` | What an `at` pointer that leads nowhere means (`json_at` only): `fail` (default) or `empty`, an empty page. Set `empty` only where the provider documents omitting the key when there is nothing to list: shipped for `google_workspace`, `gcp` (`entries`, `scc`) and `gcp_pubsub`. |
 | `rows.gzip` | The body is a gzip member sequence to inflate before framing (a `Content-Encoding: gzip` response is inflated by the client regardless). |
 | `rows.header` | The first CSV record names the columns. |
 | `rows.quoted` | Each framed row is a JSON string whose content is the row; it is unquoted first. |
