@@ -15,10 +15,13 @@ FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20b
 
 LABEL io.hyperi.profile="production"
 
+# Runtime shared libraries for dynamically-linked Rust crates.
 # Apt versions are unpinned because Debian drops superseded ones, so the digest-pinned base is what fixes the release.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dfe-fetcher /usr/local/bin/dfe-fetcher
