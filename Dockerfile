@@ -21,7 +21,7 @@ LABEL io.hyperi.profile="production"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && apt-get update && apt-get install -y --no-install-recommends \
-       curl \
+       curl libodbc2 odbc-postgresql odbc-mariadb libsqliteodbc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dfe-fetcher /usr/local/bin/dfe-fetcher

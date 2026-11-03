@@ -175,6 +175,10 @@ pub struct Config {
     #[serde(default)]
     pub self_regulation: SelfRegulationConfig,
 
+    /// ODBC driver settings that apply to every `sources.db` instance.
+    #[serde(default)]
+    pub odbc: OdbcConfig,
+
     /// Path to the config file (set by loader, not deserialized).
     #[serde(skip)]
     pub config_path: Option<String>,
@@ -240,6 +244,27 @@ impl SelfRegulationConfig {
     }
 }
 
+/// ODBC driver settings, `odbc` in the cascade.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct OdbcConfig {
+    /// Microsoft ODBC Driver for SQL Server.
+    pub mssql: MssqlOdbcConfig,
+}
+
+/// Microsoft ODBC Driver for SQL Server, `odbc.mssql` in the cascade.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MssqlOdbcConfig {
+    /// Accept Microsoft's licence for its SQL Server ODBC driver
+    /// (<https://aka.ms/odbc18eula>). Until it is true, a `sources.db`
+    /// instance with dialect `mssql` is refused at load.
+    pub accept_eula: bool,
+}
+
+/// Where Microsoft publishes the SQL Server ODBC driver licence.
+const MSSQL_ODBC_EULA_URL: &str = "https://aka.ms/odbc18eula";
+
 const fn default_unwrap_nested_json() -> bool {
     true
 }
@@ -288,6 +313,7 @@ impl Default for Config {
             accumulate: AccumulateConfig::default(),
             oversize: OversizePolicy::default(),
             self_regulation: SelfRegulationConfig::default(),
+            odbc: OdbcConfig::default(),
             config_path: None,
         }
     }
@@ -438,6 +464,7 @@ impl Config {
         registry::register("accumulate", &self.accumulate);
         registry::register("oversize", &self.oversize);
         registry::register("self_regulation", &self.self_regulation);
+        registry::register("odbc", &self.odbc);
     }
 
     /// Validate the configuration.
@@ -760,6 +787,16 @@ impl Config {
                 continue;
             }
             refuse_zero_interval(&format!("sources.db.{id}"), instance.interval_secs)?;
+            if instance.dialect() == Some(dfe_fetcher_db::Dialect::Mssql)
+                && !self.odbc.mssql.accept_eula
+            {
+                return Err(Error::Config(format!(
+                    "sources.db.{id}: dialect `mssql` uses the Microsoft ODBC Driver for SQL \
+                     Server, which needs its licence accepted: read {MSSQL_ODBC_EULA_URL} and \
+                     set `odbc.mssql.accept_eula: true` (env \
+                     DFE_FETCHER__ODBC__MSSQL__ACCEPT_EULA=true)"
+                )));
+            }
             if let Some(filter) = &instance.filter {
                 let errors = scalo::expression::validate(filter);
                 if !errors.is_empty() {

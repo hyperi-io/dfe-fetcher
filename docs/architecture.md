@@ -63,4 +63,5 @@ Feature flags on the app follow scalo's `<capability>-<backend>` naming:
 `db-odbc`, `db-clickhouse`, `db-mongodb`, `file`, `file-tail`, plus `jemalloc`
 and `full`. `.hyperi-ci.yaml` lists feature sets explicitly so a runner is
 never asked for a native driver it does not carry; `db-odbc` needs unixODBC on
-the host.
+the host. The release build adds `db-odbc`, and its image carries unixODBC and
+the open-licence drivers (docs/reference/db-drivers.md).
