@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.48](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.47...v1.4.48) (2026-11-03)
+
+### Bug Fixes
+
+* **deps:** update pulldown-cmark to 0.13.6 ([3f48f64](https://github.com/hyperi-io/dfe-fetcher/commit/3f48f64fd75515f72bc392f54f4bc484e3e51e96))
+* **fetcher:** reject absent row pointers, warn on oversize drops ([#273](https://github.com/hyperi-io/dfe-fetcher/issues/273)) ([ed92f2f](https://github.com/hyperi-io/dfe-fetcher/commit/ed92f2f55faabaaa9e03825a8b98a97fedc1a692))
+
 ## [1.4.47](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.46...v1.4.47) (2026-11-02)
 
 ### Bug Fixes
