@@ -287,13 +287,13 @@ make gates    # the gates alone -- deterministic, needs only python3 and ripgrep
 
 Three ways a green run says more than it proved:
 
-- **CI never runs `--all-features`.** `.hyperi-ci.yaml` lists three feature
-  sets: `default`, `jemalloc`, and `db-clickhouse,db-mongodb,file-tail`.
-  `db-odbc` is out on purpose -- it links unixODBC and needs driver packages on
-  the runner, which that config cannot declare -- so CI compiles and lints
-  neither the ODBC engine nor its tests. The `cargo nextest run --workspace
-  --all-features` in Development does build it, and needs `libodbc` and its
-  headers on your host.
+- **CI never tests `db-odbc`.** Quality lints it and the release image ships
+  it with the PostgreSQL, MariaDB and SQLite drivers, but the test lists in
+  `.hyperi-ci.yaml` leave it out: its suites need the `odbc-postgresql` and
+  `odbc-mariadb` drivers, which the runner lacks and that config cannot
+  declare. The `cargo nextest run --workspace --all-features` in Development
+  does run them, and needs `libodbc`, its headers and those drivers on your
+  host.
 - **Live provider tests are `#[ignore]`.** A green run has not talked to AWS,
   Okta or any other provider. Each `docs/cloud-setup/*.md` says how to run its
   own.
