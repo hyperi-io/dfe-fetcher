@@ -1806,9 +1806,9 @@ dependencies = [
 
 [[package]]
 name = "dfe-clickhouse"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a602c8c4a6cefdc95ecef465c371806fe384aa1cc451c85606176aeb9b9ca5f"
+checksum = "f45c9c5d373c402f8f39a805b3c859b7dfc0add77b5e61cdfd53c383b822ab4c"
 dependencies = [
  "bytes",
  "clickhouse",
@@ -1849,7 +1849,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "opentelemetry-proto",
- "parking_lot 0.12.5",
+ "parking_lot 0.13.0",
  "prost",
  "reqwest 0.13.5",
  "scalo",
@@ -6300,9 +6300,9 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.14.25"
+version = "2.14.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20a4403ba4e4d6ac2ea494be7e0922fe24069d96cd64bfbd37b23f2e122f3fac"
+checksum = "86fc07cf7507dff236cc415a1effc053513b84016b95a0d6f431a1e4ec515615"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
