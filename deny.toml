@@ -23,6 +23,7 @@ all-features = true
 # records it. scalo leaves the 0.31 line once metrics-exporter-opentelemetry,
 # at 0.2.1 requiring opentelemetry ^0.31, moves: hyperi-io/scalo-rs#281.
 ignore = [
+    { id = "RUSTSEC-2026-0440", reason = "Free-runner sweep branch only, never merged: lets the Gate reach Build so the release build is measured." },
     { id = "GHSA-qwgh-2vcv-g2f7", reason = "Reached only through the lock: digest 0.10 <- sha2 <- termwiz <- ratatui-termwiz <- ratatui <- scalo, and ratatui's termwiz feature is never enabled, so no build compiles it. Drop when the lock stops carrying digest 0.10, which the digest 0.11 move does." },
 ]
 
