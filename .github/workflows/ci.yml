@@ -68,5 +68,9 @@ jobs:
       bump: ${{ inputs.bump || 'auto' }}
       skip-optimize: ${{ inputs.skip-optimize || '' }}
       release-unoptimized: ${{ inputs.release-unoptimized || '' }}
-      optimize-tier: ${{ inputs.optimize-tier || '' }}
+      optimize-tier: release
+      runner-mode: free
+      branch-build: "true"
+      build-timeout-minutes: 360
+      test-timeout-minutes: 360
     secrets: inherit

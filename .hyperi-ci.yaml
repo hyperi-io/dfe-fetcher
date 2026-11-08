@@ -92,6 +92,8 @@ build:
 # emitted contract and ships beside the image.
 release:
   enabled: true
+  container:
+    enabled: false
   # Keep `library` at the scalo version in Cargo.toml: the library renders only the contract version its scalo release writes.
   helm:
     enabled: true
