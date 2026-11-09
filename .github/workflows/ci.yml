@@ -49,6 +49,12 @@ on:
         required: false
         default: ""
         description: "'release' to build the release optimisation tier on a run that publishes nothing (Rust: PGO + BOLT)."
+      test-tier:
+        type: choice
+        required: false
+        default: "core"
+        options: [core, full]
+        description: "full runs the full test tier on this run. core never lowers a tier."
 
 permissions:
   contents: write
@@ -60,13 +66,11 @@ jobs:
   ci:
     uses: hyperi-io/hyperi-ci/.github/workflows/rust-ci.yml@main
     with:
-      runner-build: namespace-profile-hyperi-amd64-32x64
-      runner-quality: namespace-profile-hyperi-amd64-8x16
-      runner-build-arm64: namespace-profile-hyperi-arm64-32x64
       tag: ${{ inputs.tag || '' }}
       from-head: ${{ inputs.from-head || '' }}
       bump: ${{ inputs.bump || 'auto' }}
       skip-optimize: ${{ inputs.skip-optimize || '' }}
       release-unoptimized: ${{ inputs.release-unoptimized || '' }}
       optimize-tier: ${{ inputs.optimize-tier || '' }}
+      test-tier: ${{ inputs.test-tier || 'core' }}
     secrets: inherit
