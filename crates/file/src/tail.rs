@@ -438,7 +438,11 @@ mod tailer {
         view: Arc<CheckpointsView>,
         /// `true` once the tailer ended through its shutdown path.
         task: tokio::task::JoinHandle<bool>,
-        /// Stops this run of the tailer without ending the shape.
+        /// Stops this run of the tailer without ending the shape. Cancelled
+        /// only by [`Running::stop`] and [`FileTail`]'s drop, never by the
+        /// shape's `shutdown`: the tailer writes its final checkpoint the
+        /// moment it sees this, so it must not see it before `stop_at` has
+        /// handed the view the committed positions.
         stop: CancellationToken,
         /// Fingerprints and generations seen this run, by the id their marks carry.
         files: Files,
@@ -494,6 +498,9 @@ mod tailer {
     impl Drop for FileTail {
         fn drop(&mut self) {
             self.shutdown.cancel();
+            if let Some(running) = self.running.get_mut() {
+                running.stop.cancel();
+            }
         }
     }
 
@@ -645,7 +652,7 @@ mod tailer {
                 tx,
                 lease: Arc::clone(&self.lease),
             };
-            let stop = self.shutdown.child_token();
+            let stop = CancellationToken::new();
             let stop_reading = stop.clone().cancelled_owned().boxed();
             let stop_writer = stop.clone().cancelled_owned().boxed();
             let unit = Arc::clone(&self.unit);
@@ -767,6 +774,10 @@ mod tailer {
                 };
                 let next = tokio::select! {
                     biased;
+                    () = self.tail.shutdown.cancelled() => {
+                        self.done = true;
+                        return None;
+                    }
                     pass = running.rx.next() => pass,
                     () = tokio::time::sleep_until(self.deadline) => {
                         debug!(unit = %self.tail.unit, "file tail: tick ended at max_tick_secs");
