@@ -512,6 +512,11 @@ mod tailer {
     type Stopping = Shared<BoxFuture<'static, Stopped>>;
 
     /// One tail unit over the vendored tailer.
+    ///
+    /// [`stop`](FileTail::stop) or [`stop_at`](FileTail::stop_at) must be
+    /// awaited before the tail is dropped. A drop cancels the tailer but cannot
+    /// wait for its checkpoint writer, which may still be writing when a
+    /// replacement tailer starts on the same `data_dir`.
     pub struct FileTail {
         spec: TailSpec,
         unit: Arc<str>,
@@ -521,6 +526,12 @@ mod tailer {
         /// run leaves it here, and `start` and `stop_at` wait for it so no
         /// old writer is left to race the next one on the same temp file.
         stopping: std::sync::Mutex<Vec<Stopping>>,
+        /// Held across the whole of `stop_at`, so two stops never settle and
+        /// seed the same checkpoint file at once.
+        lifecycle: Mutex<()>,
+        /// How many stops wrote committed positions for a run left stopping.
+        #[cfg(test)]
+        stop_seeds: std::sync::atomic::AtomicUsize,
         shutdown: CancellationToken,
     }
 
@@ -537,6 +548,7 @@ mod tailer {
         fn drop(&mut self) {
             self.shutdown.cancel();
             if let Some(running) = self.running.get_mut() {
+                warn!(unit = %self.unit, "file tail: dropped without stop; its checkpoint writer is not joined");
                 running.stop.cancel();
             }
         }
@@ -557,6 +569,9 @@ mod tailer {
                 lease,
                 running: Mutex::new(None),
                 stopping: std::sync::Mutex::new(Vec::new()),
+                lifecycle: Mutex::new(()),
+                #[cfg(test)]
+                stop_seeds: std::sync::atomic::AtomicUsize::new(0),
                 shutdown: CancellationToken::new(),
             })
         }
@@ -575,8 +590,10 @@ mod tailer {
         /// final checkpoint that leaves out the last acknowledged tick, and a
         /// restart reads those lines again.
         pub async fn stop_at(&self, committed: Option<&CheckpointValue>) {
+            // Ends an in-flight tick, which holds `running`, before the wait
+            // for the lifecycle lock.
             self.shutdown.cancel();
-            let running = self.running.lock().await.take();
+            let _lifecycle = self.lifecycle.lock().await;
             let lines = match committed_lines(committed) {
                 Ok(lines) => lines,
                 Err(e) => {
@@ -584,21 +601,23 @@ mod tailer {
                     Vec::new()
                 }
             };
-            let detached = self.settle().await;
-            match running {
-                Some(running) => {
-                    self.apply(&running.view, &running.files, &lines);
-                    self.stop_run(running).await;
-                }
-                // A run left stopping wrote its final checkpoint without the
-                // committed positions, and nothing is running to take them.
-                None => {
-                    if let Some(last) = detached.last()
-                        && !lines.is_empty()
-                        && let Err(e) = self.seed(&lines, &last.files).await
-                    {
-                        warn!(unit = %self.unit, error = %e, "file tail: cannot write the committed positions after a stop");
-                    }
+            // Registered before the first await that follows, so a caller
+            // dropped from here on does not lose the run.
+            let running = self.running.lock().await.take().map(|running| {
+                self.apply(&running.view, &running.files, &lines);
+                self.stop_run(running)
+            });
+            let stopped = self.settle().await;
+            // A run left stopping wrote its final checkpoint without the
+            // committed positions, and nothing is running to take them.
+            if running.is_none()
+                && let Some(last) = stopped.last()
+                && !lines.is_empty()
+            {
+                #[cfg(test)]
+                self.stop_seeds.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = self.seed(&lines, &last.files).await {
+                    warn!(unit = %self.unit, error = %e, "file tail: cannot write the committed positions after a stop");
                 }
             }
         }
@@ -612,6 +631,12 @@ mod tailer {
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(stopping.clone());
             stopping
+        }
+
+        /// How many stops wrote committed positions for a run left stopping.
+        #[cfg(test)]
+        pub(super) fn stop_seeds(&self) -> usize {
+            self.stop_seeds.load(Ordering::Relaxed)
         }
 
         /// How many runs are still being stopped.
@@ -1417,6 +1442,36 @@ mod tailer_tests {
         assert!(state.contains("\"position\":16"), "{state}");
         assert!(!state_dir.join("checkpoints.new.json").exists());
         assert_eq!(tail.stopping_runs(), 0, "a run is still stopping");
+    }
+
+    /// Two stops at once (a dropped scheduler task's and an explicit one)
+    /// leave one valid checkpoint file with the committed positions and no
+    /// writer behind them.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_concurrent_stops_write_one_valid_checkpoint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        append(
+            &dir.path().join("logs").join("app.log"),
+            &["{\"n\":1}", "{\"n\":2}"],
+        );
+        let tail = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
+        let (rows, committed) = tick(&tail, None).await;
+        assert_eq!(rows.len(), 2);
+        let mut stream = tail.rows(None);
+        assert!(futures::poll!(stream.next()).is_pending());
+        drop(stream);
+
+        tokio::join!(
+            tail.stop_at(committed.as_ref()),
+            tail.stop_at(committed.as_ref())
+        );
+        let state_dir = dir.path().join("state");
+        let state = std::fs::read_to_string(state_dir.join("checkpoints.json")).unwrap();
+        assert!(state.contains("\"position\":16"), "{state}");
+        assert!(!state_dir.join("checkpoints.new.json").exists());
+        assert_eq!(tail.stopping_runs(), 0, "a run is still stopping");
+        assert_eq!(tail.stop_seeds(), 1, "one stop takes the stopped run");
     }
 
     /// A tick whose lines the driver never commits (a failed flush) is
