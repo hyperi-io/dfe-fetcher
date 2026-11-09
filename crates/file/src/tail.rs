@@ -193,14 +193,14 @@ mod tailer {
     use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
     use std::pin::Pin;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, PoisonError};
     use std::task::{Context, Poll};
     use std::time::Duration;
 
     use bytes::Bytes;
     use futures::channel::mpsc;
-    use futures::future::BoxFuture;
+    use futures::future::{BoxFuture, Shared, join_all};
     use futures::{FutureExt, Sink, StreamExt};
     use tokio::sync::{Mutex, MutexGuard};
     use tokio::time::Instant;
@@ -267,7 +267,7 @@ mod tailer {
 
     /// The fingerprint and generation behind each id this run handed out,
     /// and each file's current generation.
-    #[derive(Debug, Default)]
+    #[derive(Debug, Clone, Default)]
     struct Files {
         ids: HashMap<u64, (FileFingerprint, u32)>,
         generations: HashMap<FileFingerprint, Generation>,
@@ -438,7 +438,11 @@ mod tailer {
         view: Arc<CheckpointsView>,
         /// `true` once the tailer ended through its shutdown path.
         task: tokio::task::JoinHandle<bool>,
-        /// Stops this run of the tailer without ending the shape.
+        /// Stops this run of the tailer without ending the shape. Cancelled
+        /// only by [`Running::stop`] and [`FileTail`]'s drop, never by the
+        /// shape's `shutdown`: the tailer writes its final checkpoint the
+        /// moment it sees this, so it must not see it before `stop_at` has
+        /// handed the view the committed positions.
         stop: CancellationToken,
         /// Fingerprints and generations seen this run, by the id their marks carry.
         files: Files,
@@ -457,28 +461,80 @@ mod tailer {
             })
         }
 
-        /// Stop this run and wait for its final checkpoint write. `true` when
-        /// the tailer ended through its shutdown path.
-        async fn stop(self) -> std::result::Result<bool, tokio::task::JoinError> {
+        /// Stop this run on a task of its own, which ends with the tailer's
+        /// final checkpoint write joined, and give back its files. The task
+        /// outlives a caller that drops the future this returns.
+        fn stop(self, unit: Arc<str>) -> Stopping {
             let Self {
-                mut rx, task, stop, ..
+                mut rx,
+                task,
+                stop,
+                files,
+                ..
             } = self;
             stop.cancel();
-            // Drained until the tailer ends, never dropped: a send onto a closed
-            // channel ends it before it joins its checkpoint writer, and that
-            // writer then races the next run's on the same temp file.
-            let drain = async { while rx.next().await.is_some() {} };
-            let ((), ended) = tokio::join!(drain, task);
-            ended
+            let ended = tokio::spawn(async move {
+                // Drained until the tailer ends, never dropped: a send onto a
+                // closed channel ends it before it joins its checkpoint
+                // writer, and that writer then races the next run's on the
+                // same temp file.
+                let drain = async { while rx.next().await.is_some() {} };
+                let graceful = match tokio::join!(drain, task).1 {
+                    Ok(true) => true,
+                    Ok(false) => {
+                        warn!(unit = %unit, "file tail: the tailer ended outside its shutdown path; its final checkpoint was not written");
+                        false
+                    }
+                    Err(e) => {
+                        warn!(unit = %unit, error = %e, "file tail: tailer task ended badly");
+                        false
+                    }
+                };
+                Stopped { files, graceful }
+            });
+            async move { ended.await.unwrap_or_default() }
+                .boxed()
+                .shared()
         }
     }
 
+    /// What a stopped run leaves: its files, and whether the tailer ended
+    /// through its shutdown path (which joins its checkpoint writer).
+    #[derive(Debug, Clone, Default)]
+    struct Stopped {
+        files: Files,
+        /// Read only by the test that proves a stop joins the writer.
+        #[cfg_attr(not(test), expect(dead_code))]
+        graceful: bool,
+    }
+
+    /// A run being stopped, resolving once its checkpoint writer is joined.
+    type Stopping = Shared<BoxFuture<'static, Stopped>>;
+
     /// One tail unit over the vendored tailer.
+    ///
+    /// [`stop`](FileTail::stop) or [`stop_at`](FileTail::stop_at) must be
+    /// awaited before the tail is dropped. A drop cancels the tailer but cannot
+    /// wait for its checkpoint writer, which may still be writing when a
+    /// replacement tailer starts on the same `data_dir`.
     pub struct FileTail {
         spec: TailSpec,
         unit: Arc<str>,
         lease: Arc<dyn Lease>,
         running: Mutex<Option<Running>>,
+        /// Runs being stopped. A tick dropped while its restart stops the old
+        /// run leaves it here, and `start` and `stop_at` wait for it so no
+        /// old writer is left to race the next one on the same temp file.
+        stopping: std::sync::Mutex<Vec<Stopping>>,
+        /// Held across the whole of `stop_at`, so two stops never settle and
+        /// seed the same checkpoint file at once.
+        lifecycle: Mutex<()>,
+        /// The files of the last stopped run, while no stop has written the
+        /// committed positions for it. A later `stop_at` that has them still can.
+        unseeded: std::sync::Mutex<Option<Files>>,
+        /// How many stops wrote committed positions for a run left stopping.
+        #[cfg(test)]
+        stop_seeds: std::sync::atomic::AtomicUsize,
         shutdown: CancellationToken,
     }
 
@@ -494,6 +550,10 @@ mod tailer {
     impl Drop for FileTail {
         fn drop(&mut self) {
             self.shutdown.cancel();
+            if let Some(running) = self.running.get_mut() {
+                warn!(unit = %self.unit, "file tail: dropped without stop; its checkpoint writer is not joined");
+                running.stop.cancel();
+            }
         }
     }
 
@@ -511,6 +571,11 @@ mod tailer {
                 unit: Arc::from(unit),
                 lease,
                 running: Mutex::new(None),
+                stopping: std::sync::Mutex::new(Vec::new()),
+                lifecycle: Mutex::new(()),
+                unseeded: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                stop_seeds: std::sync::atomic::AtomicUsize::new(0),
                 shutdown: CancellationToken::new(),
             })
         }
@@ -529,18 +594,93 @@ mod tailer {
         /// final checkpoint that leaves out the last acknowledged tick, and a
         /// restart reads those lines again.
         pub async fn stop_at(&self, committed: Option<&CheckpointValue>) {
+            // Ends an in-flight tick, which holds `running`, before the wait
+            // for the lifecycle lock.
             self.shutdown.cancel();
-            if let Some(running) = self.running.lock().await.take() {
-                match committed_lines(committed) {
-                    Ok(lines) => self.apply(&running.view, &running.files, &lines),
-                    Err(e) => {
-                        warn!(unit = %self.unit, error = %e, "file tail: the committed checkpoint is not a tail's; stopping without it");
-                    }
+            let _lifecycle = self.lifecycle.lock().await;
+            let lines = match committed_lines(committed) {
+                Ok(lines) => lines,
+                Err(e) => {
+                    warn!(unit = %self.unit, error = %e, "file tail: the committed checkpoint is not a tail's; stopping without it");
+                    Vec::new()
                 }
-                if let Err(e) = running.stop().await {
-                    warn!(unit = %self.unit, error = %e, "file tail: tailer task ended badly");
+            };
+            // Registered before the first await that follows, so a caller
+            // dropped from here on does not lose the run.
+            let running = self.running.lock().await.take().map(|running| {
+                self.apply(&running.view, &running.files, &lines);
+                self.stop_run(running)
+            });
+            let stopped = self.settle().await;
+            let files = stopped.last().map(|last| last.files.clone());
+            let to_seed = {
+                let mut unseeded = self.unseeded.lock().unwrap_or_else(PoisonError::into_inner);
+                if lines.is_empty() {
+                    // Nothing to write now. Keep the mapping for a later stop.
+                    if files.is_some() {
+                        *unseeded = files;
+                    }
+                    return;
+                }
+                if running.is_some() {
+                    // `apply` handed the run its final checkpoint's positions.
+                    *unseeded = None;
+                    return;
+                }
+                // A run left stopping, or one an earlier stop had no positions
+                // for, wrote its final checkpoint without them, and nothing is
+                // running to take them.
+                files.or_else(|| unseeded.take())
+            };
+            if let Some(files) = to_seed {
+                #[cfg(test)]
+                self.stop_seeds.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = self.seed(&lines, &files).await {
+                    warn!(unit = %self.unit, error = %e, "file tail: cannot write the committed positions after a stop");
+                    *self.unseeded.lock().unwrap_or_else(PoisonError::into_inner) = Some(files);
                 }
             }
+        }
+
+        /// Stop `running`, recording it so a caller that drops the wait does
+        /// not lose it.
+        fn stop_run(&self, running: Running) -> Stopping {
+            let stopping = running.stop(Arc::clone(&self.unit));
+            self.stopping
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(stopping.clone());
+            stopping
+        }
+
+        /// How many stops wrote committed positions for a run left stopping.
+        #[cfg(test)]
+        pub(super) fn stop_seeds(&self) -> usize {
+            self.stop_seeds.load(Ordering::Relaxed)
+        }
+
+        /// How many runs are still being stopped.
+        #[cfg(test)]
+        pub(super) fn stopping_runs(&self) -> usize {
+            self.stopping
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len()
+        }
+
+        /// Wait for every run being stopped, and give back what each left.
+        async fn settle(&self) -> Vec<Stopped> {
+            let pending = self
+                .stopping
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let stopped = join_all(pending).await;
+            self.stopping
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|stopping| stopping.peek().is_none());
+            stopped
         }
 
         fn fingerprint_of(&self, files: &Files, id: u64) -> Option<FileFingerprint> {
@@ -571,15 +711,9 @@ mod tailer {
             }
         }
 
-        /// Start the tailer: load its checkpoint file, fold the committed
-        /// positions in, persist, then run.
-        async fn start(&self, committed: &[(u64, u64)]) -> Result<Running> {
-            if self.shutdown.is_cancelled() {
-                return Err(Error::Source(format!(
-                    "file tail `{}`: the tailer was stopped",
-                    self.unit
-                )));
-            }
+        /// Load the checkpoint file, fold the committed positions in and
+        /// persist it. No tailer of this unit may still be writing.
+        async fn seed(&self, committed: &[(u64, u64)], files: &Files) -> Result<Checkpointer> {
             let data_dir = PathBuf::from(&self.spec.data_dir);
             tokio::fs::create_dir_all(&data_dir).await.map_err(|e| {
                 Error::Cursor(format!(
@@ -589,15 +723,29 @@ mod tailer {
             })?;
             let mut checkpointer = Checkpointer::new(&data_dir);
             checkpointer.read_checkpoints(None).await;
-            let view = checkpointer.view();
-            let files = Files::default();
-            self.apply(&view, &files, committed);
+            self.apply(&checkpointer.view(), files, committed);
             checkpointer.write_checkpoints().await.map_err(|e| {
                 Error::Cursor(format!(
                     "file tail: cannot write checkpoints under {}: {e}",
                     data_dir.display()
                 ))
             })?;
+            Ok(checkpointer)
+        }
+
+        /// Start the tailer: seed its checkpoint file, then run.
+        async fn start(&self, committed: &[(u64, u64)]) -> Result<Running> {
+            if self.shutdown.is_cancelled() {
+                return Err(Error::Source(format!(
+                    "file tail `{}`: the tailer was stopped",
+                    self.unit
+                )));
+            }
+            self.settle().await;
+            let files = Files::default();
+            let checkpointer = self.seed(committed, &files).await?;
+            let view = checkpointer.view();
+            let data_dir = PathBuf::from(&self.spec.data_dir);
 
             let emitter = Events {
                 unit: Arc::clone(&self.unit),
@@ -645,7 +793,7 @@ mod tailer {
                 tx,
                 lease: Arc::clone(&self.lease),
             };
-            let stop = self.shutdown.child_token();
+            let stop = CancellationToken::new();
             let stop_reading = stop.clone().cancelled_owned().boxed();
             let stop_writer = stop.clone().cancelled_owned().boxed();
             let unit = Arc::clone(&self.unit);
@@ -695,10 +843,8 @@ mod tailer {
                     files = running.handed.len(),
                     "file tail: the last tick handed out lines its checkpoint does not cover; restarting the tailer from the committed offsets"
                 );
-                if let Some(running) = guard.take()
-                    && let Err(e) = running.stop().await
-                {
-                    warn!(unit = %self.unit, error = %e, "file tail: tailer task ended badly");
+                if let Some(running) = guard.take() {
+                    self.stop_run(running).await;
                 }
             }
             **guard = Some(self.start(committed).await?);
@@ -767,6 +913,10 @@ mod tailer {
                 };
                 let next = tokio::select! {
                     biased;
+                    () = self.tail.shutdown.cancelled() => {
+                        self.done = true;
+                        return None;
+                    }
                     pass = running.rx.next() => pass,
                     () = tokio::time::sleep_until(self.deadline) => {
                         debug!(unit = %self.tail.unit, "file tail: tick ended at max_tick_secs");
@@ -924,7 +1074,7 @@ mod tailer {
                     .await
                     .is_ok_and(|pass| pass.is_some())
                 {}
-                ended.push(running.stop().await.expect("the tailer task ends"));
+                ended.push(running.stop(Arc::clone(&tail.unit)).await.graceful);
             }
             growing.store(false, Ordering::Relaxed);
             appender.join().unwrap();
@@ -1281,6 +1431,92 @@ mod tailer_tests {
         tail.stop_at(committed.as_ref()).await;
         let with = std::fs::read_to_string(&state).unwrap();
         assert!(with.contains("\"position\":16"), "{with}");
+    }
+
+    /// A tick the driver drops while its restart is stopping the old run
+    /// (the shutdown `select!` abandons the row stream) leaves that run to
+    /// finish on its own. `stop_at` still waits for it, joins its checkpoint
+    /// writer and writes the committed positions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_restart_dropped_mid_stop_still_leaves_the_committed_checkpoint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        append(
+            &dir.path().join("logs").join("app.log"),
+            &["{\"n\":1}", "{\"n\":2}"],
+        );
+        let tail = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
+        let (rows, committed) = tick(&tail, None).await;
+        assert_eq!(rows.len(), 2);
+
+        // No checkpoint handed back, so the lines of the first tick are
+        // uncovered and the tick restarts the tailer. One poll runs it as far
+        // as the pending stop of the old run, and the drop abandons it there.
+        let mut stream = tail.rows(None);
+        assert!(futures::poll!(stream.next()).is_pending());
+        drop(stream);
+
+        tail.stop_at(committed.as_ref()).await;
+        let state_dir = dir.path().join("state");
+        let state = std::fs::read_to_string(state_dir.join("checkpoints.json")).unwrap();
+        assert!(state.contains("\"position\":16"), "{state}");
+        assert!(!state_dir.join("checkpoints.new.json").exists());
+        assert_eq!(tail.stopping_runs(), 0, "a run is still stopping");
+    }
+
+    /// Two stops at once (a dropped scheduler task's and an explicit one)
+    /// leave one valid checkpoint file with the committed positions and no
+    /// writer behind them.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_concurrent_stops_write_one_valid_checkpoint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        append(
+            &dir.path().join("logs").join("app.log"),
+            &["{\"n\":1}", "{\"n\":2}"],
+        );
+        let tail = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
+        let (rows, committed) = tick(&tail, None).await;
+        assert_eq!(rows.len(), 2);
+        let mut stream = tail.rows(None);
+        assert!(futures::poll!(stream.next()).is_pending());
+        drop(stream);
+
+        tokio::join!(
+            tail.stop_at(committed.as_ref()),
+            tail.stop_at(committed.as_ref())
+        );
+        let state_dir = dir.path().join("state");
+        let state = std::fs::read_to_string(state_dir.join("checkpoints.json")).unwrap();
+        assert!(state.contains("\"position\":16"), "{state}");
+        assert!(!state_dir.join("checkpoints.new.json").exists());
+        assert_eq!(tail.stopping_runs(), 0, "a run is still stopping");
+        assert_eq!(tail.stop_seeds(), 1, "one stop takes the stopped run");
+    }
+
+    /// A stop that could not load the committed checkpoint leaves a final
+    /// checkpoint without it. A later stop that can still writes it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_later_stop_writes_the_positions_an_earlier_stop_did_not_have() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        append(
+            &dir.path().join("logs").join("app.log"),
+            &["{\"n\":1}", "{\"n\":2}"],
+        );
+        let tail = FileTail::new("logs", spec(&dir), no_lease()).unwrap();
+        let (rows, committed) = tick(&tail, None).await;
+        assert_eq!(rows.len(), 2);
+
+        tail.stop_at(None).await;
+        let state = dir.path().join("state").join("checkpoints.json");
+        let without = std::fs::read_to_string(&state).unwrap();
+        assert!(!without.contains("\"position\":16"), "{without}");
+
+        tail.stop_at(committed.as_ref()).await;
+        let with = std::fs::read_to_string(&state).unwrap();
+        assert!(with.contains("\"position\":16"), "{with}");
+        assert_eq!(tail.stopping_runs(), 0, "a run is still stopping");
     }
 
     /// A tick whose lines the driver never commits (a failed flush) is
