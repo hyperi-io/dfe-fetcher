@@ -99,7 +99,7 @@ percent-encoding = "2.3.2"
 jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 # Test-only RSA key generation for the JWT-bearer fixtures, jsonwebtoken's
 # own backend so no second crypto crate enters the graph.
-aws-lc-rs = "1.18.2"
+aws-lc-rs = "1.19.0"
 # AWS SigV4 signing (reqsign -- lightweight, no AWS SDK dependency). reqsign
 # signs an http::request::Parts and its default context sends STS and metadata
 # calls over the same reqwest line as the REST path.
