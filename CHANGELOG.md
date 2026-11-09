@@ -3,6 +3,14 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.49](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.48...v1.4.49) (2026-11-09)
+
+### Bug Fixes
+
+* **deps:** update rust-dependencies ([3e0a975](https://github.com/hyperi-io/dfe-fetcher/commit/3e0a975300ee1c482dbad0349ffabf56b0ec1a5d))
+* **deps:** update rust-dependencies ([#276](https://github.com/hyperi-io/dfe-fetcher/issues/276)) ([1f4fe3a](https://github.com/hyperi-io/dfe-fetcher/commit/1f4fe3a385b7a0dec78cf9677eed7e86bf2da6ab))
+* **scalo:** rebuild on scalo 2.14.27 ([3a2c6ed](https://github.com/hyperi-io/dfe-fetcher/commit/3a2c6ed98dd364fdc035ebe7444f64db19b832ab))
+
 ## [1.4.48](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.47...v1.4.48) (2026-11-03)
 
 ### Bug Fixes
