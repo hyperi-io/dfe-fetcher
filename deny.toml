@@ -24,6 +24,7 @@ all-features = true
 # at 0.2.1 requiring opentelemetry ^0.31, moves: hyperi-io/scalo-rs#281.
 ignore = [
     { id = "GHSA-qwgh-2vcv-g2f7", reason = "Reached only through the lock: digest 0.10 <- sha2 <- termwiz <- ratatui-termwiz <- ratatui <- scalo, and ratatui's termwiz feature is never enabled, so no build compiles it. Drop when the lock stops carrying digest 0.10, which the digest 0.11 move does." },
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained, not vulnerable. It arrives only through testcontainers, via the testcontainers-modules dev-dependency the integration tests use, and no release binary links it. testcontainers 0.28.0 still depends on it. Drop when testcontainers moves off it." },
 ]
 
 [licenses]
