@@ -327,7 +327,7 @@ sources:
     # customer_id: "my_customer"               # default - tenant of admin_email
     # api_url_override: "https://admin.googleapis.com"   # default
     # token_url_override: "https://oauth2.googleapis.com/token"  # default
-    services:
+    services: []
       # Each entry is one applicationName under
       # /admin/reports/v1/activity/users/all/applications/<name>.
       # - name: login
@@ -362,7 +362,7 @@ sources:
     # credential_secret: "vault:kv/data/gcp-pubsub:sa_key"
     # api_url_override: "https://pubsub.googleapis.com"  # default
     # token_url_override: "https://oauth2.googleapis.com/token"  # default
-    subscriptions:
+    subscriptions: []
       # - project_id: "my-gcp-project"
       #   subscription_id: "audit-logs-fetcher"
       #   max_messages: 1000           # default; REST cap is 1000
@@ -388,7 +388,7 @@ sources:
     enabled: false
     topic: "object_store"
     # filter: '_dfe_fetcher_object.bucket == "my-cloudtrail-bucket"'
-    backends:
+    backends: []
       # --- S3 example (live) ---
       # - provider: s3
       #   region: ap-southeast-2
@@ -476,7 +476,7 @@ sources:
     # # credential_secret: "vault:kv/data/salesforce:client_secret"
     #
     # instance_url_override: "https://mydomain.my.salesforce.com"  # testing / custom domain
-    services:
+    services: []
       # - name: setup_audit_trail
       # - name: login_history
       # - name: event_log_file
