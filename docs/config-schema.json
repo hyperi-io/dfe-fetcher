@@ -7367,7 +7367,7 @@
           "default": 100
         },
         "max_payload_bytes": {
-          "description": "Payload bytes an entry keeps: a longer payload is cut to this and the\nentry marked `truncated` with its original length, so it lands where\nthe whole record could not. `None` keeps every payload whole. Default\n[`DEFAULT_MAX_PAYLOAD_BYTES`].",
+          "description": "Bytes an entry's payload and copied header values keep together: a\nlonger payload is cut and the entry marked `truncated` with its\noriginal length, so it lands where the whole record could not, and a\nheader value that does not fit is left out. `None` keeps every\npayload whole. Default [`DEFAULT_MAX_PAYLOAD_BYTES`].",
           "type": [
             "integer",
             "null"
