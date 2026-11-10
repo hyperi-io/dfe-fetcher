@@ -3,6 +3,14 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.50](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.49...v1.4.50) (2026-11-10)
+
+### Bug Fixes
+
+* **ci:** drop Namespace runners, add test-tier ([e83a687](https://github.com/hyperi-io/dfe-fetcher/commit/e83a687a6e9a1372d0fba6a1f6392e61dde14b61))
+* **fetcher:** rebuild on scalo 2.14.28 ([#280](https://github.com/hyperi-io/dfe-fetcher/issues/280)) ([3c39756](https://github.com/hyperi-io/dfe-fetcher/commit/3c3975675f20df498d0493dd0d3583452cd7c923))
+* **file:** stop tailers without losing the last committed checkpoint ([c74f605](https://github.com/hyperi-io/dfe-fetcher/commit/c74f605042278a40535b774b75910bfe02835268))
+
 ## [1.4.49](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.48...v1.4.49) (2026-11-09)
 
 ### Bug Fixes
