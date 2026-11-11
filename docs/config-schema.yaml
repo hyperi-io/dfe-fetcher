@@ -6752,13 +6752,19 @@ $defs:
         description: |-
           Regex patterns for topic exclude filtering.
           Topics matching any pattern are excluded. Exclude wins over include.
-          Default: `["^__", "_dlq$"]` -- Kafka internal topics and a downstream
-          dead-letter-topic convention (a DLQ consumer sets its own include).
+          Default: Kafka internal topics (`^__`), the internal topics of Strimzi,
+          Confluent, Redpanda, Schema Registry and Kafka Connect, and a downstream
+          dead-letter-topic convention (`_dlq$`, a DLQ consumer sets its own include).
         type: array
         items:
           type: string
         default:
         - ^__
+        - ^strimzi\.
+        - ^_confluent
+        - ^_redpanda
+        - ^_schemas$
+        - ^connect-(configs|offsets|status)$
         - _dlq$
       topic_refresh_secs:
         description: |-

@@ -7662,13 +7662,18 @@
           "default": []
         },
         "topic_exclude": {
-          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: `[\"^__\", \"_dlq$\"]` -- Kafka internal topics and a downstream\ndead-letter-topic convention (a DLQ consumer sets its own include).",
+          "description": "Regex patterns for topic exclude filtering.\nTopics matching any pattern are excluded. Exclude wins over include.\nDefault: Kafka internal topics (`^__`), the internal topics of Strimzi,\nConfluent, Redpanda, Schema Registry and Kafka Connect, and a downstream\ndead-letter-topic convention (`_dlq$`, a DLQ consumer sets its own include).",
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [
             "^__",
+            "^strimzi\\.",
+            "^_confluent",
+            "^_redpanda",
+            "^_schemas$",
+            "^connect-(configs|offsets|status)$",
             "_dlq$"
           ]
         },
