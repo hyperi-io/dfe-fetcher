@@ -224,6 +224,7 @@ pub struct Metrics {
     // Pipeline / delivery
     pipeline_ready: AtomicU64,          // gauge: 1=ready, 0=backpressured
     records_delivered_total: AtomicU64, // counter
+    records_processed_total: AtomicU64, // counter
 
     // Gauges
     active_fetches: AtomicU64,
@@ -279,6 +280,7 @@ impl Metrics {
             dead_letters_dropped_total: AtomicU64::new(0),
             pipeline_ready: AtomicU64::new(1),
             records_delivered_total: AtomicU64::new(0),
+            records_processed_total: AtomicU64::new(0),
             active_fetches: AtomicU64::new(0),
             active_extractors: AtomicU64::new(0),
             memory_used_bytes: AtomicU64::new(0),
@@ -852,6 +854,19 @@ impl Metrics {
         }
     }
 
+    /// Add records that made it through processing (enrichment) and went on to the output.
+    ///
+    /// ServiceMetrics has no processed counter, so the dual-emit counts the
+    /// bare `records_processed_total` series scalo registers.
+    #[inline]
+    pub fn add_records_processed(&self, count: u64) {
+        self.records_processed_total
+            .fetch_add(count, Ordering::Relaxed);
+        if self.dfe.is_some() {
+            metrics::counter!("records_processed_total").increment(count);
+        }
+    }
+
     // ==========================================================================
     // Gauges
     // ==========================================================================
@@ -1010,6 +1025,13 @@ impl Metrics {
         output.push_str(&format!(
             "dfe_records_delivered_total {}\n",
             self.records_delivered_total.load(Ordering::Relaxed)
+        ));
+
+        output.push_str("# HELP dfe_records_processed_total Total records processed\n");
+        output.push_str("# TYPE dfe_records_processed_total counter\n");
+        output.push_str(&format!(
+            "dfe_records_processed_total {}\n",
+            self.records_processed_total.load(Ordering::Relaxed)
         ));
 
         // Extractor counters
@@ -1450,6 +1472,25 @@ mod tests {
         assert!(
             output.contains("dfe_transport_send_errors_total 2"),
             "the local total still counts both: {output}"
+        );
+    }
+
+    /// ServiceMetrics has no processed counter, so the fetcher counts the
+    /// bare series itself, and the local total reads the same.
+    #[test]
+    fn processed_records_reach_records_processed_total() {
+        let manager = MetricsManager::with_config(scalo::metrics::MetricsConfig::offline(""));
+        let mut output = String::new();
+        let hits = counted("records_processed_total", || {
+            let m = Metrics::with_dfe(&manager);
+            m.add_records_processed(3);
+            m.add_records_processed(2);
+            output = m.render();
+        });
+        assert_eq!(hits, 5);
+        assert!(
+            output.contains("dfe_records_processed_total 5\n"),
+            "{output}"
         );
     }
 
