@@ -354,15 +354,7 @@ async fn run_fetcher_service(
     // with fetcher-specific weights for buffer depth, transport errors, and memory.
     let scaling_pressure = Arc::new(scalo::scaling::ScalingPressure::new(
         config.scaling.clone(),
-        vec![
-            ScalingComponent::new(
-                "buffer_depth",
-                0.40,
-                config.buffer.memory_limit.max(1) as f64,
-            ),
-            ScalingComponent::new("transport_errors", 0.30, 100.0),
-            ScalingComponent::new("memory", 0.30, 1.0),
-        ],
+        scaling_components(),
     ));
 
     // Start config hot-reload
@@ -431,7 +423,7 @@ async fn run_fetcher_service(
                         let limit = mg.limit_bytes();
                         let circuit_open = !state.output_healthy();
                         // Canonical weighted pressure engine (served to KEDA).
-                        scaling.set_component("buffer_depth", used as f64);
+                        scaling.set_component("buffer_depth", buffer_depth(used, limit));
                         scaling.set_memory(used, limit);
                         scaling.set_circuit_open(circuit_open);
                         // Keep the per-tick scaling gauges current for KEDA's
@@ -794,6 +786,23 @@ async fn run_fetcher_service(
     Ok(())
 }
 
+/// The fetcher's scaling components, each read as a 0-1 fraction of its saturation.
+fn scaling_components() -> Vec<ScalingComponent> {
+    vec![
+        ScalingComponent::new("buffer_depth", 0.40, 1.0),
+        ScalingComponent::new("transport_errors", 0.30, 100.0),
+        ScalingComponent::new("memory", 0.30, 1.0),
+    ]
+}
+
+/// The share of the memory guard's limit the buffered bytes hold, 0 when it has no limit.
+fn buffer_depth(used: u64, limit: u64) -> f64 {
+    if limit == 0 {
+        return 0.0;
+    }
+    used as f64 / limit as f64
+}
+
 /// The pressure latch framework drivers gate on: the memory guard as the one
 /// HARD source under the configured hysteresis, or `None` when the brake is
 /// off.
@@ -877,6 +886,33 @@ mod tests {
         // SAFETY: test-only, serialised by ENV_LOCK
         unsafe { std::env::remove_var(ENABLED_VAR) };
         resolved
+    }
+
+    /// An idle fetcher reads near 0 and a buffer that fills the guard's limit
+    /// reads the component's full 40, whatever `buffer.memory_limit` is.
+    #[test]
+    fn buffer_depth_pressure_follows_the_guard_limit() {
+        let cases: [(&str, u64, u64, f64); 5] = [
+            (
+                "idle",
+                14_225_408,
+                684_510_412,
+                40.0 * 14_225_408.0 / 684_510_412.0,
+            ),
+            ("half full", 50, 100, 20.0),
+            ("full", 100, 100, 40.0),
+            ("over the limit", 500, 100, 40.0),
+            ("no limit", 14_225_408, 0, 0.0),
+        ];
+        for (name, used, limit, expected) in cases {
+            let pressure = scalo::scaling::ScalingPressure::new(
+                scalo::scaling::ScalingPressureConfig::default(),
+                scaling_components(),
+            );
+            pressure.set_component("buffer_depth", buffer_depth(used, limit));
+            let got = pressure.calculate();
+            assert!((got - expected).abs() < 1e-9, "{name}: {got} != {expected}");
+        }
     }
 
     /// `metrics-manifest` builds a bare manager and calls `register_metrics`,
