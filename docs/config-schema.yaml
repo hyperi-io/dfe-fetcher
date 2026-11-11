@@ -177,6 +177,7 @@ properties:
       vector:
         enabled: false
         grpc_bind_address: 0.0.0.0:6000
+        image: null
         instances: []
         acknowledgements:
           enabled: true
@@ -5914,6 +5915,7 @@ $defs:
         default:
           enabled: false
           grpc_bind_address: 0.0.0.0:6000
+          image: null
           instances: []
           acknowledgements:
             enabled: true
@@ -6054,6 +6056,16 @@ $defs:
           `grpc_bind_address` of its own, or on `vector` when there is none.
         type: string
         default: 0.0.0.0:6000
+      image:
+        description: |-
+          The image a container-mode instance runs when it names none, pinned by
+          digest (`timberio/vector:<tag>@sha256:<digest>`). Unset, a container
+          instance without its own `image` is refused at load. A deployment sets
+          it from the stack's pinned Vector, `DFE_FETCHER_EXTRACTORS__VECTOR__IMAGE`.
+        type:
+        - string
+        - "null"
+        default: null
       instances:
         description: |-
           Vector instances. A Vector push names no instance, so the listener a
@@ -6085,12 +6097,13 @@ $defs:
         type: string
         default: container
       image:
-        description: Container image for container mode, pinned by digest.
+        description: |-
+          Container image for container mode, pinned by digest. Unset, the
+          instance runs `extractors.vector.image`.
         type:
         - string
         - "null"
-        default: >-
-          timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
+        default: null
       vector_config:
         description: |-
           Inline Vector configuration, TOML or YAML, for container mode. It is

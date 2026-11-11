@@ -786,6 +786,10 @@ extractors:
   vector:
     enabled: false
     grpc_bind_address: "0.0.0.0:6000"
+    # The image a container instance runs when it names none, pinned by digest.
+    # Unset, such an instance is refused at load. A deployment sets it from the
+    # stack's pinned Vector with DFE_FETCHER_EXTRACTORS__VECTOR__IMAGE.
+    # image: timberio/vector:<tag>@sha256:<digest>
     # On (the default), a push is answered only once its events reach the
     # outputs or the DLQ confirms them, and a failure answers UNAVAILABLE so
     # Vector re-sends. Off, a push is answered once queued and a crash loses it.
@@ -801,8 +805,8 @@ extractors:
     instances: []
     # - name: syslog-collector
     #   mode: container
-    #   # The default. Pin any other image by digest too.
-    #   image: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
+    #   # Omit to run extractors.vector.image. Pin any image by digest.
+    #   image: timberio/vector:<tag>@sha256:<digest>
     #   # Written to a file mounted read-only into the container, read with
     #   # --config, removed at stop. Or name a file with vector_config_path.
     #   vector_config: |
