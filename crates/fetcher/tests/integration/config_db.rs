@@ -122,6 +122,41 @@ fn a_bad_filter_and_a_colliding_id_are_refused() {
     );
 }
 
+/// A SQL Server instance is refused until the operator accepts Microsoft's
+/// driver licence, in the file or through the nested env form.
+#[test]
+fn a_sql_server_instance_needs_the_driver_licence_accepted() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mssql = INSTANCE.replace("dialect: postgres", "dialect: mssql");
+    let refusal = |body: &str| {
+        Config::load_from_file(&write(&dir, body))
+            .expect("loads")
+            .validate()
+            .err()
+            .map(|e| e.to_string())
+            .filter(|text| text.contains("accept_eula"))
+    };
+
+    let text = refusal(mssql.as_str()).expect("refused without the licence accepted");
+    assert!(
+        text.contains("sources.db.inventory: dialect `mssql`"),
+        "{text}"
+    );
+    assert!(text.contains("https://aka.ms/odbc18eula"), "{text}");
+    assert!(
+        text.contains("DFE_FETCHER__ODBC__MSSQL__ACCEPT_EULA"),
+        "{text}"
+    );
+
+    assert_eq!(refusal(INSTANCE), None, "other dialects never need it");
+    let accepted = format!("odbc:\n  mssql:\n    accept_eula: true\n{mssql}");
+    assert_eq!(refusal(accepted.as_str()), None, "accepted in the file");
+
+    // SAFETY: nextest runs one process per test, so the variable leaks nowhere.
+    unsafe { std::env::set_var("DFE_FETCHER__ODBC__MSSQL__ACCEPT_EULA", "true") };
+    assert_eq!(refusal(mssql.as_str()), None, "accepted through the env");
+}
+
 #[test]
 fn an_unknown_key_fails_the_load_and_a_disabled_instance_is_not_validated() {
     let dir = tempfile::TempDir::new().unwrap();

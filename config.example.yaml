@@ -1094,6 +1094,14 @@ scaling:
 #         - { unit: changes, shape: tail, limit: 5000, mongodb: { database: inventory, collection: hosts } }
 #         - { unit: appended, shape: tail, limit: 5000, mongodb: { database: inventory, collection: audit, tail: keyset } }
 
+# A `mssql` instance uses Microsoft's ODBC Driver 18 for SQL Server and is
+# refused at load until its licence (https://aka.ms/odbc18eula) is accepted
+# here, or with DFE_FETCHER__ODBC__MSSQL__ACCEPT_EULA=true.
+#
+# odbc:
+#   mssql:
+#     accept_eula: false
+
 # =============================================================================
 # File sources (sources.file) -- the file shapes of the source framework
 # =============================================================================

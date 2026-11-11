@@ -77,10 +77,14 @@ build:
         workload_setup_cmd: "cargo build --release --features pgo-driver --bin pgo-driver"
     # What the release image ships. Without an engine here, a `sources.db` or
     # `file-tail` config is refused at load by a binary that never compiled it.
-    # `db-odbc` stays out: it needs `libodbc2` and a driver package per engine
-    # in the runtime image, which is a Dockerfile change, not a feature flag.
+    # `db-odbc` links unixODBC dynamically, the one C library here that is not
+    # static: odbc-sys has no load-on-demand mode, so the binary NEEDS
+    # `libodbc.so.2` at start, and the driver manager dlopens each engine's
+    # driver at connect time by design. The image installs `libodbc2` and the
+    # open-licence drivers (deployment.rs), which register in odbcinst.ini.
     features:
       - "jemalloc"
+      - "db-odbc"
       - "db-clickhouse"
       - "db-mongodb"
       - "file-tail"

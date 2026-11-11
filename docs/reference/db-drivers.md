@@ -12,7 +12,7 @@ A `sources.db` instance names an engine, and the engine decides what has to
 be in the image: `odbc` speaks to any SQL engine through unixODBC and that
 engine's own ODBC driver, `clickhouse` and `mongodb` are pure Rust clients
 with nothing to install. The table below is one row per engine: the driver,
-its licence, whether the runtime image ships it or the operator supplies it,
+its licence, whether the runtime image ships it or the operator adds it in a driver layer,
 the connection form, what a tail needs of its key, and what the tail commits.
 The grammar every row shares (`stores`, `batch`, `filter`, `accumulate`) is
 annotated in `config.example.yaml`; the code is `crates/db/src/`.
@@ -26,31 +26,54 @@ annotated in `config.example.yaml`; the code is `crates/db/src/`.
 
 ## What the image ships
 
-The runtime image the deployment contract generates (`Dockerfile`, from
-`dfe-fetcher emit-dockerfile`) installs the transport's shared libraries and
-no ODBC package. A binary built with `db-odbc` links unixODBC (`libodbc2` on
-Debian) and loads each engine's driver by name from `odbcinst.ini` at
-connect time, so an image for an ODBC deployment adds `libodbc2` plus one
-driver package per engine it serves. The two LGPL drivers, psqlodbc and
-MariaDB Connector/ODBC, are Debian packages and can ship in a HyperI image;
-every proprietary driver is a click-through download the operator installs
-under its own licence, in the image or in a driver layer. `db-clickhouse` and
-`db-mongodb` need nothing from the image.
+The release binary is built with `db-odbc`, and the runtime image the
+deployment contract generates (`Dockerfile`, from `dfe-fetcher
+emit-dockerfile`) installs the unixODBC driver manager (`libodbc2`) and the
+three open-licence drivers as Debian packages: psqlodbc (`odbc-postgresql`),
+MariaDB Connector/ODBC (`odbc-mariadb`) and sqliteodbc (`libsqliteodbc`). Each
+registers itself in `/etc/odbcinst.ini` on install, so `odbcinst -q -d` in the
+image lists `PostgreSQL Unicode`, `MariaDB Unicode` and `SQLite3`.
+`db-clickhouse` and `db-mongodb` need nothing from the image.
+
+unixODBC is the one C library the binary links dynamically: odbc-sys has no
+load-on-demand mode, so the binary needs `libodbc.so.2` at start, and the
+driver manager loads each engine's driver by name from `odbcinst.ini` at
+connect time.
+
+The Microsoft ODBC Driver 18 for SQL Server ships in the image once the
+deployment contract can install it under Microsoft's licence. Until the
+operator accepts that licence (<https://aka.ms/odbc18eula>) with
+`odbc.mssql.accept_eula: true` (env `DFE_FETCHER__ODBC__MSSQL__ACCEPT_EULA=true`),
+a `mssql` instance is refused at load. Microsoft's install steps are at
+<https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server>.
+
+Oracle, Snowflake, Databricks and BigQuery drivers are click-through
+downloads the operator installs under their own licences, in a driver layer
+built FROM our image. The vendor's installer registers the driver in
+`odbcinst.ini`, or the layer appends the entry itself:
+
+```dockerfile
+FROM ghcr.io/hyperi-io/dfe-fetcher:<version>
+USER root
+COPY snowflake-odbc.deb /tmp/
+RUN apt-get update && apt-get install -y /tmp/snowflake-odbc.deb && rm -rf /var/lib/apt/lists/* /tmp/*.deb
+USER 1000
+```
 
 ## The matrix
 
 | Engine | `engine` / `dialect` | Driver | Licence | In the image | Connection form | Tail key | Checkpoint |
 |--------|----------------------|--------|---------|--------------|-----------------|----------|------------|
-| PostgreSQL, and the PostgreSQL wire (Redshift, CockroachDB, Cloud SQL, RDS) | `odbc` / `postgres` | psqlodbc (`odbc-postgresql`, `PostgreSQL Unicode`) | LGPL-2.1 | Shippable (LGPL, dynamic); not in the generated image today | `Driver={PostgreSQL Unicode};Server=..;Port=..;Database=..;Uid=..;Pwd=..;UseDeclareFetch=1;BoolsAsChar=0` -- `UseDeclareFetch=1` is required or the driver buffers the whole result set; `BoolsAsChar=0` makes booleans JSON booleans | NOT NULL columns of the query's result; a plain name folds to lower case, `"Name"` keeps its case | Key tuple of the last acknowledged row |
-| MariaDB, MySQL, and their managed forms | `odbc` / `mysql` | MariaDB Connector/ODBC (`odbc-mariadb`, `MariaDB Unicode`); works against MySQL servers | LGPL-2.1 (MySQL Connector/ODBC is GPL and cannot ship) | Shippable; not in the generated image today | `Driver={MariaDB Unicode};Server=..;Port=..;Database=..;User=..;Password=..;NO_CACHE=1;FORWARDONLY=1` -- both knobs required or the driver buffers the result set | NOT NULL columns; names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
+| PostgreSQL, and the PostgreSQL wire (Redshift, CockroachDB, Cloud SQL, RDS) | `odbc` / `postgres` | psqlodbc (`odbc-postgresql`, `PostgreSQL Unicode`) | LGPL-2.1 | Shipped | `Driver={PostgreSQL Unicode};Server=..;Port=..;Database=..;Uid=..;Pwd=..;UseDeclareFetch=1;BoolsAsChar=0` -- `UseDeclareFetch=1` is required or the driver buffers the whole result set; `BoolsAsChar=0` makes booleans JSON booleans | NOT NULL columns of the query's result; a plain name folds to lower case, `"Name"` keeps its case | Key tuple of the last acknowledged row |
+| MariaDB, MySQL, and their managed forms | `odbc` / `mysql` | MariaDB Connector/ODBC (`odbc-mariadb`, `MariaDB Unicode`); works against MySQL servers | LGPL-2.1 (MySQL Connector/ODBC is GPL and cannot ship) | Shipped | `Driver={MariaDB Unicode};Server=..;Port=..;Database=..;User=..;Password=..;NO_CACHE=1;FORWARDONLY=1` -- both knobs required or the driver buffers the result set | NOT NULL columns; names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
 | ClickHouse, ClickHouse Cloud | `clickhouse` | The official HTTP client crate plus `dfe-clickhouse` (pure Rust) | Apache-2.0 | Nothing to install | `http[s]://user:password@host:8123/database` | Columns of the query's result; their types are read from `DESCRIBE (query)` at the first tail and bound as `{k<i>:Type}` placeholders | Key tuple of the last acknowledged row |
-| SQL Server, Azure SQL, Synapse | `odbc` / `mssql` | Microsoft ODBC Driver 18 (`msodbcsql18`) from packages.microsoft.com | Microsoft EULA, click-through, redistributable under its terms | Operator-supplied | `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;Database=..;Uid=..;Pwd=..;Encrypt=yes` | NOT NULL columns; names keep their case, `[name]` delimits | Key tuple of the last acknowledged row |
-| Oracle, Autonomous, RDS Oracle | `odbc` / `oracle` | Oracle Instant Client ODBC | OTN licence, click-through | Operator-supplied | `Driver={Oracle ODBC driver};DBQ=host:1521/service;UID=..;PWD=..` | NOT NULL columns; a plain name folds to UPPER case, `"Name"` keeps its case; 12c Release 1 or later | Key tuple of the last acknowledged row |
-| SQLite | `odbc` / `sqlite` | sqliteodbc (`libsqliteodbc`, `SQLite3`) | Permissive (the driver's own BSD-style licence) | Operator-supplied | `Driver={SQLite3};Database=/path/to/file.db` | NOT NULL columns; names keep their case | Key tuple of the last acknowledged row |
-| Snowflake | `odbc` / `snowflake` | Snowflake ODBC driver | Snowflake client licence, click-through | Operator-supplied | `Driver={SnowflakeDSIIDriver};Server=<account>.snowflakecomputing.com;Database=..;Schema=..;Warehouse=..;Uid=..;Pwd=..` | NOT NULL columns; a plain name folds to UPPER case, `"Name"` keeps its case | Key tuple of the last acknowledged row |
-| Databricks | `odbc` / `databricks` | Simba Spark ODBC (Databricks-distributed) | Proprietary, click-through | Operator-supplied | `Driver={Simba Spark ODBC Driver};Host=..;Port=443;HTTPPath=..;SSL=1;ThriftTransport=2;AuthMech=3;UID=token;PWD=<token>` | NOT NULL columns; names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
-| BigQuery | `odbc` / `bigquery` | Simba Google BigQuery ODBC Connector (Google-distributed) | Proprietary, click-through | Operator-supplied | `Driver={Simba Google BigQuery ODBC Connector};Catalog=<project>;OAuthMechanism=0;Email=<service account>;KeyFilePath=<key.json>` | NOT NULL columns; names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
-| Redshift with Amazon's driver | `odbc` / `postgres` | Amazon Redshift ODBC driver, or psqlodbc over the PostgreSQL wire | Apache-2.0 (Amazon's), LGPL-2.1 (psqlodbc) | Operator-supplied (Amazon's), shippable (psqlodbc) | As PostgreSQL, with Amazon's driver name when used | As PostgreSQL | Key tuple of the last acknowledged row |
+| SQL Server, Azure SQL, Synapse | `odbc` / `mssql` | Microsoft ODBC Driver 18 (`msodbcsql18`) from packages.microsoft.com | Microsoft EULA, click-through, redistributable under its terms | Ships once the contract can install it; refused at load until `odbc.mssql.accept_eula: true` | `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;Database=..;Uid=..;Pwd=..;Encrypt=yes` | NOT NULL columns; names keep their case, `[name]` delimits | Key tuple of the last acknowledged row |
+| Oracle, Autonomous, RDS Oracle | `odbc` / `oracle` | Oracle Instant Client ODBC | OTN licence, click-through | Operator driver layer | `Driver={Oracle ODBC driver};DBQ=host:1521/service;UID=..;PWD=..` | NOT NULL columns; a plain name folds to UPPER case, `"Name"` keeps its case; 12c Release 1 or later | Key tuple of the last acknowledged row |
+| SQLite | `odbc` / `sqlite` | sqliteodbc (`libsqliteodbc`, `SQLite3`) | Permissive (the driver's own BSD-style licence) | Shipped | `Driver={SQLite3};Database=/path/to/file.db` | NOT NULL columns; names keep their case | Key tuple of the last acknowledged row |
+| Snowflake | `odbc` / `snowflake` | Snowflake ODBC driver | Snowflake client licence, click-through | Operator driver layer | `Driver={SnowflakeDSIIDriver};Server=<account>.snowflakecomputing.com;Database=..;Schema=..;Warehouse=..;Uid=..;Pwd=..` | NOT NULL columns; a plain name folds to UPPER case, `"Name"` keeps its case | Key tuple of the last acknowledged row |
+| Databricks | `odbc` / `databricks` | Simba Spark ODBC (Databricks-distributed) | Proprietary, click-through | Operator driver layer | `Driver={Simba Spark ODBC Driver};Host=..;Port=443;HTTPPath=..;SSL=1;ThriftTransport=2;AuthMech=3;UID=token;PWD=<token>` | NOT NULL columns; names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
+| BigQuery | `odbc` / `bigquery` | Simba Google BigQuery ODBC Connector (Google-distributed) | Proprietary, click-through | Operator driver layer | `Driver={Simba Google BigQuery ODBC Connector};Catalog=<project>;OAuthMechanism=0;Email=<service account>;KeyFilePath=<key.json>` | NOT NULL columns; names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
+| Redshift with Amazon's driver | `odbc` / `postgres` | Amazon Redshift ODBC driver, or psqlodbc over the PostgreSQL wire | Apache-2.0 (Amazon's), LGPL-2.1 (psqlodbc) | Operator driver layer (Amazon's), shipped (psqlodbc) | As PostgreSQL, with Amazon's driver name when used | As PostgreSQL | Key tuple of the last acknowledged row |
 | MongoDB, Atlas, and the MongoDB wire (DocumentDB, Cosmos DB for MongoDB) | `mongodb` | The official `mongodb` crate and `bson` (pure Rust) | Apache-2.0 (driver), MIT (bson) | Nothing to install | `mongodb://user:password@host:27017/?authSource=admin`, or `mongodb+srv://...` for Atlas | Change stream (the default): none, the server orders events, but the deployment must be a replica set; keyset: `_id` | Change stream: the resume token of the last acknowledged event; keyset: the `_id` of the last acknowledged document |
 | DynamoDB, Cosmos DB SQL API, Elasticsearch, OpenSearch | not a `sources.db` engine | -- | -- | -- | A REST profile under `sources.rest` (see `docs/reference/profile-grammar.md`) | -- | -- |
 

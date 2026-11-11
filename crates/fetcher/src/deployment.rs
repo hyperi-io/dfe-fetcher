@@ -94,6 +94,17 @@ pub fn contract() -> DeploymentContract {
             );
             // The wait-for-engine init container probes /readyz with curl from this image.
             deps.apt_packages.push("curl".into());
+            // `db-odbc`: the unixODBC driver manager plus the open-licence
+            // drivers, each registering itself in /etc/odbcinst.ini on install.
+            deps.apt_packages.extend(
+                [
+                    "libodbc2",
+                    "odbc-postgresql",
+                    "odbc-mariadb",
+                    "libsqliteodbc",
+                ]
+                .map(String::from),
+            );
             deps
         },
         base_image,

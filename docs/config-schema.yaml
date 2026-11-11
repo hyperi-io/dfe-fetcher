@@ -339,6 +339,12 @@ properties:
       pause_above: 0.8
       resume_below: 0.65
       max_hold_secs: 30
+  odbc:
+    description: ODBC driver settings that apply to every `sources.db` instance.
+    $ref: "#/$defs/OdbcConfig"
+    default:
+      mssql:
+        accept_eula: false
 $defs:
   SchedulerConfig:
     description: Scheduler configuration for fetch timing.
@@ -7723,4 +7729,26 @@ $defs:
         format: uint64
         minimum: 0
         default: 30
+    additionalProperties: false
+  OdbcConfig:
+    description: ODBC driver settings, `odbc` in the cascade.
+    type: object
+    properties:
+      mssql:
+        description: Microsoft ODBC Driver for SQL Server.
+        $ref: "#/$defs/MssqlOdbcConfig"
+        default:
+          accept_eula: false
+    additionalProperties: false
+  MssqlOdbcConfig:
+    description: Microsoft ODBC Driver for SQL Server, `odbc.mssql` in the cascade.
+    type: object
+    properties:
+      accept_eula:
+        description: |-
+          Accept Microsoft's licence for its SQL Server ODBC driver
+          (<https://aka.ms/odbc18eula>). Until it is true, a `sources.db`
+          instance with dialect `mssql` is refused at load.
+        type: boolean
+        default: false
     additionalProperties: false
