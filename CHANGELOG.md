@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.53](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.52...v1.4.53) (2026-11-11)
+
+### Bug Fixes
+
+* **extractors:** read the container Vector image from config ([cc45a54](https://github.com/hyperi-io/dfe-fetcher/commit/cc45a54542e279e69d1ca1f0d7352eecf877685a))
+
 ## [1.4.52](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.51...v1.4.52) (2026-11-11)
 
 ### Bug Fixes
