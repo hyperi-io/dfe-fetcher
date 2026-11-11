@@ -170,6 +170,7 @@
         "vector": {
           "enabled": false,
           "grpc_bind_address": "0.0.0.0:6000",
+          "image": null,
           "instances": [],
           "acknowledgements": {
             "enabled": true
@@ -6819,6 +6820,7 @@
           "default": {
             "enabled": false,
             "grpc_bind_address": "0.0.0.0:6000",
+            "image": null,
             "instances": [],
             "acknowledgements": {
               "enabled": true
@@ -6988,6 +6990,14 @@
           "type": "string",
           "default": "0.0.0.0:6000"
         },
+        "image": {
+          "description": "The image a container-mode instance runs when it names none, pinned by\ndigest (`timberio/vector:<tag>@sha256:<digest>`). Unset, a container\ninstance without its own `image` is refused at load. A deployment sets\nit from the stack's pinned Vector, `DFE_FETCHER_EXTRACTORS__VECTOR__IMAGE`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "instances": {
           "description": "Vector instances. A Vector push names no instance, so the listener a\npush arrives on is what says which instance sent it: at most one\ninstance shares `grpc_bind_address`, and each other one gives its own.",
           "type": "array",
@@ -7019,12 +7029,12 @@
           "default": "container"
         },
         "image": {
-          "description": "Container image for container mode, pinned by digest.",
+          "description": "Container image for container mode, pinned by digest. Unset, the\ninstance runs `extractors.vector.image`.",
           "type": [
             "string",
             "null"
           ],
-          "default": "timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773"
+          "default": null
         },
         "vector_config": {
           "description": "Inline Vector configuration, TOML or YAML, for container mode. It is\nwritten to a file in a private temporary directory (`.yaml` when it\nparses as a YAML mapping, else `.toml`), mounted read-only, passed to\nVector with `--config`, and removed when the fetcher stops.",

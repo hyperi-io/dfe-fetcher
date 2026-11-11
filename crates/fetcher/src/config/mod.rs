@@ -653,6 +653,11 @@ impl Config {
         // Validate the Vector listeners: which instance each serves, and each
         // address.
         if self.extractors.vector.enabled {
+            for instance in &self.extractors.vector.instances {
+                if instance.mode == "container" {
+                    self.extractors.vector.image_for(instance)?;
+                }
+            }
             for listener in self.extractors.vector.listeners()? {
                 if listener
                     .bind_address
@@ -4594,6 +4599,12 @@ pub struct VectorExtractorConfig {
     /// `grpc_bind_address` of its own, or on `vector` when there is none.
     pub grpc_bind_address: String,
 
+    /// The image a container-mode instance runs when it names none, pinned by
+    /// digest (`timberio/vector:<tag>@sha256:<digest>`). Unset, a container
+    /// instance without its own `image` is refused at load. A deployment sets
+    /// it from the stack's pinned Vector, `DFE_FETCHER_EXTRACTORS__VECTOR__IMAGE`.
+    pub image: Option<String>,
+
     /// Vector instances. A Vector push names no instance, so the listener a
     /// push arrives on is what says which instance sent it: at most one
     /// instance shares `grpc_bind_address`, and each other one gives its own.
@@ -4612,6 +4623,7 @@ impl Default for VectorExtractorConfig {
         Self {
             enabled: false,
             grpc_bind_address: "0.0.0.0:6000".to_string(),
+            image: None,
             instances: vec![],
             acknowledgements: AcknowledgementsConfig::default(),
         }
@@ -4628,8 +4640,9 @@ pub struct VectorInstance {
     #[serde(default = "default_container_mode")]
     pub mode: String,
 
-    /// Container image for container mode, pinned by digest.
-    #[serde(default = "default_vector_image")]
+    /// Container image for container mode, pinned by digest. Unset, the
+    /// instance runs `extractors.vector.image`.
+    #[serde(default)]
     pub image: Option<String>,
 
     /// Inline Vector configuration, TOML or YAML, for container mode. It is
@@ -4659,18 +4672,6 @@ fn default_container_mode() -> String {
     "container".to_string()
 }
 
-/// The Vector image a container-mode instance runs when it names none: a
-/// release tag pinned to its multi-arch index digest.
-pub const DEFAULT_VECTOR_IMAGE: &str = "timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773";
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "serde's default for an Option field returns the Option"
-)]
-fn default_vector_image() -> Option<String> {
-    Some(DEFAULT_VECTOR_IMAGE.to_owned())
-}
-
 /// The topic, before the suffix, that the shared Vector listener's pushes land
 /// on when no instance shares it.
 pub const DEFAULT_VECTOR_TOPIC: &str = "vector";
@@ -4685,6 +4686,28 @@ pub struct VectorListener {
 }
 
 impl VectorExtractorConfig {
+    /// The image a container-mode instance runs: its own, else the shared
+    /// `extractors.vector.image`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`] when neither names one.
+    pub fn image_for<'a>(&'a self, instance: &'a VectorInstance) -> Result<&'a str> {
+        instance
+            .image
+            .as_deref()
+            .or(self.image.as_deref())
+            .filter(|image| !image.trim().is_empty())
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "extractors.vector.instances: container instance '{}' has no image. Set its \
+                     `image`, or `extractors.vector.image` \
+                     (DFE_FETCHER_EXTRACTORS__VECTOR__IMAGE) for every container instance",
+                    instance.name
+                ))
+            })
+    }
+
     /// The listeners the extractor opens: the shared one first, then one per
     /// instance that names its own address.
     ///
@@ -6328,19 +6351,45 @@ mod tests {
         assert!(err.contains("'nowhere'"), "{err}");
     }
 
+    /// A container instance runs its own image, else the shared one, and is
+    /// refused at load when neither is set. A sidecar needs none.
     #[test]
-    fn a_vector_instance_naming_no_image_runs_the_digest_pinned_default() {
-        let instance: VectorInstance = scalo::yaml::from_str(
-            "name: syslog\ntopic: syslog\n",
-            "config.yaml",
-            scalo::yaml::Profile::Config,
-        )
-        .expect("parse");
-        assert_eq!(instance.image.as_deref(), Some(DEFAULT_VECTOR_IMAGE));
+    fn a_container_vector_instance_resolves_its_image_or_is_refused_at_load() {
+        const SHARED: &str = "timberio/vector:9.9.9-alpine@sha256:aa";
+        const OWN: &str = "timberio/vector:1.1.1-alpine@sha256:bb";
+        let container = |name: &str, image: Option<&str>| VectorInstance {
+            mode: "container".into(),
+            image: image.map(str::to_owned),
+            ..vector_instance(name, Some("127.0.0.1:6001"))
+        };
+
+        let mut cfg = valid_config();
+        cfg.extractors.vector.enabled = true;
+        cfg.extractors.vector.instances = vec![
+            container("syslog", None),
+            vector_instance("sidecar", Some("127.0.0.1:6002")),
+        ];
+        let err = cfg.validate().unwrap_err().to_string();
         assert!(
-            DEFAULT_VECTOR_IMAGE.contains("@sha256:"),
-            "{DEFAULT_VECTOR_IMAGE}"
+            err.contains("'syslog'") && err.contains("DFE_FETCHER_EXTRACTORS__VECTOR__IMAGE"),
+            "{err}"
         );
+
+        cfg.extractors.vector.image = Some("  ".into());
+        assert!(
+            cfg.validate().is_err(),
+            "a blank shared image names nothing"
+        );
+
+        cfg.extractors.vector.image = Some(SHARED.into());
+        cfg.validate()
+            .expect("the shared image serves the instance");
+        let vector = &cfg.extractors.vector;
+        assert_eq!(vector.image_for(&vector.instances[0]).unwrap(), SHARED);
+
+        cfg.extractors.vector.instances[0] = container("syslog", Some(OWN));
+        let vector = &cfg.extractors.vector;
+        assert_eq!(vector.image_for(&vector.instances[0]).unwrap(), OWN);
     }
 
     // =========================================================================

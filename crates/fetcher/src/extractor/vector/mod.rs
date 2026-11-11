@@ -41,9 +41,10 @@
 //!    is written to a file in a private temporary directory, mounted read-only
 //!    and removed at stop. A `vector_config_path` is mounted read-only under
 //!    its own file name. Vector is started with `--config` naming each file,
-//!    and picks each one's format from its extension. The default image is
-//!    [`crate::config::DEFAULT_VECTOR_IMAGE`], pinned by digest. The container's stderr is
-//!    forwarded to the fetcher's log at the level Vector gave each line.
+//!    and picks each one's format from its extension. An instance runs its own
+//!    `image`, else `extractors.vector.image`, and is refused when neither is
+//!    set. Either is pinned by digest. The container's stderr is forwarded to
+//!    the fetcher's log at the level Vector gave each line.
 //!
 //! 2. **Sidecar mode** -- Vector runs alongside the fetcher (e.g., in same pod),
 //!    connecting to the fetcher's gRPC endpoint.
@@ -55,10 +56,10 @@
 //!   vector:
 //!     enabled: true
 //!     grpc_bind_address: "0.0.0.0:6000"
+//!     image: timberio/vector:<tag>@sha256:<digest>
 //!     instances:
 //!       - name: syslog-collector
 //!         mode: container
-//!         image: timberio/vector:0.58.0-alpine@sha256:5dcf67db0ee378caa87f3395cb9484ebe3e97bb0334d119f2ac33116e00c5773
 //!         vector_config: |
 //!           [sources.syslog]
 //!           type = "syslog"
@@ -90,7 +91,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, debug, error, info, warn};
 
-use crate::config::{DEFAULT_VECTOR_IMAGE, VectorExtractorConfig, VectorInstance};
+use crate::config::{VectorExtractorConfig, VectorInstance};
 use crate::emit::EmitReport;
 use crate::error::{Error, Result};
 use crate::extractor::ExtractorSink;
@@ -399,13 +400,14 @@ impl VectorManager {
     /// # Errors
     ///
     /// Returns [`Error::Config`] when more than one instance shares the
-    /// shared listener, and [`Error::Source`] when an inline config cannot be
+    /// shared listener or a container instance has no image, and [`Error::Source`] when an inline config cannot be
     /// written or a listener cannot bind.
     pub async fn start(&self) -> Result<Vec<SocketAddr>> {
         if !self.config.enabled {
             return Ok(Vec::new());
         }
         let listeners = self.config.listeners()?;
+        let images = self.container_images()?;
         // Written before anything binds, so a failed write leaves nothing
         // started, and a failed bind drops the directory with its files.
         let config_dir = self.write_inline_configs()?;
@@ -431,7 +433,7 @@ impl VectorManager {
                 .publish_guarantee("vector", first.ack_control());
         }
 
-        for (index, instance) in self.config.instances.iter().enumerate() {
+        for (index, (instance, image)) in self.config.instances.iter().zip(images).enumerate() {
             if instance.mode == "container" {
                 let inline = config_dir.as_ref().and_then(|dir| {
                     instance
@@ -439,7 +441,7 @@ impl VectorManager {
                         .as_deref()
                         .map(|config| inline_config_file(dir.path(), index, config))
                 });
-                self.start_vector_container(instance, inline.as_deref());
+                self.start_vector_container(instance, image, inline.as_deref());
             }
         }
         *self.config_dir.lock() = config_dir;
@@ -542,11 +544,30 @@ impl VectorManager {
         Ok(Some(dir))
     }
 
+    /// The image of every instance, by position: a container instance's own or
+    /// the shared one, and empty for any other.
+    fn container_images(&self) -> Result<Vec<&str>> {
+        self.config
+            .instances
+            .iter()
+            .map(|instance| {
+                if instance.mode == "container" {
+                    self.config.image_for(instance)
+                } else {
+                    Ok("")
+                }
+            })
+            .collect()
+    }
+
     /// Start a managed Vector container instance, reading its inline config
     /// from `inline` and its `vector_config_path`, each mounted read-only.
-    fn start_vector_container(&self, instance: &VectorInstance, inline: Option<&Path>) {
-        let image = instance.image.as_deref().unwrap_or(DEFAULT_VECTOR_IMAGE);
-
+    fn start_vector_container(
+        &self,
+        instance: &VectorInstance,
+        image: &str,
+        inline: Option<&Path>,
+    ) {
         info!(
             name = %instance.name,
             image = %image,
@@ -682,10 +703,14 @@ mod tests {
     }
 
     /// The Vector receiver config on a free loopback port.
+    /// The shared image the test receiver config names.
+    const TEST_IMAGE: &str = "timberio/vector:9.9.9-alpine@sha256:abc";
+
     fn receiver_config(acknowledgements: bool) -> VectorExtractorConfig {
         VectorExtractorConfig {
             enabled: true,
             grpc_bind_address: "127.0.0.1:0".into(),
+            image: Some(TEST_IMAGE.into()),
             instances: vec![],
             acknowledgements: scalo::transport::AcknowledgementsConfig::new(acknowledgements),
         }
@@ -1080,7 +1105,7 @@ mv '{args}.part' '{args}'
         );
         let image = args
             .iter()
-            .position(|arg| *arg == DEFAULT_VECTOR_IMAGE)
+            .position(|arg| *arg == TEST_IMAGE)
             .expect("the image");
         assert_eq!(
             args[image + 1..],
