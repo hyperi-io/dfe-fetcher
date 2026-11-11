@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.52](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.51...v1.4.52) (2026-11-11)
+
+### Bug Fixes
+
+* **odbc:** ship drivers in the default image ([935250f](https://github.com/hyperi-io/dfe-fetcher/commit/935250ff871827584176e8b985772e8ccfc33352))
+
 ## [1.4.51](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.50...v1.4.51) (2026-11-11)
 
 ### Bug Fixes
