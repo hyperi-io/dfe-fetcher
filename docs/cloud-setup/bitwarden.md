@@ -148,7 +148,7 @@ The health check is the OAuth2 token exchange: a minted token proves the
 client, and no data endpoint is touched. A refused exchange is a health error
 carrying the response.
 
-End-to-end smoke tests live in `crates/fetcher/tests/e2e/smoke_remote.rs`
+Smoke tests against a live Bitwarden organisation live in `crates/fetcher/tests/e2e/smoke_remote.rs`
 and are `#[ignore]`d by default. They read `BITWARDEN_CLIENT_ID` and
 `BITWARDEN_CLIENT_SECRET` (required), plus `BITWARDEN_API_BASE` and
 `BITWARDEN_IDENTITY_URL` (optional region/self-host overrides), from
