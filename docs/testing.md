@@ -17,7 +17,7 @@ The general rules are hyperi-ai's testing standard (`standards/universal/testing
 
 Core holds the unit tests, the fixture and wiremock suites, and every integration test against a real service: Kafka, the Kafka TLS round trip, OpenBao, LocalStack, ClickHouse and MongoDB.
 
-Full adds the container extractor tests, the Kafka end-to-end tests and the batcher measurement, which moves 100k rows through real Kafka. `test.full.rust.filter` in `.hyperi-ci.yaml` leaves out `smoke_remote` and `runzero`, which need tenant credentials no runner holds. Run those by hand with the credentials their `#[ignore]` reasons name.
+Full adds the container extractor tests, the Kafka produce-and-consume tests in the `e2e` target and the batcher measurement, which moves 100k rows through real Kafka. `test.full.rust.filter` in `.hyperi-ci.yaml` leaves out `smoke_remote` and `runzero`, which need tenant credentials no runner holds. Run those by hand with the credentials their `#[ignore]` reasons name.
 
 The `db-odbc` suites build only with that feature and need the `odbc-postgresql` and `odbc-mariadb` drivers, so CI does not run them. Each starts its own database container through testcontainers.
 

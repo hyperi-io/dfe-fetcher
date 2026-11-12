@@ -75,8 +75,8 @@ API calls.
    Go to **Manage Distribution**. Confirm all four checklist sections show
    green checkmarks, tick **I've reviewed and removed any hard-coded
    information**, and select **Activate Public Distribution**. This does not
-   list the app publicly - it is the technical prerequisite that unlocks
-   org-wide (rather than single-workspace) installation.
+   list the app publicly. Slack requires it before the app can be installed
+   org-wide rather than in a single workspace.
 
 5. **Install at the organization level**
 
@@ -145,7 +145,7 @@ The profile's probe calls `/api/auth.test` with the token; Slack answers 200
 either way, so `ok: false` is the refusal and is reported as a health error
 carrying Slack's reason.
 
-End-to-end smoke tests live in `crates/fetcher/tests/e2e/smoke_remote.rs`
+Smoke tests against a live Slack Enterprise org live in `crates/fetcher/tests/e2e/smoke_remote.rs`
 and are `#[ignore]`d by default. They read `SLACK_AUDIT_TOKEN` (required)
 from `.env-cloud` (or `.env`):
 

@@ -150,7 +150,7 @@ the bearer JWT string. The only configurable service-side key is `limit`
 The profile's probe calls `/api/auth/introspect` with the token (this does
 not consume any per-endpoint event budget) and is healthy on a 2xx.
 
-End-to-end smoke tests live in `crates/fetcher/tests/e2e/smoke_remote.rs`
+Smoke tests against a live 1Password account live in `crates/fetcher/tests/e2e/smoke_remote.rs`
 and are `#[ignore]`d by default. They read `ONEPASSWORD_EVENTS_TOKEN`
 (required) and `ONEPASSWORD_API_BASE` (optional regional override) from
 `.env-cloud` (or `.env`):
