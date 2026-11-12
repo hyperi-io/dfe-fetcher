@@ -11,8 +11,8 @@
 Each guide here covers what a provider administrator configures so dfe-fetcher
 can pull data from that provider: the access it needs, how to grant it
 least-privilege, where to put credentials, and how to verify the connection.
-Every source reads only -- the fetcher never writes, modifies, or deletes
-anything on the provider side.
+Every source is read-side: M365 starts its activity-feed subscription and
+Pub/Sub acknowledges what it delivered. Nothing else changes provider state.
 
 For the fetcher's own configuration (scheduler, output, credential resolution,
 the `sources.db` and `sources.file` blocks), see
@@ -79,6 +79,3 @@ stable.
 | Alpha | Code-complete but not production-validated. Behaviour and config may change. The default for a new source. |
 | Beta | Validated against a live service; hardening in progress. |
 | Stable | Production-ready. |
-
-Promote a source in its profile rather than recording its stage in these
-guides.
