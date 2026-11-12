@@ -58,7 +58,7 @@ entry.
 | | `session_login` (a login call mints a session token, read from a JSON pointer or a response header and carried in a header of the appliance's naming) | none shipped |
 | Pager (`paginate.strategy`) | `none` | runzero, azure `log_analytics` |
 | | `link_header` (RFC 5988 `rel="next"`) | github, okta |
-| | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path; a list cursor is comma-joined) | aws, bitwarden, crowdstrike, datadog, duo, gcp, google_workspace, onepassword, slack |
+| | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path, and a list cursor is comma-joined) | aws, bitwarden, crowdstrike, datadog, duo, gcp, google_workspace, onepassword, slack |
 | | `page_number` (bounded by `total_pages_at`) | cloudflare |
 | | `offset` (advanced by rows received, bounded by `total_at` or a short page) | crowdstrike |
 | | `request_path` (the next URL from the body or a header, relative resolved against the page) | azure, m365, salesforce |

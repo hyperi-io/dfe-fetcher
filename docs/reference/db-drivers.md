@@ -205,4 +205,4 @@ the first tick was the last acknowledged row's. SQL Server and Oracle have
 the same proof, gated on their operator-supplied driver being registered
 with the host's driver manager: absent the driver the test skips saying so,
 in CI too, because the driver is a click-through licence no shared runner
-carries; the dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI and the release gate do not build the `db-odbc` feature.
+carries. The dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI and the release gate do not build the `db-odbc` feature.

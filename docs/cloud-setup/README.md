@@ -16,7 +16,7 @@ Pub/Sub acknowledges what it delivered. Nothing else changes provider state.
 
 For the fetcher's own configuration (scheduler, output, credential resolution,
 the `sources.db` and `sources.file` blocks), see
-[config.example.yaml](../../config.example.yaml); the architecture and the
+[config.example.yaml](../../config.example.yaml). The architecture and the
 profile grammar are in [../internals.md](../internals.md).
 
 ## Credentials in Kubernetes
