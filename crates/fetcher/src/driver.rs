@@ -410,11 +410,14 @@ impl Driver {
     /// Stop what the shape runs in the background and wait for it to finish.
     ///
     /// A file tailer writes its final checkpoint, including the last
-    /// acknowledged tick, which only the driver's checkpoint store holds.
-    /// Every other shape runs nothing between ticks. Safe to call again.
+    /// acknowledged tick, which only the driver's checkpoint store holds. A
+    /// custom shape runs its own [`RowSource::stop`], and a REST or database
+    /// shape runs nothing between ticks. Safe to call again.
     pub async fn stop(&self) {
-        let Shape::File(shape) = &self.shape else {
-            return;
+        let shape = match &self.shape {
+            Shape::File(shape) => shape,
+            Shape::Custom(source) => return source.stop().await,
+            Shape::Rest(_) | Shape::Db(_) => return,
         };
         let mut committed = HashMap::new();
         for unit in shape.units() {

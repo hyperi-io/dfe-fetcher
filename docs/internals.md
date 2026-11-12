@@ -422,9 +422,7 @@ flowchart TB
 Earlier layers win. Validation binds every profile instance (a shipped
 profile by name or an inline one), every database instance and every file
 instance, so a bad field fails the load with its path rather than the first
-tick. The per-source filter, the routes, the scheduler interval and jitter are
-hot-reloaded and read once per tick; `enabled`, credentials and topics need a
-restart.
+tick. The per-source filter, the routes, the scheduler interval and jitter are read once per tick. A reload that adds, removes or changes a source starts, stops or rebuilds that source as a restart would, its `env:` and `vault:` specs resolved first. The ingest listener and the container and Vector extractors are built once, so a change to them needs a restart.
 
 ## Multi-Tenant Deployment
 

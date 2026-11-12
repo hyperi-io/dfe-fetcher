@@ -16,7 +16,6 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,11 +38,11 @@ use dfe_fetcher::extractor::container::ContainerExtractor;
 use dfe_fetcher::extractor::vector::VectorManager;
 use dfe_fetcher::ingest;
 use dfe_fetcher::metrics::Metrics;
-use dfe_fetcher::pipeline::{IntakeAcks, Orchestrator};
-use dfe_fetcher::scheduler::Scheduler;
-use dfe_fetcher_core::SourceMaturity;
-use dfe_fetcher_db::DbShape;
-use dfe_fetcher_file::FileShape;
+use dfe_fetcher::pipeline::{IntakeAcks, Orchestrator, PipelineState};
+use dfe_fetcher::scheduler::{Planned, Scheduler, SourceFactory, fingerprint};
+use dfe_fetcher_db::{DbInstance, DbShape};
+use dfe_fetcher_file::{FileInstance, FileShape};
+use dfe_fetcher_rest::{ExchangeClient, HttpClient, RestInstance};
 use scalo::governor::{MemoryPressureSource, PressureSource, UnifiedPressure};
 use scalo::memory::MemoryGuard;
 
@@ -270,20 +269,146 @@ async fn main() {
     }
 }
 
-/// How long shutdown waits for the source drivers to stop what they run, so a
-/// file tailer's final checkpoint is written before the process exits.
-const DRIVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// What one connection's driver is built from: its own block, and the
+/// deployment-wide settings the driver bakes in.
+#[derive(serde::Serialize)]
+struct SourceSpec {
+    kind: SourceKind,
+    in_flight: usize,
+}
 
-/// One connection's fetch task, ready to schedule: a source type expands
-/// into one entry per connection, each keyed on its connection id (cursor
-/// key + metric/log label).
-struct SpawnEntry {
-    driver: Arc<Driver>,
-    interval_secs: Option<u64>,
+/// The block one connection is configured by.
+#[derive(serde::Serialize)]
+enum SourceKind {
+    Rest(Box<RestInstance>),
+    Db(Box<DbInstance>),
+    File(Box<FileInstance>),
+}
 
-    /// A child of the global shutdown token, held by both the driver and the
-    /// fetch task, so a reload that drops this source stops just this one.
-    cancel: CancellationToken,
+/// Every connection `config` schedules, one per connection id: the typed
+/// blocks that are shipped profiles underneath (`sources.github`,
+/// `sources.okta`, ...), then `sources.rest`, `sources.db` and `sources.file`.
+fn plan_sources(config: &Config) -> anyhow::Result<Vec<Planned<SourceSpec>>> {
+    let in_flight = config.accumulate.in_flight;
+    let planned = |id: String, interval_secs: Option<u64>, kind: SourceKind| {
+        let spec = SourceSpec { kind, in_flight };
+        anyhow::Ok(Planned {
+            fingerprint: fingerprint(&spec)?,
+            id,
+            interval_secs,
+            spec,
+        })
+    };
+    let rest = config
+        .sources
+        .builtin_instances()?
+        .into_iter()
+        .map(|b| (b.connection_id, b.instance))
+        .chain(
+            config
+                .sources
+                .rest
+                .iter()
+                .filter(|(_, instance)| instance.enabled)
+                .map(|(id, instance)| (id.clone(), instance.clone())),
+        );
+    let mut out = Vec::new();
+    for (id, instance) in rest {
+        let interval = instance.interval_secs;
+        out.push(planned(id, interval, SourceKind::Rest(Box::new(instance)))?);
+    }
+    for (id, instance) in config.sources.db.iter().filter(|(_, i)| i.enabled) {
+        let kind = SourceKind::Db(Box::new(instance.clone()));
+        out.push(planned(id.clone(), instance.interval_secs, kind)?);
+    }
+    for (id, instance) in config.sources.file.iter().filter(|(_, i)| i.enabled) {
+        let kind = SourceKind::File(Box::new(instance.clone()));
+        out.push(planned(id.clone(), instance.interval_secs, kind)?);
+    }
+    Ok(out)
+}
+
+/// Builds every connection's driver over the process's one pipeline, memory
+/// guard, checkpoint store and HTTP clients.
+struct DriverFactory {
+    instance_id: String,
+    pipeline_state: Arc<PipelineState>,
+    metrics: Arc<Metrics>,
+    pressure: Option<Arc<UnifiedPressure>>,
+    checkpoints: Option<Arc<dyn cursor::CursorStore>>,
+    http_client: HttpClient,
+    exchange_client: Arc<ExchangeClient>,
+}
+
+impl SourceFactory for DriverFactory {
+    type Spec = SourceSpec;
+
+    fn plan(&self, config: &Config) -> anyhow::Result<Vec<Planned<SourceSpec>>> {
+        plan_sources(config)
+    }
+
+    /// The driver takes its source's OWN cancel token, so dropping the source
+    /// from the config aborts its in-flight tick through the driver's
+    /// non-alerting shutdown path.
+    fn build(
+        &self,
+        id: &str,
+        spec: SourceSpec,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Driver> {
+        // Every block a cursor fetches and every chunk a reader holds is
+        // leased on the memory guard until its rows are out.
+        let lease: Arc<dyn dfe_fetcher_core::batch::Lease> = Arc::new(
+            dfe_fetcher::driver::GuardLease(Arc::clone(self.pipeline_state.memory_guard())),
+        );
+        let shape = match spec.kind {
+            SourceKind::Rest(instance) => {
+                let profile = dfe_fetcher_rest::profile::bound::resolve_profile(
+                    &instance,
+                    dfe_fetcher::profiles::shipped(),
+                )?;
+                Shape::for_rest_instance(
+                    &profile,
+                    &instance,
+                    id,
+                    self.http_client.clone(),
+                    &self.exchange_client,
+                )?
+            }
+            SourceKind::Db(instance) => Shape::Db(Box::new(
+                DbShape::from_instance(&instance, id, &lease)
+                    .map_err(|e| anyhow::anyhow!("sources.db.{id}: {e}"))?,
+            )),
+            SourceKind::File(instance) => Shape::File(Box::new(
+                FileShape::from_instance(&instance, id, &lease)
+                    .map_err(|e| anyhow::anyhow!("sources.file.{id}: {e}"))?,
+            )),
+        };
+        // A scheduled source's cursor advances only once its records are delivered.
+        self.pipeline_state.publish_guarantee(
+            "scheduled",
+            Some(&IntakeAcks {
+                kind: scalo::transport::AckKind::Pull,
+                enabled: true,
+            }),
+        );
+        Ok(Driver::new(DriverParts {
+            shape,
+            connection_id: id.to_owned(),
+            instance_id: self.instance_id.clone(),
+            shared_config: self.pipeline_state.shared_config(),
+            emitter: Emitter::new(
+                Arc::clone(&self.pipeline_state),
+                Arc::clone(&self.metrics),
+                spec.in_flight,
+            ),
+            pressure: self.pressure.clone(),
+            memory_guard: Arc::clone(self.pipeline_state.memory_guard()),
+            checkpoints: self.checkpoints.clone(),
+            metrics: Arc::clone(&self.metrics),
+            shutdown: cancel,
+        }))
+    }
 }
 
 /// Main service loop -- called by the ServiceApp lifecycle after logging and config.
@@ -501,188 +626,38 @@ async fn run_fetcher_service(
             }
         };
 
-    // Framework drivers commit unit checkpoints to the same store the
-    // scheduler keeps its window cursors in.
-    let framework_cursor_store = cursor_store.clone();
-
     // Create scheduler (reads interval/jitter/window_hours from shared_config per tick)
     let scheduler = Scheduler::new(
         &config.scheduler,
         orchestrator.shared_config(),
-        cursor_store,
+        cursor_store.clone(),
         instance_id.clone(),
     );
-
-    // One spawn entry per connection, keyed on the connection id (a typed
-    // block's `connections[].id`, or the type name for a single connection).
-    let mut entries: Vec<SpawnEntry> = Vec::new();
 
     // One Driver per connection, all sharing the memory guard's pressure
     // latch so a buffer that grows anywhere pauses polling everywhere.
     let pressure = build_pressure(&config, pipeline_state.memory_guard())?;
-    // Each driver takes its source's OWN cancel token, not the global one, so
-    // dropping the source from the config aborts its in-flight tick through
-    // the driver's non-alerting shutdown path.
-    let framework_driver = |shape: Shape, id: &str, cancel: CancellationToken| {
-        Driver::new(DriverParts {
-            shape,
-            connection_id: id.to_owned(),
-            instance_id: instance_id.clone(),
-            shared_config: orchestrator.shared_config(),
-            emitter: Emitter::new(
-                Arc::clone(&pipeline_state),
-                Arc::clone(&metrics),
-                config.accumulate.in_flight,
-            ),
-            pressure: pressure.clone(),
-            memory_guard: Arc::clone(pipeline_state.memory_guard()),
-            checkpoints: framework_cursor_store.clone(),
-            metrics: Arc::clone(&metrics),
-            shutdown: cancel,
-        })
+    let factory = DriverFactory {
+        instance_id: instance_id.clone(),
+        pipeline_state: Arc::clone(&pipeline_state),
+        metrics: Arc::clone(&metrics),
+        pressure: pressure.clone(),
+        // Framework drivers commit unit checkpoints to the same store the
+        // scheduler keeps its window cursors in.
+        checkpoints: cursor_store,
+        http_client: dfe_fetcher_rest::http_client()?,
+        // One exchange client for the whole process: every instance's
+        // credential mode posts its token exchange through it.
+        exchange_client: dfe_fetcher_rest::exchange_client()?,
     };
-
-    // REST instances: the typed blocks that are shipped profiles underneath
-    // (`sources.github`, `sources.okta`, `sources.slack`, ...), then every
-    // `sources.rest` entry.
-    let http_client = dfe_fetcher_rest::http_client()?;
-    // One exchange client for the whole process: every instance's credential
-    // mode posts its token exchange through it.
-    let exchange_client = dfe_fetcher_rest::exchange_client()?;
-    let builtin = config.sources.builtin_instances()?;
-    let rest_instances = builtin
-        .iter()
-        .map(|b| (b.connection_id.as_str(), &b.instance))
-        .chain(
-            config
-                .sources
-                .rest
-                .iter()
-                .filter(|(_, instance)| instance.enabled)
-                .map(|(id, instance)| (id.as_str(), instance)),
-        );
-    for (id, instance) in rest_instances {
-        let profile = dfe_fetcher_rest::profile::bound::resolve_profile(
-            instance,
-            dfe_fetcher::profiles::shipped(),
-        )?;
-        let shape = Shape::for_rest_instance(
-            &profile,
-            instance,
-            id,
-            http_client.clone(),
-            &exchange_client,
-        )?;
-        let cancel = shutdown_token.child_token();
-        entries.push(SpawnEntry {
-            driver: Arc::new(framework_driver(shape, id, cancel.clone())),
-            interval_secs: instance.interval_secs,
-            cancel,
-        });
-    }
-
-    // Database instances: the same driver over the DB shape; every block a
-    // cursor fetches is leased on the memory guard until its rows are out.
-    for (id, instance) in &config.sources.db {
-        if !instance.enabled {
-            continue;
-        }
-        let lease: Arc<dyn dfe_fetcher_core::batch::Lease> = Arc::new(
-            dfe_fetcher::driver::GuardLease(Arc::clone(pipeline_state.memory_guard())),
-        );
-        let shape = DbShape::from_instance(instance, id, &lease)
-            .map_err(|e| anyhow::anyhow!("sources.db.{id}: {e}"))?;
-        let cancel = shutdown_token.child_token();
-        entries.push(SpawnEntry {
-            driver: Arc::new(framework_driver(
-                Shape::Db(Box::new(shape)),
-                id,
-                cancel.clone(),
-            )),
-            interval_secs: instance.interval_secs,
-            cancel,
-        });
-    }
-
-    // File instances: the same driver over the file shape; every chunk a
-    // reader holds and every pass the tailer hands over is leased likewise.
-    for (id, instance) in &config.sources.file {
-        if !instance.enabled {
-            continue;
-        }
-        let lease: Arc<dyn dfe_fetcher_core::batch::Lease> = Arc::new(
-            dfe_fetcher::driver::GuardLease(Arc::clone(pipeline_state.memory_guard())),
-        );
-        let shape = FileShape::from_instance(instance, id, &lease)
-            .map_err(|e| anyhow::anyhow!("sources.file.{id}: {e}"))?;
-        let cancel = shutdown_token.child_token();
-        entries.push(SpawnEntry {
-            driver: Arc::new(framework_driver(
-                Shape::File(Box::new(shape)),
-                id,
-                cancel.clone(),
-            )),
-            interval_secs: instance.interval_secs,
-            cancel,
-        });
-    }
-
-    // Start one fetch task per connection. The entries are consumed so the
-    // fetch task holds the only `Arc<Driver>`: a cancelled task then drops its
-    // driver and releases the connection's credentials and client.
-    let mut running: HashMap<String, CancellationToken> = HashMap::new();
-    let mut drivers: Vec<Arc<Driver>> = Vec::new();
-    for entry in entries {
-        // Surface non-stable sources at startup: the profile declares the
-        // maturity, and anything not stable is code-complete but not
-        // production-validated until promoted.
-        let maturity = entry.driver.maturity();
-        if maturity != SourceMaturity::Stable {
-            warn!(
-                source = entry.driver.name(),
-                maturity = %maturity,
-                "source is {maturity} maturity - not production-validated; \
-                 behaviour and config may change. See docs/cloud-setup/{}.md",
-                entry.driver.name(),
-            );
-        }
-
-        let initial_interval = scheduler.effective_interval(entry.interval_secs);
-        let ready_state = Arc::clone(&pipeline_state);
-        info!(
-            source = entry.driver.name(),
-            interval_secs = initial_interval.as_secs(),
-            "Starting fetch schedule (interval is hot-reloaded)"
-        );
-
-        running.insert(
-            entry.driver.connection_id().to_owned(),
-            entry.cancel.clone(),
-        );
-        drivers.push(Arc::clone(&entry.driver));
-        scheduler.spawn_source_task(
-            entry.driver,
-            entry.interval_secs,
-            Arc::clone(&metrics),
-            entry.cancel,
-            Arc::new(move || ready_state.is_ready()),
-        );
-    }
-
-    // A scheduled source's cursor advances only once its records are delivered.
-    if !running.is_empty() {
-        pipeline_state.publish_guarantee(
-            "scheduled",
-            Some(&IntakeAcks {
-                kind: scalo::transport::AckKind::Pull,
-                enabled: true,
-            }),
-        );
-    }
-
-    // Diff the running fetch tasks against every reload, so a source dropped
-    // from the config stops fetching without a restart.
-    scheduler.spawn_source_watch(running, shutdown_token.clone());
+    let ready_state = Arc::clone(&pipeline_state);
+    let sources = scheduler.start_sources(
+        factory,
+        &config,
+        Arc::clone(&metrics),
+        Arc::new(move || ready_state.is_ready()),
+        shutdown_token.clone(),
+    )?;
 
     // Start ingest HTTP server (for container extractors using HTTP
     // communication). A listener that cannot start leaves the intake dead
@@ -752,18 +727,10 @@ async fn run_fetcher_service(
     // Run pipeline orchestrator (blocks until shutdown)
     let run = orchestrator.run().await;
 
-    // The fetch tasks end on the same shutdown, but nothing waits for them, so
-    // a file tailer's final checkpoint is written here, before the runtime
-    // goes. A tick that will not release the tailer cannot hold the exit.
-    if tokio::time::timeout(
-        DRIVER_STOP_TIMEOUT,
-        futures::future::join_all(drivers.iter().map(|d| d.stop())),
-    )
-    .await
-    .is_err()
-    {
-        warn!("a source driver did not stop in time; its tailer's last checkpoint may be missing");
-    }
+    // The fetch tasks end on the same shutdown. Waiting for them, and for
+    // every driver still stopping, writes each file tailer's final checkpoint
+    // before the runtime goes.
+    sources.shutdown().await;
 
     // Before any exit: process::exit skips drops, leaving the managed Vector
     // containers running and their inline configs on disk.
@@ -1000,6 +967,56 @@ mod tests {
         assert_eq!(
             state.reason(),
             Some("no enabled sources, container extractors, vector receiver or ingest listener")
+        );
+    }
+
+    /// A source's fingerprint moves with any setting its driver is built
+    /// from, a secret included, and with nothing else: the reload rebuilds
+    /// exactly the sources a restart would build differently.
+    #[test]
+    fn a_source_fingerprint_moves_with_its_own_settings_only() {
+        let prints = |config: &Config| -> std::collections::BTreeMap<String, u64> {
+            plan_sources(config)
+                .expect("plans")
+                .into_iter()
+                .map(|p| (p.id, p.fingerprint))
+                .collect()
+        };
+        let mut config = Config::default();
+        config
+            .sources
+            .rest
+            .insert("api".into(), RestInstance::default());
+        let db = DbInstance {
+            enabled: true,
+            ..DbInstance::default()
+        };
+        config.sources.db.insert("pg".into(), db);
+        let base = prints(&config);
+        assert_eq!(base.keys().collect::<Vec<_>>(), ["api", "pg"]);
+        assert_eq!(prints(&config), base, "the same config plans the same");
+
+        let mut unrelated = config.clone();
+        unrelated.scheduler.default_interval_secs += 1;
+        assert_eq!(prints(&unrelated), base, "a global edit rebuilds nothing");
+
+        let mut secret = config.clone();
+        if let Some(pg) = secret.sources.db.get_mut("pg") {
+            pg.connection_string = scalo::SensitiveString::from("postgres://elsewhere");
+        }
+        let moved = prints(&secret);
+        assert_eq!(moved["api"], base["api"], "a sibling is untouched");
+        assert_ne!(
+            moved["pg"], base["pg"],
+            "a changed secret rebuilds its source"
+        );
+
+        let mut in_flight = config.clone();
+        in_flight.accumulate.in_flight += 1;
+        let moved = prints(&in_flight);
+        assert!(
+            base.iter().all(|(id, print)| moved[id] != *print),
+            "a setting every driver bakes in rebuilds them all"
         );
     }
 }
