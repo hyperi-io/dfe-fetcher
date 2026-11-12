@@ -3,6 +3,12 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.54](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.53...v1.4.54) (2026-11-12)
+
+### Bug Fixes
+
+* **reload:** start, stop and rebuild sources on a config reload ([16ab848](https://github.com/hyperi-io/dfe-fetcher/commit/16ab848d1707f013c2834dfa041f3ebd8f1d790e)), closes [#134](https://github.com/hyperi-io/dfe-fetcher/issues/134)
+
 ## [1.4.53](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.52...v1.4.53) (2026-11-11)
 
 ### Bug Fixes
