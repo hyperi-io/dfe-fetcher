@@ -234,7 +234,7 @@ Common failures:
   was never created.
 - Pull succeeds but returns nothing - the sink writer identity was not granted
   `roles/pubsub.publisher` on the topic (step 3), the `--log-filter` matches no
-  entries, or the window is genuinely quiet. Verify routing with the Cloud
+  entries, or the window is quiet. Verify routing with the Cloud
   console's log-sink view.
 - `invalid SA key / missing client_email` - the key JSON is malformed or the
   wrong file.

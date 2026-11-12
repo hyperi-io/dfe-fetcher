@@ -113,10 +113,9 @@ to be mounted into the image; the spec mechanism does not fetch it.
 
 ### Forms that need a token minted per connection
 
-These are unsupported today, and the reason is the same in each case: the
+These are unsupported, and the reason is the same in each case: the
 credential is a token valid for minutes to an hour, and `connection_string`
-resolves once. Supporting them means re-resolving the string per connect, which
-issue #111 also asks for.
+resolves once. Supporting them means re-resolving the string per connect.
 
 - **Azure Database for PostgreSQL** with Entra. The user name is the Entra
   principal and the PASSWORD is an access token, obtained out of band and valid
@@ -206,4 +205,4 @@ the first tick was the last acknowledged row's. SQL Server and Oracle have
 the same proof, gated on their operator-supplied driver being registered
 with the host's driver manager: absent the driver the test skips saying so,
 in CI too, because the driver is a click-through licence no shared runner
-carries; the dialect each needs is pinned by unit test regardless.
+carries; the dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI and the release gate do not build the `db-odbc` feature.

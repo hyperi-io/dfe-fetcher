@@ -50,7 +50,7 @@ flowchart TB
     subgraph "DFE pipeline"
         direction LR
         Kafka[(Kafka topics)]
-        Receiver[dfe-receiver]
+        Receiver[dfe-loader, a transform or the archiver]
     end
 
     API --> Rest
@@ -369,6 +369,8 @@ up for `stable_after_secs`.
 
 ## Container Communication
 
+The HTTP mode listener requires `ingest.auth_token`: every `/ingest` call carries `Authorization: Bearer <token>`. With no token the listener refuses to start unless `ingest.allow_unauthenticated: true` is set. The `/livez` and `/readyz` probes are exempt.
+
 ```mermaid
 flowchart TB
     subgraph "stdout mode"
@@ -477,13 +479,16 @@ another followed by `.`.
 ### Sidecar Patterns
 
 For log sources that established tools handle well, use container extractors
-with Filebeat, Fluentd, or similar collection agents:
+with a collection agent that can print JSON lines or POST JSON, such as Vector
+or Fluent Bit. Filebeat has no HTTP output (its outputs are Elasticsearch,
+Logstash, Kafka, Redis, file and console, per Elastic's output docs), so ship
+Beats data to dfe-receiver's Beats listener instead.
 
 | Source Type | Sidecar Tool | Communication |
 |-------------|-------------|---------------|
-| Syslog | Filebeat (system module) | HTTP POST to `/ingest/syslog` |
-| Windows Event Logs | Filebeat (winlogbeat) | HTTP POST to `/ingest/windows_events` |
-| Custom app logs | Filebeat (file input) | stdout JSON lines |
+| Syslog | Vector or Fluent Bit | HTTP POST to `/ingest/syslog` |
+| Windows Event Logs | A forwarder that POSTs JSON (winlogbeat is a separate Beat with the same output limits) | HTTP POST to `/ingest/windows_events` |
+| Custom app logs | A shipper that prints JSON lines | stdout JSON lines |
 | Network captures | Zeek / Suricata | stdout JSON lines |
 | Cloud provider logs | Cloud-specific CLI tools | stdout JSON lines |
 
@@ -500,8 +505,7 @@ exponential backoff. A log file the fetcher itself can reach is a
 Typical fetcher volumes are orders of magnitude lower than the loader /
 receiver / transform / archiver tier. A single fetcher pod servicing one
 tenant's combined AWS / Azure / M365 / GCP / SaaS audit feeds normally
-moves tens to a few thousand records per minute. The downstream pipeline
-moves PB/hour. The fetcher is also I/O-bound waiting on remote cloud
+moves tens to a few thousand records per minute. The fetcher is also I/O-bound waiting on remote cloud
 APIs, not CPU-bound parsing or routing.
 
 What this means in practice:
@@ -520,8 +524,7 @@ We still care about correctness, cancellation safety, bounded retries,
 and not leaking tasks - those are correctness concerns, not perf
 concerns. We also still prefer the simple, idiomatic version of any
 pattern over the clever one. But the aggressive hot-path discipline
-documented in the hyperi-ai Rust standards and applied across
-dfe-loader / dfe-receiver / dfe-archiver does **not** need to be
+applied across dfe-loader / dfe-receiver / dfe-archiver does **not** need to be
 applied symmetrically here.
 
 This trade-off is deliberate. It keeps a source a YAML profile rather than
