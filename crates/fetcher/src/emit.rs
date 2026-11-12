@@ -184,6 +184,11 @@ impl Emitter {
         // lease is released only once every outcome is known.
         let mut pending: Vec<Outbound> = std::mem::take(&mut batch.rows);
         let total = pending.len();
+        // A refused row failed enrichment, so only the rest were processed.
+        let processed = pending
+            .iter()
+            .filter(|row| row.tenancy != Tenancy::Refused)
+            .count();
         let mut backoff = BACKPRESSURE_BACKOFF;
         for attempt in 0..=retries {
             if pending.is_empty() {
@@ -209,6 +214,8 @@ impl Emitter {
             )));
         }
         drop(batch);
+        // Counted only once the batch is through, so an aborted tick counts its rows on the re-fetch alone, as received does
+        self.metrics.add_records_processed(processed as u64);
         if usage.stamped > 0 {
             metrics::counter!(USAGE_INGESTED_BYTES_TOTAL, "org_id" => org.to_owned())
                 .increment(usage.stamped);
@@ -568,6 +575,31 @@ mod tests {
         assert!(lines.contains(UNSTAMPABLE), "{lines}");
     }
 
+    /// Processed counts the records enrichment let through, and a row it
+    /// refused is not one of them.
+    #[tokio::test]
+    async fn processed_counts_the_rows_enrichment_let_through() {
+        let emitter = emitter_over("org_id: acme\n", &MemoryConfig::default());
+        let mut batcher = Batcher::new(AccumulateConfig::default(), Arc::new(NoLease));
+        batcher.push(
+            Outbound::new("fixture_land", r#"{"_org_id":"victim"}"#).with_tenancy(Tenancy::Refused),
+            None,
+        );
+        batcher.push(Outbound::new("fixture_land", r#"{"a":1}"#), None);
+        batcher.push(
+            Outbound::new("fixture_land", "plain text").with_tenancy(Tenancy::Unstamped),
+            None,
+        );
+
+        emitter.emit(batcher.take()).await.expect("sent");
+
+        let output = emitter.metrics.render();
+        assert!(
+            output.contains("dfe_records_processed_total 2\n"),
+            "{output}"
+        );
+    }
+
     /// A flush that aborts counts nothing, even for the records it sent before
     /// the abort: the tick re-fetches and sends them again.
     #[tokio::test]
@@ -591,6 +623,11 @@ mod tests {
         assert_eq!(
             recorder.counter("usage_ingested_bytes_total", &[("org_id", "default")]),
             None
+        );
+        let output = emitter.metrics.render();
+        assert!(
+            output.contains("dfe_records_processed_total 0\n"),
+            "{output}"
         );
     }
 }
