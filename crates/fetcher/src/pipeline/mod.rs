@@ -926,18 +926,6 @@ impl PipelineState {
             self.memory_guard.limit_bytes(),
         );
     }
-
-    /// Reload configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the reload cannot be applied.
-    pub fn reload_config(&self, new_config: Config) -> Result<()> {
-        self.shared_config.update(new_config);
-        let version = self.shared_config.version();
-        info!(version, "Configuration reloaded successfully");
-        Ok(())
-    }
 }
 
 /// Main pipeline orchestrator.
@@ -1523,36 +1511,6 @@ mod tests {
 
         assert!(!state.probe_ready(), "pressure must fail the probe");
         assert!(!state.is_ready(), "and must stall the fetch loop");
-    }
-
-    // -- reload_config tests --
-
-    #[test]
-    fn test_reload_config_updates_and_increments_version() {
-        let config = Config::default();
-        let shared = SharedConfig::new(config);
-        let initial_version = shared.version();
-        let metrics = Arc::new(Metrics::new());
-        let state = PipelineState::for_tests(shared, metrics, None);
-
-        let mut new_config = Config::default();
-        new_config.scheduler.default_interval_secs = 999;
-        state
-            .reload_config(new_config)
-            .expect("reload_config should succeed");
-
-        // Version incremented
-        assert_eq!(
-            state.shared_config().version(),
-            initial_version + 1,
-            "version should increment on reload"
-        );
-        // Config content applied
-        assert_eq!(
-            state.config().scheduler.default_interval_secs,
-            999,
-            "reloaded config should be returned by config()"
-        );
     }
 
     // -- Orchestrator tests --

@@ -23,14 +23,152 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
-use crate::config::{MissingCursor, SchedulerConfig, SharedConfig};
+use crate::config::resolve::resolve_config_specs;
+use crate::config::{Config, MissingCursor, SchedulerConfig, SharedConfig};
+use crate::credential::CredentialError;
 use crate::cursor::{CursorStore, CursorValue};
 use crate::driver::Driver;
 use crate::error::Error;
 use crate::metrics::Metrics;
-use dfe_fetcher_core::FetchWindow;
+use dfe_fetcher_core::{FetchWindow, SourceMaturity};
+
+/// How long a driver gets to stop what it runs: at shutdown, and before a
+/// rebuilt source's new driver starts, so a file tailer's last checkpoint is
+/// written first.
+pub const DRIVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How soon a sync that did not settle is tried again: a spec that did not
+/// resolve, or a generation not yet confirmed stopped.
+const SYNC_RETRY: Duration = Duration::from_secs(30);
+
+/// The pipeline readiness a fetch task polls before each tick.
+pub type ReadyFn = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// One connection a config schedules, before its driver is built.
+pub struct Planned<S> {
+    /// The connection id: the cursor key and the metric and log label.
+    pub id: String,
+    /// A digest of everything the driver is built from, so a reload that
+    /// changes any of it rebuilds the source.
+    pub fingerprint: u64,
+    /// The per-source interval override.
+    pub interval_secs: Option<u64>,
+    /// What the factory builds the driver from.
+    pub spec: S,
+}
+
+/// The digest [`Planned::fingerprint`] holds: `value` serialised with its
+/// secrets exposed, so a changed secret spec counts as a change, then hashed
+/// so no plaintext outlives the call.
+///
+/// # Errors
+///
+/// Returns the serialiser's error.
+pub fn fingerprint<T: serde::Serialize>(value: &T) -> serde_json::Result<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = scalo::expose_during(|| serde_json::to_vec(value))?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+/// Expands a config into the connections it schedules, and builds each
+/// one's driver.
+pub trait SourceFactory: Send + Sync + 'static {
+    /// What one connection's driver is built from.
+    type Spec: Send;
+
+    /// Every connection `config` schedules.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the config's sources do not expand.
+    fn plan(&self, config: &Config) -> anyhow::Result<Vec<Planned<Self::Spec>>>;
+
+    /// Build the driver of connection `id`, which shuts down on `cancel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the connection's settings do not build.
+    fn build(
+        &self,
+        id: &str,
+        spec: Self::Spec,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Driver>;
+}
+
+/// One built source, and its fetch task once launched.
+struct Running {
+    driver: Arc<Driver>,
+    fingerprint: u64,
+    interval_secs: Option<u64>,
+    /// A child of the global shutdown token, held by both the driver and the
+    /// fetch task, so stopping one source leaves the rest running.
+    cancel: CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// A cancelled generation whose driver is not yet confirmed stopped. No
+/// other generation of its source starts until it is.
+struct Stopping {
+    driver: Arc<Driver>,
+    /// `None` once the task has been joined, or while a settle awaits it.
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Every generation of every source, keyed on connection id.
+#[derive(Default)]
+struct Generations {
+    running: HashMap<String, Running>,
+    stopping: HashMap<String, Stopping>,
+}
+
+/// The sources [`Scheduler::start_sources`] keeps equal to the live config,
+/// and the generations still stopping, which shutdown waits for too.
+#[derive(Clone)]
+pub struct RunningSources {
+    generations: Arc<parking_lot::Mutex<Generations>>,
+    tasks: TaskTracker,
+}
+
+impl RunningSources {
+    /// The driver of every running and stopping generation.
+    #[must_use]
+    pub fn drivers(&self) -> Vec<Arc<Driver>> {
+        let generations = self.generations.lock();
+        generations
+            .running
+            .values()
+            .map(|r| Arc::clone(&r.driver))
+            .chain(generations.stopping.values().map(|s| Arc::clone(&s.driver)))
+            .collect()
+    }
+
+    /// Wait for every fetch task to end, then stop every driver still held,
+    /// both within one [`DRIVER_STOP_TIMEOUT`]. Call once the shutdown token
+    /// is cancelled.
+    pub async fn shutdown(&self) {
+        let deadline = tokio::time::Instant::now() + DRIVER_STOP_TIMEOUT;
+        self.tasks.close();
+        if tokio::time::timeout_at(deadline, self.tasks.wait())
+            .await
+            .is_err()
+        {
+            warn!("a fetch task did not end in time for shutdown");
+        }
+        let drivers = self.drivers();
+        let stops = futures::future::join_all(drivers.iter().map(|d| d.stop()));
+        if tokio::time::timeout_at(deadline, stops).await.is_err() {
+            warn!(
+                "a source driver did not stop in time, so its tailer's last checkpoint may be missing"
+            );
+        }
+    }
+}
 
 /// Fetch scheduler that coordinates timing and concurrency.
 ///
@@ -42,11 +180,13 @@ use dfe_fetcher_core::FetchWindow;
 /// that fails is retried over the width that failed, so a source catching up
 /// after an outage drains in bounded steps instead of asking for everything
 /// at once.
+#[derive(Clone)]
 pub struct Scheduler {
     shared_config: SharedConfig,
     concurrency_semaphore: Arc<Semaphore>,
     cursor_store: Option<Arc<dyn CursorStore>>,
     instance_id: String,
+    tasks: TaskTracker,
 }
 
 impl Scheduler {
@@ -64,6 +204,7 @@ impl Scheduler {
             concurrency_semaphore: semaphore,
             cursor_store,
             instance_id,
+            tasks: TaskTracker::new(),
         }
     }
 
@@ -81,6 +222,9 @@ impl Scheduler {
     /// When a cursor store is configured, the scheduler reads the last fetch
     /// position before each fetch to compute a `FetchWindow`, and writes the
     /// cursor back once the tick has awaited every acknowledgement.
+    ///
+    /// The task stops the driver before it ends, so joining the returned
+    /// handle waits for the driver's last checkpoint.
     pub fn spawn_source_task(
         &self,
         driver: Arc<Driver>,
@@ -88,16 +232,14 @@ impl Scheduler {
         metrics: Arc<Metrics>,
         shutdown: CancellationToken,
         is_ready: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let semaphore = Arc::clone(&self.concurrency_semaphore);
         let cursor_store = self.cursor_store.clone();
         let instance_id = self.instance_id.clone();
         let shared_config = self.shared_config.clone();
 
-        tokio::spawn(async move {
-            // Whichever way this task ends (shutdown, a reload that dropped
-            // the source, a closed semaphore), the driver's tailer is stopped.
-            let _stop = StopDriverOnDrop(Arc::clone(&driver));
+        let stopping = Arc::clone(&driver);
+        let fetch = async move {
             // The cursor key and the per-source metric and log labels are keyed
             // on the CONNECTION id, not the type name, so each account or
             // tenant of a type checkpoints and reports independently; a
@@ -124,8 +266,8 @@ impl Scheduler {
                 }
             }
 
-            // The last failed attempt's window. A reload never respawns a live
-            // source's task, so a frozen window survives one.
+            // The last failed attempt's window. A reload respawns only a
+            // source whose settings changed, so a frozen window survives one.
             let mut retry: Option<FetchWindow> = None;
 
             loop {
@@ -286,44 +428,61 @@ impl Scheduler {
                     break;
                 }
             }
-        });
+        };
+        self.tasks.spawn(async move {
+            Box::pin(fetch).await;
+            // However the loop ended, the tailer has stopped before the task
+            // does, so a caller that joins the task waits for its last checkpoint.
+            stopping.stop().await;
+        })
     }
 
-    /// Watch the shared config and cancel the fetch task of any source a
-    /// reload has removed.
+    /// Start a fetch task for every connection `config` schedules, then keep
+    /// the running set equal to the live config's on every reload, as a
+    /// restart would: an added source starts, a removed one stops, and one
+    /// whose settings changed is rebuilt from the new settings.
     ///
-    /// `running` maps a connection id to the child token its fetch task and
-    /// its driver hold, and the watcher is its only writer -- no lock. The
-    /// diff is on IDENTITY alone: a source whose settings changed but whose id
-    /// is still configured keeps running, because the driver and the scheduler
-    /// re-read the config every tick.
-    pub fn spawn_source_watch(
+    /// `config` is the startup config with its specs resolved. Each reload's
+    /// specs are resolved the same way before anything is built from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first connection that does not plan or build: at startup
+    /// a source that cannot run refuses the process.
+    pub fn start_sources<F: SourceFactory>(
         &self,
-        mut running: HashMap<String, CancellationToken>,
+        factory: F,
+        config: &Config,
+        metrics: Arc<Metrics>,
+        is_ready: ReadyFn,
         shutdown: CancellationToken,
-    ) {
-        let shared_config = self.shared_config.clone();
-
-        tokio::spawn(async move {
-            let mut versions = shared_config.subscribe();
-
-            // Reconcile once up front: a reload between the startup spawn and
-            // this subscription would otherwise go unseen.
-            reconcile_running_sources(&shared_config, &mut running);
-
-            loop {
-                tokio::select! {
-                    biased;
-                    () = shutdown.cancelled() => return,
-                    changed = versions.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                }
-                reconcile_running_sources(&shared_config, &mut running);
-            }
-        });
+    ) -> anyhow::Result<RunningSources> {
+        let set = SourceSet {
+            scheduler: self.clone(),
+            factory,
+            metrics,
+            is_ready,
+            shutdown,
+            running: RunningSources {
+                generations: Arc::default(),
+                tasks: self.tasks.clone(),
+            },
+        };
+        // The receiver reports every update since the config was created, so
+        // a reload that landed before this call is synced first.
+        let versions = self.shared_config.subscribe();
+        let built: anyhow::Result<Vec<(String, Running)>> = set
+            .factory
+            .plan(config)?
+            .into_iter()
+            .map(|planned| set.build(planned))
+            .collect();
+        for running in built? {
+            set.launch(running);
+        }
+        let running = set.running.clone();
+        tokio::spawn(set.watch(versions));
+        Ok(running)
     }
 
     /// Calculate the effective interval for a source (for logging at startup).
@@ -338,55 +497,245 @@ impl Scheduler {
     }
 }
 
-/// Stops a driver's background work when the fetch task holding it ends.
-struct StopDriverOnDrop(Arc<Driver>);
-
-impl Drop for StopDriverOnDrop {
-    fn drop(&mut self) {
-        let driver = Arc::clone(&self.0);
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move { driver.stop().await });
-        }
-    }
+/// The fetch tasks of every scheduled source, and what they are built with.
+struct SourceSet<F: SourceFactory> {
+    scheduler: Scheduler,
+    factory: F,
+    metrics: Arc<Metrics>,
+    is_ready: ReadyFn,
+    shutdown: CancellationToken,
+    running: RunningSources,
 }
 
-/// Cancel the fetch task of every running source the live config no longer
-/// schedules, and warn about a source it schedules that is not running.
-///
-/// Cancelling the child token stops the task at its next select and aborts an
-/// in-flight tick through the driver's non-alerting shutdown path. Adding a
-/// source still needs a restart (dfe-fetcher#134), so its id is named in a
-/// warning rather than silently ignored.
-fn reconcile_running_sources(
-    shared_config: &SharedConfig,
-    running: &mut HashMap<String, CancellationToken>,
-) {
-    let desired: BTreeSet<String> = shared_config.with(|config| {
-        config
-            .sources
-            .scheduled_connection_ids()
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    });
+impl<F: SourceFactory> SourceSet<F> {
+    /// Build `planned`'s driver over a fresh child of the shutdown token.
+    fn build(&self, planned: Planned<F::Spec>) -> anyhow::Result<(String, Running)> {
+        let cancel = self.shutdown.child_token();
+        let driver = self
+            .factory
+            .build(&planned.id, planned.spec, cancel.clone())?;
+        let running = Running {
+            driver: Arc::new(driver),
+            fingerprint: planned.fingerprint,
+            interval_secs: planned.interval_secs,
+            cancel,
+            task: None,
+        };
+        Ok((planned.id, running))
+    }
 
-    running.retain(|id, cancel| {
-        if desired.contains(id) {
-            return true;
+    /// Start a built source's fetch task and record it as running.
+    fn launch(&self, (id, mut running): (String, Running)) {
+        let driver = Arc::clone(&running.driver);
+        // Not stable means code-complete but not production-validated.
+        let maturity = driver.maturity();
+        if maturity != SourceMaturity::Stable {
+            warn!(
+                source = driver.name(),
+                maturity = %maturity,
+                "source is {maturity} maturity - not production-validated; \
+                 behaviour and config may change. See docs/cloud-setup/{}.md",
+                driver.name(),
+            );
         }
-        info!(source = %id, "source removed from the config; stopping its fetch schedule");
-        cancel.cancel();
-        false
-    });
-
-    for id in desired
-        .iter()
-        .filter(|id| !running.contains_key(id.as_str()))
-    {
-        warn!(
-            source = %id,
-            "source added to the config; a restart is needed to start fetching it"
+        info!(
+            source = driver.name(),
+            interval_secs = self
+                .scheduler
+                .effective_interval(running.interval_secs)
+                .as_secs(),
+            "Starting fetch schedule (interval is hot-reloaded)"
         );
+        running.task = Some(self.scheduler.spawn_source_task(
+            driver,
+            running.interval_secs,
+            Arc::clone(&self.metrics),
+            running.cancel.clone(),
+            Arc::clone(&self.is_ready),
+        ));
+        self.running.generations.lock().running.insert(id, running);
+    }
+
+    /// Cancel `id`'s running generation and move it to `stopping`, where
+    /// shutdown still sees it, then settle it. Returns `false` while it is
+    /// not confirmed stopped.
+    async fn retire(&self, id: &str) -> bool {
+        {
+            let mut generations = self.running.generations.lock();
+            let Some(running) = generations.running.remove(id) else {
+                return true;
+            };
+            // Cancelling the child token stops the task at its next select and
+            // aborts an in-flight tick through the driver's non-alerting path.
+            running.cancel.cancel();
+            let stopping = Stopping {
+                driver: running.driver,
+                task: running.task,
+            };
+            generations.stopping.insert(id.to_owned(), stopping);
+        }
+        self.settle(id).await
+    }
+
+    /// Confirm `id`'s stopping generation is down: its task ended, then its
+    /// driver stopped, each within [`DRIVER_STOP_TIMEOUT`]. Anything not
+    /// confirmed keeps the generation in `stopping` for a later sync.
+    async fn settle(&self, id: &str) -> bool {
+        let task = match self.running.generations.lock().stopping.get_mut(id) {
+            None => return true,
+            Some(stopping) => stopping.task.take(),
+        };
+        if let Some(mut task) = task {
+            match tokio::time::timeout(DRIVER_STOP_TIMEOUT, &mut task).await {
+                Err(_) => {
+                    warn!(source = %id, "the previous fetch task did not end in time, so the source stays stopped until it does");
+                    if let Some(stopping) = self.running.generations.lock().stopping.get_mut(id) {
+                        stopping.task = Some(task);
+                    }
+                    return false;
+                }
+                // A task that panicked never stopped its driver, which the
+                // stop below does instead.
+                Ok(Err(e)) => warn!(source = %id, error = %e, "the previous fetch task failed"),
+                Ok(Ok(())) => {}
+            }
+        }
+        let driver = self
+            .running
+            .generations
+            .lock()
+            .stopping
+            .get(id)
+            .map(|stopping| Arc::clone(&stopping.driver));
+        let Some(driver) = driver else {
+            return true;
+        };
+        if tokio::time::timeout(DRIVER_STOP_TIMEOUT, driver.stop())
+            .await
+            .is_err()
+        {
+            warn!(source = %id, "the previous driver did not stop in time, so the source stays stopped until it does");
+            return false;
+        }
+        self.running.generations.lock().stopping.remove(id);
+        true
+    }
+
+    /// Whether no earlier generation of `id` is still stopping. One whose
+    /// task has ended is settled here.
+    async fn settled(&self, id: &str) -> bool {
+        let ending = match self.running.generations.lock().stopping.get(id) {
+            None => return true,
+            Some(stopping) => stopping.task.as_ref().is_some_and(|t| !t.is_finished()),
+        };
+        !ending && self.settle(id).await
+    }
+
+    /// Bring the running set to `planned`, one generation of a source at a
+    /// time: a replaced or removed generation is confirmed stopped before
+    /// another starts. A source whose driver does not build is logged and
+    /// left as it was.
+    async fn reconcile(&self, planned: Vec<Planned<F::Spec>>) {
+        let stopping: Vec<String> = {
+            let generations = self.running.generations.lock();
+            generations.stopping.keys().cloned().collect()
+        };
+        for id in stopping {
+            self.settled(&id).await;
+        }
+
+        let desired: BTreeSet<&str> = planned.iter().map(|p| p.id.as_str()).collect();
+        let removed: Vec<String> = self
+            .running
+            .generations
+            .lock()
+            .running
+            .keys()
+            .filter(|id| !desired.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in removed {
+            info!(source = %id, "source removed from the config, stopping its fetch schedule");
+            self.retire(&id).await;
+        }
+
+        for planned in planned {
+            let previous = self
+                .running
+                .generations
+                .lock()
+                .running
+                .get(&planned.id)
+                .map(|r| r.fingerprint);
+            let change = match previous {
+                Some(fingerprint) if fingerprint == planned.fingerprint => continue,
+                Some(_) => "changed",
+                None => "added",
+            };
+            let id = planned.id.clone();
+            if !self.settled(&id).await {
+                warn!(source = %id, "source {change} in the config, but its previous generation is still stopping, so it is not started yet");
+                continue;
+            }
+            let built = match self.build(planned) {
+                Ok(built) => built,
+                Err(e) => {
+                    error!(
+                        source = %id,
+                        error = %e,
+                        "source {change} in the config does not build, so the running set keeps its previous state"
+                    );
+                    continue;
+                }
+            };
+            if !self.retire(&id).await {
+                continue;
+            }
+            info!(source = %id, "source {change} in the config, starting it from the new settings");
+            self.launch(built);
+        }
+    }
+
+    /// Bring the running set to the live config's sources, resolved as at
+    /// startup.
+    async fn sync(&self) -> Result<(), CredentialError> {
+        let mut config = self.scheduler.shared_config.get();
+        resolve_config_specs(&mut config).await?;
+        match self.factory.plan(&config) {
+            Ok(planned) => self.reconcile(planned).await,
+            Err(e) => {
+                error!(error = %e, "the reloaded sources do not expand, so the running set is unchanged");
+            }
+        }
+        Ok(())
+    }
+
+    /// Sync on every reload until shutdown. A spec that does not resolve (a
+    /// secrets backend outage), or a generation still stopping, is retried
+    /// without waiting for a reload.
+    async fn watch(self, mut versions: tokio::sync::watch::Receiver<u64>) {
+        let mut retry = false;
+        loop {
+            tokio::select! {
+                biased;
+                () = self.shutdown.cancelled() => return,
+                changed = versions.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                () = tokio::time::sleep(SYNC_RETRY), if retry => {}
+            }
+            let synced = self.sync().await;
+            retry = synced.is_err() || !self.running.generations.lock().stopping.is_empty();
+            if let Err(e) = synced {
+                error!(
+                    error = %e,
+                    retry_secs = SYNC_RETRY.as_secs(),
+                    "a reloaded source spec does not resolve, so the running set is unchanged"
+                );
+            }
+        }
     }
 }
 
@@ -862,12 +1211,29 @@ mod tests {
         connection_id: &str,
         source: Box<dyn RowSource>,
     ) -> Arc<Driver> {
+        Arc::new(driver_with(
+            shared,
+            metrics,
+            connection_id,
+            source,
+            CancellationToken::new(),
+        ))
+    }
+
+    /// [`driver_over`] shutting down on `cancel`.
+    fn driver_with(
+        shared: &SharedConfig,
+        metrics: &Arc<Metrics>,
+        connection_id: &str,
+        source: Box<dyn RowSource>,
+        cancel: CancellationToken,
+    ) -> Driver {
         let state = Arc::new(PipelineState::for_tests(
             shared.clone(),
             Arc::clone(metrics),
             None,
         ));
-        Arc::new(Driver::new(DriverParts {
+        Driver::new(DriverParts {
             shape: Shape::Custom(source),
             connection_id: connection_id.to_owned(),
             instance_id: "inst".into(),
@@ -877,8 +1243,8 @@ mod tests {
             memory_guard: Arc::clone(state.memory_guard()),
             checkpoints: None,
             metrics: Arc::clone(metrics),
-            shutdown: CancellationToken::new(),
-        }))
+            shutdown: cancel,
+        })
     }
 
     /// A driver over [`Counting`] under `connection_id`.
@@ -1689,95 +2055,459 @@ mod tests {
         shutdown.cancel();
     }
 
-    /// A reload that removes the source must stop its fetch schedule: the
-    /// watcher cancels the source's child token, the task returns and the
-    /// driver it held is freed.
-    #[tokio::test]
-    async fn a_source_dropped_by_a_reload_stops_ticking() {
-        tokio::time::pause();
+    /// One build a [`CountingFactory`] made: the connection id and its ticks.
+    type Build = (String, Arc<AtomicU64>);
 
-        // `scheduled_connection_ids` reports "counting" only while the
-        // instance is in the config; the post-reload config keeps the same
-        // cadence so the tick count can only change by the cancel.
-        let interval_secs = 2;
-        let with_source = || {
+    /// Where every [`Generation`] logs its ticks and its completed stops. A
+    /// stop waits for a permit while `hold` is set.
+    struct StopGate {
+        hold: AtomicBool,
+        gate: tokio::sync::Semaphore,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl Default for StopGate {
+        fn default() -> Self {
+            Self {
+                hold: AtomicBool::new(false),
+                gate: tokio::sync::Semaphore::new(0),
+                log: Mutex::default(),
+            }
+        }
+    }
+
+    impl StopGate {
+        /// Let the held stop finish, holding none after it.
+        fn release(&self) {
+            self.hold.store(false, Ordering::SeqCst);
+            self.gate.add_permits(1);
+        }
+
+        fn position(&self, entry: &str) -> Option<usize> {
+            self.log.lock().unwrap().iter().position(|e| e == entry)
+        }
+    }
+
+    /// A shape that counts its ticks and logs them, and its stops, to a
+    /// [`StopGate`] as build number `build`.
+    struct Generation {
+        units: Vec<UnitSpec>,
+        ticks: Arc<AtomicU64>,
+        build: usize,
+        stops: Arc<StopGate>,
+    }
+
+    impl RowSource for Generation {
+        fn name(&self) -> &'static str {
+            "generation"
+        }
+        fn maturity(&self) -> SourceMaturity {
+            SourceMaturity::Alpha
+        }
+        fn units(&self) -> &[UnitSpec] {
+            &self.units
+        }
+        fn rows<'a>(&'a self, _tick: TickCtx<'a>) -> RowStream<'a> {
+            self.ticks.fetch_add(1, Ordering::Relaxed);
+            let entry = format!("tick {}", self.build);
+            self.stops.log.lock().unwrap().push(entry);
+            futures::stream::empty().boxed()
+        }
+        fn probe(&self) -> BoxFuture<'_, dfe_fetcher_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn stop(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async move {
+                if self.stops.hold.load(Ordering::SeqCst) {
+                    self.stops.gate.acquire().await.unwrap().forget();
+                }
+                let entry = format!("stopped {}", self.build);
+                self.stops.log.lock().unwrap().push(entry);
+            })
+        }
+    }
+
+    /// A factory whose connections are the enabled `sources.rest` entries,
+    /// each a [`Generation`] driver. It records each build's id and tick
+    /// count, and the AWS region every plan was handed.
+    #[derive(Clone)]
+    struct CountingFactory {
+        shared: SharedConfig,
+        metrics: Arc<Metrics>,
+        builds: Arc<Mutex<Vec<Build>>>,
+        regions: Arc<Mutex<Vec<String>>>,
+        stops: Arc<StopGate>,
+    }
+
+    impl SourceFactory for CountingFactory {
+        type Spec = ();
+
+        fn plan(&self, config: &Config) -> anyhow::Result<Vec<Planned<()>>> {
+            let region = config.sources.aws.region.clone();
+            self.regions.lock().unwrap().push(region);
+            config
+                .sources
+                .rest
+                .iter()
+                .filter(|(_, instance)| instance.enabled)
+                .map(|(id, instance)| {
+                    Ok(Planned {
+                        id: id.clone(),
+                        fingerprint: fingerprint(instance)?,
+                        interval_secs: instance.interval_secs,
+                        spec: (),
+                    })
+                })
+                .collect()
+        }
+
+        fn build(&self, id: &str, (): (), cancel: CancellationToken) -> anyhow::Result<Driver> {
+            let ticks = Arc::new(AtomicU64::new(0));
+            let mut builds = self.builds.lock().unwrap();
+            builds.push((id.to_owned(), Arc::clone(&ticks)));
+            let source = Box::new(Generation {
+                units: vec![UnitSpec::new("unit", UnitShape::Incremental, "t")],
+                ticks,
+                build: builds.len() - 1,
+                stops: Arc::clone(&self.stops),
+            });
+            Ok(driver_with(&self.shared, &self.metrics, id, source, cancel))
+        }
+    }
+
+    /// Advance the paused clock `secs` seconds, a second at a time, letting
+    /// every task run between steps.
+    async fn run_for(secs: u64) {
+        for _ in 0..secs {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
+    /// A reload has the effect a restart on the reloaded config would: an
+    /// added source starts, a removed one stops and frees its driver, a
+    /// changed one is rebuilt from its new settings, and an unchanged one
+    /// keeps its task. Every reload is planned from its specs resolved.
+    #[tokio::test]
+    #[allow(unsafe_code)]
+    async fn a_reload_starts_stops_and_rebuilds_sources_as_a_restart_would() {
+        tokio::time::pause();
+        // SAFETY: test-only; a var name no other test sets.
+        unsafe { std::env::set_var("DFE_FETCHER_TEST_RELOAD_REGION", "eu-west-1") };
+
+        let source = dfe_fetcher_rest::RestInstance::default();
+        let changed = dfe_fetcher_rest::RestInstance {
+            interval_secs: Some(3),
+            ..Default::default()
+        };
+        // (row, before, after, builds, whether the first driver survives)
+        let rows = [
+            ("added", None, Some(&source), 1, true),
+            ("removed", Some(&source), None, 1, false),
+            ("changed", Some(&source), Some(&changed), 2, false),
+            ("unchanged", Some(&source), Some(&source), 1, true),
+        ];
+
+        for (row, before, after, want_builds, first_survives) in rows {
+            let config_with = |instance: Option<&dfe_fetcher_rest::RestInstance>| {
+                let mut cfg = test_config_no_jitter();
+                cfg.scheduler.default_interval_secs = 2;
+                if let Some(instance) = instance {
+                    cfg.sources.rest.insert("counting".into(), instance.clone());
+                }
+                cfg
+            };
+            let startup = config_with(before);
+            let shared = SharedConfig::new(startup.clone());
+            let scheduler = Scheduler::new(&startup.scheduler, shared.clone(), None, "test".into());
+            let metrics = Arc::new(Metrics::new());
+            let factory = CountingFactory {
+                shared: shared.clone(),
+                metrics: Arc::clone(&metrics),
+                builds: Arc::default(),
+                regions: Arc::default(),
+                stops: Arc::default(),
+            };
+            let shutdown = CancellationToken::new();
+            let running = scheduler
+                .start_sources(
+                    factory.clone(),
+                    &startup,
+                    Arc::clone(&metrics),
+                    Arc::new(|| true),
+                    shutdown.clone(),
+                )
+                .expect("startup builds");
+
+            run_for(5).await;
+            let first: Vec<std::sync::Weak<Driver>> =
+                running.drivers().iter().map(Arc::downgrade).collect();
+            let first_ticks: Vec<u64> = factory
+                .builds
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, ticks)| ticks.load(Ordering::Relaxed))
+                .collect();
+            assert!(
+                first_ticks.iter().all(|&ticks| ticks >= 1),
+                "{row}: a configured source ticks, got {first_ticks:?}"
+            );
+
+            // An unrelated edit with a spec in it, which the plan must see resolved.
+            let mut reloaded = config_with(after);
+            reloaded.sources.aws.enabled = true;
+            reloaded.sources.aws.region = "env:DFE_FETCHER_TEST_RELOAD_REGION".into();
+            shared.update(reloaded);
+            run_for(10).await;
+
+            let builds = factory.builds.lock().unwrap();
+            assert_eq!(builds.len(), want_builds, "{row}: builds");
+            let want_ids: BTreeSet<String> =
+                after.map(|_| "counting".to_string()).into_iter().collect();
+            let ids: BTreeSet<String> =
+                running.generations.lock().running.keys().cloned().collect();
+            assert_eq!(ids, want_ids, "{row}: running sources");
+            if after.is_some() {
+                let (_, live) = builds.last().expect("a build");
+                assert!(
+                    live.load(Ordering::Relaxed) >= 1,
+                    "{row}: the source the reload leaves configured ticks"
+                );
+            }
+            for ((_, ticks), before_reload) in builds.iter().zip(&first_ticks) {
+                if !first_survives {
+                    assert_eq!(
+                        ticks.load(Ordering::Relaxed),
+                        *before_reload,
+                        "{row}: a stopped driver must not tick again"
+                    );
+                }
+            }
+            assert_eq!(
+                first.iter().all(|driver| driver.upgrade().is_some()),
+                first_survives,
+                "{row}: whether the startup driver is still held"
+            );
+            assert_eq!(
+                factory.regions.lock().unwrap().last().map(String::as_str),
+                Some("eu-west-1"),
+                "{row}: the reload is planned from its resolved specs"
+            );
+            assert!(
+                !shutdown.is_cancelled(),
+                "{row}: a reload never shuts the process down"
+            );
+            shutdown.cancel();
+        }
+
+        // SAFETY: test-only, as above.
+        unsafe { std::env::remove_var("DFE_FETCHER_TEST_RELOAD_REGION") };
+    }
+
+    /// A cursor store that records the end of every cursor written, and holds
+    /// a write at its start while `hold` is set, until a permit is added.
+    struct GatedStore {
+        hold: AtomicBool,
+        gate: tokio::sync::Semaphore,
+        held: AtomicU64,
+        ends: Mutex<Vec<chrono::DateTime<Utc>>>,
+        cursor: Mutex<Option<CursorValue>>,
+    }
+
+    impl GatedStore {
+        /// Let the held write finish, holding none after it.
+        fn release(&self) {
+            self.hold.store(false, Ordering::SeqCst);
+            self.gate.add_permits(1);
+        }
+
+        fn held(&self) -> u64 {
+            self.held.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CursorStore for GatedStore {
+        async fn get(&self, _: &str) -> dfe_fetcher_core::error::Result<Option<CursorValue>> {
+            Ok(self.cursor.lock().unwrap().clone())
+        }
+        async fn set(&self, _: &str, value: &CursorValue) -> dfe_fetcher_core::error::Result<()> {
+            if self.hold.load(Ordering::SeqCst) {
+                self.held.fetch_add(1, Ordering::SeqCst);
+                self.gate.acquire().await.unwrap().forget();
+                self.held.fetch_sub(1, Ordering::SeqCst);
+            }
+            self.ends.lock().unwrap().push(value.last_fetch_end);
+            *self.cursor.lock().unwrap() = Some(value.clone());
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> dfe_fetcher_core::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A source runs one generation at a time. A generation caught committing
+    /// its cursor, outside any cancellation select, or stopping its driver, is
+    /// confirmed stopped before another starts: on a change, on a remove
+    /// followed by a re-add, and past the join timeout, where the retry timer
+    /// starts the source once the old one is down. The cursor never goes
+    /// backwards, and shutdown waits for the last driver to stop.
+    #[tokio::test]
+    async fn a_source_runs_one_generation_at_a_time_across_reloads() {
+        tokio::time::pause();
+        let config_with = |interval_secs: Option<Option<u64>>| {
             let mut cfg = test_config_no_jitter();
-            cfg.scheduler.default_interval_secs = interval_secs;
+            cfg.scheduler.default_interval_secs = 2;
+            if let Some(interval_secs) = interval_secs {
+                let instance = dfe_fetcher_rest::RestInstance {
+                    interval_secs,
+                    ..Default::default()
+                };
+                cfg.sources.rest.insert("counting".into(), instance);
+            }
             cfg
         };
-        let mut cfg = with_source();
-        cfg.sources
-            .rest
-            .insert("counting".into(), dfe_fetcher_rest::RestInstance::default());
-        let shared = SharedConfig::new(cfg);
-
-        let scheduler_config = SchedulerConfig {
-            default_interval_secs: interval_secs,
-            max_concurrent_fetches: 10,
-            jitter_percent: 0,
-        };
-        let scheduler = Scheduler::new(&scheduler_config, shared.clone(), None, "test".into());
-
+        let startup = config_with(Some(None));
+        let shared = SharedConfig::new(startup.clone());
+        let store = Arc::new(GatedStore {
+            hold: AtomicBool::new(true),
+            gate: tokio::sync::Semaphore::new(0),
+            held: AtomicU64::new(0),
+            ends: Mutex::default(),
+            cursor: Mutex::default(),
+        });
+        let cursors: Arc<dyn CursorStore> = Arc::clone(&store) as Arc<dyn CursorStore>;
+        let scheduler = Scheduler::new(
+            &startup.scheduler,
+            shared.clone(),
+            Some(cursors),
+            "test".into(),
+        );
         let metrics = Arc::new(Metrics::new());
-        let ticks = Arc::new(AtomicU64::new(0));
-        let driver = counting_driver(&shared, &metrics, "counting", Arc::clone(&ticks));
-        assert_eq!(driver.connection_id(), "counting");
-        let driver_alive = Arc::downgrade(&driver);
-
+        let factory = CountingFactory {
+            shared: shared.clone(),
+            metrics: Arc::clone(&metrics),
+            builds: Arc::default(),
+            regions: Arc::default(),
+            stops: Arc::default(),
+        };
         let shutdown = CancellationToken::new();
-        let cancel = shutdown.child_token();
-        scheduler.spawn_source_task(
-            driver,
-            None,
-            Arc::clone(&metrics),
-            cancel.clone(),
-            Arc::new(|| true),
-        );
-        scheduler.spawn_source_watch(
-            HashMap::from([("counting".to_string(), cancel.clone())]),
-            shutdown.clone(),
+        let running = scheduler
+            .start_sources(
+                factory.clone(),
+                &startup,
+                metrics,
+                Arc::new(|| true),
+                shutdown.clone(),
+            )
+            .expect("startup builds");
+        let ticks = |build: usize| {
+            factory.builds.lock().unwrap()[build]
+                .1
+                .load(Ordering::Relaxed)
+        };
+        let builds = || factory.builds.lock().unwrap().len();
+        let ids = || {
+            let ids: Vec<String> = running.generations.lock().running.keys().cloned().collect();
+            ids
+        };
+        let hold_next_write = || async {
+            store.hold.store(true, Ordering::SeqCst);
+            for _ in 0..30 {
+                if store.held() == 1 {
+                    return;
+                }
+                run_for(1).await;
+            }
+            panic!("no write was held");
+        };
+
+        // A change while the first generation is committing its cursor.
+        hold_next_write().await;
+        shared.update(config_with(Some(Some(3))));
+        run_for(5).await;
+        assert_eq!(builds(), 2, "the new generation is built");
+        assert_eq!(ticks(1), 0, "and does not run while the old one commits");
+        store.release();
+        run_for(10).await;
+        assert!(ticks(1) >= 1, "it runs once the old generation has ended");
+
+        // A remove, then a re-add, while the second generation commits.
+        hold_next_write().await;
+        shared.update(config_with(None));
+        run_for(3).await;
+        shared.update(config_with(Some(Some(3))));
+        run_for(3).await;
+        assert_eq!(builds(), 2, "the re-add waits for the removed generation");
+        store.release();
+        run_for(10).await;
+        assert_eq!(builds(), 3, "then starts a third");
+        assert!(ticks(2) >= 1, "which runs");
+
+        // A change whose old generation outlives the join timeout.
+        hold_next_write().await;
+        shared.update(config_with(Some(Some(4))));
+        run_for(DRIVER_STOP_TIMEOUT.as_secs() + 2).await;
+        assert_eq!(builds(), 4, "the replacement is built");
+        assert_eq!(ticks(3), 0, "but never started beside the old generation");
+        assert!(ids().is_empty(), "so the source is stopped");
+        store.release();
+        run_for(3).await;
+        assert!(ids().is_empty(), "until the next retry");
+        run_for(SYNC_RETRY.as_secs() + 10).await;
+        assert_eq!(ids(), ["counting"], "which starts it with no reload");
+        assert_eq!(builds(), 5);
+        assert!(ticks(4) >= 1, "and it runs");
+
+        // A change whose old generation is held stopping its driver.
+        factory.stops.hold.store(true, Ordering::SeqCst);
+        shared.update(config_with(Some(Some(5))));
+        run_for(5).await;
+        assert_eq!(builds(), 6, "the replacement is built");
+        assert_eq!(ticks(5), 0, "and waits for the old driver to stop");
+        assert_eq!(factory.stops.position("stopped 4"), None);
+        factory.stops.release();
+        run_for(10).await;
+        let stopped = factory
+            .stops
+            .position("stopped 4")
+            .expect("the old driver stopped");
+        let started = factory
+            .stops
+            .position("tick 5")
+            .expect("the replacement ticks");
+        assert!(
+            stopped < started,
+            "the old driver stopped before the replacement ran"
         );
 
-        for _ in 0..10 {
-            tokio::time::advance(Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
-        }
-        let ticks_while_live = ticks.load(Ordering::Relaxed);
+        let ends = store.ends.lock().unwrap().clone();
+        assert!(ends.len() >= 4, "every generation committed, got {ends:?}");
         assert!(
-            ticks_while_live >= 1,
-            "the source should tick while it is configured, got {ticks_while_live}"
+            ends.windows(2).all(|w| w[0] <= w[1]),
+            "the cursor never goes backwards: {ends:?}"
         );
+        assert!(!shutdown.is_cancelled());
 
-        // Drop the source: the unit-level equivalent of a rewritten
-        // fetcher.yaml that no longer lists it.
-        shared.update(with_source());
-
-        // No time passes here, so nothing but the cancel can end the cadence.
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            cancel.is_cancelled(),
-            "the watcher should cancel the removed source"
-        );
-
-        for _ in 0..20 {
-            tokio::time::advance(Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            ticks.load(Ordering::Relaxed),
-            ticks_while_live,
-            "a removed source must not tick again"
-        );
-        assert!(
-            driver_alive.upgrade().is_none(),
-            "the cancelled task should have dropped its driver"
-        );
-        assert!(
-            !shutdown.is_cancelled(),
-            "cancelling one source must not shut the process down"
-        );
+        // Shutdown waits for a removed generation still stopping its driver.
+        factory.stops.hold.store(true, Ordering::SeqCst);
+        shared.update(config_with(None));
+        run_for(DRIVER_STOP_TIMEOUT.as_secs() + 2).await;
+        assert!(ids().is_empty(), "the source is removed");
+        shutdown.cancel();
+        let drained = tokio::spawn({
+            let running = running.clone();
+            async move { running.shutdown().await }
+        });
+        run_for(3).await;
+        assert!(!drained.is_finished(), "shutdown waits for the held stop");
+        factory.stops.release();
+        run_for(2).await;
+        assert!(drained.is_finished(), "and ends once it completes");
+        assert!(factory.stops.position("stopped 5").is_some());
     }
 
     /// Spawn a paced source over a cursor store seeded at `last_end` (empty

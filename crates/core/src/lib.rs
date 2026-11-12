@@ -357,6 +357,12 @@ pub trait RowSource: Send + Sync {
 
     /// Health check: credentials resolve and the provider answers.
     fn probe(&self) -> BoxFuture<'_, Result<()>>;
+
+    /// Stop what the source runs between ticks and wait for it to finish.
+    /// Its driver calls this when it stops, possibly more than once.
+    fn stop(&self) -> BoxFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
 }
 
 #[cfg(test)]
