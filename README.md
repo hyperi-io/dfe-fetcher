@@ -14,7 +14,7 @@ Pulls data from cloud and SaaS APIs, databases and files into a DFE deployment.
 - A per-source CEL filter, hot-reloaded, and a memory guard that stops pulling from a provider while the service is under pressure.
 - Secrets from a secrets manager, an env var or a literal, config reload on SIGHUP or file watch, and a deployment contract that generates its Dockerfile and Compose file.
 
-Every record goes to the DFE pipeline over Kafka or gRPC, the same way dfe-receiver's do. It is the half of ingest that goes and gets the data.
+Every record goes to the DFE pipeline over Kafka or gRPC, the same way dfe-receiver's do.
 
 ## Quick start
 
