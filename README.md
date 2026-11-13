@@ -59,7 +59,7 @@ A new API starts as a profile, shipped under `crates/fetcher/profiles/` or inlin
 - [docs/cloud-setup/](docs/cloud-setup/README.md): one setup guide per provider.
 - [docs/testing.md](docs/testing.md): the test tiers and the live-API suites.
 
-The suite's published docs are at <https://dfe.docs.hyperi.io>.
+The suite's published docs are at <https://dfe.docs.hyperi.io>, and this repository's pages at <https://dfe.docs.hyperi.io/dfe-fetcher/>.
 
 ## Help and contributing
 
