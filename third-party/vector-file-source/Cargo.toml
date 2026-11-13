@@ -13,6 +13,10 @@ license = "MIT"
 [lib]
 doctest = false
 
+# Upstream's code keeps clippy's default set rather than the workspace's pedantic one.
+[lints.clippy]
+all = "warn"
+
 [target.'cfg(windows)'.dependencies]
 libc = "0.2"
 winapi = { version = "0.3", features = ["winioctl"] }
