@@ -25,11 +25,11 @@ The `db-odbc` suites build only with that feature and need the `odbc-postgresql`
 
 | Service | Image | Container ports |
 |---|---|---|
-| Kafka | `apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837` | 9092 PLAINTEXT |
-| OpenBao | `openbao/openbao:2.6.1@sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0` | 8200 |
-| LocalStack | `localstack/localstack:4.14@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a` | 4566 |
-| ClickHouse | `clickhouse/clickhouse-server:26.3.42.3@sha256:21d572843e59539c7d100286b6f5a6053c341fe4b33c2d7b74b1ff7cb24c5399` | 8123 HTTP |
-| MongoDB | `mongo:8.3.9@sha256:81a1c8842a09589fc8d5f285266f3340bf4abdf66700ba22988f14cc9b2b3118` | 27017, standalone and a one-member replica set |
+| Kafka | `apache/kafka` | 9092 PLAINTEXT |
+| OpenBao | `openbao/openbao` | 8200 |
+| LocalStack | `localstack/localstack` | 4566 |
+| ClickHouse | `clickhouse/clickhouse-server` | 8123 HTTP |
+| MongoDB | `mongo` | 27017, standalone and a one-member replica set |
 
 The Kafka pin is scalo's `transport::kafka::test_support::KAFKA_IMAGE`. The rest live in `crates/fetcher/tests/common/mod.rs`.
 
