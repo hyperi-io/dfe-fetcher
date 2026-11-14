@@ -36,10 +36,8 @@ dfe-fetcher-rest = { path = "crates/rest" }
 dfe-fetcher-db = { path = "crates/db" }
 dfe-fetcher-file = { path = "crates/file" }
 
-# scalo shared library (crates.io). Features are chosen per member; the core
-# takes `expression` only. The floor moves with `release.helm.library` in
-# .hyperi-ci.yaml: the library renders only the contract version its scalo
-# release writes.
+# Features are chosen per member. The floor moves with `release.helm.library`
+# in .hyperi-ci.yaml.
 scalo = { version = "2.14.29", default-features = false }
 # Same range scalo pins so ONE cel resolves and scalo's compiled `Program` is
 # the type the framework holds.
@@ -142,16 +140,14 @@ dbg_macro = "deny"
 module_name_repetitions = "allow"
 # #[must_use] goes where dropping the value is a bug, not on every pure function.
 must_use_candidate = "allow"
-# 8 sites turn counts into f64 values: 2 gauge values in main.rs and 6 in the integration tests.
+# Counts become f64 gauge values.
 cast_precision_loss = "allow"
-# 49 doc comments name database, cloud and protocol identifiers without backticks.
+# Doc comments name database, cloud and protocol identifiers without backticks.
 doc_markdown = "allow"
-# 5 functions run past the 150-line threshold, the largest at 260 lines.
 too_many_lines = "allow"
-# 4 casts in the metric and timestamp code, each on a value the surrounding code bounds.
+# The metric and timestamp casts are on values the surrounding code bounds.
 cast_possible_truncation = "allow"
 cast_sign_loss = "allow"
-# 3 Default impls, 3 match arms, 2 push_str of a format!, 1 unused self, 1 map then unwrap_or_else.
 derivable_impls = "allow"
 match_same_arms = "allow"
 format_push_string = "allow"

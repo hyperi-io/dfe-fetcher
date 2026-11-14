@@ -269,6 +269,6 @@ this repo in either direction.
 
 | Repo | Direction | How it interacts |
 |---|---|---|
-| scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo = { version = "2.14.3", default-features = false }`, a caret floor. A scalo release reaches here: if the floor admits it, `cargo update -p scalo` and rebuild, otherwise raise the floor first. |
+| scalo-rs | inbound -- this repo depends on it | `cargo-dep`. The workspace manifest declares `scalo` as a caret floor. A scalo release reaches here: if the floor admits it, `cargo update -p scalo` and rebuild, otherwise raise the floor first. |
 | scalo-rs | inbound, lockstep | `generated-file`. The committed `Dockerfile` is written by `scalo::deployment::generate_dockerfile()`, and its banner names the generator and the contract schema version, 4. A release that changes either needs the file regenerated and committed. The released chart is assembled on the scalo-service library chart at `release.helm.library`, which moves with the scalo version in `Cargo.toml`. |
 | dfe-infra | outbound -- it depends on this | `image-pin`, lockstep. `dfe-infra/versions.yaml` pins this service's image and the thin chart released here, and Argo deploys that published chart. A release here is consumed by bumping the tag and re-resolving the digest. |
