@@ -616,7 +616,7 @@ pub(crate) fn gcp_pubsub() -> Capability {
         .child(
             Capability::service("subscription")
                 .description("One entry per `subscriptions[]`: a subscription to pull from.")
-                .maturity("alpha")
+                .maturity("beta")
                 .field(
                     FieldSpec::string("project_id")
                         .required()
@@ -657,8 +657,8 @@ pub(crate) fn object_store() -> Capability {
                 .field(FieldSpec::int("settle_secs").description("Seconds an object ages before it is read where ListMultipartUploads is refused (default 300).")),
         )
         .children(vec![
-            Capability::service("gcs").description("Google Cloud Storage (Phase-2 stub).").maturity("alpha"),
-            Capability::service("azure_blob").description("Azure Blob Storage (Phase-2 stub).").maturity("alpha"),
+            Capability::service("gcs").description("Google Cloud Storage (Phase-2 stub).").maturity("beta"),
+            Capability::service("azure_blob").description("Azure Blob Storage (Phase-2 stub).").maturity("beta"),
         ])
 }
 

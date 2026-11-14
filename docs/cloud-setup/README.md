@@ -76,6 +76,6 @@ stable.
 
 | Stage | Meaning |
 |-------|---------|
-| Alpha | Code-complete but not production-validated. Behaviour and config may change. The default for a new source. |
-| Beta | Validated against a live service; hardening in progress. |
+| Alpha | In development. Never in a release, so no shipped profile carries it. |
+| Beta | Validated against a live service, hardening in progress. The lowest maturity a release ships, and the default for a new source. |
 | Stable | Production-ready. |
