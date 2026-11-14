@@ -11,17 +11,7 @@ targets = []
 all-features = true
 
 [advisories]
-# GHSA-w9wp-h8wv-79jx / CVE-2026-48504 is not listed here because cargo-deny
-# never sees it: it is a GitHub advisory with no RustSec entry, so an `ignore`
-# would be inert. opentelemetry_sdk 0.31.0 is in the lock through scalo and is
-# in the affected range (<= 0.32.0, fixed in 0.32.1). The flaw is in
-# `BaggagePropagator::extract_with_context`, which parses an inbound W3C
-# Baggage header before enforcing its size limits. Nothing here reaches it:
-# neither this workspace nor scalo registers a Baggage or any other text map
-# propagator, so the function is never called. It is an accepted risk in
-# dfe-infra docs/THREAT-MODEL.md, and the osv-scanner ignore in .hyperi-ci.yaml
-# records it. scalo leaves the 0.31 line once metrics-exporter-opentelemetry,
-# at 0.2.1 requiring opentelemetry ^0.31, moves: hyperi-io/scalo-rs#281.
+# GHSA-w9wp-h8wv-79jx has no RustSec entry, so it is ignored in .hyperi-ci.yaml, not here.
 ignore = [
     { id = "GHSA-qwgh-2vcv-g2f7", reason = "Reached only through the lock: digest 0.10 <- sha2 <- termwiz <- ratatui-termwiz <- ratatui <- scalo, and ratatui's termwiz feature is never enabled, so no build compiles it. Drop when the lock stops carrying digest 0.10, which the digest 0.11 move does." },
     { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained, not vulnerable. It arrives only through testcontainers, via the testcontainers-modules dev-dependency the integration tests use, and no release binary links it. testcontainers 0.28.0 still depends on it. Drop when testcontainers moves off it." },

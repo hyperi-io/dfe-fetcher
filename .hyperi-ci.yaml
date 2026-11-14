@@ -23,16 +23,7 @@ quality:
   enabled: true
   # The docs lint clean, so a new warning fails the run rather than piling up.
   markdownlint: blocking
-  # GHSA-w9wp-h8wv-79jx / CVE-2026-48504: opentelemetry_sdk 0.31.0 is in the
-  # lock through scalo, in the affected range (<= 0.32.0, fixed in 0.32.1). The
-  # flaw is in BaggagePropagator::extract_with_context, which parses an inbound
-  # W3C Baggage header before enforcing its size limits. Nothing here reaches
-  # it: neither this workspace nor scalo registers a Baggage or any other text
-  # map propagator. Accepted as unreachable in the DFE threat model (dfe-infra
-  # docs/THREAT-MODEL.md, accepted risks). scalo stays on the 0.31 line until
-  # metrics-exporter-opentelemetry, at 0.2.1 requiring opentelemetry ^0.31,
-  # moves: hyperi-io/scalo-rs#281. deny.toml carries no ignore because it is a
-  # GitHub advisory with no RustSec entry, so only osv-scanner sees it.
+  # No RustSec entry for this one, so only osv-scanner sees it and deny.toml has no ignore.
   ignore:
     - tool: osv-scanner
       id: GHSA-w9wp-h8wv-79jx
