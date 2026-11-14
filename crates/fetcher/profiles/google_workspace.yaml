@@ -22,7 +22,7 @@
 # (`when_absent: empty`). The token exchange is the health
 # check.
 profile: google_workspace
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

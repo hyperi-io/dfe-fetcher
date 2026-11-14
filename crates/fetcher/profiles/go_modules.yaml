@@ -24,7 +24,7 @@
 # unexpected publication or a commit-hash drift. The health check is the
 # proxy's root.
 profile: go_modules
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

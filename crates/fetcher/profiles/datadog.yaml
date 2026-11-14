@@ -25,7 +25,7 @@
 # health check that passed on half the credential is worse than none, so the
 # check resolves both specs instead.
 profile: datadog
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

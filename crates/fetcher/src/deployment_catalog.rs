@@ -616,7 +616,7 @@ pub(crate) fn gcp_pubsub() -> Capability {
         .child(
             Capability::service("subscription")
                 .description("One entry per `subscriptions[]`: a subscription to pull from.")
-                .maturity("alpha")
+                .maturity("stable")
                 .field(
                     FieldSpec::string("project_id")
                         .required()
@@ -657,8 +657,8 @@ pub(crate) fn object_store() -> Capability {
                 .field(FieldSpec::int("settle_secs").description("Seconds an object ages before it is read where ListMultipartUploads is refused (default 300).")),
         )
         .children(vec![
-            Capability::service("gcs").description("Google Cloud Storage (Phase-2 stub).").maturity("alpha"),
-            Capability::service("azure_blob").description("Azure Blob Storage (Phase-2 stub).").maturity("alpha"),
+            Capability::service("gcs").description("Google Cloud Storage (Phase-2 stub).").maturity("stable"),
+            Capability::service("azure_blob").description("Azure Blob Storage (Phase-2 stub).").maturity("stable"),
         ])
 }
 
@@ -847,18 +847,17 @@ mod tests {
             );
         }
         // Both sides above read the same helper, so the loop cannot catch a
-        // wrong maturity -- only a missing catalog entry. The stable set is
-        // pinned because promotion is what the startup warning stops covering.
-        let mut stable: Vec<&str> = every_source(&example_config())
+        // wrong maturity -- only a missing catalog entry. A release ships no
+        // source below stable, so the set below it is pinned empty.
+        let below_stable: Vec<&str> = every_source(&example_config())
             .into_iter()
-            .filter(|s| s.maturity.as_str() == "stable")
+            .filter(|s| s.maturity.as_str() != "stable")
             .map(|s| s.name)
             .collect();
-        stable.sort_unstable();
         assert_eq!(
-            stable,
-            ["aws", "azure", "gcp", "m365"],
-            "promoting a source past alpha silences its startup warning -- say so here first"
+            below_stable,
+            Vec::<&str>::new(),
+            "a release ships no source below stable -- finish it or keep it off main"
         );
     }
 

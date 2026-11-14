@@ -19,7 +19,7 @@
 # Cloudflare reports a failure inside a 200 as `success: false` with the
 # reasons under `errors`.
 profile: cloudflare
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

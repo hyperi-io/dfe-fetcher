@@ -17,7 +17,7 @@
 # `_dfe_fetcher_crate`. A crate the registry does not know answers 404 and
 # is skipped; the others still land. The scheduler's window plays no part.
 profile: crates_io
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

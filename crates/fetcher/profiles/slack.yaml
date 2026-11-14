@@ -19,7 +19,7 @@
 # reports a failure inside a 200 as `ok: false` with the reason under
 # `error`, on the data endpoint and on the `auth.test` probe alike.
 profile: slack
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

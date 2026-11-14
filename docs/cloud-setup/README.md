@@ -68,14 +68,4 @@ An empty value counts as unset, so a Secret key left blank leaves the field unse
 
 ## Source Maturity
 
-A source's release maturity is the `maturity` field of its shipped profile
-under `crates/fetcher/profiles/`; the capability catalog
-(`docs/capability-catalog.yaml`) repeats it and a test keeps the two equal.
-The fetcher logs a warning at startup for any enabled source that is not yet
-stable.
-
-| Stage | Meaning |
-|-------|---------|
-| Alpha | Code-complete but not production-validated. Behaviour and config may change. The default for a new source. |
-| Beta | Validated against a live service; hardening in progress. |
-| Stable | Production-ready. |
+Every source a release ships is stable. The `maturity` field of a profile under `crates/fetcher/profiles/` exists for development branches, where a source under construction is `alpha` or `beta`, and the fetcher logs a warning at startup for an enabled source at either. The capability catalog (`docs/capability-catalog.yaml`) repeats the field and a test keeps the two equal, so a release never carries a source below stable.

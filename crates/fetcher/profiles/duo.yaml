@@ -23,7 +23,7 @@
 # one ends the sequence. Duo reports a failure inside a 200 as `stat: FAIL`
 # with the reason under `message`; a refused signature is a 401.
 profile: duo
-maturity: alpha
+maturity: stable
 base_url: "{{ vars.base_url }}"
 shape: incremental
 auth:
