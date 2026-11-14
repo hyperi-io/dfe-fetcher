@@ -125,7 +125,7 @@ sources:
     # filter: 'versions.size() > 0'           # hot-reloaded
 ```
 
-Field reference (identical shape across all three):
+Field reference (identical fields across all three):
 
 - `enabled` - turn the source on.
 - `packages` (pypi) / `crates` (crates_io) / `modules` (go_modules) -

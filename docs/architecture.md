@@ -1,7 +1,7 @@
 # dfe-fetcher architecture
 
 The repo is a Cargo workspace: one app crate and a source framework split into
-an I/O-free core plus one leaf crate per shape family, with the file tailer
+an I/O-free core plus one leaf crate per source family, with the file tailer
 vendored from Vector under `third-party/`. Every crate is `publish = false` and
 inherits its version from `[workspace.package]`, so a release bump touches the
 root manifest only. Diagrams (system, the tick sequence, the profile grammar,
@@ -13,11 +13,11 @@ codemap, the invariants and the build graph.
 | Where | What lives there |
 |---|---|
 | `crates/core` (`dfe-fetcher-core`) | The row model (`Row`, `Mark`, `RowSource`, `UnitSpec`, `TickCtx`), the batcher, the compiled per-row rules (CEL filter, routes, added fields), the snapshot envelope and its reassembler, the checkpoint contract (`CursorStore`, `CursorValue`, mark folding), the once-resolved secret cell (the resolver is the I/O crate's), the framework's error type and the list of metric names. No HTTP, no transport, no filesystem. |
-| `crates/rest` (`dfe-fetcher-rest`) | The declarative REST profile grammar and its validation, `{{ cel }}` templates, the runtime axes (auth modes, pagers, streaming decoders, the request executor with retry and its per-unit origin gate), the hooks (row builders and the S3 lister), the queue shape, and `RestShape`, the `RowSource` for a bound profile. |
+| `crates/rest` (`dfe-fetcher-rest`) | The declarative REST profile grammar and its validation, `{{ cel }}` templates, the runtime axes (auth modes, pagers, streaming decoders, the request executor with retry and its per-unit origin gate), the hooks (row builders and the S3 lister), the queue unit kind, and `RestShape`, the `RowSource` for a bound profile. |
 | `crates/db` (`dfe-fetcher-db`) | The `Store` contract (dump, keyset tail), the `sources.db` grammar, `DbShape` (the `RowSource` over an instance's stores), the per-dialect keyset predicate, the blocking-cursor pump and the block-to-row framing that leases every buffered block. Engines are features: `odbc` (unixODBC + `arrow-odbc` typing + `arrow-json` writing), `clickhouse` (server-side `JSONEachRow`, `dfe-clickhouse` for the ping and typed exceptions) and `mongodb` (the official driver: `find` to dump, change stream or `_id` to tail). |
 | `crates/file` (`dfe-fetcher-file`) | The `FileSource` contract, the `sources.file` grammar, the dump reader (NDJSON, JSON array, CSV, gzip by magic) and the tail spec; the tailer sits behind the `tail` feature over the vendored crates. |
 | `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), vendored and depended on by path from `crates/file` only; provenance in `third-party/README.md`. |
-| `crates/fetcher` (`dfe-fetcher`, the binary) | The config cascade and hot reload, the typed source blocks, their registry and their mapping onto profile instances (`config/builtin.rs`), the scheduler, `Driver` (the tick the scheduler runs for every framework shape), the emitter, the pipeline (enrichment, DLQ, readiness), the output transports, the cursor file store, the shipped REST profiles (`profiles/*.yaml`), the deployment contract and capability catalog, the ingest server and the container and Vector extractors. |
+| `crates/fetcher` (`dfe-fetcher`, the binary) | The config cascade and hot reload, the typed source blocks, their registry and their mapping onto profile instances (`config/builtin.rs`), the scheduler, `Driver` (the tick the scheduler runs for every framework source), the emitter, the pipeline (enrichment, DLQ, readiness), the output transports, the cursor file store, the shipped REST profiles (`profiles/*.yaml`), the deployment contract and capability catalog, the ingest server and the container and Vector extractors. |
 | `config.example.yaml`, `docs/` | Operator-facing surface, at the repo root; the app crate's tests reach them through the manifest directory. |
 
 Adding a REST source is a profile (YAML) plus an instance in `sources.rest`;
@@ -36,7 +36,7 @@ the shipped profile of the same name at load; the driver runs it like any
 - `dfe-fetcher-rest`, `dfe-fetcher-db` and `dfe-fetcher-file` depend on `core`
   and never on each other or on the app. None sends to a transport, writes a
   cursor or reads the config cascade; each receives bound units and yields rows.
-- The app never re-implements a shape, a pager, a decoder or an auth mode; it
+- The app never re-implements a source, a pager, a decoder or an auth mode; it
   owns wiring, transports, checkpoint persistence, config and the deployment
   contract. There is no per-provider Rust in the app: a provider is a profile,
   and what a profile cannot say is a hook on an axis in `crates/rest`.

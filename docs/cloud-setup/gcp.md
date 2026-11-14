@@ -259,8 +259,8 @@ sources:
 
 To keep the service-account key itself in the secrets manager, run the `gcp`
 profile as a `sources.rest` instance with `auth.mode: jwt_bearer` and
-`auth.service_account_key: "vault:..."` (the JSON as a spec), which is the
-same shape the block maps onto. When mounting the key as a Kubernetes secret,
+`auth.service_account_key: "vault:..."` (the JSON as a spec), which is what
+the block maps onto. When mounting the key as a Kubernetes secret,
 point `service_account_key` at the mounted path:
 
 ```bash

@@ -13,7 +13,7 @@
 dfe-fetcher pulls security and operational data from cloud and SaaS providers,
 databases, files and external extractors, and delivers each record to the DFE
 pipeline over Kafka and/or gRPC. Every provider is a declarative REST profile
-run by one generic driver; databases and files are two more shapes on the same
+run by one generic driver; databases and files are two more kinds of source on the same
 driver. The codemap of the Cargo workspace is
 [architecture.md](architecture.md); this document holds the diagrams and
 the reasoning.
@@ -89,7 +89,7 @@ The fetcher has no raw capture setting and does not keep the bytes it fetched. P
 ## Workspace Crates
 
 The repo is a Cargo workspace laid out as a wide DAG off one I/O-free core, so
-the shape crates compile in parallel and a profile change never rebuilds a
+the source crates compile in parallel and a profile change never rebuilds a
 database driver. Solid edges are unconditional; dashed edges are the optional
 engine drivers and the vendored tailer, each behind its feature.
 
@@ -123,7 +123,7 @@ error.
 
 ## Source Framework: One Tick
 
-Every framework source is a shape that yields rows lazily; the driver runs
+Every framework source yields rows lazily. The driver runs
 each unit of a connection through one loop. A unit is one endpoint, store,
 subscription or prefix; its rows are either events inside the scheduler's
 window (incremental) or the whole store (a dump, wrapped in the snapshot
@@ -143,7 +143,7 @@ sequenceDiagram
     participant S as Scheduler
     participant D as Driver
     participant G as Memory-pressure gate
-    participant R as Shape RowSource
+    participant R as RowSource
     participant B as Batcher
     participant E as Emitter
     participant C as CursorStore
@@ -234,10 +234,10 @@ A cursor read that fails is a fault, not a cold start. The cursor may still be s
 
 ## The Profile Grammar
 
-A profile is the shape of an API and carries no identity: a base URL template,
+A profile describes an API and carries no identity: a base URL template,
 the auth modes the API accepts, headers, the retry policy, where errors live in
 a non-2xx body, the window format, and the endpoints with their decoder,
-pager and construct. An instance is one deployment of that shape: its
+pager and construct. An instance is one deployment of that profile: its
 credential kind and refs, `vars`, topic and interval, with per-unit narrowing.
 Every struct rejects unknown keys and every enum is a closed vocabulary, so a
 typo or an unsupported mode is a load error carrying the YAML line, never a
@@ -247,7 +247,7 @@ validation rules are in
 [reference/profile-grammar.md](reference/profile-grammar.md); the grammar as
 built is `crates/rest/src/profile/mod.rs`.
 
-## Database and File Shapes
+## Database and File Sources
 
 A database instance (`sources.db.<id>`) names an engine, its connection
 string as a secret spec, the block-cursor bounds and its stores. A `dump`
@@ -276,7 +276,7 @@ vendored Vector tailer and commits `(file fingerprint, end offset)` per line
 after the acknowledgement; it needs the `file-tail` feature and is refused at
 load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
 
-| Shape | Unit kind | Checkpoint mark | Lands on |
+| Source | Unit kind | Checkpoint mark | Lands on |
 |-------|-----------|-----------------|----------|
 | REST profile, incremental | window of events | the scheduler's window cursor (a manifest unit also marks each item) | `<topic>` |
 | REST profile, dump | the whole store per tick | none (nothing is incremental) | `<topic>-<unit>` |

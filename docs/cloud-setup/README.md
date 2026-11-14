@@ -23,7 +23,7 @@ profile grammar are in [../internals.md](../internals.md).
 
 The released chart mounts one Secret, Kafka's: its `username`, `password` and `sasl.mechanism` keys become `DFE_FETCHER_KAFKA_SASL_USER`, `DFE_FETCHER_KAFKA_SASL_PASSWORD` and `DFE_FETCHER_KAFKA_SASL_MECHANISM`. Name an existing Secret with the chart value `secrets.kafka.existingSecret`.
 
-A provider's credentials are yours to supply, through the chart's `extraEnv` (a map of variable name to value or `valueFrom`) or `extraEnvFrom` (a list of `envFrom` sources) values. Two shapes work, and each guide's Environment Variables section names the fields:
+A provider's credentials are yours to supply, through the chart's `extraEnv` (a map of variable name to value or `valueFrom`) or `extraEnvFrom` (a list of `envFrom` sources) values. Two ways work, and each guide's Environment Variables section names the fields:
 
 - set the field itself, `DFE_FETCHER_SOURCES__<BLOCK>__<FIELD>`, from a Secret key, e.g. `DFE_FETCHER_SOURCES__AWS__SECRET_ACCESS_KEY`
 - write the field as an `env:NAME` spec in the config, and load a Secret whose keys are those names with `extraEnvFrom`
