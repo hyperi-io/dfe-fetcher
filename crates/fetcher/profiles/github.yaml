@@ -18,7 +18,7 @@
 # A 401 or 403 ends the tick -- GitHub's secondary rate limit answers 403
 # with a Retry-After, and repeating the call lengthens the penalty.
 profile: github
-maturity: beta
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

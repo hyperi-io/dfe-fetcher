@@ -18,7 +18,7 @@
 # document is the package's current state, and downstream tooling computes
 # the deltas between ticks.
 profile: pypi
-maturity: beta
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

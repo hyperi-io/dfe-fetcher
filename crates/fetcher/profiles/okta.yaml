@@ -24,7 +24,7 @@
 # linked by `Link: rel="next"`; the next URL is requested as given, and a
 # page that is empty but still links onward is followed.
 profile: okta
-maturity: beta
+maturity: stable
 base_url: "{{ vars.base_url }}"
 shape: incremental
 auth:

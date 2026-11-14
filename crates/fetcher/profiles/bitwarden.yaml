@@ -18,7 +18,7 @@
 # one ends the sequence. The token exchange itself is the health check: a
 # minted token proves the client, and no data endpoint is touched.
 profile: bitwarden
-maturity: beta
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

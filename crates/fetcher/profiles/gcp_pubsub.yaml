@@ -27,7 +27,7 @@
 # broker rather than lost. The scheduler's window plays no part; the
 # health check is the token exchange.
 profile: gcp_pubsub
-maturity: beta
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:

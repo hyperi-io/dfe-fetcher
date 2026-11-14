@@ -40,7 +40,7 @@
 # `settle_secs` instead: only objects older than that are read, one
 # scheduler interval by default.
 profile: object_store
-maturity: beta
+maturity: stable
 base_url: "{{ vars.endpoint_url != '' ? vars.endpoint_url : 'https://s3.' + vars.region + '.amazonaws.com' }}"
 shape: incremental
 auth:

@@ -20,7 +20,7 @@
 # the client carries an inventory grant. A refused call ticks a server-side
 # throttle that doubles its delay per refusal, so 401 and 403 end the tick.
 profile: runzero
-maturity: beta
+maturity: stable
 base_url: "{{ vars.base_url }}"
 shape: dump
 auth:

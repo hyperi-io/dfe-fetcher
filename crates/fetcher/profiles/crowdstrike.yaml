@@ -21,7 +21,7 @@
 # for each batch of composite ids. Both calls are reads, so the POST is
 # retried like a GET. The token exchange is the health check.
 profile: crowdstrike
-maturity: beta
+maturity: stable
 base_url: "{{ vars.api_url }}"
 shape: incremental
 auth:
