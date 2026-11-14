@@ -251,7 +251,7 @@ Field reference (S3 backend):
 - `buckets[].prefixes[].topic` - optional per-prefix topic override.
 
 Prefixes run in tag order, not config order. The example config also
-documents `gcs` and `azure_blob` backend shapes, but neither is implemented -
+documents `gcs` and `azure_blob` backend types, but neither is implemented -
 if configured, the fetcher warns at load and skips them, and the S3 backend
 of the same block still runs. Do not enable them.
 

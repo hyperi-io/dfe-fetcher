@@ -15,7 +15,7 @@ count, all on the same topic and all stamped with the same `snapshot_id` and
 `snapshot_at`. A dump that aborts emits no `end`, which is the consumer-side
 incompleteness signal. The writer and a reference reassembler live in
 `crates/core/src/envelope.rs`; the driver applies the envelope to every unit
-whose shape is `dump` (a REST profile dump, a `sources.db` dump store, a
+whose `shape` is `dump` (a REST profile dump, a `sources.db` dump store, a
 `sources.file` dump unit).
 
 - [Frames](#frames)
@@ -66,7 +66,7 @@ example config), and a dropped row is never a hole.
 
 ## Scope and topics
 
-| Shape | One snapshot covers | Opened |
+| Source | One snapshot covers | Opened |
 |-------|---------------------|--------|
 | REST profile dump (`shape: dump`) | one tick of one unit | before the first row, so an empty store lands as an empty snapshot (`begin` then `end` with `row_count` 0) |
 | `sources.db` dump store | one tick of one store | before the first row, likewise |

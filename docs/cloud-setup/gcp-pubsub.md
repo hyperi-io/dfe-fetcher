@@ -27,8 +27,8 @@ under `_dfe_fetcher_pubsub` on every record. Each subscription produces
 records tagged `gcp_pubsub.<subscription-id>`.
 
 The source is the shipped `gcp_pubsub` profile
-(`crates/fetcher/profiles/gcp_pubsub.yaml`) on the framework's queue shape;
-the `sources.gcp_pubsub` block below maps onto an instance of it at load, one
+(`crates/fetcher/profiles/gcp_pubsub.yaml`) on the framework's queue unit kind.
+The `sources.gcp_pubsub` block below maps onto an instance of it at load, one
 unit per subscription. A pull that keeps failing fails that subscription's
 tick and the others still run; a refused token exchange fails the tick before
 any pull.

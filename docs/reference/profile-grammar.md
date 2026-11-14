@@ -8,10 +8,10 @@
 
 # The REST profile grammar
 
-A profile is the shape of an API and carries no identity: a base URL template,
+A profile describes an API and carries no identity: a base URL template,
 the auth modes the API accepts, headers, the retry policy, where errors live in
 a non-2xx body, the window format, and the endpoints with their decoder and
-pager. An instance is one deployment of that shape: its credential kind and
+pager. An instance is one deployment of that profile: its credential kind and
 refs, `vars`, topic and interval, with per-unit narrowing. Every struct rejects
 unknown keys and every enum is a closed vocabulary, so a typo or an
 unsupported mode is a load error carrying the YAML line, never a setting that
@@ -52,7 +52,7 @@ entry.
 | | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates; `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
 | | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM; claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
-| | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical shape and placement the profile names; Duo's versions are presets of it) | duo |
+| | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical layout and placement the profile names; Duo's versions are presets of it) | duo |
 | | `sigv4` (AWS Signature v4, service and region rendered per request) | aws, object_store |
 | | `credentials` (more than one credential on the one request, each where the profile places it; a placement may compose several into one value) | datadog |
 | | `session_login` (a login call mints a session token, read from a JSON pointer or a response header and carried in a header of the appliance's naming) | none shipped |
@@ -85,7 +85,7 @@ entry.
 | Lister (`lister`) | `s3` (`ListObjectsV2`, the keys modified after the unit's checkpoint) | object_store |
 | Window (`window.format`) | `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis`, `strftime:<pattern>`; `step` chunks the window, `lookback` is the window when the scheduler passes none; a unit may override the format | every incremental profile |
 | Method | `GET` (retried by default), `POST` (retried only with `retry.retry_non_idempotent`) | every profile |
-| Shape (`shape`, per profile or per endpoint) | `incremental` (rows are events in the window), `dump` (rows are the whole store, enveloped) | runzero is the shipped dump |
+| `shape`, per profile or per endpoint | `incremental` (rows are events in the window), `dump` (rows are the whole store, enveloped) | runzero is the shipped dump |
 | Probe | the cheapest authenticated call, with an optional `fail_when`; without one the health check resolves the credential (and mints a token) | github, okta, cloudflare, duo, slack, onepassword, aws, pypi, crates_io, go_modules |
 
 ## Profile
@@ -96,8 +96,8 @@ entry.
 | `maturity` | `alpha`, `beta` or `stable`; the fetcher warns at startup for an enabled non-stable source. |
 | `base_url` | Template; must reference a variable, never a literal URL, because a profile carries no identity. Rendered per unit, so a unit's `vars` can pick the host. |
 | `allow_hosts` | Origins a rendered URL may name besides `base_url`'s, for an API that answers on a second host (a sovereign cloud repointing `management_url`). Each entry is a template like `base_url`, so the host comes from the instance's vars, and names one exact origin: there are no wildcards, because a suffix match lets `example.com.evil.net` pass for `example.com`. Empty by default, and no shipped profile declares one. |
-| `shape` | Default shape of every endpoint (`incremental` or `dump`). |
-| `auth` | Accepted modes and the shape of each ([Auth](#auth)). |
+| `shape` | Default `shape` of every endpoint (`incremental` or `dump`). |
+| `auth` | Accepted modes and the settings of each ([Auth](#auth)). |
 | `headers` | Header templates on every request. |
 | `retry`, `error`, `quota` | [Retry, errors and quota](#retry-errors-and-quota). |
 | `window` | [Window](#window). |
@@ -109,10 +109,10 @@ entry.
 ## Auth
 
 `auth.accepts` lists the modes an instance may pick; the sibling keys carry
-the shape of each mode. Identity (tokens, keys, secrets) lives on the
+the settings of each mode. Identity (tokens, keys, secrets) lives on the
 instance, never here.
 
-| Mode shape | Fields |
+| Mode | Fields |
 |------------|--------|
 | `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `"SSWS "`; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
 | `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
@@ -122,7 +122,7 @@ instance, never here.
 | `signature` | `preset` (a shipped scheme by name), or the scheme spelled out: `digest`, `keying`, `canonical`, `encoding`, `headers`, `signed_header_prefix`, `place`, `header`, `prefix`. See [Signing a request](#signing-a-request). |
 | `credentials` | A list of placements: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
 | `session_login` | `url` (the login endpoint, a template), `send`, `username_field` / `password_field`, `body`, `token_at` or `token_header`, `ttl_secs`, `early_refresh_secs`, `header`, `prefix`. See [Logging in for a session token](#logging-in-for-a-session-token). |
-| `bearer`, `basic`, `none` | No profile-side shape. |
+| `bearer`, `basic`, `none` | No profile-side settings. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
 `jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
@@ -135,7 +135,7 @@ posts. Where a provider offers it, a key pair is the better trade: the private
 half never leaves the deployment, and the grant it buys is scoped to the
 integration rather than carrying the permissions of whoever minted a token.
 Okta steers its API Services apps this way and calls it `private_key_jwt`;
-Microsoft Entra, Zscaler OneAPI and Snowflake all take the same shape.
+Microsoft Entra, Zscaler OneAPI and Snowflake all work the same way.
 
 It is not a mode of its own. The exchange is still client credentials, so the
 profile declares `client_assertion` inside the
@@ -195,7 +195,7 @@ no `client_assertion`.
 
 Several prominent APIs authenticate a call with two credentials, and there is no
 config workaround: a static added header is not a secret reference, and a key
-does not go in plain config. The `credentials` mode is the shape for them. The
+does not go in plain config. The `credentials` mode is the one for them. The
 PROFILE declares where each credential goes and the name it is read under; the
 INSTANCE supplies a spec per name, because a profile carries no identity. Each
 name resolves once however many placements carry it, and every placement is
@@ -231,7 +231,7 @@ auth:
 
 Two credentials composed into ONE header value -- Tenable Vulnerability
 Management, whose `Authorization` carries both halves of the key pair, so the
-single-header shape does not help. Tenable Security Center is the same shape
+single-header layout does not help. Tenable Security Center is the same layout
 under `x-apikey` with the field names lower-cased:
 
 ```yaml
@@ -591,7 +591,7 @@ opts out of the defaults'.
 | Field | Meaning |
 |-------|---------|
 | `unit` | Unit name: the `_source_fetcher` suffix, the dump `store` suffix, the topic suffix. |
-| `shape` | Overrides the profile's shape for this unit. |
+| `shape` | Overrides the profile's `shape` for this unit. |
 | `base_url` | This unit's base URL template when its host differs from the profile's. |
 | `allow_hosts` | Origins this unit's rendered URLs may name on top of the profile's `allow_hosts`, which it widens rather than replaces. Held to the same rules. |
 | `auth.scope` | The scope (OAuth2) or `scope` claim (JWT bearer) this unit's token is minted for. |
@@ -621,7 +621,7 @@ opts out of the defaults'.
 | Field | Meaning |
 |-------|---------|
 | `rows.decoder` | The framing: `json_array`, `ndjson`, `json_at`, `document`, `json`, `lines`, `csv`. `json_at`, `document`, `json` and `csv` read the whole page into memory, bounded by `max_page_bytes`; the others stream. |
-| `rows.at` | JSON pointer to the row array (`json_at` only). A pointer that leads nowhere fails the unit with a decode error and the checkpoint does not move, so a 2xx error body or a changed response shape cannot read as an empty page. `null` there is an empty page. |
+| `rows.at` | JSON pointer to the row array (`json_at` only). A pointer that leads nowhere fails the unit with a decode error and the checkpoint does not move, so a 2xx error body or a changed response format cannot read as an empty page. `null` there is an empty page. |
 | `rows.when_absent` | What an `at` pointer that leads nowhere means (`json_at` only): `fail` (default) or `empty`, an empty page. Set `empty` only where the provider documents omitting the key when there is nothing to list: shipped for `google_workspace`, `gcp` (`entries`, `scc`) and `gcp_pubsub`. |
 | `rows.gzip` | The body is a gzip member sequence to inflate before framing (a `Content-Encoding: gzip` response is inflated by the client regardless). |
 | `rows.header` | The first CSV record names the columns. |
