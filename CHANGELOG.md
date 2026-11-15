@@ -3,6 +3,15 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.55](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.54...v1.4.55) (2026-11-15)
+
+### Bug Fixes
+
+* **build:** drop the unused workspace description ([#290](https://github.com/hyperi-io/dfe-fetcher/issues/290)) ([eb01812](https://github.com/hyperi-io/dfe-fetcher/commit/eb0181200b9abec62bdac36d768b914f35009750))
+* **build:** give the copied file source its own lints table ([#292](https://github.com/hyperi-io/dfe-fetcher/issues/292)) ([135c2ce](https://github.com/hyperi-io/dfe-fetcher/commit/135c2ce35e4c2f0ad6e9d1510c9b7674bc3aa2fd))
+* **metrics:** report pressure and processed counts ([#285](https://github.com/hyperi-io/dfe-fetcher/issues/285)) ([a5895e8](https://github.com/hyperi-io/dfe-fetcher/commit/a5895e8769bc98869985f848f163ac6507e723a3))
+* **profiles:** mark all released sources stable and drop maturity labels ([6a51662](https://github.com/hyperi-io/dfe-fetcher/commit/6a51662c6d317eed3c14d1e86ee8ff1da26b2f72))
+
 ## [1.4.54](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.53...v1.4.54) (2026-11-12)
 
 ### Bug Fixes
