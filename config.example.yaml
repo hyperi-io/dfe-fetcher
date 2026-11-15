@@ -1124,5 +1124,5 @@ scaling:
 #             rotate_wait_secs: 30      # a rotated file keeps being read this long after it leaves the glob
 #             max_tick_secs: 30         # a tick ends by then so its lines can be committed while the files grow
 #             fingerprint: { strategy: checksum, bytes: 256, lines: 1, ignored_header_bytes: 0 }   # checksum | device_and_inode
-#             data_dir: "/var/lib/dfe-fetcher/tail/logs"   # the checkpoint file; durable storage
+#             data_dir: "/var/lib/dfe-fetcher/tail/logs"   # the checkpoint file; durable storage. Unset: <cursor.directory>/<instance_id>.<id>.<unit>.tail
 #       accumulate: { max_rows: 1000, max_bytes: 8388608, window_ms: 1000, in_flight: 1000 }   # optional; the deployment's when unset

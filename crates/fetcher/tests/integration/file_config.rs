@@ -74,6 +74,26 @@ fn a_file_instance_loads_through_the_cascade_and_validates_per_the_built_tailer(
     }
 }
 
+/// The schema marks `data_dir` optional, so a config without it has to load:
+/// the fetcher gives the tail a directory under the cursor directory.
+#[test]
+fn a_tail_without_a_data_dir_passes_config_validation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let body = INSTANCE.replace(", data_dir: \"/var/lib/dfe-fetcher/tail/logs\"", "");
+    assert!(!body.contains("data_dir"), "{body}");
+    let config = Config::load_from_file(&write(&dir, &body)).expect("loads");
+    match config.validate() {
+        Ok(()) => assert!(tail_is_built(), "accepted only when the tailer is built"),
+        Err(e) => {
+            assert!(
+                !tail_is_built(),
+                "refused only when the tailer is absent: {e}"
+            );
+            assert!(!e.to_string().contains("data_dir"), "{e}");
+        }
+    }
+}
+
 #[test]
 fn a_unit_problem_is_reported_under_its_instance_and_field() {
     let dir = tempfile::TempDir::new().unwrap();

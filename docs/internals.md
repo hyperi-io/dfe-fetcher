@@ -241,8 +241,10 @@ path and change time after its last row is acknowledged, so a file rewritten
 in place is read again and a file dropped in by rename is never skipped. A
 `tail` unit follows growing files through rotation and truncation on
 Vector's file tailer, copied under `third-party/`, and commits `(file fingerprint, end offset)` per line
-after the acknowledgement. It needs the `file-tail` feature and is refused at
-load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
+after the acknowledgement. It keeps the tailer's own checkpoint file in its
+`data_dir`, which defaults to `<cursor.directory>/<instance_id>.<id>.<unit>.tail`
+(lowercased, beside the unit's cursor file). It needs the `file-tail` feature
+and is refused at load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
 
 | Source | Unit kind | Checkpoint mark | Lands on |
 |-------|-----------|-----------------|----------|

@@ -369,3 +369,44 @@ async fn a_restart_resumes_from_the_committed_offsets_and_a_rotation_loses_nothi
         "{frames:?}"
     );
 }
+
+/// A tail with no `data_dir` loads, and its checkpoint file lands in a
+/// directory of its own beside the unit's cursor file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tail_with_no_data_dir_checkpoints_under_the_cursor_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+    let log = dir.path().join("logs").join("app.log");
+    append(&log, &["{\"n\":1}", "{\"n\":2}"]);
+    let yaml = instance_yaml(dir.path()).replace(
+        &format!("      data_dir: \"{}/state\"\n", dir.path().display()),
+        "",
+    );
+    assert!(!yaml.contains("data_dir"), "{yaml}");
+    let h = harness(&yaml);
+    let loaded: FileInstance =
+        scalo::yaml::from_str(&yaml, "config.yaml", scalo::yaml::Profile::Config).unwrap();
+    let cursors = dir.path().join("cursors");
+    let instance =
+        dfe_fetcher::cursor::with_default_tail_data_dirs(&loaded, &cursors, "inst", "app");
+    let store = cursor_store(&cursors);
+    let lease: Arc<dyn Lease> = Arc::new(NoLease);
+    let shape = FileShape::from_instance(&instance, "app", &lease).unwrap();
+    let d = driver(&h, shape, Arc::clone(&store));
+
+    assert_eq!(d.run_tick(None).await.expect("tick 1").rows, 2);
+    if let Shape::File(shape) = &d.shape() {
+        shape.stop().await;
+    }
+    assert!(
+        cursors
+            .join("inst.app.logs.tail")
+            .join("checkpoints.json")
+            .is_file(),
+        "the tailer's checkpoint file is under the cursor directory"
+    );
+    assert!(
+        cursors.join("inst.app.logs.cursor.json").is_file(),
+        "the unit's own cursor is its sibling"
+    );
+}

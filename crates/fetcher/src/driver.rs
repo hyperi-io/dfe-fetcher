@@ -484,7 +484,7 @@ impl Driver {
 
     /// The unit's checkpoint key: `{instance}.{connection}.{unit}`.
     fn unit_key(&self, unit: &UnitSpec) -> String {
-        format!("{}.{}.{}", self.instance_id, self.connection_id, unit.name)
+        crate::cursor::unit_cursor_key(&self.instance_id, &self.connection_id, &unit.name)
     }
 
     async fn load_checkpoint(&self, unit: &UnitSpec) -> Option<CheckpointValue> {
