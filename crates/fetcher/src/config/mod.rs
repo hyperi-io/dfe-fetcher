@@ -60,34 +60,37 @@ pub const ENV_PREFIX: &str = "DFE_FETCHER";
 ///
 /// ## Hot-reload behaviour
 ///
-/// The config file is watched for changes. When reloaded, values are
-/// available via `SharedConfig::get()`. However, not all settings take
-/// effect without a restart.
+/// The config file is re-read on SIGHUP, when the file changes, and every
+/// `config_reload_secs` when that is set. A reload that does not validate is
+/// refused and the running config kept. Not every setting takes effect without
+/// a restart.
 ///
-/// **Hot-reloaded (takes effect on next fetch cycle):**
-/// - `scheduler.default_interval_secs` -- fetch interval re-computed each cycle
-/// - `scheduler.jitter_percent` -- jitter re-computed each cycle
-/// - `sources.*.filter` -- CEL filter re-evaluated on each record
-/// - `org_id`, `default_org_id` -- the `_org_id` stamped on each record, re-read
-///   each fetch cycle and for each extractor record
-/// - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
-/// - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
-/// - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
+/// **Hot-reloaded:**
+/// - `scheduler.default_interval_secs`, `scheduler.jitter_percent`,
+///   `cursor.default_window_hours`, `cursor.on_missing_cursor` -- the scheduler
+///   re-reads them on each tick
+/// - `sources.*.filter`, `output.routes`, `output.topic_suffix`, `org_id`,
+///   `default_org_id`, `unwrap_nested_json`, `accumulate`, `oversize`,
+///   `self_regulation` -- each source re-reads them on each tick, and `org_id`
+///   and `default_org_id` are also re-read for each extractor record
+/// - adding, removing or changing a source, `enabled` and credentials
+///   included -- its fetch task is started, stopped or rebuilt, its `env:` and
+///   `vault:` specs resolved first
 ///
 /// **Requires pod restart:**
-/// - `output.*` -- transport connections established at startup
+/// - `output.*` other than the two above -- transports and destinations are
+///   built at startup
 /// - `kafka.*` -- transport config bound at startup
-/// - `kafka.topic_suffix` -- the Vector extractor builds its topics once at start
+/// - the topic suffix, for the Vector extractor -- its topics are built once at
+///   start
 /// - `ingest.*` -- HTTP server binds at startup, auth token resolved once
 /// - `extractors.*` -- containers and Vector instances spawned at startup
 /// - `metrics.*` -- metrics server binds at startup
 /// - `instance_id` -- cursor key prefix set at startup
 /// - `cursor.directory` -- cursor store created at startup
-/// - adding a source, or `sources.*.enabled: true` -- source registration at startup
-/// - `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup
 /// - `scheduler.max_concurrent_fetches` -- semaphore created at startup
 /// - `dlq.*` -- DLQ created at startup
-/// - `buffer.*` -- buffer manager created at startup
+/// - `buffer.*` -- memory guard created at startup
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Config {
@@ -182,6 +185,12 @@ pub struct Config {
     /// Path to the config file (set by loader, not deserialized).
     #[serde(skip)]
     pub config_path: Option<String>,
+
+    /// Dotted path of every key the file names that no field takes (set by the
+    /// loader, not deserialized). The loader runs before the logger exists, so
+    /// it keeps them here for [`report_unknown_keys`](Self::report_unknown_keys).
+    #[serde(skip)]
+    pub unknown_keys: Vec<String>,
 }
 
 /// The memory-pressure brake, `self_regulation` in the cascade.
@@ -315,6 +324,7 @@ impl Default for Config {
             self_regulation: SelfRegulationConfig::default(),
             odbc: OdbcConfig::default(),
             config_path: None,
+            unknown_keys: Vec::new(),
         }
     }
 }
@@ -416,8 +426,34 @@ impl Config {
             .map_err(|e| Error::Config(format!("failed to read config file: {e}")))?;
 
         let (mut config, unknown) = Self::parse_yaml(&content, path)?;
-        for key in &unknown {
-            // A top-level section the fetcher does not own may be the scalo runtime's.
+        apply_nested_env(&mut config)?;
+        config.apply_flat_env("DFE_FETCHER");
+        // After the env merge: it round-trips the config through serde, which
+        // drops every `#[serde(skip)]` field.
+        config.config_path = Some(path.to_string());
+        config.unknown_keys = unknown;
+        Ok(config)
+    }
+
+    /// The keys the file named that no field takes, inside a section: a
+    /// misspelt key does nothing. A top-level one may be a section the scalo
+    /// runtime reads, so it is not listed.
+    pub fn misspelt_keys(&self) -> impl Iterator<Item = &str> {
+        self.unknown_keys
+            .iter()
+            .map(String::as_str)
+            .filter(|key| key.contains('.'))
+    }
+
+    /// Log every key the file named that no field takes: a nested one at WARN,
+    /// because a misspelt key does nothing, and a top-level one at INFO, because
+    /// it may be a section the scalo runtime reads.
+    ///
+    /// The loader only records them, since it runs before the logger exists, so
+    /// each caller that has a logger reports the config it loaded.
+    pub fn report_unknown_keys(&self) {
+        let path = self.config_path.as_deref().unwrap_or_default();
+        for key in &self.unknown_keys {
             if key.contains('.') {
                 tracing::warn!(
                     key,
@@ -428,10 +464,6 @@ impl Config {
                 tracing::info!(key, path, "top-level config key left to the runtime");
             }
         }
-        config.config_path = Some(path.to_string());
-        apply_nested_env(&mut config)?;
-        config.apply_flat_env("DFE_FETCHER");
-        Ok(config)
     }
 
     /// Parse a YAML config, returning it with the dotted path of every key
@@ -4982,7 +5014,8 @@ pub struct ProducerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct BufferConfig {
-    /// Maximum memory for buffers in bytes (0 = auto-detect 67% of available).
+    /// Memory guard limit in bytes. 0 auto-detects 85% of the cgroup limit (of
+    /// system memory outside a cgroup), or cgroup v2 `memory.high` when that is lower.
     pub memory_limit: usize,
 
     /// Memory pressure threshold (0.0-1.0).
@@ -6440,6 +6473,32 @@ kafka:
             assert!(unknown.iter().any(|k| k == key), "{key} not in {unknown:?}");
         }
         assert_eq!(unknown.len(), 3, "{unknown:?}");
+    }
+
+    /// The loader keeps each misspelt key on the config for `report_unknown_keys`,
+    /// with or without an env override, which round-trips the config through
+    /// serde and drops every `#[serde(skip)]` field.
+    #[test]
+    fn the_loader_keeps_a_misspelt_typed_key_through_the_env_merge() {
+        let cases: &[(&str, &[(&str, &str)])] = &[
+            ("no env", &[]),
+            (
+                "nested env override",
+                &[("DFE_FETCHER_SCHEDULER__JITTER_PERCENT", "10")],
+            ),
+            ("flat env override", &[("DFE_FETCHER_KAFKA_CLIENT_ID", "c")]),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "sources:\n  okta:\n    enabeld: true\n").unwrap();
+        let path = path.to_str().unwrap();
+        for (label, env) in cases {
+            with_env(env, || {
+                let cfg = Config::load_from_file(path).unwrap();
+                assert_eq!(cfg.unknown_keys, ["sources.okta.enabeld"], "{label}");
+                assert_eq!(cfg.config_path.as_deref(), Some(path), "{label}");
+            });
+        }
     }
 
     /// Inside the fetcher's own sections, the shipped example config names only

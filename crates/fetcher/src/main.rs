@@ -120,9 +120,30 @@ impl ServiceApp for App {
     fn load_config(&self, path: Option<&str>) -> Result<Config, CliError> {
         let config =
             Config::load(path).map_err(|e| CliError::Config(format!("failed to load: {e}")))?;
-        config
-            .validate()
-            .map_err(|e| CliError::Config(format!("validation failed: {e}")))?;
+        // No logger exists when the config loads, so `config-check` prints a
+        // misspelt key here, ahead of the validation it may be the cause of.
+        // `run` logs the keys from `on_config_loaded` once its logger is up, but
+        // a config that fails validation never reaches that hook, so its error
+        // names them instead.
+        let misspelt: Vec<&str> = config.misspelt_keys().collect();
+        let checking = matches!(self.command(), Some(StandardCommand::ConfigCheck));
+        if checking {
+            for key in &misspelt {
+                scalo::cli::output::print_warn(&format!(
+                    "unknown config key `{key}` ignored -- check its spelling; it does nothing"
+                ));
+            }
+        }
+        config.validate().map_err(|e| {
+            if checking || misspelt.is_empty() {
+                CliError::Config(format!("validation failed: {e}"))
+            } else {
+                CliError::Config(format!(
+                    "validation failed: {e} (unknown config keys ignored, check their spelling: {})",
+                    misspelt.join(", ")
+                ))
+            }
+        })?;
         // `config-check` is what an operator runs before a deploy, and `run`
         // resolves env:/vault: specs before it starts. Resolve them here too,
         // on a copy, or a config that cannot resolve passes the check and then
@@ -138,6 +159,12 @@ impl ServiceApp for App {
             .map_err(|e| CliError::Config(format!("a spec does not resolve: {e}")))?;
         }
         Ok(config)
+    }
+
+    /// The loader runs before the logger, so the keys it found no field for are
+    /// reported here, for the first load and again for each one the idle gate re-reads.
+    fn on_config_loaded(&self, config: &Config) {
+        config.report_unknown_keys();
     }
 
     /// The fetcher has work when something can produce records: an enabled
@@ -800,6 +827,7 @@ fn reload_config_from_path(
     };
     let config = reload_config(&placeholder)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+    config.report_unknown_keys();
 
     security::config_changed("config_reload", "system", "configuration reloaded");
     Ok(config)
@@ -1003,6 +1031,53 @@ mod tests {
             state.reason(),
             Some("no enabled sources, container extractors, vector receiver or ingest listener")
         );
+    }
+
+    /// A config that fails validation never reaches `on_config_loaded`, so the
+    /// load error names the misspelt keys the operator would otherwise not see.
+    /// `config-check` prints them as it goes and leaves the error as it is.
+    #[test]
+    fn a_refused_config_names_its_misspelt_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fetcher.yaml");
+        let path = path.to_str().expect("utf-8");
+        std::fs::write(
+            path,
+            "scheduler:\n  default_interval_secs: 0\n  jitter_percnt: 10\n\
+             sources:\n  okta:\n    enabeld: true\nsourcess: {}\n",
+        )
+        .expect("write config");
+
+        let cases: [(&str, &[&str], &[&str]); 2] = [
+            (
+                "run",
+                &["dfe-fetcher", "--config", path, "run"],
+                &["scheduler.jitter_percnt", "sources.okta.enabeld"],
+            ),
+            (
+                "config-check",
+                &["dfe-fetcher", "--config", path, "config-check"],
+                &[],
+            ),
+        ];
+        for (name, args, named) in cases {
+            let app = App::parse_from(args);
+            let err = app
+                .load_config(Some(path))
+                .expect_err("a zero interval is refused");
+            let err = err.to_string();
+            assert!(err.contains("default_interval_secs"), "{name}: {err}");
+            for key in named {
+                assert!(err.contains(key), "{name}: {key} not named in {err}");
+            }
+            if named.is_empty() {
+                assert!(!err.contains("jitter_percnt"), "{name}: {err}");
+            }
+            assert!(
+                !err.contains("sourcess"),
+                "{name}: a top-level key is not a typo: {err}"
+            );
+        }
     }
 
     /// A source's fingerprint moves with any setting its driver is built

@@ -18,7 +18,7 @@
 //!   update_lookup`, so every insert, update, replace and delete arrives as
 //!   an event carrying the current document. Each event's `_id` is the resume
 //!   token; the driver commits the last emitted one after the acks and the
-//!   next tick reopens the stream with `resume_after` that token, so a
+//!   next tick reopens the stream with `start_after` that token, so a
 //!   restart resumes from exactly the last acknowledged event. A tick drains
 //!   what the oplog holds, `limit` events at most, and ends once a `getMore`
 //!   has waited its short await time and found nothing. Needs a replica set:

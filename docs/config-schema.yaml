@@ -5,34 +5,37 @@ description: |-
 
   ## Hot-reload behaviour
 
-  The config file is watched for changes. When reloaded, values are
-  available via `SharedConfig::get()`. However, not all settings take
-  effect without a restart.
+  The config file is re-read on SIGHUP, when the file changes, and every
+  `config_reload_secs` when that is set. A reload that does not validate is
+  refused and the running config kept. Not every setting takes effect without
+  a restart.
 
-  **Hot-reloaded (takes effect on next fetch cycle):**
-  - `scheduler.default_interval_secs` -- fetch interval re-computed each cycle
-  - `scheduler.jitter_percent` -- jitter re-computed each cycle
-  - `sources.*.filter` -- CEL filter re-evaluated on each record
-  - `org_id`, `default_org_id` -- the `_org_id` stamped on each record, re-read
-    each fetch cycle and for each extractor record
-  - `cursor.default_window_hours` -- the cap on one tick's window, re-read each cycle
-  - `cursor.on_missing_cursor` -- what a tick with no cursor does, re-read each cycle
-  - dropping a source, or `sources.*.enabled: false` -- its fetch task is cancelled on reload
+  **Hot-reloaded:**
+  - `scheduler.default_interval_secs`, `scheduler.jitter_percent`,
+    `cursor.default_window_hours`, `cursor.on_missing_cursor` -- the scheduler
+    re-reads them on each tick
+  - `sources.*.filter`, `output.routes`, `output.topic_suffix`, `org_id`,
+    `default_org_id`, `unwrap_nested_json`, `accumulate`, `oversize`,
+    `self_regulation` -- each source re-reads them on each tick, and `org_id`
+    and `default_org_id` are also re-read for each extractor record
+  - adding, removing or changing a source, `enabled` and credentials
+    included -- its fetch task is started, stopped or rebuilt, its `env:` and
+    `vault:` specs resolved first
 
   **Requires pod restart:**
-  - `output.*` -- transport connections established at startup
+  - `output.*` other than the two above -- transports and destinations are
+    built at startup
   - `kafka.*` -- transport config bound at startup
-  - `kafka.topic_suffix` -- the Vector extractor builds its topics once at start
+  - the topic suffix, for the Vector extractor -- its topics are built once at
+    start
   - `ingest.*` -- HTTP server binds at startup, auth token resolved once
   - `extractors.*` -- containers and Vector instances spawned at startup
   - `metrics.*` -- metrics server binds at startup
   - `instance_id` -- cursor key prefix set at startup
   - `cursor.directory` -- cursor store created at startup
-  - adding a source, or `sources.*.enabled: true` -- source registration at startup
-  - `sources.*.credential_secret`, `tenant_id`, `subscription_id`, `project_id` -- resolved once at startup
   - `scheduler.max_concurrent_fetches` -- semaphore created at startup
   - `dlq.*` -- DLQ created at startup
-  - `buffer.*` -- buffer manager created at startup
+  - `buffer.*` -- memory guard created at startup
 type: object
 properties:
   scheduler:
@@ -6408,7 +6411,9 @@ $defs:
     type: object
     properties:
       memory_limit:
-        description: Maximum memory for buffers in bytes (0 = auto-detect 67% of available).
+        description: |-
+          Memory guard limit in bytes. 0 auto-detects 85% of the cgroup limit (of
+          system memory outside a cgroup), or cgroup v2 `memory.high` when that is lower.
         type: integer
         format: uint
         minimum: 0
