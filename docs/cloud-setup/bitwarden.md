@@ -17,18 +17,9 @@ dfe-fetcher pulls organization event logs from the Bitwarden Public API at
 `/public/events` - member, collection, group, vault, and policy actions
 across the organization. The endpoint is poll-based (Bitwarden offers no
 outbound webhooks). dfe-fetcher authenticates with the organization API key
-using the OAuth2 client_credentials flow: it exchanges `client_id` +
-`client_secret` (scope `api.organization`) at `/identity/connect/token` for a
-bearer token, then GETs `/public/events` with a `start`/`end` window and
-follows the `continuationToken` for pagination.
+using the OAuth2 client_credentials flow: it exchanges `client_id` + `client_secret` (scope `api.organization`) at the identity server's `/connect/token` for a bearer token, then GETs `/public/events` with a `start`/`end` window and follows the `continuationToken` for pagination.
 
-The source is the shipped `bitwarden` profile
-(`crates/fetcher/profiles/bitwarden.yaml`); the `sources.bitwarden` block
-below maps onto an instance of it at load. The token is cached per instance
-and refreshed shortly before it expires; a 429 or 5xx is retried with backoff
-(honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick,
-and a tick that fails does not advance the fetch window. A missing client id
-or secret is refused at load, naming `sources.bitwarden`.
+The source is the shipped `bitwarden` profile (`crates/fetcher/profiles/bitwarden.yaml`), and the `sources.bitwarden` block below maps onto an instance of it at load. The token is cached per instance and refreshed shortly before it expires. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window. A missing client id or secret is refused at load, naming `sources.bitwarden`.
 
 ## Prerequisites
 
@@ -43,8 +34,8 @@ or secret is refused at load, naming `sources.bitwarden`.
 
 | Service | Object/Endpoint | Permission or Scope | Notes |
 |---------|-----------------|---------------------|-------|
-| Identity | `/identity/connect/token` | grant_type `client_credentials`, scope `api.organization` | Token lives ~60 min; dfe-fetcher caches and refreshes it |
-| Public API | `/public/events` | Organization API key | Read-only event log; GET with `start`/`end`/`continuationToken` |
+| Identity | `/connect/token` on the identity host | grant_type `client_credentials`, scope `api.organization` | Token lives ~60 min, and dfe-fetcher caches and refreshes it |
+| Public API | `/public/events` | Organization API key | Read-only event log, GET with `start`/`end`/`continuationToken` |
 
 The credential is the **organization** API key, whose `client_id` has the
 form `organization.<uuid>`. A personal API key (`user.<uuid>`) will not work
@@ -52,7 +43,7 @@ against the Public API. Access is read-only.
 
 ## Source-Side Setup
 
-1. **Retrieve the organization API key**
+1. Retrieve the organization API key
 
    In the Bitwarden web vault, open the **Admin Console** for the
    organization. Go to **Settings** -> **Organization info** and scroll to
@@ -61,13 +52,13 @@ against the Public API. Access is read-only.
    `organization.<uuid>`) and **client_secret**. To rotate, use **Rotate API
    Key** on the same screen - this invalidates the old secret.
 
-2. **Confirm event logging is on**
+2. Confirm event logging is on
 
-   Event logs are an organization feature; ensure events are enabled for the
+   Event logs are an organization feature, so check events are enabled for the
    organization (Admin Console -> Settings). If `/public/events` returns 403,
    verify the account permissions and that the Events feature is enabled.
 
-3. **Identify your region / host**
+3. Identify your region / host
 
    | Deployment | API base (`api_url_override`) | Identity/token (`identity_url_override`) |
    |------------|-------------------------------|------------------------------------------|
@@ -77,7 +68,7 @@ against the Public API. Access is read-only.
 
    US cloud uses the built-in defaults, so no overrides are needed there.
 
-4. **Smoke-test the token exchange**
+4. Smoke-test the token exchange
 
    ```bash
    curl -s https://identity.bitwarden.com/connect/token \
@@ -139,7 +130,7 @@ sources:
 
 `credential_secret` takes precedence over a literal `client_secret` and
 resolves to the secret string. `client_id` is always supplied in clear (it is
-not sensitive). The only service is `events`; it has no service-side config
+not sensitive). The only service is `events`, and it has no service-side config
 keys.
 
 ## Verification
@@ -148,27 +139,23 @@ The health check is the OAuth2 token exchange: a minted token proves the
 client, and no data endpoint is touched. A refused exchange is a health error
 carrying the response.
 
-Smoke tests against a live Bitwarden organisation live in `crates/fetcher/tests/e2e/smoke_remote.rs`
-and are `#[ignore]`d by default. They read `BITWARDEN_CLIENT_ID` and
-`BITWARDEN_CLIENT_SECRET` (required), plus `BITWARDEN_API_BASE` and
-`BITWARDEN_IDENTITY_URL` (optional region/self-host overrides), from
-`.env-cloud` (or `.env`):
+Smoke tests against a live Bitwarden organisation live in `crates/fetcher/tests/e2e/smoke_remote.rs` and are `#[ignore]`d by default. They read `BITWARDEN_CLIENT_ID` and `BITWARDEN_CLIENT_SECRET` (required), plus `BITWARDEN_API_BASE` and `BITWARDEN_IDENTITY_URL` (optional region/self-host overrides), from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 ```bash
-cargo test -p dfe-fetcher --test e2e bitwarden_ -- --ignored
+cargo nextest run -p dfe-fetcher --test e2e --run-ignored only bitwarden_
 ```
 
 Common failure modes:
 
-- **401 on token exchange / health check fails** - wrong `client_id` or
+- 401 on token exchange / health check fails - wrong `client_id` or
   `client_secret`, a rotated secret, or a personal (`user.<uuid>`) key.
-- **403 on `/public/events`** - account lacks permission or event logging is
+- 403 on `/public/events` - account lacks permission or event logging is
   not enabled for the organization.
-- **Wrong region** - EU tenant left on the US default; set both
+- Wrong region - EU tenant left on the US default. Set both
   `api_url_override` and `identity_url_override`.
-- **HTTP 429** - rate limited; dfe-fetcher retries with backoff and
+- HTTP 429 - rate limited. dfe-fetcher retries with backoff and
   `Retry-After` up to the profile's policy, then fails the tick without
-  advancing; the page ceiling is 50 per fetch.
+  advancing. The page ceiling is 50 per fetch.
 
 ## Cost
 

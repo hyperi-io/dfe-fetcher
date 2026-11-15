@@ -21,7 +21,7 @@ token (`xoxp-...`) carrying the `auditlogs:read` scope and pages through
 results via the response `next_cursor`.
 
 The source is the shipped `slack` profile
-(`crates/fetcher/profiles/slack.yaml`); the `sources.slack` block below maps
+(`crates/fetcher/profiles/slack.yaml`), and the `sources.slack` block below maps
 onto an instance of it at load. A 429 or 5xx is retried with backoff
 (honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying
 `ok: false` fails the tick with Slack's `error` text, and a tick that fails
@@ -41,7 +41,7 @@ does not advance the fetch window. A missing token is refused at load, naming
 
 | Service | Object/Endpoint | Permission or Scope | Notes |
 |---------|-----------------|---------------------|-------|
-| Audit Logs | `audit/v1/logs` | `auditlogs:read` (User Token Scope) | The single scope that enables Audit Logs API access; org-wide |
+| Audit Logs | `audit/v1/logs` | `auditlogs:read` (User Token Scope) | The single scope that enables Audit Logs API access, org-wide |
 | Org install helper | n/a | `users:read` (Bot Token Scope) | Not used for reads, but org-level install is often blocked without it |
 
 The token produced is a **user token** (`xoxp-...`), not a bot token. It must
@@ -51,26 +51,26 @@ API calls.
 
 ## Source-Side Setup
 
-1. **Create the app**
+1. Create the app
 
    Sign in as an Org Owner and open <https://api.slack.com/apps>. Select
    **Create New App** -> **From scratch**. Name it `dfe-fetcher`, pick any
    workspace in the org as the development workspace, and select **Create
    App**.
 
-2. **Add the OAuth scopes**
+2. Add the OAuth scopes
 
    In the app settings, go to **OAuth & Permissions**. Under **Scopes** ->
    **User Token Scopes**, add **`auditlogs:read`**. Under **Bot Token
    Scopes**, add **`users:read`** (needed so org-level install is permitted).
 
-3. **Add a redirect URL**
+3. Add a redirect URL
 
    Still under **OAuth & Permissions**, add a redirect URL under **Redirect
    URLs** and save. The org install runs a standard OAuth2 flow, which
    requires at least one redirect URL.
 
-4. **Activate public distribution**
+4. Activate public distribution
 
    Go to **Manage Distribution**. Confirm all four checklist sections show
    green checkmarks, tick **I've reviewed and removed any hard-coded
@@ -78,14 +78,14 @@ API calls.
    list the app publicly. Slack requires it before the app can be installed
    org-wide rather than in a single workspace.
 
-5. **Install at the organization level**
+5. Install at the organization level
 
    Start the install/OAuth flow. On the install screen, use the dropdown in
    the upper right to select the **Enterprise organization**, not a single
    workspace. If the org option is missing, confirm you are signed in as an
    Org Owner.
 
-6. **Copy the token**
+6. Copy the token
 
    After authorization you return to **OAuth & Permissions**. Under **OAuth
    Tokens**, copy the **User OAuth Token** (starts with `xoxp-`). This is the
@@ -141,26 +141,24 @@ the `xoxp-...` string. The only service is `audit_logs`.
 
 ## Verification
 
-The profile's probe calls `/api/auth.test` with the token; Slack answers 200
+The profile's probe calls `/api/auth.test` with the token. Slack answers 200
 either way, so `ok: false` is the refusal and is reported as a health error
 carrying Slack's reason.
 
-Smoke tests against a live Slack Enterprise org live in `crates/fetcher/tests/e2e/smoke_remote.rs`
-and are `#[ignore]`d by default. They read `SLACK_AUDIT_TOKEN` (required)
-from `.env-cloud` (or `.env`):
+Smoke tests against a live Slack Enterprise org live in `crates/fetcher/tests/e2e/smoke_remote.rs` and are `#[ignore]`d by default. They read `SLACK_AUDIT_TOKEN` (required) from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 ```bash
-cargo test -p dfe-fetcher --test e2e slack_ -- --ignored
+cargo nextest run -p dfe-fetcher --test e2e --run-ignored only slack_
 ```
 
 Common failure modes:
 
-- **`not_authed` / `invalid_auth`** - token is wrong, revoked, or expired.
-- **`feature_not_enabled` or empty data** - app was installed on a workspace
-  rather than the org; reinstall at the org level.
-- **`not_allowed_token_type`** - a bot token was supplied; the Audit Logs API
+- `not_authed` / `invalid_auth` - token is wrong, revoked, or expired.
+- `feature_not_enabled` or empty data - app was installed on a workspace
+  rather than the org. Reinstall at the org level.
+- `not_allowed_token_type` - a bot token was supplied, and the Audit Logs API
   requires the `xoxp-` user token.
-- **HTTP 429** - rate limited. The endpoint is Tier 3 (about 50 calls/min);
+- HTTP 429 - rate limited. The endpoint is Tier 3 (about 50 calls/min).
   dfe-fetcher retries with backoff and `Retry-After` up to the profile's
   policy, caps at 50 pages per fetch, and polls on the configured interval.
 
@@ -174,6 +172,6 @@ plan.
 ## References
 
 - Using the Audit Logs API: <https://docs.slack.dev/admins/audit-logs-api/>
-- `auditlogs:read` scope: <https://api.slack.com/scopes/auditlogs:read>
+- `auditlogs:read` scope: <https://docs.slack.dev/reference/scopes/auditlogs.read/>
 - Audit logs overview (admin help): <https://slack.com/help/articles/360000394286-Audit-logs-in-Slack>
 - Slack rate limits: <https://docs.slack.dev/apis/web-api/rate-limits/>

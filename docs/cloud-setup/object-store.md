@@ -22,34 +22,20 @@ emits one record per line. Typical feeds:
 - AWS CloudTrail -> S3
 - AWS VPC Flow Logs -> S3
 - AWS WAF logs -> S3
-- GCP Cloud Logging -> GCS storage sink (backend not implemented)
-- Azure diagnostic settings -> Blob container (backend not implemented)
 
 The source is a family of backends selected per entry by a `provider`
 discriminator:
 
-- `s3` - FULLY IMPLEMENTED and tested live. SigV4-signed ListObjectsV2 +
-  GetObject. Also works against S3-compatible stores (MinIO, Cloudflare
-  R2, Backblaze B2) via `endpoint_override`.
-- `gcs` - NOT IMPLEMENTED. The config parses, but the backend is skipped at
-  load with a warning naming it. NOT USABLE.
-- `azure_blob` - NOT IMPLEMENTED. Same status as `gcs`. NOT USABLE.
+- `s3` - SigV4-signed ListObjectsV2 + GetObject, tested live. Also works
+  against S3-compatible stores (MinIO, Cloudflare R2, Backblaze B2) via
+  `endpoint_override`.
+- `gcs` and `azure_blob` - NOT IMPLEMENTED. The config parses, but each is
+  skipped at load with a warning naming it, and the block's S3 backend still
+  runs. They read nothing, so leave them out of your config.
 
-The S3 backend runs on the shipped `object_store` profile
-(`crates/fetcher/profiles/object_store.yaml`); the `sources.object_store`
-block below maps onto one instance of it at load, one unit per prefix. Each
-object is read exactly once: the highest `last_modified` a tick delivered is
-the prefix's checkpoint, committed after the batch is acknowledged, and the
-next listing starts there (a first tick starts a day back). A refused listing
-(401 or 403) fails that prefix's tick and the other prefixes still run; an
-object that keeps failing is retried per the profile's policy and then fails
-the prefix's tick, so the checkpoint never advances past it.
+The S3 backend runs on the shipped `object_store` profile (`crates/fetcher/profiles/object_store.yaml`), and the `sources.object_store` block below maps onto one instance of it at load, one unit per prefix. The highest `last_modified` (and key) a tick delivered is the prefix's checkpoint, committed once the prefix's whole tick is delivered, and the next listing starts there. So an object is read once while ticks succeed. A tick that fails partway, or a crash before the commit, commits nothing, and the next tick reads again the objects it had already delivered: delivery is at least once, so a consumer that counts records dedupes on `_dfe_fetcher_object.key`. A first tick, with no checkpoint, starts at the start of the scheduler's window: `cursor.default_window_hours` back (one hour by default, or one fetch interval if that is longer), so objects already older than that are never read. A refused listing (401 or 403) fails that prefix's tick and the other prefixes still run. An object that keeps failing is retried per the profile's policy and then fails the prefix's tick, so the checkpoint never advances past it.
 
-Supported object formats: `json_gz`, `jsonl`, `json`, `text_gz`, `text`.
-Per tick, each (bucket, prefix) is capped at 1000 objects and 10 list
-pages; the remainder waits for the next tick. One S3 backend per block: a
-second bucket account runs as a `sources.rest` instance of the
-`object_store` profile with its own key pair.
+Supported object formats: `json_gz`, `jsonl`, `json`, `text_gz`, `text`. Each tick walks the prefix's whole listing (1000 keys a page, at most 1000 pages, past which the unit fails and wants a narrower prefix) and reads at most 1000 objects, oldest first. The remainder waits for the next tick. One S3 backend per block: a second bucket account runs as a `sources.rest` instance of the `object_store` profile with its own key pair.
 
 dfe-fetcher only reads. It never writes, modifies, deletes, or lifecycles
 objects, buckets, or containers.
@@ -68,16 +54,12 @@ For the live S3 backend:
   per instance.
 - The bucket region (used for SigV4 signing and endpoint construction).
 
-For GCS / Azure Blob: nothing to do. Those backends cannot fetch data. The
-permission notes below are documented so the eventual rollout is unblocked,
-but leave those backends out of your config.
-
 ## Required Permissions
 
-### S3 (live)
+### S3
 
 Minimal read-only access. `s3:ListBucket` is a bucket-level action and
-targets the bare bucket ARN; `s3:GetObject` is an object-level action and
+targets the bare bucket ARN, and `s3:GetObject` is an object-level action and
 targets the `/*` object ARN. Pointing both at `/*` is the most common
 mistake - `ListBucket` then silently fails.
 
@@ -101,23 +83,6 @@ An upload that is never completed or aborted holds its prefix until it goes, and
 
 MinIO lists a completed multipart object under its completion time, so this case does not arise there, and the hold only delays objects written while an upload runs.
 
-### GCS (not implemented)
-
-When the GCS backend ships, the service account needs
-`roles/storage.objectViewer` (read plus list) on the bucket or project.
-`roles/storage.legacyObjectReader` is the read-without-list variant if
-listing is not wanted. Do not configure a `gcs` backend.
-
-### Azure Blob (not implemented)
-
-When the Azure Blob backend ships, the principal needs the data-plane
-role `Storage Blob Data Reader` on the storage account or container.
-Note that Azure control-plane roles (Owner, Contributor, Reader) do NOT
-grant blob data access on their own - a data-plane role is required, and
-reading via Entra credentials without it returns
-`403 AuthorizationPermissionMismatch`. Role assignments can take up to 10
-minutes to propagate. Do not configure an `azure_blob` backend.
-
 ## Source-Side Setup
 
 dfe-fetcher reads whatever a producing service has already delivered. You
@@ -135,15 +100,9 @@ prefix at it.
    - AWS WAF logs to S3: enable logging on the web ACL with an S3
      destination. See
      <https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html>
-   - GCP Cloud Logging to GCS (backend not implemented): create a log
-     sink with a Cloud Storage bucket destination. See
-     <https://cloud.google.com/logging/docs/export/configure_export_v2>
-   - Azure diagnostic settings to Blob (backend not implemented): route
-     resource logs to a storage account. See
-     <https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings>
 
 2. Note the exact key prefix each producer writes under. The prefix is
-   what dfe-fetcher polls; getting it wrong yields zero records.
+   what dfe-fetcher polls, and getting it wrong yields zero records.
 
 3. Note the object format. CloudTrail, VPC Flow Logs (parquet excluded),
    and most native AWS feeds are gzipped JSON-lines -> use `json_gz`.
@@ -202,7 +161,7 @@ prefix at it.
 
 ### Config File
 
-S3 backend (live). Each backend lists buckets; each bucket lists prefixes
+S3 backend. Each backend lists buckets, and each bucket lists prefixes
 with a `format` and a `source_tag`. Records are tagged
 `object_store.<source_tag>`.
 
@@ -232,28 +191,21 @@ sources:
 
 Field reference (S3 backend):
 
-- `provider` - `s3` (live), `gcs` / `azure_blob` (not implemented).
-- `region` - AWS region for SigV4 signing and endpoint construction.
-- `access_key_id`, `secret_access_key` - static credentials. Each may be
-  an inline value, an `env:VAR` spec, or a `vault:` spec.
-- `endpoint_override` - optional; for MinIO, R2, B2, or VPC endpoints.
-- `credential_secret` - optional; vault spec holding both keys as JSON
-  (see Secrets Manager below). Wins over the inline key fields.
-- `settle_secs` - optional, default 300. How old an object must be before it is read, used only where `ListMultipartUploads` is refused (see Multipart Uploads).
-- `buckets[].bucket` - bucket name (container name for Azure Blob).
-- `buckets[].prefixes[].prefix` - key prefix to poll (may be empty to
-  scan the whole bucket).
-- `buckets[].prefixes[].format` - one of `json_gz`, `jsonl`, `json`,
-  `text_gz`, `text`.
-- `buckets[].prefixes[].source_tag` - record source tag
-  (`object_store.<source_tag>`). A tag that names a format (`json_gz`,
-  `jsonl`, `json`, `text`, `text_gz`) or repeats is refused at load.
-- `buckets[].prefixes[].topic` - optional per-prefix topic override.
+| Field | Meaning |
+|-------|---------|
+| `provider` | `s3`. `gcs` and `azure_blob` parse but are skipped (Overview) |
+| `region` | AWS region for SigV4 signing and endpoint construction |
+| `access_key_id`, `secret_access_key` | Static credentials, each an inline value, an `env:VAR` spec, or a `vault:` spec |
+| `endpoint_override` | Optional, for MinIO, R2, B2, or VPC endpoints |
+| `credential_secret` | Optional vault spec holding both keys as JSON (see Secrets Manager below). Wins over the inline key fields |
+| `settle_secs` | Optional, default 300. How old an object must be before it is read, used only where `ListMultipartUploads` is refused (see Multipart Uploads) |
+| `buckets[].bucket` | Bucket name |
+| `buckets[].prefixes[].prefix` | Key prefix to poll (may be empty to scan the whole bucket) |
+| `buckets[].prefixes[].format` | One of `json_gz`, `jsonl`, `json`, `text_gz`, `text` |
+| `buckets[].prefixes[].source_tag` | Record source tag (`object_store.<source_tag>`). A tag that names a format or repeats is refused at load |
+| `buckets[].prefixes[].topic` | Optional per-prefix topic override |
 
-Prefixes run in tag order, not config order. The example config also
-documents `gcs` and `azure_blob` backend types, but neither is implemented -
-if configured, the fetcher warns at load and skips them, and the S3 backend
-of the same block still runs. Do not enable them.
+Prefixes run in tag order, not config order.
 
 ### Environment Variables
 
@@ -337,15 +289,13 @@ The keys `AccessKeyId` / `SecretAccessKey` (AWS casing) are also accepted.
 
 2. Start dfe-fetcher with the object_store source enabled and watch the
    logs. A working prefix logs `unit tick complete` with its `rows`,
-   `filtered`, `oversize` and `flushes` counts on every tick; a refused
+   `filtered`, `oversize` and `flushes` counts on every tick. A refused
    listing logs `unit tick failed` with the API's text.
 
-3. The health check is the key pair resolving; there is no probe request.
-   The unimplemented backends never participate in it.
+3. The health check is the key pair resolving, with no probe request.
 
-4. If you (incorrectly) configure a `gcs` or `azure_blob` backend, the
-   fetcher warns at load that the backend is not implemented and skips it -
-   remove that backend.
+4. A `gcs` or `azure_blob` backend in the config logs a warning at load that
+   the backend is not implemented and is skipped. Remove it.
 
 5. Emitted records carry a `_dfe_fetcher_object` envelope with
    `provider`, `bucket`, `key`, `last_modified`, and `size`, so you can
@@ -353,7 +303,7 @@ The keys `AccessKeyId` / `SecretAccessKey` (AWS casing) are also accepted.
 
 ## Cost
 
-dfe-fetcher only reads objects; it never creates trails, flow logs, sinks,
+dfe-fetcher only reads objects. It never creates trails, flow logs, sinks,
 or diagnostic settings. The object LIST/GET calls it makes may generate
 usage charges (API requests and any cross-region or egress data transfer),
 so there could be a cost depending on bucket traffic and where the fetcher
@@ -380,13 +330,3 @@ your own cloud agreement.
   <https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs-s3.html>
 - AWS WAF logging to S3:
   <https://docs.aws.amazon.com/waf/latest/developerguide/logging-s3.html>
-- GCP Cloud Storage IAM roles:
-  <https://cloud.google.com/storage/docs/access-control/iam-roles>
-- GCP log sink to Cloud Storage:
-  <https://cloud.google.com/logging/docs/export/configure_export_v2>
-- Azure built-in Storage roles, Storage Blob Data Reader:
-  <https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage>
-- Azure assign a role for blob data access:
-  <https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access>
-- Azure diagnostic settings:
-  <https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings>

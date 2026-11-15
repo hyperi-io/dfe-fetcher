@@ -14,7 +14,7 @@ organisation's audit trail and security signals.
 ## Overview
 
 dfe-fetcher reads two Datadog v2 endpoints, one Datadog organisation per
-fetcher instance:
+`sources.rest` instance:
 
 - `GET /api/v2/audit/events` -- the Audit Trail, as the `audit_events` unit.
 - `GET /api/v2/security_monitoring/signals` -- security signals, as the
@@ -148,9 +148,7 @@ land on the instance's `topic` and are told apart by `_source_fetcher`.
 
 ### Config File
 
-The stanza below is the one in
-[config.example.yaml](../../config.example.yaml), which stays the annotated
-reference:
+The stanza below is the one in [config.example.yaml](../../config.example.yaml), the annotated reference, which ships it with `enabled: false`:
 
 ```yaml
 sources:
@@ -207,19 +205,19 @@ config as a literal.
 
 ## Verification
 
-1. **No health probe, deliberately.** Datadog's cheap validation
+1. No health probe, deliberately. Datadog's cheap validation
    endpoint checks the api key alone, and a health check that passed on half
    the credential is worse than none, so the `datadog` profile declares no
    probe. The health check resolves both credential specs instead and sends
    nothing to Datadog. A passing check proves the secrets resolve, not that
    Datadog accepts them. The first tick is what proves that.
 
-2. **Validate the config.** `dfe-fetcher config-check --config <file>` loads
-   the config without running. An instance supplying only one of `api_key` and
+2. Validate the config. `dfe-fetcher --config <file> config-check` loads
+   the config without running (`--config` goes before the subcommand). An instance supplying only one of `api_key` and
    `application_key` is refused at load, naming the field the profile could
    not read.
 
-3. **Smoke-test the key pair** against the site's API host:
+3. Smoke-test the key pair against the site's API host:
 
    ```bash
    printf 'header = "DD-API-KEY: %s"\nheader = "DD-APPLICATION-KEY: %s"\n' \
@@ -236,12 +234,12 @@ config as a literal.
    other unit -- the two permissions are granted separately, so one endpoint
    can answer while the other refuses.
 
-4. **Watch the first tick.** The driver logs `unit tick complete` per unit
+4. Watch the first tick. The driver logs `unit tick complete` per unit
    with `rows`, `filtered`, `oversize` and `flushes`. Datadog's rate-limit
    headers arrive as the `dfe_fetcher_api_quota_api_rate_limit` and
    `dfe_fetcher_api_quota_api_rate_remaining` gauges, labelled by source.
 
-5. **Common failure modes.**
+5. Common failure modes.
    - `401` with `{"errors":["Unauthorized"]}`: one of the two headers never
      arrived. A `credentials` instance sends both or fails at load, so on a
      running fetcher this points at something between the fetcher and Datadog
@@ -281,10 +279,8 @@ rather than polling aggressively, and watch the quota gauges.
 - API and Application Keys (creating each, scopes, revocation): <https://docs.datadoghq.com/account_management/api-app-keys/>
 - Datadog sites (the site table): <https://docs.datadoghq.com/getting_started/site/>
 - Datadog Role Permissions: <https://docs.datadoghq.com/account_management/rbac/permissions/>
-- Datadog Audit Trail (enabling it, retention, permissions): <https://docs.datadoghq.com/account_management/audit_trail/>
-- Audit API: <https://docs.datadoghq.com/api/latest/audit/>
-- Security Monitoring API: <https://docs.datadoghq.com/api/latest/security-monitoring/>
+- Datadog Audit Trail (enabling it, retention, permissions) and the Audit API: <https://docs.datadoghq.com/account_management/audit_trail/>, <https://docs.datadoghq.com/api/latest/audit/>
+- Cloud SIEM and the Security Monitoring API: <https://docs.datadoghq.com/security/cloud_siem/>, <https://docs.datadoghq.com/api/latest/security-monitoring/>
 - API rate limits and their headers: <https://docs.datadoghq.com/api/latest/rate-limits/>
-- Cloud SIEM: <https://docs.datadoghq.com/security/cloud_siem/>
 - Datadog pricing (products and billing units): <https://docs.datadoghq.com/account_management/billing/pricing/>
 - Datadog v2 OpenAPI specification (the permission each endpoint requires, its parameters and its paging): <https://raw.githubusercontent.com/DataDog/datadog-api-client-go/master/.generator/schemas/v2/openapi.yaml>

@@ -16,7 +16,7 @@ takeover of the packages your organisation owns.
 
 These three sources poll public, unauthenticated registry APIs. On each
 tick the fetcher pulls the full metadata document for every configured
-package and emits it; downstream tooling computes deltas across ticks to
+package and emits it, and downstream tooling computes deltas across ticks to
 detect unexpected publications, yanks, ownership changes, or commit-hash
 drift - the classic indicators of a hijacked package.
 
@@ -32,13 +32,7 @@ deciding which packages you own and listing them. Each source also
 accepts an `api_url_override` so you can point at an internal mirror or a
 test server.
 
-The three sources are the shipped `pypi`, `crates_io` and `go_modules`
-profiles (`crates/fetcher/profiles/`); each typed block below maps onto an
-instance of its profile at load. Missing packages are tolerated: a 404 for a
-configured name is an empty answer, not an error, and the other names still
-land. A 5xx or 429 on one name is retried with backoff; a name the registry
-keeps refusing fails the tick, and the names after it wait for the next tick
-(these are state documents, so nothing is lost). The Go source fetches at most
+The three sources are the shipped `pypi`, `crates_io` and `go_modules` profiles (`crates/fetcher/profiles/`), and each typed block below maps onto an instance of its profile at load. Missing packages are tolerated: a 404 for a configured name is an empty answer, not an error, and the other names still land. A 5xx or 429 on one name is retried with backoff. A name the registry keeps refusing fails the tick, and the names after it wait for the next tick (these are state documents, so nothing is lost). The Go source fetches at most
 100 versions' `.info` per module per tick, in list order, and a retracted
 version (a 404 on its `.info`) is left out of the row.
 
@@ -60,7 +54,7 @@ The registries do, however, ask consumers to be polite:
 
 | Registry | Operator expectation |
 |----------|----------------------|
-| PyPI | Set a descriptive User-Agent; respect `ETag` / `X-Cache` so repeated requests hit the CDN. No hard edge rate limit today, but PyPI may throttle or ban irresponsible consumers. |
+| PyPI | Set a descriptive User-Agent, and respect `ETag` / `X-Cache` so repeated requests hit the CDN. No hard edge rate limit today, but PyPI may throttle or ban irresponsible consumers. |
 | crates.io | A descriptive User-Agent is REQUIRED (a bare client UA like `reqwest/x` invites blocking). Limit to a maximum of 1 request per second. dfe-fetcher sends `dfe-fetcher (https://github.com/hyperi-io/dfe-fetcher)`. |
 | Go module proxy | Public, no auth. The proxy only ever receives module paths and versions. Use `GOPRIVATE` upstream for truly private modules so they are never queried against the public mirror. |
 
@@ -79,7 +73,7 @@ purely the inventory step:
 
 3. Use the exact registry name for each entry:
    - PyPI: the normalised project name, e.g. `scalo`.
-   - crates.io: the crate name, e.g. `dfe-fetcher`.
+   - crates.io: the crate name, e.g. `scalo`.
    - Go: the full module path, e.g.
      `github.com/hyperi-io/some-go-tool`.
 
@@ -92,8 +86,8 @@ purely the inventory step:
 
 ### Config File
 
-Each source takes a list of names to monitor plus a `topic`. The lists
-are the only required fields.
+Each source takes a list of names to monitor plus a `topic`. No field is
+required, and an empty list fetches nothing.
 
 ```yaml
 sources:
@@ -110,8 +104,6 @@ sources:
     enabled: true
     crates:
       - "scalo"
-      - "dfe-loader"
-      - "dfe-fetcher"
     # api_url_override: "https://crates.io"   # default
     topic: "crates_io"
     # filter: 'versions.size() > 0'           # hot-reloaded
@@ -131,9 +123,10 @@ Field reference (identical fields across all three):
 - `packages` (pypi) / `crates` (crates_io) / `modules` (go_modules) -
   the list of names to monitor. An empty list means the source does
   nothing.
-- `api_url_override` - optional base URL; point at an internal mirror or
+- `api_url_override` - optional base URL, to point at an internal mirror or
   a test server. Defaults: `https://pypi.org`, `https://crates.io`,
   `https://proxy.golang.org`.
+- `interval_secs` - optional, the scheduler default when unset.
 - `topic` - output topic.
 - `filter` - optional CEL filter, hot-reloaded.
 
@@ -153,11 +146,7 @@ DFE_FETCHER_SOURCES__GO_MODULES__ENABLED="true"
 DFE_FETCHER_SOURCES__GO_MODULES__TOPIC="go_modules"
 ```
 
-The name lists (`packages`, `crates`, `modules`) are sequences and are
-cleanest to define in the config file. If you must set them via the
-environment, follow the loader's indexed-sequence convention, e.g.
-`DFE_FETCHER_SOURCES__PYPI__PACKAGES__0="scalo"`. Prefer the
-config file for anything more than a couple of names.
+The name lists (`packages`, `crates`, `modules`) are sequences and are cleanest to define in the config file. If you must set one through the environment, give the whole list as one value, e.g. `DFE_FETCHER_SOURCES__PYPI__PACKAGES="[scalo, hyperi-ci]"`. An indexed name such as `DFE_FETCHER_SOURCES__PYPI__PACKAGES__0` is read as a map and refused at load (`sources.pypi.packages: found a map, expected a sequence`). Prefer the config file for anything more than a couple of names.
 
 ### Secrets Manager
 
@@ -175,7 +164,7 @@ registry sources.
      https://pypi.org/pypi/scalo/json | head -c 200
 
    curl -s -H "User-Agent: dfe-fetcher (https://github.com/hyperi-io/dfe-fetcher)" \
-     https://crates.io/api/v1/crates/dfe-fetcher | head -c 200
+     https://crates.io/api/v1/crates/scalo | head -c 200
 
    curl -s https://proxy.golang.org/github.com/hyperi-io/some-go-tool/@v/list
    ```

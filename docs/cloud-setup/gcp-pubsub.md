@@ -13,25 +13,9 @@ log entries delivered through a Cloud Logging sink into a Pub/Sub topic.
 
 ## Overview
 
-dfe-fetcher consumes Pub/Sub via **REST synchronous pull**. For each configured
-subscription it calls `POST /v1/projects/<project>/subscriptions/<sub>:pull`
-once per tick, delivers the messages, and only then acknowledges them with
-`POST /v1/projects/<project>/subscriptions/<sub>:acknowledge`, 500 ids a
-request: a batch the transport refuses is never acknowledged, so the broker
-redelivers it rather than losing it. Each message's base64 `data` field is
-decoded; if it parses as JSON (typical for Cloud Logging sink payloads, where
-`data` is a base64-encoded `LogEntry`) the value is emitted directly,
-otherwise the raw string is wrapped as `{"data": "..."}`. The Pub/Sub envelope
-(subscription, message ID, publish time, attributes, ordering key) is attached
-under `_dfe_fetcher_pubsub` on every record. Each subscription produces
-records tagged `gcp_pubsub.<subscription-id>`.
+dfe-fetcher consumes Pub/Sub via **REST synchronous pull**. For each configured subscription it calls `POST /v1/projects/<project>/subscriptions/<sub>:pull` once per tick, delivers the messages, and only then acknowledges them with `POST /v1/projects/<project>/subscriptions/<sub>:acknowledge`, 500 ids a request: a batch the transport refuses is never acknowledged, so the broker redelivers it rather than losing it. Each message's base64 `data` field is decoded. A JSON object (typical for Cloud Logging sink payloads, where `data` is a base64-encoded `LogEntry`) is emitted as itself, any other JSON value as `{"payload": <value>}`, and text that is not JSON as `{"data": "..."}`. The Pub/Sub envelope (the subscription's full `projects/<p>/subscriptions/<s>` path, message ID, publish time, attributes, ordering key) is attached under `_dfe_fetcher_pubsub` on every record. Each subscription produces records tagged `gcp_pubsub.<subscription-id>`.
 
-The source is the shipped `gcp_pubsub` profile
-(`crates/fetcher/profiles/gcp_pubsub.yaml`) on the framework's queue unit kind.
-The `sources.gcp_pubsub` block below maps onto an instance of it at load, one
-unit per subscription. A pull that keeps failing fails that subscription's
-tick and the others still run; a refused token exchange fails the tick before
-any pull.
+The source is the shipped `gcp_pubsub` profile (`crates/fetcher/profiles/gcp_pubsub.yaml`) on the framework's queue unit kind. The `sources.gcp_pubsub` block below maps onto an instance of it at load, one unit per subscription. A pull that keeps failing fails that subscription's tick and the others still run. A refused token exchange fails the tick before any pull.
 
 Authentication is a GCP **service account** (a JSON key file, or the key
 resolved from a secrets manager), signing an RS256 JWT exchanged for an access
@@ -43,7 +27,7 @@ token from the GCE metadata server:
 The tenant side owns the delivery pipeline: a Cloud Logging **log sink** routes
 matching entries to a Pub/Sub **topic**, a **pull subscription** sits on that
 topic, and the fetcher's service account holds `roles/pubsub.subscriber` on that
-subscription. dfe-fetcher only pulls and acknowledges; it never publishes or
+subscription. dfe-fetcher only pulls and acknowledges. It never publishes or
 administers Pub/Sub.
 
 ## Prerequisites
@@ -61,7 +45,7 @@ administers Pub/Sub.
 |---------|-----------------------|-------------------|-------|
 | Cloud Logging sink | `pubsub.googleapis.com/projects/<p>/topics/<t>` | `roles/logging.configWriter` (operator, to create the sink) | gcloud does NOT auto-grant the publish role |
 | Sink writer identity | the sink's `writerIdentity` SA | `roles/pubsub.publisher` on the topic | Without this, no messages are routed |
-| Fetcher service account | `.../subscriptions/<sub>:pull` and `:acknowledge`; scope `https://www.googleapis.com/auth/pubsub` | `roles/pubsub.subscriber` on the subscription | Subscription-scoped (least privilege) |
+| Fetcher service account | `.../subscriptions/<sub>:pull` and `:acknowledge`, scope `https://www.googleapis.com/auth/pubsub` | `roles/pubsub.subscriber` on the subscription | Subscription-scoped (least privilege) |
 
 The fetcher's access is **read-side only** - pull and acknowledge. It cannot
 publish or change subscription configuration.
@@ -154,11 +138,7 @@ gcloud pubsub subscriptions add-iam-policy-binding dfe-audit-fetcher \
 
 ## dfe-fetcher Configuration
 
-Each entry under `subscriptions` is one `project_id` + `subscription_id` pair.
-`max_messages` defaults to 1000 (the REST cap); `return_immediately` defaults to
-`true` (single-shot per tick, fitting the polling model). The `subscription_id`
-is the short name, not the fully-qualified path; a repeated id, or the id
-`pull`, is refused at load.
+Each entry under `subscriptions` is one `project_id` + `subscription_id` pair. `max_messages` defaults to 1000 (the REST cap), and `return_immediately` defaults to `true` (single-shot per tick, fitting the polling model). The `subscription_id` is the short name, not the fully-qualified path. A repeated id, or the id `pull`, is refused at load.
 
 ### Config File
 
@@ -206,7 +186,7 @@ sources:
 ```
 
 `credential_secret` resolves to the full service account JSON key as a string.
-Provide `credential_secret` or `service_account_key`; with neither, the
+Provide `credential_secret` or `service_account_key`. With neither, the
 fetcher takes the workload's token from the GCE metadata server, which is the
 path for a pod running under Workload Identity.
 
@@ -216,14 +196,11 @@ The health check is the Pub/Sub-scoped token exchange (or the metadata
 server's token), so a healthy result proves the credential, not the
 subscription grant. The env-gated e2e tests in
 [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs)
-exercise the live pull path. They are `#[ignore]`'d until the tenant side is
-provisioned, and read `GCP_PUBSUB_SA_KEY` (a file path) or
-`GCP_PUBSUB_CREDENTIAL_SECRET`, plus `GCP_PUBSUB_PROJECT_ID` and
-`GCP_PUBSUB_SUBSCRIPTION_ID` for the pull, from `.env-cloud`:
+exercise the live pull path. They are `#[ignore]`'d until the tenant side is provisioned, and read `GCP_PUBSUB_SA_KEY` (the key JSON or its path) or `GCP_PUBSUB_CREDENTIAL_SECRET`, plus `GCP_PUBSUB_PROJECT_ID` and `GCP_PUBSUB_SUBSCRIPTION_ID` for the pull, from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 ```bash
 # Token exchange, then a real pull (an empty subscription is a valid pass):
-cargo test -p dfe-fetcher --test e2e gcp_pubsub_ -- --ignored
+cargo nextest run -p dfe-fetcher --test e2e --run-ignored only gcp_pubsub_
 ```
 
 Common failures:
@@ -236,14 +213,13 @@ Common failures:
   `roles/pubsub.publisher` on the topic (step 3), the `--log-filter` matches no
   entries, or the window is quiet. Verify routing with the Cloud
   console's log-sink view.
-- `invalid SA key / missing client_email` - the key JSON is malformed or the
-  wrong file.
+- `service account key is not JSON` or ``service account key has no `private_key` `` - the key JSON is malformed or the wrong file.
 
 ## Cost
 
 dfe-fetcher only reads (pull + acknowledge). Pub/Sub and log routing may
 generate usage charges depending on message throughput and retention, so
-there could be a cost at higher volumes; keep the sink `--log-filter` tight
+there could be a cost at higher volumes. Keep the sink `--log-filter` tight
 to limit what is routed. Confirm any cost implications against your own GCP
 agreement.
 

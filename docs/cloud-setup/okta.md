@@ -13,12 +13,7 @@ Log events from an Okta org.
 
 ## Overview
 
-dfe-fetcher pulls events from the Okta System Log API at
-`{tenant_url}/api/v1/logs`, one Okta org per fetcher instance. It requests a
-time-bounded, ascending window (`since` / `until` / `limit` /
-`sortOrder=ASCENDING`) and pages through the RFC 5988 `Link: rel="next"`
-header. An optional service-config `filter` (Okta OData syntax) narrows
-results server-side. Authentication is one of three schemes:
+dfe-fetcher pulls events from the Okta System Log API at `{tenant_url}/api/v1/logs`, one Okta org per connection (a block reads several through `connections`). It requests a time-bounded, ascending window (`since` / `until` / `limit` / `sortOrder=ASCENDING`) and pages through the RFC 5988 `Link: rel="next"` header. An optional service-config `filter` (a SCIM filter expression, the System Log's own syntax) narrows results server-side. Authentication is one of three schemes:
 
 - `use_ssws_header: true` (default on the `sources.okta` block) - sends
   `Authorization: SSWS <token>` using a legacy Okta API token.
@@ -34,16 +29,12 @@ admin who minted it, where a service app is granted `okta.logs.read` alone and
 the private half of its key never leaves the deployment. SSWS remains supported
 and is the simplest path.
 
-The source is the shipped `okta` REST profile
-(`crates/fetcher/profiles/okta.yaml`); the `sources.okta` block below maps
-onto an instance of it at load, so the profile's retry policy applies: a 429
-or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends
-the tick, and a tick that fails does not advance the fetch window.
+The source is the shipped `okta` REST profile (`crates/fetcher/profiles/okta.yaml`), and the `sources.okta` block below maps onto an instance of it at load, so the profile's retry policy applies: a 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window.
 
 ## Prerequisites
 
 - Any Okta org (Workforce or Customer Identity). The System Log API is
-  available on all tiers; no add-on is required.
+  available on all tiers, and no add-on is required.
 - An administrator account to create the credential:
   - SSWS path: an admin who can mint API tokens. The token inherits that
     admin's privileges, so use a dedicated service account whose role is
@@ -51,14 +42,14 @@ the tick, and a tick that fails does not advance the fetch window.
   - OAuth path: an admin who can create an API Service / OAuth service app
     and grant it the `okta.logs.read` scope.
 - Least-privilege option: the standard **Read-only Administrator** role can
-  view System Log data and manage its own API token; or use a custom admin
+  view System Log data and manage its own API token. Or use a custom admin
   role carrying the **System Log query** permission.
 
 ## Required Permissions
 
 | Service | Endpoint | Permission or Scope | Notes |
 |---------|----------|---------------------|-------|
-| `system_log` | `GET {tenant_url}/api/v1/logs` | SSWS token from a service account with read access to System Log | Token inherits the creating admin's privileges; Read-only Admin or System Log query custom role is sufficient. |
+| `system_log` | `GET {tenant_url}/api/v1/logs` | SSWS token from a service account with read access to System Log | Token inherits the creating admin's privileges. Read-only Admin or System Log query custom role is sufficient. |
 | `system_log` | `GET {tenant_url}/api/v1/logs` | OAuth scope `okta.logs.read` | Granted to an API Service app using the client-credentials flow. |
 
 All access is read-only.
@@ -118,14 +109,13 @@ sources:
     services:
       - name: system_log
         config:
-          filter: 'eventType eq "user.session.start"'   # optional OData filter
+          filter: 'eventType eq "user.session.start"'   # optional SCIM filter expression
           limit: 100                                    # per-page, max 1000
     topic: "okta"
     # filter: 'eventType != "user.session.access_token"'   # CEL, hot-reloaded
 ```
 
-For an access token someone else mints, set `use_ssws_header: false` and supply
-it as `token` (preferably via `credential_secret`).
+For an access token someone else mints, set `use_ssws_header: false` and supply it as `token` (preferably via `credential_secret`). The fetcher reads that token once and holds it for the life of the source, so a token that expires is replaced only by a restart. The service app below renews its own.
 
 For the service app, configure the same profile as a `sources.rest` instance so
 the fetcher can hold the key and mint its own token:
@@ -188,21 +178,19 @@ sources:
 
 ## Verification
 
-- **Health check.** The profile's probe calls
-  `GET {tenant_url}/api/v1/users/me` with the configured auth header; a 2xx
+- Health check. The profile's probe calls
+  `GET {tenant_url}/api/v1/users/me` with the configured auth header, and a 2xx
   confirms the token + scheme + tenant URL are correct and reachable.
-- **e2e smoke test.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
-  `#[ignore]`-gated live tests. Export credentials (or put them in
-  `.env-cloud`), then run:
+- e2e smoke test. `crates/fetcher/tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live tests. Export credentials, or put them in `.env-cloud` or `.env` at the repo root (both are loaded over the environment, `.env` last), then run:
 
   ```bash
   export OKTA_TENANT_URL="https://your-tenant.okta.com"
   export OKTA_TOKEN="00..."
   export OKTA_USE_SSWS="true"     # or false for OAuth bearer
-  cargo test -p dfe-fetcher --test e2e okta_ -- --ignored
+  cargo nextest run -p dfe-fetcher --test e2e --run-ignored only okta_
   ```
 
-- **Common failure modes.**
+- Common failure modes.
   - `401 Unauthorized`: wrong scheme - SSWS token sent as Bearer (or vice
     versa). Flip `use_ssws_header` to match the token type.
   - `401` on the token exchange with `invalid_client`: the public key Okta

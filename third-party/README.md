@@ -3,10 +3,11 @@
 Each directory below is a copy of an upstream crate, kept under its own licence
 (the `LICENSE` file in each directory is the upstream text, verbatim) and built
 as a path-only, `publish = false` workspace member. The local edits detach the
-crate from its upstream workspace, plus one behaviour change in
-`vector-file-source/src/file_watcher/mod.rs`: a file truncated in place under
-the same device and inode (copytruncate), or found shorter than its checkpoint
-at start, is read again from its first byte. Each edit is marked in place with
+crate from its upstream workspace, plus one behaviour change, in
+`vector-file-source/src/file_watcher/mod.rs` and the `file_server.rs` read loop
+that calls it: a file truncated in place under the same device and inode
+(copytruncate), or found shorter than its checkpoint at start, is read again
+from its first byte. Each edit is marked in place with
 a `dfe-fetcher:` comment. Re-sync by diffing against the recorded commit.
 
 | directory | upstream | path | commit | licence |

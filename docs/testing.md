@@ -8,16 +8,16 @@
 
 # Testing
 
-The general rules are hyperi-ai's testing standard (`standards/universal/testing.md` in hyperi-ai). This page covers what dfe-fetcher does on top of them.
+This page covers the test levels dfe-fetcher runs and the services its tests share.
 
 | Level | Runs | Selection |
 |---|---|---|
-| core | every push and PR | nextest's default selection: every test not marked `#[ignore]` |
+| core | every pull request, and every push that changes more than `docs/` and Markdown (`paths-ignore` in `.github/workflows/ci.yml`) | nextest's default selection: every test not marked `#[ignore]` |
 | full | nightly (`schedule` in `.github/workflows/ci.yml`) and before every release (`test.full.required_for_release: true`) | core plus the `#[ignore]` tests, less the live-provider suites |
 
 Core holds the unit tests, the fixture and wiremock suites, and every integration test against a real service: Kafka, the Kafka TLS round trip, OpenBao, LocalStack, ClickHouse and MongoDB.
 
-Full adds the container extractor tests, the Kafka produce-and-consume tests in the `e2e` target and the batcher measurement, which moves 100k rows through real Kafka. `test.full.rust.filter` in `.hyperi-ci.yaml` leaves out `smoke_remote` and `runzero`, which need tenant credentials no runner holds. Run those by hand with the credentials their `#[ignore]` reasons name.
+Full adds the container extractor tests, the Kafka produce-and-consume tests in the `e2e` target and the batcher measurement, which moves rows through real Kafka. `test.full.rust.filter` in `.hyperi-ci.yaml` leaves out `smoke_remote` and `runzero`, which need tenant credentials no runner holds. Run those by hand with `cargo nextest run -p dfe-fetcher --test e2e --run-ignored only <prefix>` and the variables each [cloud-setup](cloud-setup/README.md) guide names. A missing variable fails its test rather than skipping it.
 
 The `db-odbc` suites build only with that feature and need the `odbc-postgresql` and `odbc-mariadb` drivers, so CI does not run them. Each starts its own database container through testcontainers.
 
@@ -38,7 +38,7 @@ scalo's `test_support::shared_service` starts them:
 - The first test process to ask creates the container, named `<prefix>-integration-<service>-r<run>`. `<prefix>` is `HYPERI_TEST_CONTAINER_PREFIX`, else `dfe-fetcher-test`. Every other process joins it by name.
 - A watcher removes it once the run's nextest process exits, whether the run passed, failed or was interrupted.
 - Containers carry `io.hyperi.test.suite=dfe-fetcher-integration` and their owner's labels, so a later create sweeps what a dead run left.
-- Locally the daemon is the current docker context, and an `ssh://` context gets a tunnel per port. With no daemon a test skips locally and fails in CI.
+- The daemon is the one `DOCKER_HOST` names, else the current docker context's, and a daemon reached over `ssh://` gets a tunnel per port. With no daemon a test skips locally and fails in CI.
 
 Tests on a shared service keep to their own names: topics and consumer groups per test, OpenBao paths per test, a ClickHouse table per test and a MongoDB database per test.
 
