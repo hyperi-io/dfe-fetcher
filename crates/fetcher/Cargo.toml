@@ -8,7 +8,7 @@
 
 [package]
 name = "dfe-fetcher"
-description = "Pulls data from cloud and SaaS APIs, databases and files into a DFE deployment."
+description.workspace = true
 publish = false
 version.workspace = true
 edition.workspace = true
