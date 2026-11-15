@@ -20,13 +20,123 @@
 
 pub mod file;
 
+use std::path::{Path, PathBuf};
+
+use dfe_fetcher_file::FileInstance;
+
 pub use dfe_fetcher_core::checkpoint::{CursorStore, CursorValue, normalize_cursor_key};
+
+/// The cursor key of a framework unit: `{instance}.{connection}.{unit}`.
+#[must_use]
+pub fn unit_cursor_key(instance_id: &str, connection_id: &str, unit: &str) -> String {
+    format!("{instance_id}.{connection_id}.{unit}")
+}
+
+/// Where a file tail unit keeps its checkpoint file when its config sets no
+/// `data_dir`: `<cursor_dir>/<unit cursor key>.tail`, beside the unit's
+/// `<unit cursor key>.cursor.json` and named for the same normalised key, so
+/// the unit has one cursor and one tail directory and no two units share
+/// either.
+#[must_use]
+pub fn default_tail_data_dir(
+    cursor_dir: &Path,
+    instance_id: &str,
+    connection_id: &str,
+    unit: &str,
+) -> PathBuf {
+    let key = normalize_cursor_key(&unit_cursor_key(instance_id, connection_id, unit));
+    cursor_dir.join(format!("{key}.tail"))
+}
+
+/// A copy of `instance` with every tail unit that sets no `data_dir` given
+/// [`default_tail_data_dir`]. A `data_dir` the config sets is kept as written.
+#[must_use]
+pub fn with_default_tail_data_dirs(
+    instance: &FileInstance,
+    cursor_dir: &Path,
+    instance_id: &str,
+    connection_id: &str,
+) -> FileInstance {
+    let mut resolved = instance.clone();
+    for unit in &mut resolved.units {
+        if let Some(tail) = unit.tail.as_mut()
+            && tail.data_dir.trim().is_empty()
+        {
+            tail.data_dir =
+                default_tail_data_dir(cursor_dir, instance_id, connection_id, &unit.unit)
+                    .display()
+                    .to_string();
+        }
+    }
+    resolved
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    fn file_instance(yaml: &str) -> FileInstance {
+        scalo::yaml::from_str(yaml, "source.yaml", scalo::yaml::Profile::Config).unwrap()
+    }
+
+    #[test]
+    fn a_tail_with_no_data_dir_gets_one_beside_its_cursor_file() {
+        let instance = file_instance(
+            r#"
+topic: t
+units:
+  - unit: Logs
+    tail: { include: ["/var/log/*.log"] }
+  - unit: audit
+    tail: { include: ["/var/log/audit/*.log"], data_dir: /srv/audit }
+  - unit: dumped
+    dump: { paths: ["/data/*.jsonl"] }
+"#,
+        );
+        let resolved = with_default_tail_data_dirs(
+            &instance,
+            Path::new("/var/lib/dfe-fetcher/cursors"),
+            "Prod",
+            "app",
+        );
+        let tail_dir = |i: usize| resolved.units[i].tail.as_ref().unwrap().data_dir.as_str();
+        assert_eq!(
+            tail_dir(0),
+            "/var/lib/dfe-fetcher/cursors/prod.app.logs.tail"
+        );
+        assert_eq!(tail_dir(1), "/srv/audit", "a data_dir the config sets wins");
+        assert!(resolved.units[2].tail.is_none());
+        assert_eq!(
+            resolved
+                .validate()
+                .iter()
+                .filter(|i| i.contains("data_dir"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn no_two_units_connections_or_instances_default_to_one_data_dir() {
+        let cursors = Path::new("/c");
+        let dirs: std::collections::HashSet<PathBuf> = [
+            ("i1", "app", "logs"),
+            ("i1", "app", "audit"),
+            ("i1", "web", "logs"),
+            ("i2", "app", "logs"),
+        ]
+        .into_iter()
+        .map(|(i, c, u)| default_tail_data_dir(cursors, i, c, u))
+        .collect();
+        assert_eq!(dirs.len(), 4);
+        assert!(
+            dirs.iter()
+                .all(|d| !d.to_string_lossy().ends_with("cursor.json")),
+            "the cursor store loads every entry whose name ends so: {dirs:?}"
+        );
+    }
 
     #[test]
     fn test_cursor_value_serialization_roundtrip() {

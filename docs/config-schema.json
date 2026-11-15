@@ -6710,7 +6710,7 @@
           }
         },
         "data_dir": {
-          "description": "Directory the checkpoint file lives in; must be on durable storage.",
+          "description": "Directory the checkpoint file lives in; must be on durable storage.\nLeft empty, dfe-fetcher uses a directory of its own for this unit under\n`cursor.directory`.",
           "type": "string",
           "default": ""
         }

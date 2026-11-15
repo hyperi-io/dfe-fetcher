@@ -122,8 +122,12 @@ impl FileInstance {
             let at = |f: &str| format!("units[{i}].{f}");
             if unit.unit.trim().is_empty() {
                 issues.push(format!("{}: is required", at("unit")));
-            } else if !seen.insert(unit.unit.as_str()) {
-                issues.push(format!("{}: `{}` is declared twice", at("unit"), unit.unit));
+            } else if !seen.insert(unit.unit.to_lowercase()) {
+                issues.push(format!(
+                    "{}: `{}` is declared twice (unit names compare without case, like cursor keys)",
+                    at("unit"),
+                    unit.unit
+                ));
             } else if unit.unit.contains('.') {
                 issues.push(format!(
                     "{}: `{}` cannot contain `.`, which separates the connection from the unit",
@@ -307,17 +311,19 @@ units:
   - unit: z
     tail: { include: ["y"], data_dir: "" }
     row_key: "/id"
+  - unit: A
+    dump: { paths: ["x"] }
 "#,
         );
         let issues = without_build_gate(inst.validate());
         for expected in [
             "units[0].dump: a unit is a `dump` or a `tail`; neither",
             "units[1].unit: `a` is declared twice",
+            "units[4].unit: `A` is declared twice",
             "units[1].tail: a unit is a `dump` or a `tail`, not both",
             "units[2].unit: `x.y` cannot contain `.`",
             "units[2].dump: configuration error: file dump `paths`",
             "units[2].row_key: `id` is not a JSON pointer",
-            "units[3].tail: configuration error: file tail `data_dir`",
             "units[3].row_key: only a dump has a row key",
         ] {
             assert!(
@@ -325,6 +331,10 @@ units:
                 "missing `{expected}` in {issues:?}"
             );
         }
+        assert!(
+            issues.iter().all(|i| !i.contains("data_dir")),
+            "a tail with no data_dir is the host's to fill: {issues:?}"
+        );
     }
 
     #[test]

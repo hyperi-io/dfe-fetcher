@@ -359,6 +359,9 @@ fn plan_sources(config: &Config) -> anyhow::Result<Vec<Planned<SourceSpec>>> {
 /// guard, checkpoint store and HTTP clients.
 struct DriverFactory {
     instance_id: String,
+    /// The directory the cursor store lives in, which a file tail with no
+    /// `data_dir` keeps its checkpoint file under.
+    cursor_dir: PathBuf,
     pipeline_state: Arc<PipelineState>,
     metrics: Arc<Metrics>,
     pressure: Option<Arc<UnifiedPressure>>,
@@ -406,10 +409,18 @@ impl SourceFactory for DriverFactory {
                 DbShape::from_instance(&instance, id, &lease)
                     .map_err(|e| anyhow::anyhow!("sources.db.{id}: {e}"))?,
             )),
-            SourceKind::File(instance) => Shape::File(Box::new(
-                FileShape::from_instance(&instance, id, &lease)
-                    .map_err(|e| anyhow::anyhow!("sources.file.{id}: {e}"))?,
-            )),
+            SourceKind::File(instance) => {
+                let instance = cursor::with_default_tail_data_dirs(
+                    &instance,
+                    &self.cursor_dir,
+                    &self.instance_id,
+                    id,
+                );
+                Shape::File(Box::new(
+                    FileShape::from_instance(&instance, id, &lease)
+                        .map_err(|e| anyhow::anyhow!("sources.file.{id}: {e}"))?,
+                ))
+            }
         };
         // A scheduled source's cursor advances only once its records are delivered.
         self.pipeline_state.publish_guarantee(
@@ -657,6 +668,7 @@ async fn run_fetcher_service(
     let pressure = build_pressure(&config, pipeline_state.memory_guard())?;
     let factory = DriverFactory {
         instance_id: instance_id.clone(),
+        cursor_dir: PathBuf::from(&cursor_dir),
         pipeline_state: Arc::clone(&pipeline_state),
         metrics: Arc::clone(&metrics),
         pressure: pressure.clone(),

@@ -118,6 +118,8 @@ pub struct TailSpec {
     /// How files are recognised across renames.
     pub fingerprint: Fingerprint,
     /// Directory the checkpoint file lives in; must be on durable storage.
+    /// Left empty, dfe-fetcher uses a directory of its own for this unit under
+    /// `cursor.directory`.
     pub data_dir: String,
 }
 
@@ -139,8 +141,10 @@ impl Default for TailSpec {
 }
 
 impl TailSpec {
-    /// Reject a tail with nothing to follow, nowhere to checkpoint, a glob
-    /// that does not parse, or a fingerprint that cannot tell files apart.
+    /// Reject a tail with nothing to follow, a glob that does not parse, or a
+    /// fingerprint that cannot tell files apart. An empty `data_dir` passes:
+    /// the host fills in a default before it builds the tail, and
+    /// [`FileTail::new`] refuses one it was not given.
     ///
     /// # Errors
     ///
@@ -154,11 +158,6 @@ impl TailSpec {
         for pattern in self.include.iter().chain(&self.exclude) {
             glob::Pattern::new(pattern)
                 .map_err(|e| Error::Config(format!("file tail glob `{pattern}`: {e}")))?;
-        }
-        if self.data_dir.trim().is_empty() {
-            return Err(Error::Config(
-                "file tail `data_dir` is required for the checkpoint file".into(),
-            ));
         }
         if self.max_line_bytes == 0 {
             return Err(Error::Config(
@@ -563,9 +562,15 @@ mod tailer {
         ///
         /// # Errors
         ///
-        /// Returns [`Error::Config`] when the spec does not validate.
+        /// Returns [`Error::Config`] when the spec does not validate or has no
+        /// `data_dir` to checkpoint in.
         pub fn new(unit: &str, spec: TailSpec, lease: Arc<dyn Lease>) -> Result<Self> {
             spec.validate()?;
+            if spec.data_dir.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "file tail `{unit}`: `data_dir` is empty, so there is nowhere to keep the checkpoint file"
+                )));
+            }
             Ok(Self {
                 spec,
                 unit: Arc::from(unit),
@@ -1092,7 +1097,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tail_needs_globs_a_data_dir_and_a_usable_fingerprint() {
+    fn a_tail_needs_globs_and_a_usable_fingerprint_and_leaves_data_dir_to_the_host() {
         assert!(TailSpec::default().validate().is_err());
         let spec: TailSpec = serde_json::from_str(
             r#"{"include": ["/var/log/app/*.log"], "data_dir": "/var/lib/dfe/tail"}"#,
@@ -1107,7 +1112,9 @@ mod tests {
         assert!(zero.validate().is_err());
         let mut no_dir = spec.clone();
         no_dir.data_dir.clear();
-        assert!(no_dir.validate().is_err());
+        no_dir
+            .validate()
+            .expect("an empty data_dir is the host's to fill");
         let mut bad_glob = spec.clone();
         bad_glob.exclude.push("[".into());
         assert!(
@@ -1147,6 +1154,27 @@ mod tailer_tests {
             rotate_wait_secs: 1,
             max_tick_secs: 5,
             ..TailSpec::default()
+        }
+    }
+
+    #[test]
+    fn a_tail_without_a_data_dir_is_not_built() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for blank in ["", "  "] {
+            let err = FileTail::new(
+                "logs",
+                TailSpec {
+                    data_dir: blank.into(),
+                    ..spec(&dir)
+                },
+                no_lease(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("file tail `logs`: `data_dir` is empty"),
+                "{err}"
+            );
         }
     }
 

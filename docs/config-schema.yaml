@@ -5839,7 +5839,10 @@ $defs:
           ignored_header_bytes: 0
           lines: 1
       data_dir:
-        description: Directory the checkpoint file lives in; must be on durable storage.
+        description: |-
+          Directory the checkpoint file lives in; must be on durable storage.
+          Left empty, dfe-fetcher uses a directory of its own for this unit under
+          `cursor.directory`.
         type: string
         default: ""
     additionalProperties: false
