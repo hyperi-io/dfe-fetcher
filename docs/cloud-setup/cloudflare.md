@@ -15,32 +15,21 @@ account-level audit logs.
 
 dfe-fetcher pulls account audit-log entries from the v1 REST endpoint
 `https://api.cloudflare.com/client/v4/accounts/{account_id}/audit_logs`, one
-Cloudflare account per fetcher instance. It requests a time window
+Cloudflare account per connection. It requests a time window
 (`since` / `before` RFC 3339) with `per_page`, optional `actor.email` and
 `action.type` filters, and pages by number using `result_info.total_pages`
 from Cloudflare's `{"success":..., "result":[...], "result_info":{...}}`
 envelope. Authentication is a scoped API token in
 `Authorization: Bearer <token>`.
 
-The source is the shipped `cloudflare` profile
-(`crates/fetcher/profiles/cloudflare.yaml`); the `sources.cloudflare` block
-below maps onto an instance of it at load. A 429 or 5xx is retried with
-backoff (honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying
-`success: false` fails the tick with the `errors` array as the reason, and a
-tick that fails does not advance the fetch window. A missing token or
-`account_id` is refused at load, naming `sources.cloudflare`.
+The source is the shipped `cloudflare` profile (`crates/fetcher/profiles/cloudflare.yaml`), and the `sources.cloudflare` block below maps onto an instance of it at load. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying `success: false` fails the tick with the `errors` array as the reason, and a tick that fails does not advance the fetch window. A missing token or `account_id` is refused at load, naming `sources.cloudflare`.
 
-Note on API versions: Cloudflare made **Audit Logs v2** (the newer
-`/accounts/{account_id}/logs/audit` endpoint) generally available in early
-2026. dfe-fetcher targets the **v1** `audit_logs` endpoint, which
-is still live - Cloudflare has not published a firm retirement date for v1.
-If/when v1 is sunset, this source will need to move to v2; track the
-references below.
+dfe-fetcher reads the v1 `audit_logs` endpoint, not Cloudflare's newer Audit Logs v2 endpoint (`/accounts/{account_id}/logs/audit`), whose changelog entry is in the references below.
 
 ## Prerequisites
 
-- Any Cloudflare account. Account audit logs are available on all plans;
-  no paid add-on is required to read them via the API.
+- Any Cloudflare account. Account audit logs are available on all plans,
+  and no paid add-on is required to read them via the API.
 - An account role that can create API tokens and read account settings
   (Super Administrator, or Administrator). User API tokens are created from
   your user profile, scoped to the chosen account.
@@ -64,7 +53,7 @@ In the Cloudflare dashboard (`dash.cloudflare.com`), open the account, then
 either:
 
 - Click the menu button (three dots) next to the account name on the Account
-  Home page and choose **Copy account ID**; or
+  Home page and choose **Copy account ID**, or
 - On the account **Overview** page, scroll to the **API** section at the
   bottom and copy the **Account ID**.
 
@@ -142,21 +131,19 @@ sources:
 
 ## Verification
 
-- **Health check.** The profile's probe calls `GET /user/tokens/verify`; a
+- Health check. The profile's probe calls `GET /user/tokens/verify`, and a
   2xx confirms the token is valid and active. Note this proves the token is
   good but not that it carries Account Settings Read - exercise the smoke
   test for that.
-- **e2e smoke test.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
-  `#[ignore]`-gated live tests. Export credentials (or put them in
-  `.env-cloud`), then run:
+- e2e smoke test. `crates/fetcher/tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live tests. Export credentials, or put them in `.env-cloud` or `.env` at the repo root (both are loaded over the environment, `.env` last), then run:
 
   ```bash
   export CLOUDFLARE_ACCOUNT_ID="0123456789abcdef0123456789abcdef"
   export CLOUDFLARE_TOKEN="cfut_..."
-  cargo test -p dfe-fetcher --test e2e cloudflare_ -- --ignored
+  cargo nextest run -p dfe-fetcher --test e2e --run-ignored only cloudflare_
   ```
 
-- **Common failure modes.**
+- Common failure modes.
   - `403 Forbidden` / `success:false` with an authentication error: token
     lacks **Account Settings: Read**, or is scoped to the wrong account.
     Adding Account Settings Read is the usual fix - do NOT go hunting for an
@@ -179,9 +166,9 @@ plan.
 
 - Cloudflare API - Get Account Audit Logs (v1 list method):
   <https://developers.cloudflare.com/api/resources/audit_logs/methods/list/>
-- Review audit logs - v1 (Fundamentals):
+- Cloudflare Fundamentals, audit logs version 1:
   <https://developers.cloudflare.com/fundamentals/account/account-security/review-audit-logs/>
-- Audit Logs - version 2 (Fundamentals):
+- Cloudflare Fundamentals, audit logs version 2:
   <https://developers.cloudflare.com/fundamentals/account/account-security/audit-logs/>
 - Audit logs (version 2) - General Availability changelog:
   <https://developers.cloudflare.com/changelog/post/2026-03-10-audit-logs-v2-ga/>

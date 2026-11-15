@@ -13,9 +13,9 @@
 dfe-fetcher pulls security and operational data from cloud and SaaS providers,
 databases, files and external extractors, and delivers each record to the DFE
 pipeline over Kafka and/or gRPC. Every provider is a declarative REST profile
-run by one generic driver; databases and files are two more kinds of source on the same
+run by one generic driver. Databases and files are two more kinds of source on the same
 driver. The codemap of the Cargo workspace is
-[architecture.md](architecture.md); this document holds the diagrams and
+[architecture.md](architecture.md). This document holds the diagrams and
 the reasoning.
 
 ## High-Level Architecture
@@ -40,6 +40,7 @@ flowchart TB
         end
         Driver[Driver<br>one tick per unit]
         Scheduler[Scheduler<br>interval, jitter, concurrency]
+        Containers[Container extractor<br>stdout JSON lines]
         Ingest[Ingest server<br>HTTP :8080]
         Vector[Vector receiver<br>gRPC :6000]
         Pipeline[Pipeline<br>enrich, DLQ, readiness]
@@ -56,7 +57,8 @@ flowchart TB
     API --> Rest
     DB --> DbS
     FS --> FileS
-    Ext -->|stdout or HTTP POST| Ingest
+    Ext -->|stdout| Containers
+    Ext -->|HTTP POST| Ingest
     Ext -.->|Vector gRPC| Vector
     Scheduler --> Driver
     Rest --> Driver
@@ -64,6 +66,7 @@ flowchart TB
     FileS --> Driver
     Driver --> Pipeline
     Driver --> Cursor
+    Containers --> Pipeline
     Ingest --> Pipeline
     Vector --> Pipeline
     Pipeline --> Output
@@ -80,6 +83,8 @@ Blue cylinders are datastores, rounded faded nodes are external systems,
 dotted edges are pushed events. The metrics server (Prometheus, `:9090`) and
 the health probes are not drawn.
 
+The container and Vector extractors, their lifecycle, their guarantees and when to choose each over a profile are in [extractors.md](extractors.md).
+
 ## Where parsing happens
 
 We parse mechanical transport at max efficiency at the edge. The fetcher parses the framing of the API, file or database it reads (NDJSON lines, a JSON array, CSV rows, a response envelope) into one JSON record per row. Records leave already parsed, with the payload and its fields in the record itself.
@@ -90,8 +95,8 @@ The fetcher has no raw capture setting and does not keep the bytes it fetched. P
 
 The repo is a Cargo workspace laid out as a wide DAG off one I/O-free core, so
 the source crates compile in parallel and a profile change never rebuilds a
-database driver. Solid edges are unconditional; dashed edges are the optional
-engine drivers and the vendored tailer, each behind its feature.
+database driver. Solid edges are unconditional. Dashed edges are the optional
+engine drivers and the copied Vector tailer, each behind its feature.
 
 ```mermaid
 flowchart TB
@@ -99,7 +104,7 @@ flowchart TB
     rest["dfe-fetcher-rest<br>crates/rest<br>profile grammar, auth, pager, decoder,<br>hooks, request executor, RestShape"]
     db["dfe-fetcher-db<br>crates/db<br>Store contract, keyset, pump<br>(engines behind features)"]
     file["dfe-fetcher-file<br>crates/file<br>FileSource contract, dump reader, tail spec"]
-    tailer["vector-file-source<br>third-party/ (vendored, MIT)"]
+    tailer["vector-file-source<br>third-party/ (Vector's, MIT)"]
     core["dfe-fetcher-core<br>crates/core<br>Row, Mark, RowSource, Batcher, RowRules,<br>snapshot envelope, checkpoints, metric names"]
 
     engines["engine drivers<br>unixODBC + arrow-odbc, dfe-clickhouse, mongodb"]
@@ -116,7 +121,7 @@ flowchart TB
 ```
 
 The app links all four crates unconditionally, so a `sources.db` or
-`sources.file` block is always understood and validated; what the features
+`sources.file` block is always understood and validated. What the features
 decide is whether the ENGINE behind an accepted config is present, which is
 why naming an engine this binary lacks is a load error rather than a parse
 error.
@@ -125,14 +130,16 @@ error.
 
 Every framework source yields rows lazily. The driver runs
 each unit of a connection through one loop. A unit is one endpoint, store,
-subscription or prefix; its rows are either events inside the scheduler's
+subscription or prefix. Its rows are either events inside the scheduler's
 window (incremental) or the whole store (a dump, wrapped in the snapshot
 envelope). Rows are polled only while the memory-pressure gate admits them,
 so not polling is what pushes back on the provider, and a held source flushes
-what it has buffered before it waits.
+what it has buffered before it waits. A hold lasts at most
+`self_regulation.max_hold_secs`, then the source polls on and logs a warning,
+because memory the pause cannot release would otherwise hold it for good.
 
 The checkpoint is the part that makes a failure safe. Each row may carry a
-mark (a queue ack id, a manifest item, a keyset tuple, a file offset); the
+mark (a queue ack id, a manifest item, a keyset tuple, a file offset). The
 driver folds the marks of a batch and commits them only after the emitter
 reports the batch acknowledged by the transport. A tick that fails commits
 nothing more and re-fetches next time, and a queue message is acknowledged to
@@ -191,46 +198,7 @@ snapshot opens at a file's first row and closes -- `end`, flush, checkpoint --
 when the next file starts, so an idle tick publishes nothing and a bad file
 leaves the files before it complete and committed.
 
-### Emit
-
-The emitter issues a flush's sends as concurrent futures (`accumulate.in_flight`
-at a time). Every record gets a terminal outcome: sent, dead-lettered (a fatal
-transport error, a truncated copy to the DLQ), or backpressured; the
-backpressured subset is retried with a bounded backoff and, if still refused,
-the whole tick aborts without a checkpoint so the scheduler's stall handling
-takes over.
-
-A dead letter counts only once the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ refuses or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
-
-An enabled DLQ whose backends cannot start (an unwritable spool directory, a Kafka backend with no client config) fails startup, so the process never runs believing refused records are held when they are dropped.
-
-With no DLQ configured, or a disabled one, a record the transport refuses is still refused for good, so fetching it again would only hold the source back. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, an oversize row in `{reason="too_large"}` (with a warn-level log line, debounced to one every 10 seconds a connection) and a row enrichment refused in `{reason="unstampable"}`, and the tick carries on. A dead letter no DLQ backend can ever hold (scalo's `Dlq::refusal`: over the Kafka DLQ's ceiling once encoded, which a Vector or ingest record over about 12 MiB can be) is left out of the DLQ write and dropped the same way, counted under scalo's reason. Any other DLQ failure can clear, so it still aborts the tick.
-
-Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{listener, guarantee, reason}`, from scalo's `EffectiveGuarantee::publish_for` against what the outputs confirm. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. The ingest listener and Vector follow their `acknowledgements` setting, and a container's stdout is `best_effort` (`source_cannot_ack`).
-
-### Enrichment
-
-Five names are reserved on every record: `_timestamp_fetcher`, `_timestamp_received`, `_source` (the topic base, or the destination a single-destination route names), `_source_fetcher` (`<connection>.<unit>`) and `_org_id` (`org_id`, else `default_org_id`). The per-source CEL filter runs on the provider's row before they are added, so a filter cannot reference them. A payload that already carries one keeps its own value under `<key>_original` and the fetcher's value takes the name: the loader routes on `_source` and the record's org is its `_org_id`, so the fetcher's values have to be the ones that survive, and a record carrying the same top-level key twice is rejected outright by ClickHouse rather than dead-lettered.
-
-`<key>_original` is never overwritten. A payload that already carries both the
-reserved name and its `_original` -- a replayed record on a second enrich
-pass, say -- keeps the `_original` it arrived with, and the colliding value is
-parked under the next free `<key>_original_<n>` counting from 2, with a
-warning naming the key.
-
-A payload that opens as a JSON object, after whitespace or a UTF-8 byte-order mark, and cannot be stamped is refused, because sent as it came it would keep any `_org_id` its sender gave it. That is an object with no closing brace, or one that may carry a reserved key and does not parse. "May carry" is a byte scan for the names and for any backslash, since an escape can spell a name, so a payload that fails to parse cannot be shown free of one, and appending the fetcher's own could give the record two `_org_id`. A refused row is never sent: it is dead-lettered with the reason, or with no DLQ dropped and counted in `pipeline_dead_letters_dropped_total{reason="unstampable"}`, and its bytes count for no org. A stamped row leaves without the byte-order mark.
-
-A JSON array whose every element is an object goes out as one record per element, each stamped, because the loader splits an array into its elements and an element with no `_org_id` lands in its default org. A body of two or more whitespace-separated objects and nothing else, newline-delimited records in one payload, is split the same way, exactly where the loader's own split would fan it out: the stamp lands before the last closing brace only, so sent whole it would reach only the last record. Each record counts for usage at its own length before the stamp, and the row's mark rides its last record. `[]` goes out as nothing.
-
-A binary row, and a payload that is neither an object nor such a split body (a scalar, plain text, an array holding a non-object), goes out verbatim with no `_org_id`. The loader refuses it, though the archiver may keep it. Its usage counts under `default_org_id`, because usage measures ingest into the platform, not what the loader stores.
-
-## Cursor Cold Start
-
-A tick with no window cursor stored, or no cursor store at all, is a cold start. Every one counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart. The first cold start of a source logs a WARN and later ones log at DEBUG, since with no store at all every tick is one.
-
-A cursor read that fails is a fault, not a cold start. The cursor may still be stored further back than the lookback, so the tick is refused under either `on_missing_cursor` setting and the next tick reads again. The window stays where the stored cursor left it, rather than sliding forward and skipping what sat behind it. Each refusal counts in `dfe_fetcher_cursor_read_failures_total{source}` and as a failed fetch, and logs an ERROR at most once every 10 s per source.
-
-`cursor.on_missing_cursor` decides what the tick does. `lookback` (the default) fetches the last `default_window_hours`, so a new source starts on its own and a lost cursor skips anything older. `refuse` fetches nothing and fails the tick until a cursor exists, so a lost cursor never skips data and a new source never starts on its own. Each refused tick counts as a failed fetch, and the refusal logs an ERROR at most once every 10 s per source.
+What a flush does with each record, the dead letters, the guarantee each intake gives, the fields enrichment stamps and a tick with no cursor are in [delivery.md](delivery.md).
 
 ## The Profile Grammar
 
@@ -244,14 +212,14 @@ typo or an unsupported mode is a load error carrying the YAML line, never a
 setting that parses and does nothing. The closed vocabulary (auth modes,
 pagers, decoders, constructs, builders, listers), every field and the
 validation rules are in
-[reference/profile-grammar.md](reference/profile-grammar.md); the grammar as
+[reference/profile-grammar.md](reference/profile-grammar.md). The grammar as
 built is `crates/rest/src/profile/mod.rs`.
 
 ## Database and File Sources
 
 A database instance (`sources.db.<id>`) names an engine, its connection
 string as a secret spec, the block-cursor bounds and its stores. A `dump`
-store selects the whole result set every tick into the snapshot envelope; a
+store selects the whole result set every tick into the snapshot envelope. A
 `tail` store selects rows past the last committed key tuple in key order
 (`WHERE key > $last ORDER BY key LIMIT n`) and each row carries its key as a
 mark, committed after the batch is acknowledged. Engines are opt-in features
@@ -271,9 +239,9 @@ each file its globs match once -- NDJSON, a JSON array or CSV, gzip detected by
 magic -- lands each file as its own snapshot, and marks the file done with its
 path and change time after its last row is acknowledged, so a file rewritten
 in place is read again and a file dropped in by rename is never skipped. A
-`tail` unit follows growing files through rotation and truncation on the
-vendored Vector tailer and commits `(file fingerprint, end offset)` per line
-after the acknowledgement; it needs the `file-tail` feature and is refused at
+`tail` unit follows growing files through rotation and truncation on
+Vector's file tailer, copied under `third-party/`, and commits `(file fingerprint, end offset)` per line
+after the acknowledgement. It needs the `file-tail` feature and is refused at
 load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
 
 | Source | Unit kind | Checkpoint mark | Lands on |
@@ -293,7 +261,7 @@ A database tail reads its store in pages of `limit` rows inside one tick, each
 page resuming past the last row of the one before, and the tick ends on the
 first short page or at `max_pages_per_tick`. One query per tick would cap a
 unit at `limit / interval` rows a second whatever the table does, and a table
-appending faster would fall behind with no signal; `tail_pages_full_total`
+appending faster would fall behind with no signal. `tail_pages_full_total`
 counts the pages that came back full, so a store repeatedly hitting the cap is
 visible before it is a backlog.
 
@@ -307,122 +275,30 @@ UUIDv7 `snapshot_id` and `snapshot_at` and all on the unit's own topic
 (`<topic>-<unit>` plus the deployment suffix). A dump that aborts emits no
 `end`, which is the consumer-side incompleteness signal. The frames, every
 field, the per-tick and per-file scopes and the consumer rules are in
-[reference/snapshot-envelope.md](reference/snapshot-envelope.md); the writer
+[reference/snapshot-envelope.md](reference/snapshot-envelope.md). The writer
 and a reference reassembler are `crates/core/src/envelope.rs`.
 
 A known limitation: a single-destination route moves a dump's matching rows to that destination's table while its `begin` and `end` frames stay in the unit's own, so neither table holds a dump that can be reassembled.
-
-## Extraction Modes
-
-```mermaid
-flowchart LR
-    subgraph "Mode 1: Source framework"
-        A1{Plain REST API?} -->|Yes| A2[Declarative profile<br>YAML, no Rust]
-        A1 -->|Needs a signer, lister,<br>row builder or paging quirk| A3[Hook on an axis<br>crates/rest]
-        A3 --> A2
-        A1 -->|A database or files| A4[sources.db or sources.file]
-        A2 --> A5[Driver: rows, batch, transport]
-        A4 --> A5
-    end
-
-    subgraph "Mode 2: Container"
-        C1{Mature tool exists?} -->|Yes| C2[Wrap in a container]
-        C2 --> C3[Docker or podman run]
-        C3 --> C4[stdout JSON lines<br>or HTTP POST]
-        C4 --> C5[IngestMessage]
-    end
-
-    subgraph "Mode 3: Vector.dev"
-        D1[Vector config] --> D2[Container or sidecar]
-        D2 --> D3[Vector gRPC protocol]
-        D3 --> D4[IngestMessage]
-    end
-```
-
-## Container Extractor Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Configured: Config loaded
-    Configured --> Starting: start()
-    Starting --> Running: Container started
-    Running --> Running: Health check OK
-    Running --> Unhealthy: Health check fail
-    Unhealthy --> Running: Recovery
-    Unhealthy --> Stopped: Max retries
-    Running --> Stopping: shutdown signal
-    Stopping --> Stopped: Container stopped
-    Stopped --> [*]
-
-    state Running {
-        [*] --> Scheduled: mode=scheduled
-        [*] --> Continuous: mode=continuous
-        Scheduled --> Waiting: Run complete
-        Waiting --> Scheduled: Timer tick
-        Continuous --> Continuous: Streaming output
-    }
-```
-
-A continuous extractor that exits is restarted after an exponential backoff
-capped by `max_restart_backoff_secs`; the backoff resets once a run has stayed
-up for `stable_after_secs`.
-
-## Container Communication
-
-The HTTP mode listener requires `ingest.auth_token`: every `/ingest` call carries `Authorization: Bearer <token>`. With no token the listener refuses to start unless `ingest.allow_unauthenticated: true` is set. The `/livez` and `/readyz` probes are exempt.
-
-```mermaid
-flowchart TB
-    subgraph "stdout mode"
-        C1[Container] -->|JSON lines on stdout| F1[Fetcher reads child stdout]
-        F1 --> P1[Parse line as JSON]
-        P1 --> D1[Deliver to pipeline]
-    end
-
-    subgraph "HTTP mode"
-        C2[Container] -->|POST /ingest/source| F2[Ingest HTTP server :8080]
-        F2 --> P2[Parse JSON body]
-        P2 --> D2[Deliver to pipeline]
-    end
-
-    subgraph "gRPC mode - Vector"
-        C3[Vector container] -->|Vector gRPC protocol| F3[gRPC server :6000]
-        F3 --> P3[Convert to JSON]
-        P3 --> D3[Deliver to pipeline]
-    end
-```
-
-What each mode guarantees:
-
-- Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is answered only after its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` too, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. While the fetcher's memory-pressure latch holds, a push is refused `UNAVAILABLE` before any work.
-- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` only after the outputs took the record or the DLQ confirmed it, and `503` with `Retry-After` otherwise. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it; such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
-- stdout: a pipe cannot be read twice, so a line the outputs cannot take yet is held and retried, pausing from 1 s up to 30 s, and the container's stdout is not read meanwhile, so the container blocks on its own writes until the outputs recover. Only a failure no retry can clear (no output configured), or a line still held at shutdown after one more attempt, is dropped, counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}` and never in the received count.
-
-At shutdown the extractors deliver what they hold before the outputs close, for up to 20 s: the Vector receiver refuses new pushes and delivers what it has queued, and a container extractor stops its container while still reading its stdout to the end. A scheduled container's `timeout_secs` bounds the whole run, stdout included: at the timeout the container is killed and the run fails. A line held for an output outage is not interrupted by the timeout; the kill follows once the line is delivered.
-
-A Vector listener that cannot bind at start-up fails the process: it drains, stops its containers and exits non-zero, so the pod restarts rather than stay Ready with a dead intake.
-
-A Vector push names no instance, so the listener it arrives on decides its topic. The shared `extractors.vector.grpc_bind_address`, the one port the chart publishes, carries at most one instance and lands on that instance's `topic`, or on `vector` when none shares it. Every other instance names its own `grpc_bind_address` and lands on its own `topic`. Two instances sharing the listener are refused at load.
 
 ## Configuration Cascade
 
 ```mermaid
 flowchart TB
-    CLI[CLI arguments] --> Merge
+    CLI[CLI flags] --> Merge
     ENV[Environment variables<br>DFE_FETCHER_*] --> Merge
-    DOT[.env file] --> Merge
-    CFG[Config file<br>config.yaml] --> Merge
+    CFG[The --config file] --> Merge
     DEF[Defaults] --> Merge
     Merge[Merged config] --> Validate
     Validate --> SharedConfig
-    SharedConfig -->|SIGHUP or file watch| Reload[Hot reload]
+    SharedConfig -->|SIGHUP, file change, config_reload_secs| Reload[Reload]
     Reload --> Merge
 ```
 
-Earlier layers win. Validation binds every profile instance (a shipped
-profile by name or an inline one), every database instance and every file
-instance, so a bad field fails the load with its path rather than the first
-tick. The per-source filter, the routes, the scheduler interval and jitter are read once per tick. A reload that adds, removes or changes a source starts, stops or rebuilds that source as a restart would, its `env:` and `vault:` specs resolved first. The ingest listener and the container and Vector extractors are built once, so a change to them needs a restart.
+Earlier layers win. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's cascade stands in for the file: `.env` from the working directory, then `settings.<env>.yaml`, `settings.yaml` and `defaults.yaml` from the working directory, `./config/`, `/config/` and the user's config directory. A nested name reaches its key with either separator after the prefix (`DFE_FETCHER_SOURCES__AWS__REGION` and `DFE_FETCHER__SOURCES__AWS__REGION`), an empty value counts as unset, and the flat names `apply_flat_env` reads (`DFE_FETCHER_KAFKA_BROKERS` and the like) are applied last. The runtime's own sections (`logger`, `metrics`, `version_check`) come from the `--config` file, or from scalo's cascade without one.
+
+Validation binds every profile instance (a shipped profile by name or an inline one), every database instance and every file instance, so a bad field fails the load with its path rather than the first tick. Outside the profile grammar a key the config does not know is skipped, and the warning naming it is written before the logger starts, so a misspelt key in a typed block does nothing without a word.
+
+The reloader re-reads the config on SIGHUP, on a change to the `--config` file (polled every `config_reload_secs`, at least 5 s) and every `config_reload_secs` when that is set. A reload that does not validate is refused and the running config kept. Each source reads its filter, the routes, the topic suffix, the org, `unwrap_nested_json`, its batch bounds, the oversize policy and the memory brake once per tick, and the scheduler re-reads the interval, the jitter and the `cursor` window settings. A reload that adds, removes or changes a source starts, stops or rebuilds that source as a restart would, its `env:` and `vault:` specs resolved first. The outputs, the DLQ, the memory guard, the cursor store, `scheduler.max_concurrent_fetches`, the instance id, the ingest listener and the container and Vector extractors are built once, so a change to them needs a restart. On Kubernetes the chart rolls the pod for any config edit outside the deployment contract's `hot_paths` (`crates/fetcher/src/deployment.rs`), so there most edits restart the pod whatever the process could have reloaded.
 
 ## Multi-Tenant Deployment
 
@@ -451,71 +327,25 @@ connection id. The connection id is the second part of every cursor key, so
 ids must differ across every source once case is ignored, and no id may be
 another followed by `.`.
 
-## Decision Framework: Profile vs Container vs Vector
-
-| Criterion | REST profile | Container | Vector |
-|-----------|--------------|-----------|--------|
-| A plain REST or JSON API | Yes | - | - |
-| A mature tool in another language does the job | - | Yes | - |
-| Vector already has a native source for it | - | - | Yes |
-| Needs process isolation from the fetcher | - | Yes | - |
-| Third-party maintained | - | Yes | Yes |
-| Wanted: checkpoint after ack, the snapshot envelope, the memory brake | Yes | - | - |
-
-### Examples
-
-| Source | Mode | Reason |
-|--------|------|--------|
-| AWS CloudTrail | Profile | JSON API signed with the `sigv4` auth mode |
-| Azure Activity Log | Profile | REST API paged by `nextLink` |
-| M365 Audit Log | Profile | A prelude, a paged content list and a manifest per blob |
-| runZero inventory | Profile | NDJSON exports as snapshot dumps |
-| An inventory database | `sources.db` | A table dumped whole or tailed by key |
-| Prometheus exporters | Container | A mature exporter run as a sidecar |
-| Syslog collection | Vector | Vector has a native syslog source |
-
-### Sidecar Patterns
-
-For log sources that established tools handle well, use container extractors
-with a collection agent that can print JSON lines or POST JSON, such as Vector
-or Fluent Bit. Filebeat has no HTTP output (its outputs are Elasticsearch,
-Logstash, Kafka, Redis, file and console, per Elastic's output docs), so ship
-Beats data to dfe-receiver's Beats listener instead.
-
-| Source Type | Sidecar Tool | Communication |
-|-------------|-------------|---------------|
-| Syslog | Vector or Fluent Bit | HTTP POST to `/ingest/syslog` |
-| Windows Event Logs | A forwarder that POSTs JSON (winlogbeat is a separate Beat with the same output limits) | HTTP POST to `/ingest/windows_events` |
-| Custom app logs | A shipper that prints JSON lines | stdout JSON lines |
-| Network captures | Zeek / Suricata | stdout JSON lines |
-| Cloud provider logs | Cloud-specific CLI tools | stdout JSON lines |
-
-Each sidecar runs as a container extractor with `mode: continuous` and
-communicates via stdout (JSON lines) or HTTP POST to the ingest endpoint.
-The fetcher manages the container lifecycle including restart-on-crash with
-exponential backoff. A log file the fetcher itself can reach is a
-`sources.file` tail unit instead.
-
 ## Performance Sensitivity
 
 > **dfe-fetcher is less hot-path-sensitive than the rest of the DFE stack.**
 
 Typical fetcher volumes are orders of magnitude lower than the loader /
-receiver / transform / archiver tier. A single fetcher pod servicing one
-tenant's combined AWS / Azure / M365 / GCP / SaaS audit feeds normally
-moves tens to a few thousand records per minute. The fetcher is also I/O-bound waiting on remote cloud
-APIs, not CPU-bound parsing or routing.
+receiver / transform / archiver tier, because a provider's API paces what it
+hands over. The fetcher is also I/O-bound waiting on remote cloud APIs, not
+CPU-bound parsing or routing.
 
 What this means in practice:
 
 | Concern | Rest of DFE stack | dfe-fetcher |
 |---|---|---|
-| Per-record allocation | Zero-allocation hot path; pre-allocated pools, arenas | Allocate freely - `Vec`, `String`, `serde_json::Value` are fine |
+| Per-record allocation | Zero-allocation hot path. Pre-allocated pools, arenas | Allocate freely - `Vec`, `String`, `serde_json::Value` are fine |
 | SIMD JSON parse | `sonic-rs` mandatory on hot paths | `serde_json` is sufficient |
 | Cloning / `Bytes` reuse | Aggressive `Bytes` reuse, `Cow`, arena lifetimes | One allocation per enveloped row is fine |
 | Channel sizing | Backpressure-tuned bounded channels per stage | The batcher's bounds and the memory guard's lease are the backpressure |
-| `regex` on hot path | Forbidden - use `memchr` / `memmem::Finder` | Acceptable if needed; volumes don't justify rewrite |
-| `async fn` granularity | Watch `.await` budget, yield_now hints | `await` per HTTP request is the unit of work; one virtual `poll_next` per row through a boxed stream |
+| `regex` on hot path | Forbidden - use `memchr` / `memmem::Finder` | Acceptable if needed. Volumes don't justify rewrite |
+| `async fn` granularity | Watch `.await` budget, yield_now hints | `await` per HTTP request is the unit of work. One virtual `poll_next` per row through a boxed stream |
 | Per-source concurrency | Lock-free, sharded, ArcSwap | A mutex around a token cache is acceptable |
 
 We still care about correctness, cancellation safety, bounded retries,

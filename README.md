@@ -8,31 +8,36 @@ Pulls data from cloud and SaaS APIs, databases and files into a DFE deployment.
 ## What it does
 
 - A new REST provider is a YAML profile, with no Rust: the base URL, auth modes, endpoints, decoder and pager, checked at load with the line of any unknown key.
-- Database sources over ODBC, the ClickHouse HTTP interface and MongoDB, dumped whole or tailed, by key tuple on SQL and by change stream on MongoDB.
-- Any tool run in a Docker or podman container as a source, its stdout JSON lines collected, and Vector's native gRPC protocol received.
+- Database sources over ODBC, the ClickHouse HTTP interface and MongoDB, dumped whole or tailed, by key tuple on SQL and by change stream or `_id` on MongoDB.
+- Any tool run in a Docker or podman container as a source, its stdout JSON lines or HTTP posts collected, and Vector's native gRPC protocol received.
 - A cursor or checkpoint written only after the transport has taken the batch, so a failed tick fetches again rather than losing records. A dump travels as one snapshot, framed `begin`, rows and `end`.
-- A per-source CEL filter, hot-reloaded, and a memory guard that stops pulling from a provider while the service is under pressure.
-- Secrets from a secrets manager, an env var or a literal, config reload on SIGHUP or file watch, and a deployment contract that generates its Dockerfile and Compose file.
+- A per-source CEL filter, re-read every tick, and a memory brake that pauses polling a provider while the service is under memory pressure, for at most `self_regulation.max_hold_secs` at a time.
+- Secrets from a secrets manager, an env var or a literal, config reload on SIGHUP or file watch, and a deployment contract that generates its Dockerfile, its Compose file and the released chart.
 
 Every record goes to the DFE pipeline over Kafka or gRPC, the same way dfe-receiver's do.
 
 ## Quick start
 
+On Linux the build needs `protoc`, a C toolchain, `pkg-config` and librdkafka. scalo compiles its gRPC `.proto` files, `aws-lc-sys` compiles C, and `rdkafka-sys` links librdkafka through pkg-config. It refuses a librdkafka older than the version after the `+` in its `Cargo.lock` entry, and a Debian or Ubuntu package can be older than that, so there [build librdkafka from source](https://github.com/confluentinc/librdkafka#build-from-source) first.
+
 ```bash
+sudo apt-get install -y protobuf-compiler build-essential pkg-config
 cargo build --release
-./target/release/dfe-fetcher config-check --config config.example.yaml
+./target/release/dfe-fetcher --config config.example.yaml config-check
 ./target/release/dfe-fetcher --config config.example.yaml
 ```
 
-The default features carry the REST sources. The database and file sources are their own cargo features, listed in [docs/config-schema.yaml](docs/config-schema.yaml) and the crate manifest. Metrics and health answer on port 9090 (`/livez`, `/readyz`). The ingest HTTP endpoint on 8080 and the Vector gRPC receiver on 6000 are off until a deployment turns them on.
+`--config` goes before the subcommand. [config.example.yaml](config.example.yaml) enables no source, so the fetcher starts idle and logs `no work configured` until a source, an extractor or the ingest listener is switched on. Metrics and health answer on port 9090 (`/metrics`, `/livez`, `/readyz`), and `/readyz` answers `{"status":"ready"}` while it idles. The ingest HTTP endpoint on 8080 and the Vector gRPC receiver on 6000 are off until a deployment turns them on.
+
+A default build carries the REST sources and the file dump. The database engines and the file tailer are cargo features of `crates/fetcher/Cargo.toml` (`db-odbc`, `db-clickhouse`, `db-mongodb`, `file-tail`), and a config naming an engine the binary lacks is refused at load with the feature to build. The release image is built with all four and `jemalloc` (`build.rust.features` in `.hyperi-ci.yaml`).
 
 ## Configuration
 
-[config.example.yaml](config.example.yaml) is the annotated reference for every setting, and [docs/reference/profile-grammar.md](docs/reference/profile-grammar.md) is the profile grammar field by field. Settings load through a cascade: CLI, then `DFE_FETCHER_*` environment variables, then config files, then defaults. Each provider has its typed block (`sources.aws`, `sources.okta`, and so on), and `sources.rest.<id>` takes a shipped or inline profile.
+[config.example.yaml](config.example.yaml) is the annotated reference, [docs/config-schema.yaml](docs/config-schema.yaml) the generated list of every key, and [docs/reference/profile-grammar.md](docs/reference/profile-grammar.md) the profile grammar field by field. Settings load through a cascade: CLI flags, then `DFE_FETCHER_*` environment variables, then the config file, then defaults. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's own search for `settings.yaml` and `defaults.yaml` stands in, with `.env` read from the working directory, as [docs/internals.md](docs/internals.md#configuration-cascade) sets out. Each provider has its typed block (`sources.aws`, `sources.okta`, and so on), and `sources.rest.<id>` takes a shipped or inline profile.
 
 ## Sources
 
-Each source is a shipped profile under `crates/fetcher/profiles/`. Its `maturity` is repeated in [docs/capability-catalog.yaml](docs/capability-catalog.yaml), and the fetcher warns at startup for any enabled source that is not stable. [docs/cloud-setup/README.md](docs/cloud-setup/README.md) indexes the setup guides.
+Each REST source is a shipped profile under `crates/fetcher/profiles/`, and databases and files are source kinds of their own (`sources.db`, `sources.file`). A profile's `maturity` is repeated in [docs/capability-catalog.yaml](docs/capability-catalog.yaml), and the fetcher warns at startup for any enabled source that is not stable. [docs/cloud-setup/README.md](docs/cloud-setup/README.md) indexes the setup guides.
 
 | Source | Block | What it pulls |
 |--------|-------|---------------|
@@ -44,7 +49,7 @@ Each source is a shipped profile under `crates/fetcher/profiles/`. Its `maturity
 | Okta, Cisco Duo, CrowdStrike, Cloudflare | `sources.okta`, `sources.duo`, `sources.crowdstrike`, `sources.cloudflare` | System Log, authentication logs, Falcon alerts, account audit logs |
 | Datadog, runZero | `sources.rest` with the shipped profile | Audit trail and security signals, asset inventory snapshots |
 | Bitwarden, 1Password, Slack, GitHub, Salesforce | `sources.bitwarden`, `sources.onepassword`, `sources.slack`, `sources.github`, `sources.salesforce` | Each product's audit and event logs |
-| Object store | `sources.object_store` | S3 and S3-compatible bucket prefixes, each object read once |
+| Object store | `sources.object_store` | S3 and S3-compatible bucket prefixes, each object read at least once |
 | PyPI, crates.io, Go modules | `sources.pypi`, `sources.crates_io`, `sources.go_modules` | Package metadata for supply-chain monitoring |
 | Databases | `sources.db` | Any ODBC-reachable database, ClickHouse or MongoDB, dumped whole or tailed by key |
 | Files | `sources.file` | Directories of NDJSON, JSON or CSV dumps, or log files tailed |
@@ -54,6 +59,7 @@ A new API starts as a profile, shipped under `crates/fetcher/profiles/` or inlin
 ## Documentation
 
 - [docs/internals.md](docs/internals.md): the system, the framework's tick and the configuration cascade, with diagrams.
+- [docs/delivery.md](docs/delivery.md) and [docs/extractors.md](docs/extractors.md): what happens to a record on its way out, and the container and Vector extractors.
 - [docs/architecture.md](docs/architecture.md): the codemap of the Cargo workspace.
 - [docs/reference/](docs/reference/profile-grammar.md): the profile grammar, the snapshot envelope and the database drivers.
 - [docs/cloud-setup/](docs/cloud-setup/README.md): one setup guide per provider.

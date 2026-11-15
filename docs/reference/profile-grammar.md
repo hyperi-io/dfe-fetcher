@@ -20,7 +20,7 @@ parses and does nothing.
 The grammar as built is `crates/rest/src/profile/mod.rs`, and the generated
 JSON Schema of the whole config surface (this grammar included) is
 `docs/config-schema.yaml`. The shipped profiles under
-`crates/fetcher/profiles/` are the worked examples of every entry below;
+`crates/fetcher/profiles/` are the worked examples of every entry below.
 `config.example.yaml` shows an instance of one and an inline profile. Defaults
 are not repeated here: read them off the `Default` impls in the grammar.
 
@@ -49,22 +49,22 @@ entry.
 | | `bearer` (static token) | github, cloudflare, onepassword, slack, okta, runzero, gcp |
 | | `api_key` (named header with a prefix, or a query parameter) | okta (`SSWS`) |
 | | `basic` | none shipped |
-| | `oauth2_client_credentials` (cached until shortly before expiry; per-unit `auth.scope`; `expose` allow-lists token-response fields for templates; `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
-| | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM; claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
+| | `oauth2_client_credentials` (cached until shortly before expiry. Per-unit `auth.scope`. `expose` allow-lists token-response fields for templates. `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
+| | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM. Claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
-| | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical layout and placement the profile names; Duo's versions are presets of it) | duo |
+| | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical layout and placement the profile names. Duo's versions are presets of it) | duo |
 | | `sigv4` (AWS Signature v4, service and region rendered per request) | aws, object_store |
-| | `credentials` (more than one credential on the one request, each where the profile places it; a placement may compose several into one value) | datadog |
+| | `credentials` (more than one credential on the one request, each where the profile places it. A placement may compose several into one value) | datadog |
 | | `session_login` (a login call mints a session token, read from a JSON pointer or a response header and carried in a header of the appliance's naming) | none shipped |
 | Pager (`paginate.strategy`) | `none` | runzero, azure `log_analytics` |
 | | `link_header` (RFC 5988 `rel="next"`) | github, okta |
-| | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path, and a list cursor is comma-joined) | aws, bitwarden, crowdstrike, datadog, duo, gcp, google_workspace, onepassword, slack |
+| | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path, and a list cursor is comma-joined) | aws, bitwarden, datadog, duo, gcp, google_workspace, onepassword, slack |
 | | `page_number` (bounded by `total_pages_at`) | cloudflare |
 | | `offset` (advanced by rows received, bounded by `total_at` or a short page) | crowdstrike |
 | | `request_path` (the next URL from the body or a header, relative resolved against the page) | azure, m365, salesforce |
 | Decoder (`rows.decoder`) | `json_array` (streamed) | github, okta, m365 |
 | | `ndjson` (streamed) | runzero, object_store |
-| | `json_at` (a wrapped page, rows at a JSON pointer) | aws, azure, bitwarden, cloudflare, crowdstrike, datadog, duo, gcp, gcp_pubsub, google_workspace, onepassword, salesforce, slack |
+| | `json_at` (a wrapped page, rows at a JSON pointer) | aws, azure, bitwarden, cloudflare, crowdstrike, datadog, duo, gcp, gcp_pubsub, google_workspace, m365 `alerts`, onepassword, salesforce, slack |
 | | `document` (the whole body is one row) | pypi, crates_io, go_modules, aws `cloudwatch_metrics` |
 | | `json` (an array is its elements, anything else one row) | object_store |
 | | `lines` (plain text, one row per line) | go_modules, object_store |
@@ -72,10 +72,11 @@ entry.
 | Row flags (`rows.*`) | `gzip` (inflate a gzip member sequence before framing), `quoted` (each row is a JSON string holding the row), `header` (CSV) | object_store, aws `config`, salesforce |
 | Construct (`construct.*`, at most one of the last three per unit) | `keyset` (one page sequence per key of a list, from a template or a first request) | aws, azure, pypi, crates_io, go_modules |
 | | `lookup` (a second request per batch of ids the pages yield, with its own rows and pager) | aws `guardduty`, aws `cloudwatch_metrics`, crowdstrike |
-| | `manifest` (a second request per item the pages point at; `key` and `position` give each row an item checkpoint) | m365, object_store, salesforce, go_modules |
-| | `queue` (rows carry an ack id; the ack request goes out after delivery) | gcp_pubsub |
+| | `manifest` (a second request per item the pages point at. `key` and `position` give each row an item checkpoint) | m365, object_store, salesforce, go_modules |
+| | `queue` (rows carry an ack id. The ack request goes out after delivery) | gcp_pubsub |
 | `prelude` | idempotent requests sent once per tick before the first page | m365 (the subscription start) |
 | Row builder (`rows.builder`, or `fold` for a folding one) | `columnar_table` | azure `log_analytics` |
+| | `cloudwatch_logs` | aws `cloudwatch_logs` |
 | | `cloudwatch_metrics` | aws `cloudwatch_metrics` |
 | | `go_module_aggregate` (a fold) | go_modules |
 | | `wrap_non_object` | object_store |
@@ -83,19 +84,19 @@ entry.
 | | `cloudtrail_event` | aws `cloudtrail` |
 | | `event_time` | azure `entra_signins`, `entra_directory_audits`, `entra_provisioning` |
 | Lister (`lister`) | `s3` (`ListObjectsV2`, the keys modified after the unit's checkpoint) | object_store |
-| Window (`window.format`) | `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis`, `strftime:<pattern>`; `step` chunks the window, `lookback` is the window when the scheduler passes none; a unit may override the format | every incremental profile |
+| Window (`window.format`) | `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis`, `strftime:<pattern>`. `step` chunks the window, `lookback` is the window of a tick run with none, which a scheduled tick never is. A unit may override the format | every incremental profile |
 | Method | `GET` (retried by default), `POST` (retried only with `retry.retry_non_idempotent`) | every profile |
 | `shape`, per profile or per endpoint | `incremental` (rows are events in the window), `dump` (rows are the whole store, enveloped) | runzero is the shipped dump |
-| Probe | the cheapest authenticated call, with an optional `fail_when`; without one the health check resolves the credential (and mints a token) | github, okta, cloudflare, duo, slack, onepassword, aws, pypi, crates_io, go_modules |
+| Probe | the cheapest authenticated call, with an optional `fail_when`. Without one the health check resolves the credential (and mints a token) | github, okta, cloudflare, duo, slack, onepassword, aws, pypi, crates_io, go_modules |
 
 ## Profile
 
 | Field | Meaning |
 |-------|---------|
-| `profile` | Registry key of a shipped profile; an inline profile may leave it empty. |
-| `maturity` | `alpha`, `beta` or `stable`; the fetcher warns at startup for an enabled non-stable source. |
-| `base_url` | Template; must reference a variable, never a literal URL, because a profile carries no identity. Rendered per unit, so a unit's `vars` can pick the host. |
-| `allow_hosts` | Origins a rendered URL may name besides `base_url`'s, for an API that answers on a second host (a sovereign cloud repointing `management_url`). Each entry is a template like `base_url`, so the host comes from the instance's vars, and names one exact origin: there are no wildcards, because a suffix match lets `example.com.evil.net` pass for `example.com`. Empty by default, and no shipped profile declares one. |
+| `profile` | Registry key of a shipped profile. An inline profile may leave it empty. |
+| `maturity` | `alpha`, `beta` or `stable`. The fetcher warns at startup for an enabled non-stable source. |
+| `base_url` | Template. Must reference a variable, never a literal URL, because a profile carries no identity. Rendered per unit, so a unit's `vars` can pick the host. |
+| `allow_hosts` | Origins a rendered URL may name besides `base_url`'s, for an API that answers on a second host (a sovereign cloud repointing `management_url`). Each entry is a template like `base_url`, so the host comes from the instance's vars, and names one exact origin: there are no wildcards, because a suffix match lets `example.com.evil.net` pass for `example.com`. Empty by default. The shipped `salesforce` profile declares its org's `instance_url`. |
 | `shape` | Default `shape` of every endpoint (`incremental` or `dump`). |
 | `auth` | Accepted modes and the settings of each ([Auth](#auth)). |
 | `headers` | Header templates on every request. |
@@ -108,24 +109,24 @@ entry.
 
 ## Auth
 
-`auth.accepts` lists the modes an instance may pick; the sibling keys carry
+`auth.accepts` lists the modes an instance may pick. The sibling keys carry
 the settings of each mode. Identity (tokens, keys, secrets) lives on the
 instance, never here.
 
 | Mode | Fields |
 |------------|--------|
-| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `"SSWS "`; a query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
-| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`; `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
-| `jwt_bearer` | `token_url` (template; may read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`; a claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
+| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `"SSWS "`. A query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
+| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`. `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
+| `jwt_bearer` | `token_url` (template. May read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`. A claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
-| `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context; the body's SHA-256 is the payload hash). |
+| `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context. The body's SHA-256 is the payload hash). |
 | `signature` | `preset` (a shipped scheme by name), or the scheme spelled out: `digest`, `keying`, `canonical`, `encoding`, `headers`, `signed_header_prefix`, `place`, `header`, `prefix`. See [Signing a request](#signing-a-request). |
 | `credentials` | A list of placements: `header` or `query` (exactly one) with an optional `prefix`, carrying either `from` (one named credential as it resolved) or `value` (a value composed of `{{ credentials.<name> }}` placeholders). See [More than one credential on a request](#more-than-one-credential-on-a-request). |
 | `session_login` | `url` (the login endpoint, a template), `send`, `username_field` / `password_field`, `body`, `token_at` or `token_header`, `ttl_secs`, `early_refresh_secs`, `header`, `prefix`. See [Logging in for a session token](#logging-in-for-a-session-token). |
 | `bearer`, `basic`, `none` | No profile-side settings. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
-`jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`; units
+`jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`. Units
 with the same scope share one token.
 
 ### Authenticating the exchange with a key instead of a secret
@@ -134,7 +135,7 @@ A client secret is a static credential the deployment holds and the exchange
 posts. Where a provider offers it, a key pair is the better trade: the private
 half never leaves the deployment, and the grant it buys is scoped to the
 integration rather than carrying the permissions of whoever minted a token.
-Okta steers its API Services apps this way and calls it `private_key_jwt`;
+Okta steers its API Services apps this way and calls it `private_key_jwt`.
 Microsoft Entra, Zscaler OneAPI and Snowflake all work the same way.
 
 It is not a mode of its own. The exchange is still client credentials, so the
@@ -171,7 +172,7 @@ auth:
 
 The assertion always carries `iss` and `sub` as the client id and `aud` as the
 rendered token endpoint, which is what RFC 7523 s2.2 requires of a client
-authenticating as itself; `iat` and `exp` come from `ttl_secs`, and `jti` is
+authenticating as itself. `iat` and `exp` come from `ttl_secs`, and `jti` is
 fresh on every mint, because Okta refuses an assertion whose id it has already
 seen. A profile that writes `iat`, `exp` or `jti` in `claims` is refused at
 load rather than having them overwritten.
@@ -179,7 +180,7 @@ load rather than having them overwritten.
 The signature is RS256, so `private_key` is an RSA private key PEM and a key of
 another kind is refused when it is read, naming the kind that is wanted. The
 instance's `private_key_id` becomes the `kid` of the JOSE header. An app holding
-ONE registered key pair resolves an assertion without it; an app holding two --
+ONE registered key pair resolves an assertion without it. An app holding two --
 which is what rotating a signing key looks like, the new public key registered
 beside the old -- resolves by `kid` alone and refuses an assertion that names
 none. So an instance whose app has ever been rotated carries it.
@@ -196,7 +197,7 @@ no `client_assertion`.
 Several prominent APIs authenticate a call with two credentials, and there is no
 config workaround: a static added header is not a secret reference, and a key
 does not go in plain config. The `credentials` mode is the one for them. The
-PROFILE declares where each credential goes and the name it is read under; the
+PROFILE declares where each credential goes and the name it is read under. The
 INSTANCE supplies a spec per name, because a profile carries no identity. Each
 name resolves once however many placements carry it, and every placement is
 applied to the one built request.
@@ -259,7 +260,7 @@ front of it (`{ header: Authorization, from: token, prefix: "Token " }`). A
 
 A name is letters, digits, `_` and `-` -- in the profile's `from`, in a
 `{{ credentials.<name> }}` placeholder and as an instance key alike, because the
-two sides are matched against each other. A spec is any the resolver reads; the
+two sides are matched against each other. A spec is any the resolver reads. The
 spellings are in `config.example.yaml`.
 
 A `value` is composed, not computed. Its only substitution is
@@ -300,7 +301,7 @@ administrator's credentials, get a token back, send that token on every later
 request. vCenter, Cisco Catalyst Centre, Check Point Management, F5 BIG-IP,
 Wazuh, Veeam, Zscaler's legacy API, Redfish and iDRAC BMCs and Qualys all work
 this way, and none of them speaks RFC 6749: the token comes back under a name
-the vendor chose, in the body or in a header, usually with nothing said about
+the appliance's maker chose, in the body or in a header, usually with nothing said about
 how long it lives.
 
 So `session_login` reads the token from where the profile points, holds it for
@@ -311,7 +312,7 @@ names. It is NOT a bearer, and the grammar does not pretend otherwise.
 |-------|---------|
 | `url` | The login endpoint, a template (may read `base_url`). |
 | `send` | `body` puts the credentials in the JSON body, `basic` in the login's own `Authorization: Basic` header. |
-| `username_field`, `password_field` | The body members the credentials are written into under `send: body`; `username` and `password` unless the appliance names them otherwise. |
+| `username_field`, `password_field` | The body members the credentials are written into under `send: body`. `username` and `password` unless the appliance names them otherwise. |
 | `body` | Further members of the login body, each a template (F5's `loginProviderName`). The profile's own text -- a credential never travels here. Refused under `send: basic`, which posts no body at all. |
 | `token_at` | JSON pointer to the token in the login response. The empty pointer is the whole body, which is what vCenter answers: a JSON string that IS the session id. |
 | `token_header` | The response header carrying the token instead (F5's `X-F5-Auth-Token`). Exactly one of this and `token_at`. |
@@ -371,7 +372,7 @@ because that is not a failure the account is locked for.
 
 Some providers authenticate a call with a digest of the call itself rather than
 with a credential the request carries. The digest algorithm, the canonical
-string it is taken over and where the digest goes are per-vendor details, so
+string it is taken over and where the digest goes differ by provider, so
 they are the `signature` mode's config rather than a mode of their own.
 
 | Field | Meaning |
@@ -384,7 +385,7 @@ they are the `signature` mode's config rather than a mode of their own.
 | `headers` | Headers set on the request BEFORE it is signed, each a template over the same facts less `signature.headers_hash`, which is computed after them and so is refused here. A scheme that signs a timestamp or a nonce carries it this way. |
 | `signed_header_prefix` | The lowercase name prefix of the headers `signature.headers_hash` covers. Unset covers none, so the hash is of the empty string. |
 | `place` | `basic` (`Basic base64(<key_id>:<digest>)`) or `digest` (the encoded digest on its own, after `prefix`). |
-| `header` | The header the digest goes in; `authorization` unless named. |
+| `header` | The header the digest goes in. `authorization` unless named. |
 | `prefix` | Text in front of the digest, under `place: digest` only. |
 
 The facts a `canonical` or `headers` template may read, all of them the built
@@ -399,7 +400,7 @@ request's own:
 | `signature.host` | The host, lowercase, with the port when the URL states one. |
 | `signature.path` | The path. |
 | `signature.query` | The query pairs percent-encoded to the RFC 3986 unreserved set, then sorted and `&`-joined. |
-| `signature.body_hash` | The body's digest as lowercase hex; the empty string's when there is no body. |
+| `signature.body_hash` | The body's digest as lowercase hex. The empty string's when there is no body. |
 | `signature.headers_hash` | The digest of the signed headers -- each name lowercase, then its trimmed value, in name order, NUL-separated -- as lowercase hex. |
 | `signature.key_id` | The instance's `key_id`, the public half naming the key. |
 
@@ -514,7 +515,7 @@ decide what another unit's request signs.
 
 Nothing else about the mode varies at all. The digest, the keying, the
 encoding, the placement, the header and the prefix are the profile's and are
-not templates; the key id and the secret are the instance's and are read as
+not templates. The key id and the secret are the instance's and are read as
 they were configured. So a per-unit value can reach neither the key nor where
 the digest is written -- the two decisions that would otherwise let one unit
 authenticate as another.
@@ -530,14 +531,14 @@ A credential is minted once per instance, and once per scope a unit names, so
 own `vars` or `base_url`, is refused when the instance binds: a claim deciding
 the identity the token acts as (a domain-wide-delegation `sub`) must not be able
 to vary by unit. `sigv4`'s `service` and `region` are the exception, and render
-per request by design; `signature`'s templates render per request too, and are
+per request by design. `signature`'s templates render per request too, and are
 held to the request's own facts instead ([What a signature may be
 about](#what-a-signature-may-be-about)).
 
 ### Endpoint rules the modes are held to
 
 - `early_refresh_secs` is capped at half the token's lifetime. A margin at or
-  over the lifetime is logged; one between half and full is capped silently.
+  over the lifetime is logged. One between half and full is capped silently.
 - `token_url` must be an https URL or a loopback address, because the client
   secret is a field of the form that is posted. A self-hosted deployment reached
   over plain http stops fetching, which is deliberate. `session_login.url` is
@@ -555,9 +556,9 @@ about](#what-a-signature-may-be-about)).
 | `retry.retry_on` | Statuses that are retried: a code, or a class such as `5xx`. |
 | `retry.never_retry` | Statuses never retried whatever `retry_on` says (every shipped profile lists 401 and 403). |
 | `retry.retry_after_header` | Honour `Retry-After` on a retried response. |
-| `retry.retry_non_idempotent` | Retry POST as well as GET; off by default, set where every POST of the profile is a read. |
+| `retry.retry_non_idempotent` | Retry POST as well as GET. Off by default, set where every POST of the profile is a read. |
 | `retry.throttle_when` | What a refusal meaning "slow down" looks like where the status does not say so (`status` and `body_contains`, as AWS answers 400 with a `ThrottlingException` body): retried whatever `retry_on` lists, and counted `throttle` rather than a client error. A status in `never_retry` is never one. |
-| `error.at` | JSON pointer to the error text in a non-2xx body; the whole body is used when unset. |
+| `error.at` | JSON pointer to the error text in a non-2xx body. The whole body is used when unset. |
 | `quota.headers` | Gauge-name suffix -> response header, surfaced as `dfe_fetcher_api_quota_<suffix>` labelled by source. |
 
 A final retry failure fails the tick, and a failed tick does not advance the
@@ -570,7 +571,7 @@ counted as an API error.
 |-------|---------|
 | `window.format` | How `window.start` and `window.end` render: `rfc3339_secs`, `rfc3339_millis`, `epoch_secs`, `epoch_millis` or `strftime:<pattern>`. |
 | `window.step` | Split the window into steps of at most this length (`<n>s\|m\|h\|d`), one page sequence each. |
-| `window.lookback` | Window used when the scheduler passes none. |
+| `window.lookback` | Window of a tick run with none. The scheduler always passes one, from the stored cursor or `cursor.default_window_hours` back, so a scheduled tick never reads this. |
 | `window.delay` | How long after the fact the provider publishes a record (`<n>s\|m\|h\|d`). Every window ends at least this long before now, so the cursor never passes a record not yet visible. Duo's is `2m`. |
 | `endpoints[].window.format` | A unit's own rendering when its API differs from the profile's. |
 
@@ -584,7 +585,7 @@ Each entry of `endpoints` is one unit of the source. `defaults` carries the
 same keys (except `unit`, `shape`, `base_url`, `allow_hosts`, `auth`, `window`,
 `vars`, `row_key`, `fail_when`, `add_fields`, `fold`, `lister`, `ignore_status`,
 `timeout_secs`) and
-every endpoint inherits them unless it sets its own; a `defaults.body` reaches
+every endpoint inherits them unless it sets its own. A `defaults.body` reaches
 POST endpoints only, and an endpoint's own `prelude: []` or `construct: {}`
 opts out of the defaults'.
 
@@ -597,19 +598,19 @@ opts out of the defaults'.
 | `auth.scope` | The scope (OAuth2) or `scope` claim (JWT bearer) this unit's token is minted for. |
 | `window.format` | This unit's window rendering. |
 | `vars` | Values this unit's templates read as `vars.*`, over the instance's and under the instance's `units.<name>.vars`. |
-| `method` | `GET` or `POST`; the defaults' when unset, else GET. |
-| `path` | Path template appended to `base_url`; `{{ unit.name }}` lets one default path serve many units. |
-| `query`, `headers` | Templates; an empty query rendering is omitted. |
-| `body` | JSON body for POST; string leaves are templates, a leaf that is one expression keeps its type, a member that renders `null` is left out. |
+| `method` | `GET` or `POST`. The defaults' when unset, else GET. |
+| `path` | Path template appended to `base_url`. `{{ unit.name }}` lets one default path serve many units. |
+| `query`, `headers` | Templates. An empty query rendering is omitted. |
+| `body` | JSON body for POST. String leaves are templates, a leaf that is one expression keeps its type, a member that renders `null` is left out. |
 | `rows` | Row framing ([Rows](#rows)). |
 | `row_key` | JSON pointer to the row's identity, for the oversize stub and logs. |
 | `paginate` | Pagination ([Pagination](#pagination)). |
-| `fail_when` | CEL over a 2xx body; true fails the tick with the text at `error.at`. |
+| `fail_when` | CEL over a 2xx body. True fails the tick with the text at `error.at`. |
 | `max_pages` | Page ceiling per tick. A unit that reads the window, a dump and a lister fail when pages remain past it, so nothing is committed past rows never read (a windowed unit is read again in narrower halves). A unit that reads no window is cut short. |
-| `rate` | The provider's rate limit for this unit's requests (`requests_per_sec`, a fraction for a limit slower than one a second), held to across its pages, window steps and ticks; the defaults' when unset, and unpaced when neither sets one. |
+| `rate` | The provider's rate limit for this unit's requests (`requests_per_sec`, a fraction for a limit slower than one a second), held to across its pages, window steps and ticks. The defaults' when unset, and unpaced when neither sets one. |
 | `timeout_secs` | Total bound on one request of this endpoint, its body included. Refused on a unit whose decoder streams: a streamed store takes as long as it takes and the client's idle read timeout bounds each read instead. |
 | `max_page_bytes` | Bytes a page-bounded decoder may buffer. |
-| `add_fields` | Fields added to every row: a template, or a JSON object or array whose string leaves are templates; one that reads `key` renders per key of the unit's keyset. |
+| `add_fields` | Fields added to every row: a template, or a JSON object or array whose string leaves are templates. One that reads `key` renders per key of the unit's keyset. |
 | `fold` | A folding row builder: the rows of one key become the one row it builds. |
 | `lister` | A listing protocol standing in for the page fetch. |
 | `construct` | How the unit's requests are multiplied ([Constructs and prelude](#constructs-and-prelude)). |
@@ -620,13 +621,14 @@ opts out of the defaults'.
 
 | Field | Meaning |
 |-------|---------|
-| `rows.decoder` | The framing: `json_array`, `ndjson`, `json_at`, `document`, `json`, `lines`, `csv`. `json_at`, `document`, `json` and `csv` read the whole page into memory, bounded by `max_page_bytes`; the others stream. |
+| `rows.decoder` | The framing: `json_array`, `ndjson`, `json_at`, `document`, `json`, `lines`, `csv`. `json_at`, `document`, `json` and `csv` read the whole page into memory, bounded by `max_page_bytes`. The others stream. |
 | `rows.at` | JSON pointer to the row array (`json_at` only). A pointer that leads nowhere fails the unit with a decode error and the checkpoint does not move, so a 2xx error body or a changed response format cannot read as an empty page. `null` there is an empty page. |
 | `rows.when_absent` | What an `at` pointer that leads nowhere means (`json_at` only): `fail` (default) or `empty`, an empty page. Set `empty` only where the provider documents omitting the key when there is nothing to list: shipped for `google_workspace`, `gcp` (`entries`, `scc`) and `gcp_pubsub`. |
 | `rows.gzip` | The body is a gzip member sequence to inflate before framing (a `Content-Encoding: gzip` response is inflated by the client regardless). |
 | `rows.header` | The first CSV record names the columns. |
-| `rows.quoted` | Each framed row is a JSON string whose content is the row; it is unquoted first. |
-| `rows.builder` | A row builder applied to each framed row: `columnar_table`, `cloudwatch_metrics`, `wrap_non_object`, `pubsub_message`, `cloudtrail_event`, `event_time`. The folding builder `go_module_aggregate` is named under `fold`, never here. |
+| `rows.quoted` | Each framed row is a JSON string whose content is the row. It is unquoted first. |
+| `rows.builder` | A row builder applied to each framed row: `columnar_table`, `cloudwatch_logs`, `cloudwatch_metrics`, `wrap_non_object`, `pubsub_message`, `cloudtrail_event`, `event_time`. The folding builder `go_module_aggregate` is named under `fold`, never here. |
+| `rows.content` | `json` (the default) or `binary`, a template rendered once when the unit binds, so a builder whose output a var decides can say which (aws `cloudwatch_metrics` emits OTLP as `binary`). A binary row is emitted verbatim, never enriched, filtered, routed or unwrapped, and a dump unit cannot be binary. |
 
 ## Pagination
 
@@ -635,21 +637,22 @@ opts out of the defaults'.
 | `paginate.strategy` | `none`, `link_header`, `cursor`, `page_number`, `offset`, `request_path`. |
 | `paginate.from` | Where the token or URL comes from: `body:/pointer` or `header:Name`. |
 | `paginate.into` | Where the token goes on the next request: `query:name`, `body:/pointer`, `body_replace:/pointer` (the next body is the token and nothing else) or `path`. |
-| `paginate.stop_when` | CEL over `body` and `headers`; true stops after this page. |
+| `paginate.stop_when` | CEL over `body` and `headers`. True stops after this page. |
 | `paginate.total_pages_at` | JSON pointer to the total page count (`page_number`). |
 | `paginate.total_at` | JSON pointer to the total row count (`offset`). |
-| `paginate.page_size` | Rows per page (`offset`); a shorter page is the last; optional when `total_at` is set. |
+| `paginate.page_size` | Rows per page (`offset`). A shorter page is the last. Optional when `total_at` is set. |
 | `paginate.param` | Query parameter carrying the page number or offset. |
 | `paginate.start` | First page number or first offset. |
-| `paginate.base` | Base URL a relative `request_path` value is resolved against; without one it resolves against the page's own URL. |
+| `paginate.base` | Base URL a relative `request_path` value is resolved against. Without one it resolves against the page's own URL. |
 
-A cursor that is a list of scalars is sent comma-joined; an empty list, null
+A cursor that is a list of scalars is sent comma-joined. An empty list, null
 or a list of objects ends the sequence.
 
 ## Constructs and prelude
 
-A unit takes at most one of `lookup`, `manifest` and `queue`; `keyset` can sit
-beside any of them. A secondary request (a keyset request, a lookup batch, a
+A unit takes at most one of `lookup`, `manifest` and `queue`. `keyset` can sit
+beside a lookup or a manifest, never a queue: a queue is one subscription, so
+each subscription is a unit of its own. A secondary request (a keyset request, a lookup batch, a
 manifest item, a prelude step) is a `LookupRequest`: `method` (unset takes the
 construct's default: POST for a lookup batch, a keyset request and a prelude
 step, GET for a manifest item), `path` (appended to `base_url`, or a whole URL
@@ -658,9 +661,9 @@ when it renders one, whose host is held to the rule under
 
 | Construct | Fields | Context |
 |-----------|--------|---------|
-| `construct.keyset` | `from` (a template rendering the list of keys) or `request` plus `keys_at` (the keys come from one request the unit sends first); exactly one. One page sequence per key. | `{{ key }}` in the unit's templates and `add_fields`. |
-| `construct.lookup` | `id_at` (pointer into each first-stage row to its id; unset when the row is the id), `batch`, `request`, `rows`, `paginate`, `max_pages`. A second request per batch of ids; a lookup whose request reads `key` flushes its ids before the next key. | `{{ ids }}` in the batch request. |
-| `construct.manifest` | `item_request`, `rows`, `key` and `position` (templates of the item's identity and RFC 3339 position, set together, giving every row an item checkpoint mark), `max_items` (items per key per tick: with `key` and `position` the rest wait for the next tick, otherwise a unit that reads the window or is a dump fails like a page ceiling, and one that reads no window is cut short), `add_fields` (rendered per item). The pages' rows are pointers; the unit's rows are what each item answers. | `{{ item }}` in the item request and fields. |
+| `construct.keyset` | `from` (a template rendering the list of keys) or `request` plus `keys_at` (the keys come from one request the unit sends first). Exactly one. One page sequence per key. | `{{ key }}` in the unit's templates and `add_fields`. |
+| `construct.lookup` | `id_at` (pointer into each first-stage row to its id. Unset when the row is the id), `batch`, `request`, `rows`, `paginate`, `max_pages`. A second request per batch of ids. A lookup whose request reads `key` flushes its ids before the next key. | `{{ ids }}` in the batch request. |
+| `construct.manifest` | `item_request`, `rows`, `key` and `position` (templates of the item's identity and RFC 3339 position, set together, giving every row an item checkpoint mark), `max_items` (items per key per tick: with `key` and `position` the rest wait for the next tick, otherwise a unit that reads the window or is a dump fails like a page ceiling, and one that reads no window is cut short), `add_fields` (rendered per item). The pages' rows are pointers. The unit's rows are what each item answers. | `{{ item }}` in the item request and fields. |
 | `construct.queue` | `ack_at` (pointer into each framed row to its ack id), `ack_request` (POST by default), `ack_batch` (ids per acknowledgement). The ack request is sent for each batch of ids the driver hands back after the batch is delivered. | `{{ ids }}` in the ack request. |
 | `prelude` | A list of `LookupRequest`s sent once per tick before the unit's first page, rendered from the unit's vars alone (never the window, a key or an item). | -- |
 
@@ -671,6 +674,12 @@ when it renders one, whose host is held to the rule under
 answers a bad credential inside a 200). Without a probe the health check
 resolves the credential and, for a minting mode, exchanges it for a token.
 
+The health check runs from the tests, never from a deployed fetcher: each
+source's `<source>_health_check` live test in
+`crates/fetcher/tests/e2e/smoke_remote.rs` calls it. `/readyz` answers from
+startup and memory pressure alone, so a running fetcher shows a bad credential
+first as the `unit tick failed` warning and `dfe_fetcher_api_errors_total`.
+
 ## Templates
 
 Templates are `{{ cel }}` expressions over:
@@ -678,15 +687,15 @@ Templates are `{{ cel }}` expressions over:
 | Name | Available |
 |------|-----------|
 | `vars.*` | The profile's defaults, overlaid by the instance's `vars`, the endpoint's `vars`, then the instance's `units.<name>.vars`. |
-| `base_url` | The rendered base URL; the instance's in a `token_url` template, the unit's everywhere else. |
-| `window.start`, `window.end` | The step's bounds, rendered per `window.format`; `int(...)` gives a number. |
+| `base_url` | The rendered base URL. The instance's in a `token_url` template, the unit's everywhere else. |
+| `window.start`, `window.end` | The step's bounds, rendered per `window.format`. `int(...)` gives a number. |
 | `unit.name` | The unit's name. |
 | `key` | The current keyset key. |
 | `item` | The current manifest item. |
 | `ids` | The current lookup or ack batch, a typed list. |
 | `auth.*` | What the mode exposes: `client_email`, `token_uri`, `token_url` for a JWT bearer, plus the token-response fields listed under `expose`. |
 
-A body leaf that is exactly one expression keeps its JSON type; a mixed leaf
+A body leaf that is exactly one expression keeps its JSON type. A mixed leaf
 is a string.
 
 A rendered path that is a whole URL replaces `base_url`, and its host is checked
@@ -707,13 +716,13 @@ An instance (`sources.rest.<id>`, or a typed block mapped at load) carries:
 |-------|---------|
 | `enabled` | Whether the instance runs. |
 | `profile` | A shipped profile by name, or the profile itself inline. |
-| `interval_secs` | Fetch interval; the scheduler default when unset. |
-| `topic` | Topic base; dump units land on `<topic>-<unit>`. |
+| `interval_secs` | Fetch interval. The scheduler default when unset. |
+| `topic` | Topic base. Dump units land on `<topic>-<unit>`. |
 | `filter` | CEL keep-filter over each row, hot-reloaded. |
 | `auth` | The mode and its credentials (below). |
 | `vars` | Values the profile's templates read as `vars.*`. |
 | `units` | Per-unit narrowing, keyed by unit name (below). |
-| `accumulate` | Batch bounds for this instance; the deployment's when unset. |
+| `accumulate` | Batch bounds for this instance. The deployment's when unset. |
 
 Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 `env:VAR`, or a literal) resolved when first used:
@@ -724,10 +733,10 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `api_key` | `key` |
 | `basic` | `username`, `password` |
 | `oauth2_client_credentials` | `client_id` (the literal id), then exactly one of `client_secret` or `private_key` (a bare RSA PEM signing a client assertion, where the profile declares one), optional `private_key_id` (the `kid` naming that key, not a secret) and optional `scope` overriding the profile's |
-| `signature` | `key_id` (the public half naming the key -- Duo's integration key; also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
+| `signature` | `key_id` (the public half naming the key -- Duo's integration key. Also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |
-| `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling) |
+| `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling), and optional `assume_role_arn`, a role the key assumes and whose session signs every request |
 | `credentials` | `credentials`, a spec per name the profile's placements read ([More than one credential on a request](#more-than-one-credential-on-a-request)) |
 | `session_login` | `username`, `password` ([Logging in for a session token](#logging-in-for-a-session-token)) |
 
@@ -755,6 +764,6 @@ renders something that is not an absolute URL, a pointer that does not start
 with `/`, an `offset` pager
 without `page_size` or `total_at`, a keyset with both or neither of `from` and
 `request`, `key` in `add_fields` without a keyset, a queue unit that also
-declares a lookup or manifest, a `defaults.body` on a GET, an `expose`
+declares a lookup, a manifest or a keyset, a `defaults.body` on a GET, an `expose`
 entry naming a credential, and a malformed or unmatched credential placement
 ([More than one credential on a request](#more-than-one-credential-on-a-request)).

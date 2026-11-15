@@ -32,22 +32,15 @@ REST calls (you can pin it with `instance_url_override`). The JWT `aud` follows
 
 Services (each emits source tag `salesforce.<service>`):
 
-- `setup_audit_trail` - SOQL against `SetupAuditTrail`; admin config changes.
-- `login_history` - SOQL against `LoginHistory`; login events.
+- `setup_audit_trail` - SOQL against `SetupAuditTrail`, admin config changes.
+- `login_history` - SOQL against `LoginHistory`, login events.
 - `event_log_file` - two-stage: SOQL lists `EventLogFile` rows in the window,
   then each row's `LogFile` body is downloaded and parsed from CSV to one
   record per line, with `_dfe_fetcher_event_type` / `_dfe_fetcher_log_date`
   provenance fields added. A window listing more than 200 files is read
   again in halves until each half fits, so no file is skipped.
 
-The source is the shipped `salesforce` profile
-(`crates/fetcher/profiles/salesforce.yaml`); the `sources.salesforce` block
-below maps onto an instance of it at load. The SOQL units follow
-`nextRecordsUrl` until the API says `done`; a 429 or 5xx is retried with
-backoff (honouring `Retry-After`), a refused exchange or a 401 or 403 ends
-the tick, a log file that keeps failing fails the unit's tick, and a tick that
-fails does not advance the fetch window. An unknown service name or a
-missing credential is refused at load, naming `sources.salesforce`.
+The source is the shipped `salesforce` profile (`crates/fetcher/profiles/salesforce.yaml`), and the `sources.salesforce` block below maps onto an instance of it at load. The SOQL units follow `nextRecordsUrl` until the API says `done`. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick, a log file that keeps failing fails the unit's tick, and a tick that fails does not advance the fetch window. An unknown service name or a missing credential is refused at load, naming `sources.salesforce`.
 
 ## Prerequisites
 
@@ -68,19 +61,19 @@ Salesforce API) - no `full` or write scope.
 |---------|--------------------|-----------------------------|--------|
 | `setup_audit_trail` | `SetupAuditTrail` (SOQL) | API Enabled + View Setup and Configuration | None (every org) |
 | `login_history` | `LoginHistory` (SOQL) | API Enabled + Manage Users (or View All Users) | None (every org) |
-| `event_log_file` | `EventLogFile` (SOQL + LogFile download) | API Enabled + View Event Log Files | Free event types with limited retention; the full event-type set and longer retention require Event Monitoring / Shield |
+| `event_log_file` | `EventLogFile` (SOQL + LogFile download) | API Enabled + View Event Log Files | Free event types with limited retention. The full event-type set and longer retention require Event Monitoring / Shield |
 
 ## Source-Side Setup
 
 There is no OpenTofu path for this source. Connected-app / external-client-app
 creation, certificate upload, and the pre-authorise / run-as policy are
-UI / CLI steps in Salesforce Setup; the provider does not cover digital-signature
+UI / CLI steps in Salesforce Setup, and the provider does not cover digital-signature
 config cleanly. Follow the manual steps below.
 
 > Spring '26 change: new orgs can no longer create classic **Connected Apps**
 > without requesting the capability from Salesforce Support. The successor is the
 > **External Client App (ECA)**, which supports the same JWT-bearer and
-> client-credentials flows. Steps below use Connected App terminology; the ECA
+> client-credentials flows. Steps below use Connected App terminology, and the ECA
 > equivalents live under Setup -> App Manager -> New External Client App, with
 > JWT-bearer configured under Flow Enablement and policies under the app's
 > Policies tab. Existing connected apps keep working.
@@ -103,7 +96,7 @@ in step 2.
 
 Setup -> App Manager -> New Connected App -> Create a Connected App.
 
-- Connected App Name: `dfe-fetcher`; set a contact email.
+- Connected App Name: `dfe-fetcher`, with a contact email.
 - Tick **Enable OAuth Settings**.
 - Callback URL: `https://login.salesforce.com/services/oauth2/callback`
   (unused server-to-server, but the form requires a value).
@@ -119,7 +112,7 @@ Copy the **Consumer Key** (this is `client_id`) and, for client credentials, the
 
 Use a dedicated least-privilege user (a Salesforce Integration license is ideal).
 Assign a permission set / profile granting the permissions from the table above:
-API Enabled; View Setup and Configuration; Manage Users or View All Users; View
+API Enabled, View Setup and Configuration, Manage Users or View All Users, and View
 Event Log Files.
 
 ### 4. Wire the chosen auth flow
@@ -173,7 +166,7 @@ sources:
   salesforce:
     enabled: true
     # login_url: "https://login.salesforce.com"   # sandbox: https://test.salesforce.com
-    # api_version: "v60.0"
+    # api_version: "vNN.0"                        # the default is in salesforce.yaml
     client_id: "your-connected-app-consumer-key"
     username: "integration@yourco.com"
     private_key: "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
@@ -190,12 +183,7 @@ sources:
 
 Client credentials: replace `username` + `private_key` with `client_secret`.
 
-Recognised top-level fields: `enabled`, `login_url`, `api_version`, `client_id`,
-`username`, `private_key`, `private_key_secret`, `client_secret`,
-`credential_secret`, `instance_url_override`, `interval_secs`, `services`,
-`topic`, `filter`. The `event_log_file` service config accepts `interval`
-(`Daily`/`Hourly`) and `event_types` (allow-list; omit to pull every available
-type).
+Recognised top-level fields: `enabled`, `login_url`, `api_version`, `client_id`, `username`, `private_key`, `private_key_secret`, `client_secret`, `credential_secret`, `instance_url_override`, `interval_secs`, `services`, `topic`, `filter`, `connections`. The `event_log_file` service config accepts `interval` (`Daily`/`Hourly`) and `event_types` (an allow-list, omitted to pull every available type).
 
 ### Environment Variables
 
@@ -234,28 +222,18 @@ sources:
 - `private_key_secret` resolves to the full RSA private-key PEM.
 - `credential_secret` resolves to the consumer secret.
 
-Sandboxes: set `login_url: "https://test.salesforce.com"`. My Domain: token
-exchange still goes through `login_url`; the returned `instance_url` is your My
-Domain host. For multiple orgs, run one dfe-fetcher instance per org, each with
-its own app (and cert for JWT), integration user, and `instance_id`.
+Sandboxes: set `login_url: "https://test.salesforce.com"`. My Domain: token exchange still goes through `login_url`, and the returned `instance_url` is your My Domain host. Each org needs its own app (and cert for JWT) and integration user. Run one dfe-fetcher per org with a distinct `instance_id`, or list each org as an entry under `connections` in one fetcher.
 
 ## Verification
 
-1. **Health check.** The health check is the token exchange; the
+1. **Health check.** The health check is the token exchange, and the
    `instance_url` it answers is what every data call addresses. It does not
    exercise per-sObject read permissions.
 
-2. **Env-gated smoke tests.** Live tests live in
-   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs),
-   all `#[ignore]`'d. They read these from `.env-cloud`: `SALESFORCE_CLIENT_ID`
-   (required) plus one of `SALESFORCE_PRIVATE_KEY` /
-   `SALESFORCE_PRIVATE_KEY_SECRET` (with `SALESFORCE_USERNAME`) or
-   `SALESFORCE_CLIENT_SECRET` / `SALESFORCE_CREDENTIAL_SECRET`. Optional:
-   `SALESFORCE_LOGIN_URL`, `SALESFORCE_API_VERSION`,
-   `SALESFORCE_INSTANCE_URL`.
+2. **Env-gated smoke tests.** Live tests live in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs), all `#[ignore]`'d. They read these from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `SALESFORCE_CLIENT_ID` (required) plus one of `SALESFORCE_PRIVATE_KEY` / `SALESFORCE_PRIVATE_KEY_SECRET` (with `SALESFORCE_USERNAME`) or `SALESFORCE_CLIENT_SECRET` / `SALESFORCE_CREDENTIAL_SECRET`. Optional: `SALESFORCE_LOGIN_URL`, `SALESFORCE_API_VERSION`, `SALESFORCE_INSTANCE_URL`.
 
    ```bash
-   cargo test -p dfe-fetcher --test e2e salesforce_ -- --ignored
+   cargo nextest run -p dfe-fetcher --test e2e --run-ignored only salesforce_
    ```
 
 3. **Common failures.**

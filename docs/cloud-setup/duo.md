@@ -39,8 +39,8 @@ unset otherwise.
 
 SHA-1 is kept out of a security purpose everywhere else in the platform, so
 version 2 is a deliberate exemption rather than a setting like any other. A
-connection that binds on it logs a warning at startup naming the connection;
-that warning is the signal to move the tenant to version 5 once its endpoints
+connection that binds on it logs a warning at startup naming the connection.
+That warning is the signal to move the tenant to version 5 once its endpoints
 verify it, and it is expected to stay until then.
 
 The admin provisions an **Admin API application** in the Duo Admin Panel,
@@ -56,7 +56,7 @@ profile's `window.delay: 2m` ends every window two minutes before now, so the
 cursor never passes events Duo has not yet published.
 
 The source is the shipped `duo` profile (`crates/fetcher/profiles/duo.yaml`)
-on the `signature` auth mode; the `sources.duo` block below maps onto an
+on the `signature` auth mode, and the `sources.duo` block below maps onto an
 instance of it at load. A 429 or 5xx is retried with backoff (honouring
 `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying `stat: FAIL` fails
 the tick with Duo's `message`, and a tick that fails does not advance the
@@ -75,42 +75,38 @@ fetch window. A missing host or key is refused at load, naming `sources.duo`.
 | Service | Object/Endpoint | Permission or Scope | Notes |
 |---------|-----------------|---------------------|-------|
 | Authentication logs | `GET /admin/v2/logs/authentication` | **Grant read log** | Read-only. The only permission dfe-fetcher needs. |
-| Health probe | `GET /admin/v1/check` | (covered by the same application keys) | Cheap auth check; no extra permission. |
+| Health probe | `GET /admin/v1/check` | (covered by the same application keys) | Cheap auth check, no extra permission. |
 
 Grant **only** "Grant read log". Leave all other Admin API permission toggles
 unchecked (least privilege).
 
 ## Source-Side Setup
 
-1. **Sign in to the Duo Admin Panel** at `https://admin.duosecurity.com` as an
+1. Sign in to the Duo Admin Panel at `https://admin.duosecurity.com` as an
    administrator with rights to create applications.
 
-2. **Start a new Admin API application.** Either path works depending on your
+2. Start a new Admin API application. Either path works depending on your
    panel version:
-   - **Newer panel:** **Applications > Application Catalog**, find **Admin
+   - Newer panel: **Applications > Application Catalog**, find **Admin
      API**, click **+ Add**.
-   - **Older panel:** **Applications > Protect an Application**, search for
+   - Older panel: **Applications > Protect an Application**, search for
      `Admin API`, then click **Protect** next to it.
 
-3. **Grant the log-read permission.** On the new application's page, in the
+3. Grant the log-read permission. On the new application's page, in the
    **Permissions** section, tick **Grant read log**. Untick everything else.
    Click **Save Changes**.
 
-4. **Copy the credentials.** In the application's **Details** section, copy:
-   - **Integration key** (the `ikey`)
-   - **Secret key** (the `skey`) - treat as a password; shown here so capture
-     it now
-   - **API hostname** (the `api_host`, format `api-XXXXXXXX.duosecurity.com`)
+4. Copy the credentials. In the application's **Details** section, copy:
+   - the integration key (the `ikey`)
+   - the secret key (the `skey`), which is a password, so capture it now
+   - the API hostname (the `api_host`, format `api-XXXXXXXX.duosecurity.com`)
 
-5. **(Optional) Name the application** something recognisable, e.g.
+5. (Optional) Name the application something recognisable, e.g.
    `dfe-fetcher-authlogs`, and **Save Changes** again.
 
 ## dfe-fetcher Configuration
 
-The Duo source config fields are: `enabled`, `api_host`, `integration_key`
-(ikey), `secret_key` (skey), `credential_secret`, `signature_version`,
-`api_url_override` (test mock only), `services`, `topic`. The only service is
-`authentication_logs`.
+The Duo source config fields are: `enabled`, `api_host`, `integration_key` (ikey), `secret_key` (skey), `credential_secret`, `signature_version`, `api_url_override` (test mock only), `interval_secs`, `services`, `topic`, `filter`, `connections`. The only service is `authentication_logs`.
 
 ### Config File
 
@@ -185,13 +181,11 @@ from the platform's crypto baseline taken for this tenant alone.
 ## Verification
 
 **Health check.** The profile's probe signs and calls `GET /admin/v1/check`,
-which returns `{"response": "valid", "stat": "OK"}` for working credentials;
-a `stat` other than `OK` is a health error. A healthy result confirms the
+which returns `{"response": "valid", "stat": "OK"}` for working credentials.
+A `stat` other than `OK` is a health error. A healthy result confirms the
 ikey, skey, and api_host are correct and the application is active.
 
-**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
-env-gated, `#[ignore]`d tests that hit a real tenant. They read these
-variables (canonical `.env-cloud`, fallback `.env`):
+**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d tests that hit a real tenant. They read these variables from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 - `DUO_API_HOST`
 - `DUO_INTEGRATION_KEY`
@@ -200,7 +194,7 @@ variables (canonical `.env-cloud`, fallback `.env`):
 Run them:
 
 ```bash
-cargo test -p dfe-fetcher --test e2e duo_ -- --ignored
+cargo nextest run -p dfe-fetcher --test e2e --run-ignored only duo_
 ```
 
 Results are tagged `duo.authentication_logs`. Zero records is normal on a
@@ -214,10 +208,10 @@ delay window.
   verifies the other signature version. Verify the skey, check NTP is in sync,
   and try `signature_version: v2` on an older tenant.
 - `40101 Missing request credentials` - the ikey or api_host is wrong.
-- `40301 Access denied` - the Admin API application lacks **Grant read log**;
-  re-check the Permissions section and save.
+- `40301 Access denied` - the Admin API application lacks **Grant read log**.
+  Re-check the Permissions section and save.
 - Health passes but zero records every cycle - widen the window or confirm
-  authentications exist; remember events under two minutes old are withheld.
+  authentications exist, and remember events under two minutes old are withheld.
 
 ## Cost
 

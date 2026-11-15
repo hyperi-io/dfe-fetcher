@@ -30,16 +30,9 @@ Falcon tenants live on different cloud regions, each with its own API host.
 The admin's only job is to create an OAuth2 API client with the right scope
 and tell dfe-fetcher which region to use.
 
-The source is the shipped `crowdstrike` profile
-(`crates/fetcher/profiles/crowdstrike.yaml`); the `sources.crowdstrike` block
-below maps onto an instance of it at load. The id query walks `offset` against
-`meta.pagination.total` and the entity lookup runs per batch of ids; both
-calls are reads, so a 429 or 5xx on either is retried with backoff
-(honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick,
-and a tick that fails does not advance the fetch window. A missing client id
-or secret is refused at load, naming `sources.crowdstrike`.
+The source is the shipped `crowdstrike` profile (`crates/fetcher/profiles/crowdstrike.yaml`), and the `sources.crowdstrike` block below maps onto an instance of it at load. The id query walks `offset` against `meta.pagination.total` and the entity lookup runs per batch of ids. Both calls are reads, so a 429 or 5xx on either is retried with backoff (honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window. A missing client id or secret is refused at load, naming `sources.crowdstrike`.
 
-> **History (2026).** CrowdStrike renamed "Detections" to "Alerts" and
+> **History.** CrowdStrike renamed "Detections" to "Alerts" and
 > introduced the Alerts API. The legacy `/detects/*` endpoints were
 > deprecated 2024-10-01 and decommissioned 2025-09-30. dfe-fetcher uses the
 > Alerts API (`/alerts/queries/alerts/v2` + `/alerts/entities/alerts/v2`),
@@ -66,27 +59,26 @@ required.
 
 ## Source-Side Setup
 
-1. **Sign in to the Falcon console** with a Falcon Administrator account, in
+1. Sign in to the Falcon console with a Falcon Administrator account, in
    the cloud region where your tenant lives.
 
-2. **Open the API clients page.** Navigate to **Support and resources >
+2. Open the API clients page. Navigate to **Support and resources >
    Resources and tools > API clients and keys**. (Older consoles list this as
    **Support > API clients and keys**.)
 
-3. **Create the API client.** Under **OAuth2 API clients**, click **Create
-   API client**. Enter:
-   - **Client name**: `dfe-fetcher`
-   - **Description**: e.g. "dfe-fetcher alert pull (read-only)"
+3. Create the API client. Under **OAuth2 API clients**, click **Create
+   API client**. Enter the client name `dfe-fetcher` and a description,
+   e.g. "dfe-fetcher alert pull (read-only)".
 
-4. **Select scopes.** In the scopes table, tick **Read** for **Alerts**.
+4. Select scopes. In the scopes table, tick **Read** for **Alerts**.
    Leave all **Write** boxes unchecked.
 
-5. **Save and capture credentials.** Click **Create**. Falcon shows the
+5. Save and capture credentials. Click **Create**. Falcon shows the
    **Client ID**, **Client Secret**, and **Base URL** once only. Copy all
    three now - the secret cannot be retrieved later (a reset is required if
    lost).
 
-6. **Note the Base URL** for your region:
+6. Note the Base URL for your region:
 
    | Region | Base URL |
    |--------|----------|
@@ -95,7 +87,7 @@ required.
    | EU-1 | `https://api.eu-1.crowdstrike.com` |
    | US-GOV-1 | `https://api.laggar.gcw.crowdstrike.com` |
 
-7. **(Optional) Verify the token exchange** from a shell:
+7. (Optional) Verify the token exchange from a shell:
 
    ```bash
    curl -s -X POST "https://api.crowdstrike.com/oauth2/token" \
@@ -168,18 +160,16 @@ auth probe). A healthy result means the client ID/secret and region base URL
 are correct - it does NOT confirm the Alerts: Read scope. A refused exchange
 is a health error carrying the response.
 
-**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
-env-gated, `#[ignore]`d tests that hit a real tenant. They read these
-variables (canonical `.env-cloud`, fallback `.env`):
+**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d tests that hit a real tenant. They read these variables from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 - `CROWDSTRIKE_CLIENT_ID`
 - `CROWDSTRIKE_CLIENT_SECRET`
-- `CROWDSTRIKE_API_BASE` (optional; maps to `api_url_override`)
+- `CROWDSTRIKE_API_BASE` (optional, maps to `api_url_override`)
 
 Run them:
 
 ```bash
-cargo test -p dfe-fetcher --test e2e crowdstrike_ -- --ignored
+cargo nextest run -p dfe-fetcher --test e2e --run-ignored only crowdstrike_
 ```
 
 Results are tagged `crowdstrike.alerts`. Zero records is normal on a quiet
@@ -192,7 +182,7 @@ tenant or a short lookback window.
 - `403 Forbidden` on the alert query - the API client lacks the read scope
   (grant Alerts: Read).
 - Token works but zero records every cycle - check the region base URL and
-  that alerts exist in the lookback window; widen with a longer interval or a
+  that alerts exist in the window, then widen with a longer interval or a
   `filter` adjustment.
 
 ## Cost
@@ -204,11 +194,9 @@ Confirm any cost implications against your own CrowdStrike agreement.
 
 ## References
 
-- CrowdStrike - Falcon console API clients and keys (Support and resources):
-  <https://www.crowdstrike.com/blog/tech-center/get-access-falcon-apis/>
 - CrowdStrike Developer Center - OpenAPI docs and scopes:
   <https://developer.crowdstrike.com/docs/openapi/>
 - CrowdStrike Detects API decommission and migration to Alerts API:
-  <https://cloud.google.com/chronicle/docs/detection/migrate-detects-api-to-alerts-api>
+  <https://docs.cloud.google.com/chronicle/docs/detection/migrate-detects-api-to-alerts-api>
 - FalconPy - environment configuration / regional base URLs:
-  <https://www.falconpy.io/Usage/Environment-Configuration.html>
+  <https://developer.crowdstrike.com/sdks/python/configuration/>

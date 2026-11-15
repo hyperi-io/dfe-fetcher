@@ -42,6 +42,10 @@ extraEnvFrom:
 
 An empty value counts as unset, so a Secret key left blank leaves the field unset rather than signing requests with an empty key.
 
+## Checking a source
+
+Each guide's health check is the profile's probe, or its credential exchange where the profile has none. It runs from that source's live test, `cargo nextest run -p dfe-fetcher --test e2e --run-ignored only <source>_health_check`, never from a deployed fetcher, whose `/readyz` answers from startup and memory pressure alone. In a deployment the first tick is the check: it runs one fetch interval after start and logs `unit tick complete` for each unit, or `unit tick failed` with the provider's answer.
+
 ## Providers
 
 | Provider | Data it pulls | Guide |

@@ -13,21 +13,9 @@ audit data from Google Cloud Platform (read-only, pull-mode).
 
 ## Overview
 
-dfe-fetcher polls Google Cloud REST APIs on a schedule and ships records to
-Kafka. It authenticates with a service account: it signs an RS256 JWT with the
-service account's private key and exchanges it once per tick for a short-lived
-OAuth2 access token (scope `https://www.googleapis.com/auth/cloud-platform`),
-or - when running on GCE/GKE with no key configured - it reads a token from the
-metadata server (workload identity), or it sends a pre-minted access token
-supplied as `credential_secret`. dfe-fetcher never writes, modifies, or
-deletes resources.
+dfe-fetcher polls Google Cloud REST APIs on a schedule and hands each record to the DFE pipeline over Kafka or gRPC. It authenticates with a service account: it signs an RS256 JWT with the service account's private key and exchanges it for a short-lived OAuth2 access token (scope `https://www.googleapis.com/auth/cloud-platform`), cached and minted again shortly before it expires. When running on GCE/GKE with no key configured it reads a token from the metadata server (workload identity), or it sends a pre-minted access token supplied as `credential_secret`. dfe-fetcher never writes, modifies, or deletes resources.
 
-The source is the shipped `gcp` profile (`crates/fetcher/profiles/gcp.yaml`);
-the `sources.gcp` block below maps onto an instance of it at load. Each
-Cloud Logging unit sends its documented filter clause and pages on
-`nextPageToken`; a 429 or 5xx is retried with backoff (honouring
-`Retry-After`), a 401 or 403 ends the tick with the API's `error.message`,
-and a tick that fails does not advance the fetch window.
+The source is the shipped `gcp` profile (`crates/fetcher/profiles/gcp.yaml`), and the `sources.gcp` block below maps onto an instance of it at load. Each Cloud Logging unit sends its documented filter clause ANDed with the tick's window and pages on `nextPageToken`. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick with the API's `error.message`, and a tick that fails does not advance the fetch window.
 
 The GCP source exposes these services (each emits its own source tag
 `gcp.<service>` and tracks its own cursor):
@@ -39,10 +27,12 @@ The GCP source exposes these services (each emits its own source tag
   `storage_access` (a `gcs_bucket`-scoped subset of `data_access`).
 - `cloud_logging` - an arbitrary Cloud Logging filter (default
   `severity >= WARNING`, override with service config `filter`).
-- `scc` - Security Command Center findings (organisation-scoped).
+- `scc` - Security Command Center findings (organisation-scoped). It sends no
+  time filter, so every tick lists the organisation's findings again, up to
+  the profile's 10 pages of 100.
 
 All audit/logging services read via `POST logging.googleapis.com/v2/entries:list`
-with a Logging Query Language filter; `scc` reads
+with a Logging Query Language filter, and `scc` reads
 `securitycenter.googleapis.com/v1/organizations/<org>/sources/-/findings`.
 
 ## Prerequisites
@@ -65,9 +55,9 @@ Grant only what you need. All roles are read-only.
 |------------|----------|-------|-------|
 | `admin_activity`, `system_event`, `policy_denied`, `vpc_flow_logs`, `dns_queries`, `cloud_logging` | `roles/logging.viewer` | Project | Reads the `_Required`/`_Default` buckets, excluding Data Access logs |
 | `data_access`, `storage_access` | `roles/logging.privateLogViewer` | Project | REQUIRED for Data Access audit logs - `roles/logging.viewer` alone CANNOT read them |
-| `scc` | `roles/securitycenter.findingsViewer` | Organisation | Requires SCC activated; needs `organization_id` in service config |
+| `scc` | `roles/securitycenter.findingsViewer` | Organisation | Requires SCC activated, and `organization_id` in the service config |
 
-**Notes:**
+Notes:
 
 - `roles/logging.privateLogViewer` is a superset of `roles/logging.viewer`, so
   granting it alone covers every logging-backed service. If you do not fetch
@@ -152,7 +142,7 @@ resource "google_organization_iam_member" "scc_viewer" {
    ```
 
 3. **Enable Data Access audit logs** (only if you fetch `data_access` /
-   `storage_access`; they are OFF by default)
+   `storage_access`, which are OFF by default)
 
    In the console: IAM and Admin -> Audit Logs -> select the service(s) ->
    enable `DATA_READ` / `DATA_WRITE`. Or apply an IAM policy with an
@@ -170,7 +160,7 @@ resource "google_organization_iam_member" "scc_viewer" {
    gcloud projects set-iam-policy your-project-id policy.yaml
    ```
 
-   dfe-fetcher only reads logs; it never enables logging.
+   dfe-fetcher only reads logs. It never enables logging.
 
 4. **Grant the SCC role** (optional, organisation level)
 
@@ -240,10 +230,7 @@ DFE_FETCHER_SOURCES__GCP__SERVICE_ACCOUNT_KEY="/etc/gcp/sa-key.json"
 
 ### Secrets Manager
 
-On this block `credential_secret` resolves to an OAuth2 ACCESS TOKEN that is
-sent as the bearer on every call -- not the service-account key. Use it when
-something outside the fetcher mints and rotates the token; a static value
-expires within the hour.
+On this block `credential_secret` resolves to an OAuth2 ACCESS TOKEN that is sent as the bearer on every call -- not the service-account key. The fetcher resolves it once, when the source first fetches, and holds it for the life of the source: a token rotated behind the spec is read only after a restart or a change to the block's own settings. An access token expires within the hour, so prefer `service_account_key` or the metadata server, which the fetcher renews itself.
 
 ```yaml
 sources:
@@ -261,25 +248,21 @@ To keep the service-account key itself in the secrets manager, run the `gcp`
 profile as a `sources.rest` instance with `auth.mode: jwt_bearer` and
 `auth.service_account_key: "vault:..."` (the JSON as a spec), which is what
 the block maps onto. When mounting the key as a Kubernetes secret,
-point `service_account_key` at the mounted path:
+point `service_account_key` at the mounted path. The released chart takes the volume and its mount as the `extraVolumes` and `extraVolumeMounts` values:
 
 ```bash
 kubectl create secret generic dfe-fetcher-gcp --from-file=sa-key.json=./sa-key.json
 ```
 
 ```yaml
-volumes:
+extraVolumes:
   - name: gcp-key
     secret: { secretName: dfe-fetcher-gcp }
-containers:
-  - name: dfe-fetcher
-    volumeMounts:
-      - { name: gcp-key, mountPath: /etc/gcp, readOnly: true }
+extraVolumeMounts:
+  - { name: gcp-key, mountPath: /etc/gcp, readOnly: true }
 ```
 
-For multiple projects, run one dfe-fetcher instance per project (each with a
-distinct `instance_id`); a single service account can hold the logging role on
-several projects.
+For multiple projects, run one dfe-fetcher per project with a distinct `instance_id`, or list each project as an entry under `connections` (its own `id` and `project_id`) in one fetcher. A single service account can hold the logging role on several projects.
 
 ## Verification
 
@@ -287,14 +270,10 @@ several projects.
    `credential_secret`, the resolution of the token), so a healthy result
    confirms the credential only - not per-service IAM grants.
 
-2. **Env-gated smoke tests.** Live tests live in
-   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs),
-   all `#[ignore]`'d. They read `GCP_PROJECT_ID` and `GCP_SERVICE_ACCOUNT_KEY`
-   (a file path) from `.env-cloud`, and `GCP_ORGANIZATION_ID` for the SCC
-   test. A refusal fails its test rather than passing with zero records.
+2. **Env-gated smoke tests.** Live tests live in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs), all `#[ignore]`'d. They read `GCP_PROJECT_ID` and `GCP_SERVICE_ACCOUNT_KEY` from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it, and `GCP_ORGANIZATION_ID` for the SCC test. `GCP_SERVICE_ACCOUNT_KEY` is the path of the key file, which must exist from the directory the test runs in, so give an absolute path. A refusal fails its test rather than passing with zero records.
 
    ```bash
-   cargo test -p dfe-fetcher --test e2e gcp_ -- --ignored
+   cargo nextest run -p dfe-fetcher --test e2e --run-ignored only gcp_
    ```
 
 3. **Common failures.**
@@ -304,14 +283,15 @@ several projects.
      `organization_id` to the `scc` service config.
    - Token exchange error: bad key file path, malformed JSON key, or clock skew
      (the JWT `exp` is `now + 3600s`).
-   - `metadata server unavailable`: no key/secret configured and not running on
-     GCE/GKE.
+   - `credential exchange at http://metadata.google.internal/... failed`: no
+     key or secret is configured, so the fetcher asks the metadata server, and
+     it is not running on GCE/GKE.
    - SCC answers `400` naming the legacy tier: Security Command Center is not
      activated on a Standard or Premium tier for the organisation.
 
 ## Cost
 
-dfe-fetcher only reads; it never enables logging or services. The read calls
+dfe-fetcher only reads. It never enables logging or services. The read calls
 and the always-on audit logs (admin_activity, system_event, policy_denied)
 are not expected to carry an additional charge. Some capabilities here may
 have a cost depending on what you enable - for example turning on Data Access

@@ -13,7 +13,7 @@ operational data from Azure and Microsoft Entra ID.
 
 ## Overview
 
-dfe-fetcher polls Azure APIs on an interval and ships each record to Kafka.
+dfe-fetcher polls Azure APIs on an interval and hands each record to the DFE pipeline over Kafka or gRPC.
 It supports these services: `activity_log` (subscription Activity Log),
 `defender` (Microsoft Defender for Cloud alerts), `sentinel` (Microsoft
 Sentinel incidents), the three split Entra ID Graph audit feeds
@@ -28,13 +28,7 @@ units that need it:
 - `https://graph.microsoft.com/.default` - the Entra ID audit feeds.
 - `https://api.loganalytics.io/.default` - Log Analytics queries.
 
-The source is the shipped `azure` profile
-(`crates/fetcher/profiles/azure.yaml`); the `sources.azure` block below maps
-onto an instance of it at load. The Resource Manager units page on `nextLink`,
-the Graph units on `@odata.nextLink`, each as the API documents; a 429 or 5xx
-is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick
-with the API's `error.message`, and a tick that fails does not advance the
-fetch window.
+The source is the shipped `azure` profile (`crates/fetcher/profiles/azure.yaml`), and the `sources.azure` block below maps onto an instance of it at load. The Resource Manager units page on `nextLink`, the Graph units on `@odata.nextLink`, each as the API documents. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick with the API's `error.message`, and a tick that fails does not advance the fetch window. `activity_log` and the three Entra feeds filter on the tick's window. `defender` and `sentinel` send no time filter, so every tick lists the subscription's alerts or incidents again from the first page, up to the profile's 10 pages.
 
 ## Prerequisites
 
@@ -99,7 +93,7 @@ tofu output -json | python3 gen-env.py > ../../.env
 The module provisions only the subscription `Reader` role, which covers
 `activity_log`, `defender`, and `sentinel`. For the Entra audit feeds you
 must add the Graph application permission and grant admin consent (the module
-does not do this; run the manual step below or extend it):
+does not do this, so run the manual step below or extend it):
 
 ```bash
 # AuditLog.Read.All (application / Role) on Microsoft Graph
@@ -144,7 +138,7 @@ az ad app permission admin-consent --id <azure_client_id>
 
 5. Add the Graph application permission for the Entra audit feeds, then
    grant admin consent. `admin-consent` is required for application (Role)
-   permissions; ignore any CLI hint suggesting `az ad app permission grant`.
+   permissions, so ignore any CLI hint suggesting `az ad app permission grant`.
 
    ```bash
    az ad app permission add \
@@ -169,14 +163,7 @@ az ad app permission admin-consent --id <azure_client_id>
 
 ## dfe-fetcher Configuration
 
-The Azure source config fields are: `enabled`, `tenant_id`, `client_id`,
-`client_secret`, `credential_secret`, `subscription_id`, `interval_secs`,
-`services`, `connections`, `topic`, `management_url_override`,
-`graph_url_override`, `token_url_override`, `filter`. Each service entry is
-`{ name, config }`. `tenant_id` and a secret are required; `subscription_id`
-is required when a Resource Manager unit (`activity_log`, `defender`,
-`sentinel`) is listed; an unknown service name is refused at load, naming
-`sources.azure`.
+The Azure source config fields are: `enabled`, `tenant_id`, `client_id`, `client_secret`, `credential_secret`, `subscription_id`, `interval_secs`, `services`, `connections`, `topic`, `management_url_override`, `graph_url_override`, `token_url_override`, `filter`. Each service entry is `{ name, config }`. `tenant_id`, `client_id` and a secret are required, and so is `subscription_id` when a Resource Manager unit (`activity_log`, `defender`, `sentinel`) is listed. An unknown service name is refused at load, naming `sources.azure`.
 
 The Entra feeds are split into three distinct services, each with its own
 source tag and cursor. There is intentionally no combined `entra_id`
@@ -235,10 +222,7 @@ DFE_FETCHER_SOURCES__AZURE__SUBSCRIPTION_ID="your-subscription-uuid"
 
 ### Secrets Manager
 
-`credential_secret` resolves from the secrets manager using the
-`vault:<mount>/data/<path>:<key>` format (the literal `data` segment names the
-KV v2 mount). It supplies the client SECRET only, so keep `client_id` as the
-literal application id beside it and omit the inline `client_secret`.
+`credential_secret` resolves from the secrets manager using the `vault:<mount>/<path>:<key>` format: the first segment is the KV v2 mount, and a `data` segment after it is optional. It supplies the client SECRET only, so keep `client_id` as the literal application id beside it and omit the inline `client_secret`.
 
 ```yaml
 sources:
@@ -262,21 +246,13 @@ sources:
    the env-gated smoke test:
 
    ```bash
-   cargo test -p dfe-fetcher --test e2e azure_health_check -- --ignored
+   cargo nextest run -p dfe-fetcher --test e2e --run-ignored only azure_health_check
    ```
 
-2. Live fetch tests. The env-gated tests in
-   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs)
-   hit real Azure APIs. They are `#[ignore]` by default and read credentials
-   from `.env-cloud` (preferred) or `.env`:
-   `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
-   `AZURE_SUBSCRIPTION_ID`, plus `AZURE_SENTINEL_WORKSPACE_NAME` /
-   `AZURE_SENTINEL_RESOURCE_GROUP` for Sentinel and
-   `AZURE_LOG_ANALYTICS_WORKSPACE_ID` / `AZURE_LOG_ANALYTICS_KQL` for Log
-   Analytics. A refusal fails its test rather than passing with zero records.
+2. Live fetch tests. The env-gated tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) hit real Azure APIs. They are `#[ignore]` by default and read credentials from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SUBSCRIPTION_ID`, plus `AZURE_SENTINEL_WORKSPACE_NAME` / `AZURE_SENTINEL_RESOURCE_GROUP` for Sentinel and `AZURE_LOG_ANALYTICS_WORKSPACE_ID` / `AZURE_LOG_ANALYTICS_KQL` for Log Analytics. A refusal fails its test rather than passing with zero records.
 
    ```bash
-   cargo test -p dfe-fetcher --test e2e azure_ -- --ignored
+   cargo nextest run -p dfe-fetcher --test e2e --run-ignored only azure_
    ```
 
 3. Common failures.
@@ -292,7 +268,7 @@ sources:
 
 ## Cost
 
-dfe-fetcher only reads; it never enables services. The read paths generally
+dfe-fetcher only reads. It never enables services. The read paths generally
 carry no additional charge, but some capabilities here may have a cost
 depending on your Azure plan and what is enabled - for example Microsoft
 Sentinel, Microsoft Defender for Cloud, and Log Analytics may carry their own
@@ -304,7 +280,7 @@ agreement.
 - Microsoft Graph permissions reference (AuditLog.Read.All): <https://learn.microsoft.com/en-us/graph/permissions-reference>
 - Microsoft Entra audit logs API overview: <https://learn.microsoft.com/en-us/graph/api/resources/azure-ad-auditlog-overview?view=graph-rest-1.0>
 - List provisioningObjectSummary (v1.0): <https://learn.microsoft.com/en-us/graph/api/provisioningobjectsummary-list?view=graph-rest-1.0>
-- Defender for Cloud Alerts - List (api-version 2022-01-01): <https://learn.microsoft.com/en-us/rest/api/defenderforcloud/alerts/list>
+- Defender for Cloud Alerts - List (the `api-version` the profile sends is in `azure.yaml`): <https://learn.microsoft.com/en-us/rest/api/defenderforcloud/alerts/list>
 - Azure built-in roles for Security (Reader / Security Reader): <https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/security>
 - Azure built-in roles for Monitor (Log Analytics Reader): <https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/monitor>
 - az ad app permission CLI reference: <https://learn.microsoft.com/en-us/cli/azure/ad/app/permission?view=azure-cli-latest>

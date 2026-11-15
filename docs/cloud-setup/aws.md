@@ -13,26 +13,9 @@ operational data from AWS.
 
 ## Overview
 
-dfe-fetcher polls AWS service APIs on an interval and ships each record to
-Kafka. It supports these AWS services: CloudTrail (management-event audit
-trail), GuardDuty (threat-detection findings), SecurityHub (aggregated
-security findings), Config (resource configuration through
-`SelectResourceConfig`), CloudWatch Logs (log events), CloudWatch Metrics
-(monitoring data, emitted as JSON or OTLP), Inspector (Inspector v2
-vulnerability findings), and Health (AWS Health events). All access is
-read-only - dfe-fetcher never writes, modifies, or deletes resources.
-Requests are direct AWS REST/JSON API calls signed with SigV4, not the AWS
-SDK. Authentication is a static access key pair, inline or from a secrets
-manager.
+dfe-fetcher polls AWS service APIs on an interval and hands each record to the DFE pipeline over Kafka or gRPC. It supports these AWS services: CloudTrail (management-event audit trail), GuardDuty (threat-detection findings), SecurityHub (aggregated security findings), Config (resource configuration through `SelectResourceConfig`), CloudWatch Logs (log events), CloudWatch Metrics (monitoring data, emitted as JSON or OTLP), Inspector (Inspector v2 vulnerability findings), and Health (AWS Health events). All access is read-only: dfe-fetcher never writes, modifies, or deletes resources. Requests are direct AWS REST/JSON API calls signed with SigV4, not the AWS SDK. Authentication is a static access key pair, inline or from a secrets manager, which may assume a role (see Cross-Account Access).
 
-The source is the shipped `aws` profile (`crates/fetcher/profiles/aws.yaml`);
-the `sources.aws` block below maps onto an instance of it at load. Every unit
-is its own AWS service, signed for that service in the configured region
-(Health is region-locked to `us-east-1`), and every list pages to the end on
-the token the API documents. A 429 or 5xx is retried with backoff (honouring
-`Retry-After`), a 401 or 403 ends the tick, and a tick that fails does not
-advance the fetch window. The health check is STS `GetCallerIdentity`, the one
-call every key may make.
+The source is the shipped `aws` profile (`crates/fetcher/profiles/aws.yaml`), and the `sources.aws` block below maps onto an instance of it at load. Every unit is its own AWS service, signed for that service in the configured region (Health is region-locked to `us-east-1`), and every list pages on the token the API documents. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window. The health check is STS `GetCallerIdentity`, the one call every key may make.
 
 A CloudTrail row is the event itself (`eventName`, `eventTime`, `userIdentity` at the top), the format CloudTrail delivers to S3. `LookupEvents` wraps each event as a JSON string beside its own lookup fields, and the fetcher lifts the event out of it. A record whose `CloudTrailEvent` is not a JSON object lands as the lookup record with the reason under `_dfe_fetcher_parse_error`, so one bad record neither fails the tick nor is lost. A `filter` on this unit therefore names event fields (`eventName`), not lookup fields (`EventName`).
 
@@ -60,12 +43,12 @@ permission.
 | Service | IAM Actions | Notes |
 |---------|-------------|-------|
 | CloudTrail | `cloudtrail:LookupEvents` (or managed policy `AWSCloudTrail_ReadOnlyAccess`) | `LookupEvents` covers the last 90 days of management events |
-| GuardDuty | `guardduty:ListDetectors`, `guardduty:ListFindings`, `guardduty:GetFindings` | One detector per region; fetcher walks all detectors and looks findings up under the detector that listed them |
-| SecurityHub | `securityhub:GetFindings` | Requires SecurityHub enabled in the account; fetches every finding whose record changed in the window, in any workflow status, so a finding's resolution arrives as an update. The `workflow_status` knob narrows it |
-| Config | `config:SelectResourceConfig` | Requires AWS Config recording in the account; the `expression` knob replaces the default query |
+| GuardDuty | `guardduty:ListDetectors`, `guardduty:ListFindings`, `guardduty:GetFindings` | One detector per region. The fetcher walks all detectors and looks findings up under the detector that listed them |
+| SecurityHub | `securityhub:GetFindings` | Requires SecurityHub enabled in the account. Fetches every finding whose record changed in the window, in any workflow status, so a finding's resolution arrives as an update. The `workflow_status` knob narrows it |
+| Config | `config:SelectResourceConfig` | Requires AWS Config recording in the account. The `expression` knob replaces the default query |
 | CloudWatch Logs | `logs:FilterLogEvents` | Per-service config must set `log_group_name`. Each event carries `logGroupName` and `awsRegion` from the call, and `awsAccountId` when the connection sets `assume_role_arn` (the role's account) |
-| CloudWatch Metrics | `cloudwatch:ListMetrics`, `cloudwatch:GetMetricData`, `cloudwatch:GetMetricStatistics`, `cloudwatch:DescribeAlarms` | Per-service config must set `namespaces` |
-| Inspector | `inspector2:ListFindings` (or managed policy `AmazonInspector2ReadOnlyAccess`) | Inspector v2; returns empty unless enabled tenant-side |
+| CloudWatch Metrics | `cloudwatch:ListMetrics`, `cloudwatch:GetMetricData` | Per-service config must set `namespaces` |
+| Inspector | `inspector2:ListFindings` (or managed policy `AmazonInspector2ReadOnlyAccess`) | Inspector v2, which returns empty unless enabled tenant-side |
 | Health | `health:DescribeEvents` | Requires Business / Enterprise On-Ramp / Enterprise Support tier |
 
 ### Least-Privilege Policy (All Services)
@@ -78,9 +61,7 @@ permission.
       "Sid": "CloudTrailRead",
       "Effect": "Allow",
       "Action": [
-        "cloudtrail:LookupEvents",
-        "cloudtrail:GetTrailStatus",
-        "cloudtrail:DescribeTrails"
+        "cloudtrail:LookupEvents"
       ],
       "Resource": "*"
     },
@@ -123,9 +104,7 @@ permission.
       "Effect": "Allow",
       "Action": [
         "cloudwatch:ListMetrics",
-        "cloudwatch:GetMetricData",
-        "cloudwatch:GetMetricStatistics",
-        "cloudwatch:DescribeAlarms"
+        "cloudwatch:GetMetricData"
       ],
       "Resource": "*"
     },
@@ -219,7 +198,7 @@ instead of the key it is given: it calls STS `AssumeRole` once per connection
 expire, then assumes the role again, and every signed request carries the
 session token in `x-amz-security-token`. The key's own principal needs
 `sts:AssumeRole` on the role, and the role's trust policy must name that
-principal; the role then needs the read permissions listed above, not the
+principal. The role then needs the read permissions listed above, not the
 key. A role in another partition (GovCloud, China) is checked against the
 connection's region when it is first assumed.
 
@@ -290,7 +269,7 @@ Notes: `inspector` calls the Inspector v2 REST API (`inspector2`), and
 `health` is region-locked to `us-east-1` regardless of the configured
 `region`. `config` runs `SelectResourceConfig` with a default expression that
 names the configuration item's top-level properties (`SELECT *` would not
-return `configuration`); the `expression` knob replaces it. Each `Results`
+return `configuration`), and the `expression` knob replaces it. Each `Results`
 string lands as the document it holds.
 
 ### Environment Variables
@@ -306,12 +285,7 @@ DFE_FETCHER_SOURCES__AWS__SECRET_ACCESS_KEY="wJalrXUtnFEMI..."
 
 ### Secrets Manager
 
-`credential_secret` resolves from the secrets manager. Format is
-`vault:<mount>/data/<path>:<key>`, e.g. `vault:kv/data/aws:credentials` -- the
-KV v2 mount followed by a literal `data` segment, without which the whole path
-is read under the default `secret` mount. Individual `access_key_id` /
-`secret_access_key` values may also be `env:` or `vault:` prefixed. Credentials
-are resolved once per instance, not per API call.
+`credential_secret` resolves from the secrets manager. Format is `vault:<mount>/<path>:<key>`, e.g. `vault:kv/data/aws:credentials`: the first segment is the KV v2 mount, and a `data` segment after it is optional and ignored. A path with no `/` at all is read under the default `secret` mount. Individual `access_key_id` / `secret_access_key` values may also be `env:` or `vault:` prefixed. Credentials are resolved once per instance, not per API call.
 
 ```yaml
 sources:
@@ -343,18 +317,13 @@ The vault secret must be JSON with these keys (PascalCase `AccessKeyId` /
    Exercise it via the env-gated smoke test:
 
    ```bash
-   cargo test -p dfe-fetcher --test e2e aws_health_check -- --ignored
+   cargo nextest run -p dfe-fetcher --test e2e --run-ignored only aws_health_check
    ```
 
-2. Live fetch tests. The env-gated tests in
-   [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs)
-   hit real AWS APIs. They are `#[ignore]` by default and read credentials
-   from `.env-cloud` (preferred) or `.env`: `AWS_ACCESS_KEY_ID`,
-   `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_CLOUDWATCH_LOG_GROUP`
-   (optional). A refusal fails its test rather than passing with zero records.
+2. Live fetch tests. The env-gated tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) hit real AWS APIs. They are `#[ignore]` by default and read credentials from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (optional, `ap-southeast-2` by default) and `AWS_CLOUDWATCH_LOG_GROUP` (optional). A refusal fails its test rather than passing with zero records.
 
    ```bash
-   cargo test -p dfe-fetcher --test e2e aws_ -- --ignored
+   cargo nextest run -p dfe-fetcher --test e2e --run-ignored only aws_
    ```
 
 3. Common failures.
@@ -366,13 +335,11 @@ The vault secret must be JSON with these keys (PascalCase `AccessKeyId` /
      granted, or AWS Config is not recording in the account.
    - `SubscriptionRequiredException` on Health: account is below Business
      support tier.
-   - `cloudwatch_logs requires log_group_name` / `cloudwatch_metrics
-     requires namespaces`: the per-service `config` block is missing a
-     required key; the config is refused at load.
+   - ``sources.aws: `cloudwatch_logs log_group_name` is required`` or ``sources.aws: `cloudwatch_metrics` needs `namespaces` in its config``: the per-service `config` block is missing a required key, and the config is refused at load.
 
 ## Cost
 
-dfe-fetcher only reads; it never enables services or creates trails, log
+dfe-fetcher only reads. It never enables services or creates trails, log
 groups, detectors, or recorders. The core read paths generally carry no
 additional charge, but some capabilities here may have a cost depending on
 your AWS plan and what is enabled - for example the Health programmatic API
@@ -387,7 +354,6 @@ agreement.
 - AWS Config SelectResourceConfig: <https://docs.aws.amazon.com/config/latest/APIReference/API_SelectResourceConfig.html>
 - AWS Config query limitations (`SELECT *` returns scalar properties only): <https://docs.aws.amazon.com/config/latest/developerguide/querying-AWS-resources.html>
 - GuardDuty ListFindings / GetFindings: <https://docs.aws.amazon.com/guardduty/latest/APIReference/API_ListFindings.html>
-- Amazon Inspector2 IAM actions: <https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazoninspector2.html>
+- Amazon Inspector2 IAM actions: <https://docs.aws.amazon.com/service-authorization/latest/reference/list_inspector2.html>
 - Amazon Inspector managed policies: <https://docs.aws.amazon.com/inspector/latest/user/security-iam-awsmanpol.html>
-- AWS Health IAM policy examples: <https://docs.aws.amazon.com/health/latest/ug/security_iam_id-based-policy-examples.html>
-- AWS Health DescribeEvents API: <https://docs.aws.amazon.com/health/latest/APIReference/API_DescribeEvents.html>
+- AWS Health IAM policy examples and the DescribeEvents API: <https://docs.aws.amazon.com/health/latest/ug/security_iam_id-based-policy-examples.html>, <https://docs.aws.amazon.com/health/latest/APIReference/API_DescribeEvents.html>

@@ -21,7 +21,7 @@ single bearer JSON Web Token (JWT) issued from the 1Password admin console
 and POSTs a time-window / cursor body to each `/api/v2/*` endpoint.
 
 The source is the shipped `onepassword` profile
-(`crates/fetcher/profiles/onepassword.yaml`); the `sources.onepassword` block
+(`crates/fetcher/profiles/onepassword.yaml`), and the `sources.onepassword` block
 below maps onto an instance of it at load. The first call of a tick carries
 the window and the `limit`, every later call carries the returned `cursor`
 alone, and `has_more: false` ends the sequence. A 429 or 5xx is retried with
@@ -32,10 +32,10 @@ service name is refused at load, naming `sources.onepassword`.
 ## Prerequisites
 
 - A **1Password Business** account (Events Reporting is a Business-tier
-  feature; it is not available on Teams Starter, Families, or Individual).
+  feature, not available on Teams Starter, Families, or Individual).
   1Password Enterprise also qualifies.
 - The person doing this setup must be an account **owner or administrator**.
-- No paid add-on beyond the Business subscription; Events Reporting and
+- No paid add-on beyond the Business subscription. Events Reporting and
   Events API access are included.
 
 ## Required Permissions
@@ -52,25 +52,26 @@ needs a single token that can read all three streams it polls.
 The token is **read-only** by design - the Events API exposes no write
 operations. When issuing the token, select (do not deselect) all three event
 features above. To change which event types a token can read, you must issue
-a new token; you cannot edit an existing one.
+a new token. You cannot edit an existing one.
 
 ## Source-Side Setup
 
-1. **Confirm Events Reporting is available**
+1. Confirm Events Reporting is available
 
    Sign in at your account URL (for example `https://my.1password.com`) as an
    owner or administrator. The host in that URL is your region - note it now,
    you need it for the base URL in step 4 (`1password.com` = US,
-   `1password.ca` = Canada, `1password.eu` / `ent.1password.eu` = EU).
+   `ent.1password.com` = US Enterprise, `1password.ca` = Canada,
+   `1password.eu` = EU).
 
-2. **Create the Events Reporting integration**
+2. Create the Events Reporting integration
 
    Select **Integrations** in the sidebar. Under **Events Reporting**, pick
    your SIEM if one is listed, or choose **Other** to build a custom client
    (dfe-fetcher is a custom client). Enter a name such as `dfe-fetcher`, then
    select **Add Integration**.
 
-3. **Issue a bearer token**
+3. Issue a bearer token
 
    Enter a token name (for example `dfe-fetcher`), choose an expiry, and make
    sure **Sign-in attempts**, **Item usages**, and **Audit events** are all
@@ -86,17 +87,16 @@ a new token; you cannot edit an existing one.
      --expires-in 0   # 0 = never expires; set a duration like 8760h otherwise
    ```
 
-4. **Note your regional base URL**
+4. Note your regional base URL
 
-   The default is the US host. Override only if your tenant is not US:
+   The default is the US host. Override only if your account is hosted elsewhere:
 
-   | Region | Base URL |
+   | Account hosted on | Base URL |
    |--------|----------|
-   | US (default) | `https://events.1password.com` |
-   | US Enterprise | `https://events.ent.1password.com` |
-   | Canada | `https://events.1password.ca` |
-   | EU (standard) | `https://events.1password.eu` |
-   | EU (enterprise) | `https://events.ent.1password.eu` |
+   | `1password.com` (default) | `https://events.1password.com` |
+   | `ent.1password.com` | `https://events.ent.1password.com` |
+   | `1password.ca` | `https://events.1password.ca` |
+   | `1password.eu` | `https://events.1password.eu` |
 
 ## dfe-fetcher Configuration
 
@@ -141,7 +141,7 @@ sources:
     topic: "onepassword"
 ```
 
-`credential_secret` takes precedence over a literal `token`; it resolves to
+`credential_secret` takes precedence over a literal `token`, and it resolves to
 the bearer JWT string. The only configurable service-side key is `limit`
 (page size, default 100, max 1000).
 
@@ -150,22 +150,19 @@ the bearer JWT string. The only configurable service-side key is `limit`
 The profile's probe calls `/api/auth/introspect` with the token (this does
 not consume any per-endpoint event budget) and is healthy on a 2xx.
 
-Smoke tests against a live 1Password account live in `crates/fetcher/tests/e2e/smoke_remote.rs`
-and are `#[ignore]`d by default. They read `ONEPASSWORD_EVENTS_TOKEN`
-(required) and `ONEPASSWORD_API_BASE` (optional regional override) from
-`.env-cloud` (or `.env`):
+Smoke tests against a live 1Password account live in `crates/fetcher/tests/e2e/smoke_remote.rs` and are `#[ignore]`d by default. They read `ONEPASSWORD_EVENTS_TOKEN` (required) and `ONEPASSWORD_API_BASE` (optional regional override) from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 ```bash
-cargo test -p dfe-fetcher --test e2e onepassword_ -- --ignored
+cargo nextest run -p dfe-fetcher --test e2e --run-ignored only onepassword_
 ```
 
 Common failure modes:
 
-- **401 / health check fails** - token revoked, expired, or wrong region
+- 401 / health check fails - token revoked, expired, or wrong region
   base URL.
-- **Empty results** - the time window had no matching events; sign-in
+- Empty results - the time window had no matching events. Sign-in
   attempts and item usages are sparse on small tenants.
-- **403 on one endpoint only** - the token was issued without that event
+- 403 on one endpoint only - the token was issued without that event
   feature. Issue a new token with all three selected.
 
 ## Cost

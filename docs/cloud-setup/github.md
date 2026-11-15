@@ -15,21 +15,21 @@ audit-log data from a GitHub organisation or enterprise account.
 
 dfe-fetcher pulls events from the GitHub audit log over the REST API at
 `api.github.com`, paging through the `Link: rel="next"` header. It reads
-exactly one of two endpoints per fetcher instance:
+exactly one of two endpoints per connection:
 
 - Organisation scope: `GET /orgs/{org}/audit-log`
 - Enterprise scope: `GET /enterprises/{enterprise}/audit-log`
 
-A service-config `include` selects `web`, `git`, or `all` event classes.
-Every request carries `Accept: application/vnd.github+json` and the pinned
-`X-GitHub-Api-Version: 2022-11-28` header. Authentication is a bearer token
+A service-config `include` selects `web`, `git`, or `all` event classes, and any other value is read as `all`.
+Every request carries `Accept: application/vnd.github+json` and the
+`X-GitHub-Api-Version` header the profile pins. Authentication is a bearer token
 (classic Personal Access Token, fine-grained PAT, or a GitHub App
 installation token). The audit-log API is available only on GitHub
 Enterprise Cloud - both the org-level and enterprise-level endpoints require
 your organisation to be part of an Enterprise Cloud plan.
 
 The source is the shipped `github` REST profile
-(`crates/fetcher/profiles/github.yaml`); the `sources.github` block below
+(`crates/fetcher/profiles/github.yaml`), and the `sources.github` block below
 maps onto an instance of it at load, so the profile's retry policy applies:
 a 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403
 ends the tick, and a tick that fails does not advance the fetch window.
@@ -47,7 +47,7 @@ ends the tick, and a tick that fails does not advance the fetch window.
   GitHub App support for the audit-log list endpoint exists but has been
   inconsistent in practice - prefer a classic PAT unless your org policy
   blocks them. Fine-grained PATs are NOT supported for the audit-log
-  streaming endpoints (dfe-fetcher does not use those; it uses the list
+  streaming endpoints (dfe-fetcher does not use those, only the list
   endpoint).
 
 ## Required Permissions
@@ -55,7 +55,7 @@ ends the tick, and a tick that fails does not advance the fetch window.
 | Service | Endpoint | Permission or Scope | Notes |
 |---------|----------|---------------------|-------|
 | `audit_log` (org) | `GET /orgs/{org}/audit-log` | Classic PAT scope `read:audit_log` | Reliable path. Token owner must be able to read the org audit log. |
-| `audit_log` (org) | `GET /orgs/{org}/audit-log` | Fine-grained / GitHub App: org `Administration: Read` | Supported but historically flaky; verify with `X-Accepted-GitHub-Permissions` response header. |
+| `audit_log` (org) | `GET /orgs/{org}/audit-log` | Fine-grained / GitHub App: org `Administration: Read` | Supported but historically flaky. Verify with the `X-Accepted-GitHub-Permissions` response header. |
 | `audit_log` (enterprise) | `GET /enterprises/{enterprise}/audit-log` | Classic PAT scope `read:audit_log` | Token owner must be an enterprise admin. |
 | `audit_log` (enterprise) | `GET /enterprises/{enterprise}/audit-log` | Fine-grained / GitHub App: enterprise `Enterprise administration: Read` | Alternative to classic PAT. |
 
@@ -92,7 +92,7 @@ permission (fine-grained / App).
 1. **Settings** -> **Developer settings** -> **Personal access tokens**
    -> **Fine-grained tokens** -> **Generate new token**.
 2. Set **Resource owner** to the target organisation (fine-grained tokens
-   max out at 366 days; non-expiring is not allowed).
+   max out at 366 days, and non-expiring is not allowed).
 3. Under **Organization permissions**, set **Administration** to
    **Read-only** (enterprise endpoint: set **Enterprise administration** to
    Read). Grant nothing else.
@@ -160,27 +160,25 @@ sources:
 
 ## Verification
 
-- **Health check.** The profile's probe calls `GET /user` with the token; a
+- Health check. The profile's probe calls `GET /user` with the token, and a
   2xx means the token authenticates and `api.github.com` is reachable. Note
   this only proves the token is valid, not that it carries audit-log
   permission.
-- **e2e smoke test.** `crates/fetcher/tests/e2e/smoke_remote.rs` has
-  `#[ignore]`-gated live tests. Export credentials (or put them in
-  `.env-cloud`), then run:
+- e2e smoke test. `crates/fetcher/tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live tests. Export credentials, or put them in `.env-cloud` or `.env` at the repo root (both are loaded over the environment, `.env` last), then run:
 
   ```bash
   export GITHUB_AUDIT_TOKEN="ghp_..."
   export GITHUB_AUDIT_ORG="your-github-org"   # OR GITHUB_AUDIT_ENTERPRISE
-  cargo test -p dfe-fetcher --test e2e github_ -- --ignored
+  cargo nextest run -p dfe-fetcher --test e2e --run-ignored only github_
   ```
 
   Covers the health check, audit-log fetch, and git-only include variant.
-- **Common failure modes.**
+- Common failure modes.
   - `403 Forbidden` with a valid token: token lacks `read:audit_log` (or the
     fine-grained permission), or the org is not on Enterprise Cloud.
   - `404 Not Found`: wrong `org`/`enterprise` slug, or the audit-log API is
     not available for that account tier.
-  - Empty result every tick: no events in the lookback window; git events are
+  - Empty result every tick: no events in the window. Git events are
     retained only ~7 days, so a stale window returns nothing.
   - Setting both `org` and `enterprise`, or neither, is a config error: the
     fetcher refuses the config at load, naming `sources.github`.
