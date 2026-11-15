@@ -662,6 +662,133 @@ fn config_check_fails_on_a_spec_that_cannot_resolve() {
     );
 }
 
+/// A typed source block with a misspelt key: it parses, and nothing reads the key.
+const MISSPELT_TYPED_KEY: &str = "kafka:\n  brokers: [broker:9092]\ningest:\n  enabled: false\nsources:\n  okta:\n    enabeld: true\n";
+
+/// The warning both commands print for [`MISSPELT_TYPED_KEY`].
+const MISSPELT_KEY_REPORT: &str = "unknown config key";
+
+/// `config-check` reports a misspelt key inside a typed block, once.
+///
+/// The loader reads the file before any logger exists, so a warning raised
+/// there goes nowhere and the operator's pre-deploy check passes in silence.
+#[test]
+fn config_check_reports_a_misspelt_typed_key() {
+    // The child process inherits this process's env at spawn.
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(&dir, MISSPELT_TYPED_KEY);
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_dfe-fetcher"))
+        .args(["--config", &path, "config-check"])
+        .output()
+        .expect("run config-check");
+    let report = String::from_utf8_lossy(&out.stderr);
+
+    assert!(out.status.success(), "config-check failed:\n{report}");
+    let warnings: Vec<&str> = report
+        .lines()
+        .filter(|line| line.contains(MISSPELT_KEY_REPORT))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for the misspelt key:\n{report}"
+    );
+    assert!(
+        warnings[0].contains("sources.okta.enabeld"),
+        "the warning must name the key by its path: {warnings:?}"
+    );
+}
+
+/// Send each line `stream` produces down `tx` from a thread of its own.
+fn forward_lines(stream: impl std::io::Read + Send + 'static, tx: std::sync::mpsc::Sender<String>) {
+    use std::io::{BufRead, BufReader};
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// `run` reports a misspelt key inside a typed block once its logger is up.
+///
+/// With nothing enabled the fetcher idles, so the process stays up after
+/// logging the config and the test stops it once the idle line has printed.
+#[test]
+fn run_reports_a_misspelt_typed_key() {
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    // The child process inherits this process's env at spawn.
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = write_config(&dir, MISSPELT_TYPED_KEY);
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_dfe-fetcher"))
+        .args([
+            "--config",
+            &path,
+            "--metrics-addr",
+            "127.0.0.1:0",
+            "--log-format",
+            "text",
+            "run",
+        ])
+        // The test machine is not a deployment: no release check phones home.
+        .env("DFE_FETCHER_VERSION_CHECK__ENABLED", "false")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run");
+
+    let (tx, rx) = mpsc::channel::<String>();
+    forward_lines(child.stdout.take().expect("piped stdout"), tx.clone());
+    forward_lines(child.stderr.take().expect("piped stderr"), tx.clone());
+    drop(tx);
+
+    // `on_config_loaded` runs before the idle gate, so the idle line closes the window.
+    let mut lines: Vec<String> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                let idle = line.contains("idling");
+                lines.push(line);
+                if idle {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    child.kill().expect("stop run");
+    child.wait().expect("reap run");
+
+    let report = lines.join("\n");
+    let warnings: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains(MISSPELT_KEY_REPORT))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected one warning for the misspelt key:\n{report}"
+    );
+    assert!(
+        warnings[0].contains("sources.okta.enabeld"),
+        "the warning must name the key by its path: {warnings:?}"
+    );
+}
+
 /// `config-check` run by the binary from `dir` with no `--config`, returning
 /// what it printed.
 fn config_check_in(dir: &Path) -> String {
