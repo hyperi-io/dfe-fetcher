@@ -301,7 +301,7 @@ administrator's credentials, get a token back, send that token on every later
 request. vCenter, Cisco Catalyst Centre, Check Point Management, F5 BIG-IP,
 Wazuh, Veeam, Zscaler's legacy API, Redfish and iDRAC BMCs and Qualys all work
 this way, and none of them speaks RFC 6749: the token comes back under a name
-the vendor chose, in the body or in a header, usually with nothing said about
+the appliance's maker chose, in the body or in a header, usually with nothing said about
 how long it lives.
 
 So `session_login` reads the token from where the profile points, holds it for
@@ -372,7 +372,7 @@ because that is not a failure the account is locked for.
 
 Some providers authenticate a call with a digest of the call itself rather than
 with a credential the request carries. The digest algorithm, the canonical
-string it is taken over and where the digest goes are per-vendor details, so
+string it is taken over and where the digest goes differ by provider, so
 they are the `signature` mode's config rather than a mode of their own.
 
 | Field | Meaning |

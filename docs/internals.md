@@ -96,7 +96,7 @@ The fetcher has no raw capture setting and does not keep the bytes it fetched. P
 The repo is a Cargo workspace laid out as a wide DAG off one I/O-free core, so
 the source crates compile in parallel and a profile change never rebuilds a
 database driver. Solid edges are unconditional. Dashed edges are the optional
-engine drivers and the vendored tailer, each behind its feature.
+engine drivers and the copied Vector tailer, each behind its feature.
 
 ```mermaid
 flowchart TB
@@ -104,7 +104,7 @@ flowchart TB
     rest["dfe-fetcher-rest<br>crates/rest<br>profile grammar, auth, pager, decoder,<br>hooks, request executor, RestShape"]
     db["dfe-fetcher-db<br>crates/db<br>Store contract, keyset, pump<br>(engines behind features)"]
     file["dfe-fetcher-file<br>crates/file<br>FileSource contract, dump reader, tail spec"]
-    tailer["vector-file-source<br>third-party/ (vendored, MIT)"]
+    tailer["vector-file-source<br>third-party/ (Vector's, MIT)"]
     core["dfe-fetcher-core<br>crates/core<br>Row, Mark, RowSource, Batcher, RowRules,<br>snapshot envelope, checkpoints, metric names"]
 
     engines["engine drivers<br>unixODBC + arrow-odbc, dfe-clickhouse, mongodb"]
@@ -239,8 +239,8 @@ each file its globs match once -- NDJSON, a JSON array or CSV, gzip detected by
 magic -- lands each file as its own snapshot, and marks the file done with its
 path and change time after its last row is acknowledged, so a file rewritten
 in place is read again and a file dropped in by rename is never skipped. A
-`tail` unit follows growing files through rotation and truncation on the
-vendored Vector tailer and commits `(file fingerprint, end offset)` per line
+`tail` unit follows growing files through rotation and truncation on
+Vector's file tailer, copied under `third-party/`, and commits `(file fingerprint, end offset)` per line
 after the acknowledgement. It needs the `file-tail` feature and is refused at
 load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
 

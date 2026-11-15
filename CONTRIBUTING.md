@@ -184,7 +184,7 @@ listener with no `auth_token` refuses to start unless
 | `crates/fetcher/profiles/*.yaml` | The shipped REST profiles. A new one is registered in `crates/fetcher/src/profiles/mod.rs`. |
 | `crates/fetcher/src/deployment.rs` | The deployment contract, and the drift tests that hold the generated artefacts to it. The released chart is assembled from it, never committed. |
 | `Dockerfile`, `docs/config-schema.*`, `docs/capability-catalog.*` | Generated from that contract and committed. Never hand-edited -- see below. |
-| `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), vendored, depended on by path from `crates/file` only. |
+| `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied in and depended on by path from `crates/file` only. |
 | `scripts/generics_gates.py` | The generics acceptance gates: one framework site per provider mechanism, the crate dependency direction, per-hook line budgets. |
 | `config.example.yaml` | The annotated reference. `docs/config-schema.yaml` is the generated list of every key. |
 | `docs/architecture.md`, `docs/internals.md`, `docs/delivery.md`, `docs/extractors.md` | The workspace codemap with its negative invariants, the diagrams plus rationale, the delivery path and the extractors. |
@@ -220,7 +220,7 @@ Two ways a green run says more than it proved:
 | Add a config knob and assume it lands | Add a case to `crates/fetcher/tests/integration/config_reachability.rs` | `metrics.address` shipped in the old chart's values, the contract default and `config.example.yaml`, and was read by nothing: the runtime resolves it from scalo's cascade, which `--config` did not populate, so the listener bound the hard-coded default. Every failure in this class looks identical from outside -- the process starts, logs a healthy line, and runs on a value the operator did not set. |
 | Sleep to wait for a tick, a tail or a file timestamp | Bound the wait on the thing itself, or cross the boundary | Repeated flakes: `8e205c5` bounded the file-tail and dump-listing races instead of sleeping, `33b53aa` crossed a second boundary instead of polling for a change time, `9dfb307` used a port nothing can bind rather than one just handed back. |
 | Add per-provider Rust | Write a profile, or add a variant on the matching axis in `crates/rest` | The generics gates fail a provider mechanism written twice, and every hook has a line budget. `741e28c` is the gate itself being fixed after it matched the word "sigv4" in a comment instead of a signer. |
-| Share an `instance_id` between fetchers, or change one | One stable id per deployment, which dfe-infra binds to its source | Every cursor key starts with the instance id, so two fetchers sharing one read and write each other's windows, and a changed id starts every connection cold on the default window. `8a37e11` refuses an unset id when more than one source runs, because every such fetcher would share the fallback. |
+| Share an `instance_id` between fetchers, or change one | One stable id per deployment, which dfe-infra binds to its source | Every cursor key starts with the instance id, so two fetchers sharing one read and write each other's windows, and a changed id starts every connection cold on the default window. An unset id that would fall back to the shared default is refused once more than one source runs. |
 
 ### Where this sits
 

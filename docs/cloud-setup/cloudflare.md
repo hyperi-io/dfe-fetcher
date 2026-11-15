@@ -24,7 +24,7 @@ envelope. Authentication is a scoped API token in
 
 The source is the shipped `cloudflare` profile (`crates/fetcher/profiles/cloudflare.yaml`), and the `sources.cloudflare` block below maps onto an instance of it at load. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying `success: false` fails the tick with the `errors` array as the reason, and a tick that fails does not advance the fetch window. A missing token or `account_id` is refused at load, naming `sources.cloudflare`.
 
-Note on API versions: dfe-fetcher reads the **v1** `audit_logs` endpoint. Cloudflare made **Audit Logs v2** (the newer `/accounts/{account_id}/logs/audit` endpoint) generally available on 2026-03-10 (the changelog is in the references below).
+dfe-fetcher reads the v1 `audit_logs` endpoint, not Cloudflare's newer Audit Logs v2 endpoint (`/accounts/{account_id}/logs/audit`), whose changelog entry is in the references below.
 
 ## Prerequisites
 

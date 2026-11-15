@@ -919,7 +919,7 @@ kafka:
 # Buffer / Memory -- REQUIRES RESTART
 # =============================================================================
 buffer:
-  memory_limit: 0             # 0 = auto-detect (85% of the cgroup or host memory)
+  memory_limit: 0             # 0 = auto-detect: https://github.com/hyperi-io/scalo-rs/blob/main/docs/runtime/memory.md
   pressure_threshold: 0.8
 
 # =============================================================================

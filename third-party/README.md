@@ -1,4 +1,4 @@
-# Third-party code vendored into this repository
+# Third-party code copied into this repository
 
 Each directory below is a copy of an upstream crate, kept under its own licence
 (the `LICENSE` file in each directory is the upstream text, verbatim) and built

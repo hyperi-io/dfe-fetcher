@@ -50,8 +50,9 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-A continuous extractor that exits is restarted after an exponential backoff
-capped by `max_restart_backoff_secs`. The backoff resets once a run has stayed
+A continuous extractor that exits is restarted after a backoff that doubles up
+to 64 s, or up to `max_restart_backoff_secs` when that is lower, so a setting
+above 64 changes nothing. The backoff resets once a run has stayed
 up for `stable_after_secs`. A container that exits more than
 `max_restart_attempts` times with no stable run between stops for good (0, the
 default, restarts it for ever). No health check runs while a container is up:
@@ -85,7 +86,7 @@ flowchart TB
 What each mode guarantees:
 
 - Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is answered only after its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` too, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. While the fetcher's memory-pressure latch holds, a push is refused `UNAVAILABLE` before any work.
-- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` only after the outputs took the record or the DLQ confirmed it, and `503` with `Retry-After` otherwise. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it. Such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
+- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` only after the outputs took the record or the DLQ confirmed it, and `503` otherwise, with `Retry-After` when the outputs pushed back. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it. Such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
 - stdout: a pipe cannot be read twice, so a line the outputs cannot take yet is held and retried, pausing from 1 s up to 30 s, and the container's stdout is not read meanwhile, so the container blocks on its own writes until the outputs recover. Only a failure no retry can clear (no output configured), or a line still held at shutdown after one more attempt, is dropped, counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}` and never in the received count.
 
 ## Shutdown and the Vector listeners
