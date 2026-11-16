@@ -33,7 +33,7 @@ test server.
 
 The three sources are the shipped `pypi`, `crates_io` and `go_modules` profiles (`crates/fetcher/profiles/`), and each typed block below maps onto an instance of its profile at load. Missing packages are tolerated: a 404 for a configured name is an empty answer, not an error, and the other names still land. A 5xx or 429 on one name is retried with backoff. A name the registry keeps refusing fails the tick, and the names after it wait for the next tick (these are state documents, so nothing is lost). The Go source fetches at most
 100 versions' `.info` per module per tick, in list order, and a retracted
-version (a 404 on its `.info`) is left out of the row.
+version (a 404 on its `.info`) is left out of the row. The proxy's list is not in version order, so the versions past the 100 are not the oldest. A module with more is logged as a warning with the `skipped` count and the first 20 versions skipped, and counted in `dfe_fetcher_manifest_items_skipped_total`.
 
 ## Prerequisites
 

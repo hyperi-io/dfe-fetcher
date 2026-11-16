@@ -2298,6 +2298,39 @@ async fn a_fold_unit_yields_one_row_per_key_from_its_items() {
     );
 }
 
+/// A fold unit cut at `max_items` counts the items it did not fetch: the list
+/// has three versions and the cap takes two, so one is skipped.
+#[tokio::test]
+async fn a_fold_unit_cut_at_max_items_counts_the_items_it_skipped() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    // A process takes one recorder, and nextest runs each test in its own.
+    let _ = recorder.install();
+
+    let fx = common::start().await;
+    let p = format!(
+        "{PLAIN}vars: {{ modules: [] }}\nendpoints:\n  - unit: metadata\n    path: \"/goproxy/{{{{ key }}}}/@v/list\"\n    rows: {{ decoder: lines }}\n    ignore_status: [404]\n    fold: go_module_aggregate\n    add_fields: {{ _dfe_fetcher_module: \"{{{{ key }}}}\" }}\n    construct:\n      keyset: {{ from: \"{{{{ vars.modules }}}}\" }}\n      manifest:\n        item_request: {{ path: \"/goproxy/{{{{ key }}}}/@v/{{{{ item.line }}}}.info\", ignore_status: [404] }}\n        rows: {{ decoder: document }}\n        max_items: 2\n"
+    );
+    let i = "profile: x\ntopic: t\nauth: { mode: none }\nvars: { modules: [textmod] }\n";
+    let s = shape(&fx, &p, i);
+    let rows = fetch(&s, "metadata", None).await.unwrap();
+    assert_eq!(rows[0]["versions"], serde_json::json!(["v0.3.0"]));
+
+    let skipped: Vec<u64> = snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter(|(key, ..)| key.key().name() == "dfe_fetcher_manifest_items_skipped_total")
+        .filter_map(|(_, _, _, value)| match value {
+            DebugValue::Counter(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(skipped, [1], "one of the three versions was cut");
+}
+
 /// A token-minting mode exposes the token-response fields the profile
 /// names as `auth.*`, so a Salesforce-shaped unit addresses the instance
 /// the exchange named; a field the profile does not name never renders;
