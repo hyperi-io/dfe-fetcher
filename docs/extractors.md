@@ -55,18 +55,20 @@ This diagram shows the states of one container extractor.
 stateDiagram-v2
     direction LR
     accTitle: L4 Detail -- Container extractor lifecycle
-    accDescr: A scheduled container waits an interval, runs, and waits again. A continuous container runs at once and, when it exits, waits out a backoff and runs again, until its exits with no stable run between pass max_restart_attempts. Shutdown stops the extractor.
-    [*] --> Waiting: scheduled
+    accDescr: A scheduled container waits an interval, runs, and waits again. A continuous container runs at once and, when it exits, waits out a backoff and runs again, It stops for good when it exits more than max_restart_attempts times with no stable run between. Shutdown stops it from any state.
     [*] --> Running: continuous
+    [*] --> Waiting: scheduled
     Waiting --> Running: tick
     Running --> Waiting: done
     Running --> Backoff: exited
     Backoff --> Running: retry
     Running --> Stopped: limit
     Running --> Stopped: shutdown
+    Waiting --> Stopped: shutdown
+    Backoff --> Stopped: shutdown
 ```
 
-*Figure 2. L4 Detail -- Container extractor lifecycle. Shutdown stops a waiting or backing-off extractor the same way.* Up: [L4 Detail -- Extractors](#extractors).
+*Figure 2. L4 Detail -- Container extractor lifecycle.* Up: [L4 Detail -- Extractors](#extractors).
 
 A continuous extractor that exits is restarted after a backoff that doubles up
 to 64 s, or up to `max_restart_backoff_secs` when that is lower, so a setting

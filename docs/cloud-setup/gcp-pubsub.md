@@ -217,7 +217,7 @@ Common failures:
 
 ## Cost
 
-dfe-fetcher reads and never writes (pull + acknowledge). Pub/Sub and log routing may
+dfe-fetcher reads, and writes nothing back except Pub/Sub acknowledgements. Pub/Sub and log routing may
 generate usage charges depending on message throughput and retention, so
 there could be a cost at higher volumes. Keep the sink `--log-filter` tight
 to limit what is routed. Confirm any cost implications against your GCP
