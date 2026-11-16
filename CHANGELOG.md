@@ -3,6 +3,23 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.56](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.55...v1.4.56) (2026-11-16)
+
+### Bug Fixes
+
+* **build:** add the workspace description for release builds ([#299](https://github.com/hyperi-io/dfe-fetcher/issues/299)) ([d03024f](https://github.com/hyperi-io/dfe-fetcher/commit/d03024f222171aafca4e0e484f5610754c395357))
+* **catalog:** drop the unbuilt GCS and Azure Blob backends ([66a97c4](https://github.com/hyperi-io/dfe-fetcher/commit/66a97c41d0606c11c4f4313ddba001c3ddfdcfec))
+* **ci:** run the db-odbc test suites on every pull request ([#313](https://github.com/hyperi-io/dfe-fetcher/issues/313)) ([e643dd9](https://github.com/hyperi-io/dfe-fetcher/commit/e643dd9535092060ce993401ccd2d71ffc3ae6dd))
+* **config:** report misspelt config keys after logger setup ([#301](https://github.com/hyperi-io/dfe-fetcher/issues/301)) ([ad685af](https://github.com/hyperi-io/dfe-fetcher/commit/ad685afc70699fe458b077a08ddfe314974277a0))
+* **deps:** bump rust-dependencies and regenerate config schema ([#305](https://github.com/hyperi-io/dfe-fetcher/issues/305)) ([2e349b6](https://github.com/hyperi-io/dfe-fetcher/commit/2e349b65196eb21802cb5d435a0a6eea67c4be61))
+* **deps:** update arrow-odbc to 27.0.0 and odbc-api to 30.0.0 ([#312](https://github.com/hyperi-io/dfe-fetcher/issues/312)) ([9521ada](https://github.com/hyperi-io/dfe-fetcher/commit/9521ada99747aa0ba9a38d6dd7d6aac010eb651f))
+* **deps:** update rust-dependencies ([bc3f303](https://github.com/hyperi-io/dfe-fetcher/commit/bc3f30353c3731dedb4a4663213884b56796926d))
+* **docs:** point extractor links at the page ([5f3bc22](https://github.com/hyperi-io/dfe-fetcher/commit/5f3bc22a84522db197460bd7cc7041a0efb6c0ff)), closes [#extractors](https://github.com/hyperi-io/dfe-fetcher/issues/extractors)
+* **fetcher:** write dump units to the instance topic ([#316](https://github.com/hyperi-io/dfe-fetcher/issues/316)) ([c70edb1](https://github.com/hyperi-io/dfe-fetcher/commit/c70edb13713ab459f91fe3b8650b7b752551111f))
+* **file:** default a tail's data_dir under the cursor directory ([#302](https://github.com/hyperi-io/dfe-fetcher/issues/302)) ([727f2c6](https://github.com/hyperi-io/dfe-fetcher/commit/727f2c6f0b4380ef37e67b0ca66c92da7500b250))
+* **rest:** report the manifest items a max_items cap skips ([#315](https://github.com/hyperi-io/dfe-fetcher/issues/315)) ([c6f0928](https://github.com/hyperi-io/dfe-fetcher/commit/c6f0928ce1ea7be61b56313fb6b2dd4ad4130028))
+* **tests:** lay out test image digests so Renovate matches them ([f75154d](https://github.com/hyperi-io/dfe-fetcher/commit/f75154dd9ad28a0d3a9721321a74c0cf72adb257))
+
 ## [1.4.55](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.54...v1.4.55) (2026-11-15)
 
 ### Bug Fixes
