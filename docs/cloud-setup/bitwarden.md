@@ -155,14 +155,16 @@ Common failure modes:
   `api_url_override` and `identity_url_override`.
 - HTTP 429 - rate limited. dfe-fetcher retries with backoff and
   `Retry-After` up to the profile's policy, then fails the tick without
-  advancing. The page ceiling is 50 per fetch.
+  advancing. A window reads at most 50 pages. A busier window is read again
+  in halves inside the same tick, down to one second, and only a one-second
+  window past the ceiling fails the tick, so no event is skipped.
 
 ## Cost
 
 dfe-fetcher only reads. The Public API and `/public/events` reads add no
 charge of their own, but access may require a paid Bitwarden plan (the
 Events/Public API is an organization feature). Fair-use server-side rate
-limits apply. Confirm any cost implications against your own Bitwarden
+limits apply. Confirm any cost implications against your Bitwarden
 plan.
 
 ## References

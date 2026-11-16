@@ -50,7 +50,7 @@ a `mssql` instance is refused at load. Microsoft's install steps are at
 <https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server>.
 
 Oracle, Snowflake, Databricks and BigQuery drivers are click-through
-downloads the operator installs under their own licences, in a driver layer
+downloads the operator installs under their licences, in a driver layer
 built FROM our image. The driver's own installer registers it in
 `odbcinst.ini`, or the layer appends the entry itself:
 
@@ -68,7 +68,7 @@ USER 1000
 |--------|----------------------|--------|---------|--------------|-----------------|----------|------------|
 | PostgreSQL, and the PostgreSQL wire (Redshift, CockroachDB, Cloud SQL, RDS) | `odbc` / `postgres` | psqlodbc (`odbc-postgresql`, `PostgreSQL Unicode`) | LGPL-2.1 | Shipped | `Driver={PostgreSQL Unicode};Server=..;Port=..;Database=..;Uid=..;Pwd=..;UseDeclareFetch=1;BoolsAsChar=0` -- `UseDeclareFetch=1` is required or the driver buffers the whole result set. `BoolsAsChar=0` makes booleans JSON booleans | NOT NULL columns of the query's result. A plain name folds to lower case, `"Name"` keeps its case | Key tuple of the last acknowledged row |
 | MariaDB, MySQL, and their managed forms | `odbc` / `mysql` | MariaDB Connector/ODBC (`odbc-mariadb`, `MariaDB Unicode`). Works against MySQL servers | LGPL-2.1 (MySQL Connector/ODBC is GPL and cannot ship) | Shipped | `Driver={MariaDB Unicode};Server=..;Port=..;Database=..;User=..;Password=..;NO_CACHE=1;FORWARDONLY=1` -- both knobs required or the driver buffers the result set | NOT NULL columns. Names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
-| ClickHouse, ClickHouse Cloud | `clickhouse` | The official HTTP client crate plus `dfe-clickhouse` (pure Rust) | Apache-2.0 | Nothing to install | `http[s]://user:password@host:8123/database` | Columns of the query's result. Their types are read from `DESCRIBE (query)` at the first tail and bound as `{k<i>:Type}` placeholders | Key tuple of the last acknowledged row |
+| ClickHouse, ClickHouse Cloud | `clickhouse` | The official HTTP client crate plus `dfe-clickhouse` (pure Rust) | MIT OR Apache-2.0 (`clickhouse`), Apache-2.0 (`dfe-clickhouse`) | Nothing to install | `http[s]://user:password@host:8123/database` | NOT NULL columns of the query's result. Their types are read from `DESCRIBE (query)` at the first tail and bound as `{k<i>:Type}` placeholders | Key tuple of the last acknowledged row |
 | SQL Server, Azure SQL, Synapse | `odbc` / `mssql` | Microsoft ODBC Driver 18 (`msodbcsql18`) from packages.microsoft.com | Microsoft EULA, click-through, redistributable under its terms | Operator driver layer, and refused at load until `odbc.mssql.accept_eula: true` | `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;Database=..;Uid=..;Pwd=..;Encrypt=yes` | NOT NULL columns. Names keep their case, `[name]` delimits | Key tuple of the last acknowledged row |
 | Oracle, Autonomous, RDS Oracle | `odbc` / `oracle` | Oracle Instant Client ODBC | OTN licence, click-through | Operator driver layer | `Driver={Oracle ODBC driver};DBQ=host:1521/service;UID=..;PWD=..` | NOT NULL columns. A plain name folds to UPPER case, `"Name"` keeps its case. 12c Release 1 or later | Key tuple of the last acknowledged row |
 | SQLite | `odbc` / `sqlite` | sqliteodbc (`libsqliteodbc`, `SQLite3`) | Permissive (the driver's own BSD-style licence) | Shipped | `Driver={SQLite3};Database=/path/to/file.db` | NOT NULL columns. Names keep their case | Key tuple of the last acknowledged row |
@@ -86,7 +86,7 @@ the host. The names above are the packages' defaults.
 
 `connection_string` is ONE string, resolved once when the store first
 connects. So an auth form works here only if the whole credential fits in that
-string, or in files the container already carries. A form that needs a
+string, or in files inside the container. A form that needs a
 short-lived token minted per connection does not work, because nothing
 re-resolves the string between connects. Those are listed as unsupported below
 rather than left to fail at connect time.
@@ -105,13 +105,13 @@ to be mounted into the image. The spec mechanism does not fetch it.
 | MariaDB, MySQL | User and password. TLS client certificate (`SSLCERT`, `SSLKEY`, `SSLCA`, `SSLVERIFY=1`). Absolute paths are required | The certificate, key and CA | -- |
 | ClickHouse | User and password in the URL (`http[s]://user:password@host/db`) | -- | -- |
 | SQL Server, Azure SQL, Synapse | User and password. Entra service principal (`Authentication=ActiveDirectoryServicePrincipal`, client id in `UID`, secret in `PWD`). Managed identity (`Authentication=ActiveDirectoryMsi`, with `UID` for a user-assigned identity). Kerberos (`Trusted_Connection=yes`) | Nothing for the Entra forms. Kerberos needs an external ticket cache the driver does not create | An Entra ACCESS TOKEN. Microsoft documents no DSN or connection-string keyword for it: it is set through a connection attribute whose buffer must outlive the connection handle, so a config-driven caller cannot supply it. Client certificates are documented only for loopback connections on SQL Server on Linux, not as a general login |
-| Oracle | User and password. Nothing else: the ODBC keyword set has no auth parameter beyond these | Wallet and TCPS, and Kerberos, are Oracle Net configuration in `tnsnames.ora` and `sqlnet.ora` found through `TNS_ADMIN`, so the credential is entirely out of band and the string carries none of it | -- |
-| Snowflake | User and password. Key-pair JWT (`AUTHENTICATOR=SNOWFLAKE_JWT` with `PRIV_KEY_FILE`, plus `PRIV_KEY_FILE_PWD` for an encrypted key) -- the driver signs the assertion itself. OAuth client credentials (`AUTHENTICATOR=oauth_client_credentials` with `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_REQUEST_URL`) -- the driver performs the exchange. Workload identity (`AUTHENTICATOR=workload_identity` with `WORKLOAD_IDENTITY_PROVIDER`), which needs no key file at all. A programmatic access token, which the driver's parameter list takes as `AUTHENTICATOR=programmatic_access_token` with `token` while the feature's own guide describes putting it in the password | The private key for the key-pair form | An OAuth token minted elsewhere (`AUTHENTICATOR=oauth` with `token`) -- that is a caller-supplied token, not a static credential |
+| Oracle | User and password. Nothing else: the ODBC keyword set has no auth parameter beyond these | Wallet and TCPS, and Kerberos, are Oracle Net configuration in `tnsnames.ora` and `sqlnet.ora` found through `TNS_ADMIN`, so the credential is entirely out of band and the string has none of it | -- |
+| Snowflake | User and password. Key-pair JWT (`AUTHENTICATOR=SNOWFLAKE_JWT` with `PRIV_KEY_FILE`, plus `PRIV_KEY_FILE_PWD` for an encrypted key) -- the driver signs the assertion itself. OAuth client credentials (`AUTHENTICATOR=oauth_client_credentials` with `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_REQUEST_URL`) -- the driver performs the exchange. Workload identity (`AUTHENTICATOR=workload_identity` with `WORKLOAD_IDENTITY_PROVIDER`), which needs no key file at all. A programmatic access token, which the driver's parameter list takes as `AUTHENTICATOR=programmatic_access_token` with `token` but the feature's own guide describes putting it in the password | The private key for the key-pair form | An OAuth token minted elsewhere (`AUTHENTICATOR=oauth` with `token`) -- that is a caller-supplied token, not a static credential |
 | Databricks | A personal access token (`AuthMech=3`, `UID=token`, the token in `PWD`). OAuth machine-to-machine (`AuthMech=11`, `Auth_Flow=1`, with `Auth_Client_ID`, `Auth_Client_Secret` and `Auth_Scope=all-apis`), where the driver performs the exchange | -- | Token pass-through (`Auth_Flow=0` with `Auth_AccessToken`), where the caller supplies an OAuth token |
-| BigQuery | A service-account key (`OAuthMechanism=0` with `Email` and `KeyFilePath`, or `KeyFile` for the key inline). Application Default Credentials (`OAuthMechanism=3`), which falls back to the metadata server's default service account and so needs no key at all. Workload identity federation (`OAuthMechanism=4`). Service-account impersonation (`SAI_Email`, `SAI_Lifetime`, `SAI_Scopes`) | The key file, unless `KeyFile` carries it inline or `OAuthMechanism=3` is used | -- |
+| BigQuery | A service-account key (`OAuthMechanism=0` with `Email` and `KeyFilePath`, or `KeyFile` for the key inline). Application Default Credentials (`OAuthMechanism=3`), which falls back to the metadata server's default service account and so needs no key at all. Workload identity federation (`OAuthMechanism=4`). Service-account impersonation (`SAI_Email`, `SAI_Lifetime`, `SAI_Scopes`) | The key file, unless `KeyFile` has it inline or `OAuthMechanism=3` is used | -- |
 | Redshift | IAM with explicit keys (`IAM=1` with `AccessKeyID`, `SecretAccessKey`, optional `SessionToken`), a shared profile (`Profile`), or the instance role (`InstanceProfile=1`). The driver calls STS and requests cluster credentials itself | `Profile` reads a shared credentials file | The IdP token plugin, which Amazon states the calling application must generate |
 | SQLite | Nothing: the file is the database and the driver takes no credential | The database file itself | -- |
-| MongoDB | SCRAM (`authMechanism=SCRAM-SHA-256` or `SCRAM-SHA-1`, with `authSource`), which is the on-prem form and the one this engine is for. Workload identity (`authMechanism=MONGODB-OIDC` with `authMechanismProperties=ENVIRONMENT:k8s`, `azure` or `gcp`, the latter two with `TOKEN_RESOURCE`), where the driver mints the token from that environment itself | The projected service-account token for the `k8s` form, which Kubernetes mounts on its own | `MONGODB-AWS` and `GSSAPI`: driver build features this binary does not enable, the first because it links the AWS SDK's credential stack. `MONGODB-OIDC` with no `ENVIRONMENT`, which needs a token callback the driver expects the application to supply. Each is refused at load naming the reason. `MONGODB-X509` is set through the URI and needs no auth feature, but the driver's own documentation demonstrates X.509 only through a programmatic credential, so it is unproven here rather than supported |
+| MongoDB | SCRAM (`authMechanism=SCRAM-SHA-256` or `SCRAM-SHA-1`, with `authSource`), which is the on-prem form and the one this engine is for. Workload identity (`authMechanism=MONGODB-OIDC` with `authMechanismProperties=ENVIRONMENT:k8s`, `azure` or `gcp`, the latter two with `TOKEN_RESOURCE`), where the driver mints the token from that environment itself | The projected service-account token for the `k8s` form, which Kubernetes mounts itself | `MONGODB-AWS` and `GSSAPI`: driver build features this binary does not enable, the first because it links the AWS SDK's credential stack. `MONGODB-OIDC` with no `ENVIRONMENT`, which needs a token callback the driver expects the application to supply. Each is refused naming the reason: at load for a literal connection string, at connect for a `vault:` or other spec. `MONGODB-X509` is set through the URI and needs no auth feature, but the driver's own documentation demonstrates X.509 only through a programmatic credential, so it is unproven here rather than supported |
 
 ### Forms that need a token minted per connection
 
@@ -142,8 +142,8 @@ and the unit tests there pin each of these:
 - The predicate. Engines with row-value comparison take `(a, b) > (?, ?)`.
   SQL Server and Oracle do not, and take the expanded
   `a > ? OR (a = ? AND b > ?)` with the leading values bound once per
-  disjunct. Values are always bound as ODBC `?` parameters, never written
-  into the SQL text.
+  disjunct. Values are always bound as parameters (ODBC `?`, ClickHouse
+  `{k<i>:Type}`), never written into the SQL text.
 - The cap. `LIMIT n` everywhere except SQL Server, whose
   `OFFSET 0 ROWS FETCH NEXT n ROWS ONLY` is a sub-clause of `ORDER BY` (so
   the no-key form is `TOP (n)`), and Oracle's `FETCH FIRST n ROWS ONLY`,
@@ -158,7 +158,7 @@ and the unit tests there pin each of these:
   is what the row JSON is read under.
 - Case. A plain (undelimited) key is written as given and the engine folds
   it: PostgreSQL to lower case, Oracle and Snowflake to upper, the rest keep
-  it. The row JSON carries the column under the folded name, which is where
+  it. The row JSON has the column under the folded name, which is where
   the tail reads its checkpoint value. Write a case-sensitive column
   delimited.
 - Timestamps. Every engine reports timestamps as RFC 3339 UTC (the session
@@ -169,7 +169,7 @@ and the unit tests there pin each of these:
 
 ## What the tail commits
 
-A tail row carries its key as a mark. The driver folds the marks of a flush
+A tail row has its key as a mark. The driver folds the marks of a flush
 and commits the last one only after the transport has acknowledged the
 batch, under the cursor key `{instance}.{connection}.{unit}` in the cursor
 store. The next tick binds the committed values back: as the keyset
@@ -184,7 +184,7 @@ which is inserts only unless the key is a change timestamp.
 One tick reads pages of `limit` rows, each resuming past the last row of the
 page before, and ends on the first short page or at `max_pages_per_tick`: a
 store that is behind catches up over several ticks instead of holding one
-open, and `tail_pages_full_total` counts the pages that came back full.
+open, and `dfe_fetcher_tail_pages_full_total` counts the pages that came back full.
 
 A change stream that saw no event still commits. The tick ends with the
 stream's post-batch resume token, so an idle collection does not leave the
@@ -200,7 +200,7 @@ The integration tests under `crates/fetcher/tests/integration/` run the dump
 and the tail through the driver: PostgreSQL and MariaDB through their ODBC
 drivers, ClickHouse over HTTP, MongoDB as a standalone server for the dump and
 the keyset tail and as a one-member replica set for the change stream. The
-ODBC suites start their own database container per test, and the ClickHouse
+ODBC suites start their database container per test, and the ClickHouse
 and MongoDB suites share the run's one server, each test on a table or
 database of its own ([../testing.md](../testing.md)). Each tail proof inserts rows,
 ticks, stops, ticks again on a fresh driver over the same cursor store, and
@@ -208,5 +208,5 @@ checks that every row landed once in key order and that the checkpoint after
 the first tick was the last acknowledged row's. SQL Server and Oracle have
 the same proof, gated on their operator-supplied driver being registered
 with the host's driver manager: absent the driver the test skips saying so,
-in CI too, because the driver is a click-through licence no shared runner
-carries. The dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI lints the `db-odbc` feature, but neither CI nor the release gate tests it.
+in CI as well, because the driver is a click-through licence no shared runner
+has. The dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI lints the `db-odbc` feature, but neither CI nor the release gate tests it.

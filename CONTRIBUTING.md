@@ -154,7 +154,7 @@ A merge to `main` runs CI and releases nothing by itself. A release is cut when 
 A Rust service that PULLS. It polls external providers -- cloud and SaaS APIs
 over REST, databases, files -- and hands each record to the DFE pipeline over
 Kafka or gRPC. Every REST provider is a declarative YAML profile run by one
-generic driver, so a new REST source is data, not Rust.
+generic driver, so adding a REST source is data, not Rust.
 
 It is not a default component on the Kubernetes tiers. `dfe-infra/apps.yaml` gives it `multiplicity: per_config`, so the engine writes one fetcher deployment per configured source when that source is written, binding `config.instance_id` to the source, and `default_in: [docker-single]`, where one fetcher starts idle and every instance's sources merge into its one file (`shared_instance: config.sources`). `scale_deployed: false` -- KEDA does not drive it. Compare dfe-receiver in the same manifest, which is `single` and `scale_deployed: true`.
 
@@ -181,7 +181,7 @@ listener with no `auth_token` refuses to start unless
 | `crates/rest` | The REST profile grammar and its runtime axes -- auth modes, pagers, decoders, the request executor, the hooks. |
 | `crates/db`, `crates/file` | The database and file sources. The engines and the tailer are feature-gated, and the grammars are always linked. |
 | `crates/fetcher` | The binary: config cascade and hot reload, scheduler, the per-tick `Driver`, pipeline, output transports, cursor store, ingest server, Vector and container extractors. |
-| `crates/fetcher/profiles/*.yaml` | The shipped REST profiles. A new one is registered in `crates/fetcher/src/profiles/mod.rs`. |
+| `crates/fetcher/profiles/*.yaml` | The shipped REST profiles. Each is registered in `crates/fetcher/src/profiles/mod.rs`. |
 | `crates/fetcher/src/deployment.rs` | The deployment contract, and the drift tests that hold the generated artefacts to it. The released chart is assembled from it, never committed. |
 | `Dockerfile`, `docs/config-schema.*`, `docs/capability-catalog.*` | Generated from that contract and committed. Never hand-edited -- see below. |
 | `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied in and depended on by path from `crates/file` only. |
@@ -196,11 +196,16 @@ make check    # the generics gates, then hyperi-ci check
 make gates    # the gates alone -- deterministic, needs python3, git and cargo
 ```
 
-The gates also run in the test stage, as the integration test `the_generics_gates_hold`, so CI and `hyperi-ci check` fail a broken gate too. `make gates` is the quick way to run them alone, from a git checkout.
+The gates run in the test stage, as the integration test `the_generics_gates_hold`, so CI and `hyperi-ci check` fail a broken gate as well. `make gates` is the quick way to run them alone, from a git checkout.
+
+The generated files are regenerated from the binary: `dfe-fetcher emit-dockerfile > Dockerfile`, and `dfe-fetcher config-schema --dir docs` for the schema and catalogue under `docs/`. To see the chart a release would ship, build the binary and run `hyperi-ci chart assemble --binary target/debug/dfe-fetcher --image ghcr.io/hyperi-io/dfe-fetcher:<tag>@sha256:<digest>`, which prints the directory it wrote.
 
 Two ways a green run says more than it proved:
 
-- CI never tests `db-odbc`. Quality lints it and the release image ships it
+- CI never tests `db-odbc`. It tests `db-clickhouse`, `db-mongodb` and
+  `file-tail`, which are pure Rust and need only Docker, and the feature sets
+  in `.hyperi-ci.yaml` are listed one by one, never `--all-features`.
+  Quality lints `db-odbc` and the release image ships it
   with the PostgreSQL, MariaDB and SQLite drivers, but the test lists in
   `.hyperi-ci.yaml` leave it out: its suites need the `odbc-postgresql` and
   `odbc-mariadb` drivers, which the runner lacks and that config cannot

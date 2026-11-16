@@ -8,7 +8,7 @@
 
 # The REST profile grammar
 
-A profile describes an API and carries no identity: a base URL template,
+A profile describes an API and has no identity: a base URL template,
 the auth modes the API accepts, headers, the retry policy, where errors live in
 a non-2xx body, the window format, and the endpoints with their decoder and
 pager. An instance is one deployment of that profile: its credential kind and
@@ -71,9 +71,9 @@ entry.
 | | `csv` (one object per record, optional header) | salesforce `event_log_file` |
 | Row flags (`rows.*`) | `gzip` (inflate a gzip member sequence before framing), `quoted` (each row is a JSON string holding the row), `header` (CSV) | object_store, aws `config`, salesforce |
 | Construct (`construct.*`, at most one of the last three per unit) | `keyset` (one page sequence per key of a list, from a template or a first request) | aws, azure, pypi, crates_io, go_modules |
-| | `lookup` (a second request per batch of ids the pages yield, with its own rows and pager) | aws `guardduty`, aws `cloudwatch_metrics`, crowdstrike |
+| | `lookup` (a second request per batch of ids the pages yield, with its rows and pager) | aws `guardduty`, aws `cloudwatch_metrics`, crowdstrike |
 | | `manifest` (a second request per item the pages point at. `key` and `position` give each row an item checkpoint) | m365, object_store, salesforce, go_modules |
-| | `queue` (rows carry an ack id. The ack request goes out after delivery) | gcp_pubsub |
+| | `queue` (rows have an ack id. The ack request goes out after delivery) | gcp_pubsub |
 | `prelude` | idempotent requests sent once per tick before the first page | m365 (the subscription start) |
 | Row builder (`rows.builder`, or `fold` for a folding one) | `columnar_table` | azure `log_analytics` |
 | | `cloudwatch_logs` | aws `cloudwatch_logs` |
@@ -95,7 +95,7 @@ entry.
 |-------|---------|
 | `profile` | Registry key of a shipped profile. An inline profile may leave it empty. |
 | `maturity` | `alpha`, `beta` or `stable`. The fetcher warns at startup for an enabled non-stable source. |
-| `base_url` | Template. Must reference a variable, never a literal URL, because a profile carries no identity. Rendered per unit, so a unit's `vars` can pick the host. |
+| `base_url` | Template. Must reference a variable, never a literal URL, because a profile has no identity. Rendered per unit, so a unit's `vars` can pick the host. |
 | `allow_hosts` | Origins a rendered URL may name besides `base_url`'s, for an API that answers on a second host (a sovereign cloud repointing `management_url`). Each entry is a template like `base_url`, so the host comes from the instance's vars, and names one exact origin: there are no wildcards, because a suffix match lets `example.com.evil.net` pass for `example.com`. Empty by default. The shipped `salesforce` profile declares its org's `instance_url`. |
 | `shape` | Default `shape` of every endpoint (`incremental` or `dump`). |
 | `auth` | Accepted modes and the settings of each ([Auth](#auth)). |
@@ -109,14 +109,14 @@ entry.
 
 ## Auth
 
-`auth.accepts` lists the modes an instance may pick. The sibling keys carry
+`auth.accepts` lists the modes an instance may pick. The sibling keys have
 the settings of each mode. Identity (tokens, keys, secrets) lives on the
 instance, never here.
 
 | Mode | Fields |
 |------------|--------|
-| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `"SSWS "`. A query parameter carries the key on its own, so a prefix beside `query` is refused rather than dropped). |
-| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response carries no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`. `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
+| `api_key` | `header` (the header carrying the key), `query` (the query parameter carrying it), `prefix` (text put in front of the key in a header, e.g. `"SSWS "`. A query parameter has the key alone, so a prefix beside `query` is refused rather than dropped). |
+| `oauth2_client_credentials` | `token_url` (template), `scope` (omitted from the form when empty), `expires_in_fallback_secs` (lifetime assumed when the response has no `expires_in`), `early_refresh_secs`, `expose` (top-level token-response fields the templates read as `auth.<name>`. `access_token`, `refresh_token`, `id_token` and `client_secret` are refused), `client_assertion` (see [Authenticating the exchange with a key instead of a secret](#authenticating-the-exchange-with-a-key-instead-of-a-secret)). The exchange posts `grant_type=client_credentials`, `client_id`, `client_secret` and the scope as a form. |
 | `jwt_bearer` | `token_url` (template. May read `auth.token_uri` from a service-account key), `claims` (templates for `iss`, `scope`, `aud` and an optional `sub`. A claim that renders empty is left out), `ttl_secs` (`exp - iat`), `expires_in_fallback_secs`, `early_refresh_secs`, `expose`. The authenticator exposes `client_email` and `token_uri` from a service-account key and `token_url` once rendered. |
 | `gce_metadata` | `url` (the service account's token URL on the metadata server, a template), `expires_in_fallback_secs`, `early_refresh_secs`. |
 | `sigv4` | `service` and `region` (both templates, rendered per request from the unit's context. The body's SHA-256 is the payload hash). |
@@ -126,7 +126,7 @@ instance, never here.
 | `bearer`, `basic`, `none` | No profile-side settings. |
 
 A mode that mints a token for a scope (`oauth2_client_credentials`,
-`jwt_bearer`) lets a unit ask for its own with `endpoints[].auth.scope`. Units
+`jwt_bearer`) lets a unit ask for a scope of its own with `endpoints[].auth.scope`. Units
 with the same scope share one token.
 
 ### Authenticating the exchange with a key instead of a secret
@@ -170,8 +170,8 @@ auth:
 | `ttl_secs` | Assertion lifetime, `exp - iat`. An hour at most -- a longer one is refused at load, because Okta answers `invalid_client` rather than shortening it. Short is right anyway: an assertion is spent the moment it is posted. |
 | `claims` | Claim templates added to the assertion, or replacing `iss`, `sub` or `aud`. Each reads `vars`, `base_url` and `auth.token_url` / `auth.client_id`, and is held to the instance's context like every other credential template. The `expose` fields of the token response are NOT among them: they arrive with the token the assertion is minting. |
 
-The assertion always carries `iss` and `sub` as the client id and `aud` as the
-rendered token endpoint, which is what RFC 7523 s2.2 requires of a client
+The assertion always has `iss` and `sub` as the client id and `aud` as the
+rendered token endpoint, which is what RFC 7523 s2.2 asks of a client
 authenticating as itself. `iat` and `exp` come from `ttl_secs`, and `jti` is
 fresh on every mint, because Okta refuses an assertion whose id it has already
 seen. A profile that writes `iat`, `exp` or `jti` in `claims` is refused at
@@ -183,10 +183,10 @@ instance's `private_key_id` becomes the `kid` of the JOSE header. An app holding
 ONE registered key pair resolves an assertion without it. An app holding two --
 which is what rotating a signing key looks like, the new public key registered
 beside the old -- resolves by `kid` alone and refuses an assertion that names
-none. So an instance whose app has ever been rotated carries it.
+none. So an instance whose app has ever been rotated has it.
 
 Declaring the block says the API accepts the path. Which path an instance takes
-is decided by the credential it carries -- `client_secret` posts the secret,
+is decided by the credential it has -- `client_secret` posts the secret,
 `private_key` signs the assertion -- so one deployment of an API that takes both
 may hold a secret and another a key pair. An instance carrying neither or both
 is refused when it binds, as is a `private_key` against a profile that declares
@@ -198,14 +198,14 @@ Several prominent APIs authenticate a call with two credentials, and there is no
 config workaround: a static added header is not a secret reference, and a key
 does not go in plain config. The `credentials` mode is the one for them. The
 PROFILE declares where each credential goes and the name it is read under. The
-INSTANCE supplies a spec per name, because a profile carries no identity. Each
-name resolves once however many placements carry it, and every placement is
+INSTANCE supplies a spec per name, because a profile has no identity. Each
+name resolves once however many placements have it, and every placement is
 applied to the one built request.
 
 `auth.credentials` is the mode for credentials the deployment supplies as specs
 and the profile places as they resolved. Where a credential goes is an axis of a
-request rather than a mode of its own, so a mode that MINTS carries its own
-placement under its own key: `session_login` names the `header` and `prefix` its
+request rather than a mode of its own, so a mode that MINTS has its own
+placement under its key: `session_login` names the `header` and `prefix` its
 token goes in, over a token it minted rather than over a spec.
 
 Two credentials in two headers of their own -- Datadog, where the api key names
@@ -231,7 +231,7 @@ auth:
 ```
 
 Two credentials composed into ONE header value -- Tenable Vulnerability
-Management, whose `Authorization` carries both halves of the key pair, so the
+Management, whose `Authorization` has both halves of the key pair, so the
 single-header layout does not help. Tenable Security Center is the same layout
 under `x-apikey` with the field names lower-cased:
 
@@ -266,7 +266,7 @@ spellings are in `config.example.yaml`.
 A `value` is composed, not computed. Its only substitution is
 `{{ credentials.<name> }}`: anything else between the braces is refused at load,
 so no expression ever runs over a secret and no context -- `vars`, `unit`,
-`window` -- can reach a credential value. That is also why a composed value needs
+`window` -- can reach a credential value. That is why a composed value needs
 no per-unit check of its own: there is nothing in it a unit could change. The
 composed string is built once, on first use, and the placement that writes it
 marks the header sensitive, as it does a single credential.
@@ -282,12 +282,12 @@ Refused at load, each naming the field it sits on -- a placement by its index:
 - a `query` the profile writes itself -- `defaults.query`, an endpoint's `query`,
   the pager's `into: query:<name>` or its `param` -- or that a unit's narrowing
   writes: a query pair is appended, so the credential would be sent twice
-- a `value` in a `query`: a composed value carries more than one secret and a
+- a `value` in a `query`: a composed value has more than one secret and a
   query parameter is written into every access log and proxy on the path, so it
   goes in a header. A single credential may still go in a query.
 - a `prefix` beside a `value`, which says the whole header value already, or
-  beside a `query`, which carries the credential on its own
-- a `prefix` or a `value`'s literal text carrying what no header value may carry
+  beside a `query`, which has the credential alone
+- a `prefix` or a `value`'s literal text carrying what no header value may have
   -- a newline, a tab -- checked here because the text is the profile's and
   static, so it is named with its field rather than failing on every tick
 - a name the profile places and the instance supplies no spec for, and a name
@@ -305,7 +305,7 @@ the appliance's maker chose, in the body or in a header, usually with nothing sa
 how long it lives.
 
 So `session_login` reads the token from where the profile points, holds it for
-the lifetime the profile declares, and carries it in the header the profile
+the lifetime the profile declares, and has it in the header the profile
 names. It is NOT a bearer, and the grammar does not pretend otherwise.
 
 | Field | Meaning |
@@ -318,7 +318,7 @@ names. It is NOT a bearer, and the grammar does not pretend otherwise.
 | `token_header` | The response header carrying the token instead (F5's `X-F5-Auth-Token`). Exactly one of this and `token_at`. |
 | `ttl_secs` | How long the token is held. The appliance does not say, so this is the session lifetime it documents. |
 | `early_refresh_secs` | How long before that lifetime is up the login runs again, with the same meaning it has on the OAuth2 spec: capped at half the lifetime. |
-| `header` | The request header every later request carries the token in. Required -- there is no default, because there is no convention. |
+| `header` | The request header every later request has the token in. Required -- there is no default, because there is no convention. |
 | `prefix` | Text in front of the token in that header, for the appliances that want one. |
 
 The instance supplies `username` and `password`, the same two fields the `basic`
@@ -347,7 +347,7 @@ auth:
 
 One login per instance: `url` and every `body` member render against the
 INSTANCE's context, and one that reads a name only a unit supplies is refused
-when the instance binds, as a token endpoint's is. A refused login carries its
+when the instance binds, as a token endpoint's is. A refused login has its
 status and nothing of the response text -- a login body holds the password, and
 an appliance that answers a bad request by quoting what it was posted would put
 that password in the one line every consumer logs.
@@ -356,7 +356,7 @@ that password in the one line every consumer logs.
 loopback address so a fixture needs no certificate. Plain http anywhere else is
 refused however private the network, and so is any other scheme. An appliance on
 a management LAN is exactly where a captured administrator password is worth the
-most, and every appliance here serves https -- with its own certificate, which is
+most. An appliance's certificate from a private CA is
 a trust-store question and not a reason to send the password in the clear. The
 refusal is at BIND rather than at the first login, because the URL is rendered
 there.
@@ -371,20 +371,20 @@ because that is not a failure the account is locked for.
 ### Signing a request
 
 Some providers authenticate a call with a digest of the call itself rather than
-with a credential the request carries. The digest algorithm, the canonical
+with a credential the request has. The digest algorithm, the canonical
 string it is taken over and where the digest goes differ by provider, so
 they are the `signature` mode's config rather than a mode of their own.
 
 | Field | Meaning |
 |-------|---------|
-| `preset` | A shipped scheme by name: `duo_v5` or `duo_v2`. A preset is the WHOLE scheme, so a block that names one and also sets another key is refused. |
+| `preset` | A shipped scheme by name: `duo_v5` or `duo_v2`. A preset is the WHOLE scheme, so a block that names one and sets another key is refused. |
 | `digest` | `sha1`, `sha256` or `sha512`. The same digest takes the body hash and the header hash. `sha1` is there for Duo's legacy scheme and is never a default. |
 | `keying` | `hmac` (the secret keys an HMAC over the canonical string, RFC 2104) or `prefix` (the secret is hashed in front of the canonical string, with no HMAC). |
 | `canonical` | The canonical string, ONE LINE per entry, joined by newlines. Each is a template over `signature.*` and nothing else. |
 | `encoding` | `hex` (lowercase) or `base64`, for the digest that goes on the request. A body or header hash is always lowercase hex. |
-| `headers` | Headers set on the request BEFORE it is signed, each a template over the same facts less `signature.headers_hash`, which is computed after them and so is refused here. A scheme that signs a timestamp or a nonce carries it this way. |
+| `headers` | Headers set on the request BEFORE it is signed, each a template over the same facts less `signature.headers_hash`, which is computed after them and so is refused here. A scheme that signs a timestamp or a nonce has it this way. |
 | `signed_header_prefix` | The lowercase name prefix of the headers `signature.headers_hash` covers. Unset covers none, so the hash is of the empty string. |
-| `place` | `basic` (`Basic base64(<key_id>:<digest>)`) or `digest` (the encoded digest on its own, after `prefix`). |
+| `place` | `basic` (`Basic base64(<key_id>:<digest>)`) or `digest` (the encoded digest alone, after `prefix`). |
 | `header` | The header the digest goes in. `authorization` unless named. |
 | `prefix` | Text in front of the digest, under `place: digest` only. |
 
@@ -405,7 +405,7 @@ request's own:
 | `signature.key_id` | The instance's `key_id`, the public half naming the key. |
 
 Duo's Admin API on the scheme Duo documents, which is what the shipped `duo`
-profile carries:
+profile has:
 
 ```yaml
 # profile
@@ -434,7 +434,7 @@ per connection, so one deployment can poll a tenant on each scheme.
 Version 2 keys its HMAC with SHA-1, which is kept out of a security purpose
 everywhere else in the platform, so selecting it is a deliberate exemption:
 every connection that binds on it logs a warning at startup naming itself,
-however the version was chosen. Duo's version 2 also signs a POST's BODY
+however the version was chosen. Duo's version 2 signs a POST's BODY
 parameters where this grammar signs the query, which nothing in the grammar can
 say, so `duo_v2` paired with a unit that POSTs is refused at load rather than
 signing every request over a string the provider will not recompute.
@@ -469,7 +469,7 @@ auth:
 ```
 
 A scheme that hashes its key rather than keying an HMAC with it, signs a nonce
-and a millisecond timestamp, and carries the digest bare -- Palo Alto Cortex
+and a millisecond timestamp, and has the digest bare -- Palo Alto Cortex
 XDR's advanced key. One canonical line, because a template concatenates:
 
 ```yaml
@@ -496,8 +496,8 @@ Refused at load, each naming the field it sits on:
   name but `signature` -- `vars`, `unit`, `window`, `page`, `key`, `item`,
   `auth`, `base_url`, `body`, `headers`, `ids`
 - a `headers` key or a `header` that is not a header name
-- a `prefix` under `place: basic`, whose value carries its own prefix, or one
-  carrying what no header value may carry
+- a `prefix` under `place: basic`, whose value has its prefix, or one
+  carrying what no header value may have
 - a `signed_header_prefix` that is not lowercase, because it is matched against
   lowercased names
 - an instance with no `secret_key`, or with no `key_id` under `place: basic`,
@@ -507,7 +507,7 @@ Refused at load, each naming the field it sits on:
 ### What a signature may be about
 
 A canonical string is COMPUTED per request, which is what makes signing its own
-mode: a value composed once per instance cannot carry the request's own date,
+mode: a value composed once per instance cannot have the request's own date,
 method, path and body. What varies per request is therefore held to the
 request: the `canonical` and `headers` templates read `signature.*` and the
 grammar refuses them every other name, so no unit's `vars` or narrowing can
@@ -531,7 +531,7 @@ A credential is minted once per instance, and once per scope a unit names, so
 own `vars` or `base_url`, is refused when the instance binds: a claim deciding
 the identity the token acts as (a domain-wide-delegation `sub`) must not be able
 to vary by unit. `sigv4`'s `service` and `region` are the exception, and render
-per request by design. `signature`'s templates render per request too, and are
+per request by design. `signature`'s templates render per request as well, and are
 held to the request's own facts instead ([What a signature may be
 about](#what-a-signature-may-be-about)).
 
@@ -556,7 +556,7 @@ about](#what-a-signature-may-be-about)).
 | `retry.retry_on` | Statuses that are retried: a code, or a class such as `5xx`. |
 | `retry.never_retry` | Statuses never retried whatever `retry_on` says (every shipped profile lists 401 and 403). |
 | `retry.retry_after_header` | Honour `Retry-After` on a retried response. |
-| `retry.retry_non_idempotent` | Retry POST as well as GET. Off by default, set where every POST of the profile is a read. |
+| `retry.retry_non_idempotent` | Retry POST as well as GET. Off by default, set where every POST of the profile is safe to repeat: a read, or an idempotent write such as a Pub/Sub acknowledgement or the M365 subscription start. |
 | `retry.throttle_when` | What a refusal meaning "slow down" looks like where the status does not say so (`status` and `body_contains`, as AWS answers 400 with a `ThrottlingException` body): retried whatever `retry_on` lists, and counted `throttle` rather than a client error. A status in `never_retry` is never one. |
 | `error.at` | JSON pointer to the error text in a non-2xx body. The whole body is used when unset. |
 | `quota.headers` | Gauge-name suffix -> response header, surfaced as `dfe_fetcher_api_quota_<suffix>` labelled by source. |
@@ -581,7 +581,7 @@ renders a JSON number.
 
 ## Endpoints
 
-Each entry of `endpoints` is one unit of the source. `defaults` carries the
+Each entry of `endpoints` is one unit of the source. `defaults` has the
 same keys (except `unit`, `shape`, `base_url`, `allow_hosts`, `auth`, `window`,
 `vars`, `row_key`, `fail_when`, `add_fields`, `fold`, `lister`, `ignore_status`,
 `timeout_secs`) and
@@ -657,7 +657,7 @@ manifest item, a prelude step) is a `LookupRequest`: `method` (unset takes the
 construct's default: POST for a lookup batch, a keyset request and a prelude
 step, GET for a manifest item), `path` (appended to `base_url`, or a whole URL
 when it renders one, whose host is held to the rule under
-[Templates](#templates)), `query`, `headers`, `body` and `ignore_status`.
+[Templates](#templates)), `query`, `headers`, `body`, `ignore_status` and `timeout_secs` (a total bound, only for a request whose rows are read whole).
 
 | Construct | Fields | Context |
 |-----------|--------|---------|
@@ -674,9 +674,9 @@ when it renders one, whose host is held to the rule under
 answers a bad credential inside a 200). Without a probe the health check
 resolves the credential and, for a minting mode, exchanges it for a token.
 
-The health check runs from the tests, never from a deployed fetcher: each
-source's `<source>_health_check` live test in
-`crates/fetcher/tests/e2e/smoke_remote.rs` calls it. `/readyz` answers from
+The health check runs from the tests, never from a deployed fetcher: the
+`<source>_health_check` live tests in
+`crates/fetcher/tests/e2e/smoke_remote.rs` call it, for the sources that have one. `/readyz` answers from
 startup and memory pressure alone, so a running fetcher shows a bad credential
 first as the `unit tick failed` warning and `dfe_fetcher_api_errors_total`.
 
@@ -710,7 +710,7 @@ check covers the URL a `link_header`, a `cursor` with `into: path` or a
 
 ## Instance
 
-An instance (`sources.rest.<id>`, or a typed block mapped at load) carries:
+An instance (`sources.rest.<id>`, or a typed block mapped at load) has:
 
 | Field | Meaning |
 |-------|---------|
@@ -733,7 +733,7 @@ Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,
 | `api_key` | `key` |
 | `basic` | `username`, `password` |
 | `oauth2_client_credentials` | `client_id` (the literal id), then exactly one of `client_secret` or `private_key` (a bare RSA PEM signing a client assertion, where the profile declares one), optional `private_key_id` (the `kid` naming that key, not a secret) and optional `scope` overriding the profile's |
-| `signature` | `key_id` (the public half naming the key -- Duo's integration key. Also accepted as `integration_key`), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
+| `signature` | `key_id` (the public half naming the key -- Duo's integration key, accepted as `integration_key` as well), `secret_key`, optional `signature_preset` in place of the profile's scheme ([Signing a request](#signing-a-request)) |
 | `jwt_bearer` | exactly one of `service_account_key` (a Google-style key JSON as a spec), `service_account_key_file` (a spec resolving to the path of such a file), `private_key` (a bare RSA PEM for an API whose issuer and audience come from `vars`) |
 | `gce_metadata`, `none` | nothing |
 | `sigv4` | `access_key_id` and `secret_access_key`, or `credentials_json` alone (a document carrying both, in either the snake_case or the AWS `AccessKeyId` / `SecretAccessKey` spelling), and optional `assume_role_arn`, a role the key assumes and whose session signs every request |
@@ -763,7 +763,7 @@ that is a literal, an `allow_hosts` entry that is a literal, a wildcard, or
 renders something that is not an absolute URL, a pointer that does not start
 with `/`, an `offset` pager
 without `page_size` or `total_at`, a keyset with both or neither of `from` and
-`request`, `key` in `add_fields` without a keyset, a queue unit that also
-declares a lookup, a manifest or a keyset, a `defaults.body` on a GET, an `expose`
+`request`, `key` in `add_fields` without a keyset, a queue unit that
+declares a lookup, a manifest or a keyset, a `body` on a GET endpoint or a GET secondary request, an `expose`
 entry naming a credential, and a malformed or unmatched credential placement
 ([More than one credential on a request](#more-than-one-credential-on-a-request)).

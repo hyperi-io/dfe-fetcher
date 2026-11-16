@@ -17,8 +17,8 @@ dfe-fetcher polls Google Cloud REST APIs on a schedule and hands each record to 
 
 The source is the shipped `gcp` profile (`crates/fetcher/profiles/gcp.yaml`), and the `sources.gcp` block below maps onto an instance of it at load. Each Cloud Logging unit sends its documented filter clause ANDed with the tick's window and pages on `nextPageToken`. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick with the API's `error.message`, and a tick that fails does not advance the fetch window.
 
-The GCP source exposes these services (each emits its own source tag
-`gcp.<service>` and tracks its own cursor):
+The GCP source exposes these services (each emits its source tag
+`gcp.<service>` and tracks its cursor):
 
 - Cloud Audit Logs, split per subtype: `admin_activity`, `data_access`,
   `system_event`, `policy_denied`. There is no combined `audit_logs` service -
@@ -55,7 +55,7 @@ Grant only what you need. All roles are read-only.
 |------------|----------|-------|-------|
 | `admin_activity`, `system_event`, `policy_denied`, `vpc_flow_logs`, `dns_queries`, `cloud_logging` | `roles/logging.viewer` | Project | Reads the `_Required`/`_Default` buckets, excluding Data Access logs |
 | `data_access`, `storage_access` | `roles/logging.privateLogViewer` | Project | REQUIRED for Data Access audit logs - `roles/logging.viewer` alone CANNOT read them |
-| `scc` | `roles/securitycenter.findingsViewer` | Organisation | Requires SCC activated, and `organization_id` in the service config |
+| `scc` | `roles/securitycenter.findingsViewer` | Organisation | Needs SCC activated, and `organization_id` in the service config |
 
 Notes:
 
@@ -88,7 +88,7 @@ key.
 ```bash
 cd infra/test
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars - set gcp_project_id
+# Edit terraform.tfvars - set aws_profile, azure_subscription_id and gcp_project_id. One apply provisions AWS, Azure, M365 and GCP, so az and gcloud must be signed in as well.
 gcloud auth application-default login
 tofu init
 tofu apply
@@ -293,11 +293,11 @@ For multiple projects, run one dfe-fetcher per project with a distinct `instance
 
 dfe-fetcher only reads. It never enables logging or services. The read calls
 and the always-on audit logs (admin_activity, system_event, policy_denied)
-are not expected to carry an additional charge. Some capabilities here may
+are not expected to have an additional charge. Some capabilities here may
 have a cost depending on what you enable - for example turning on Data Access
 audit logs (to populate `data_access`/`storage_access`) can generate logging
 charges, and SCC findings depend on your activated SCC tier. Confirm any cost
-implications against your own GCP agreement.
+implications against your GCP agreement.
 
 ## References
 

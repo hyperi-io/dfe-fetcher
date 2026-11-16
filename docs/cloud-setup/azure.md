@@ -42,7 +42,7 @@ The source is the shipped `azure` profile (`crates/fetcher/profiles/azure.yaml`)
 - For `log_analytics`: the target workspace GUID and the `Log Analytics
   Reader` role for the service principal on that workspace.
 - Cost flags: dfe-fetcher only reads, but some services here (e.g. Sentinel,
-  Defender for Cloud, Log Analytics) may carry a cost depending on your Azure
+  Defender for Cloud, Log Analytics) may have a cost depending on your Azure
   plan and what is enabled. See the Cost section.
 
 ## Required Permissions
@@ -66,7 +66,7 @@ Notes:
 - `AuditLog.Read.All` (application permission ID
   `df021288-bdef-4463-88db-98f22de89214`) covers all three Entra audit
   endpoints. For least privilege on provisioning only, the more scoped
-  `ProvisioningLog.Read.All` also works for `entra_provisioning`.
+  `ProvisioningLog.Read.All` works for `entra_provisioning`.
 - The Microsoft Graph resource app ID is always
   `00000003-0000-0000-c000-000000000000`.
 - All permissions are read-only.
@@ -83,7 +83,7 @@ secret (1-year expiry), and assigns the `Reader` role on the subscription.
 ```bash
 cd infra/test
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars - set azure_subscription_id
+# Edit terraform.tfvars - set aws_profile, azure_subscription_id and gcp_project_id. One apply provisions AWS, Azure, M365 and GCP, so az and gcloud must be signed in as well.
 az login
 tofu init
 tofu apply
@@ -249,7 +249,7 @@ sources:
    cargo nextest run -p dfe-fetcher --test e2e --run-ignored only azure_health_check
    ```
 
-2. Live fetch tests. The env-gated tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) hit real Azure APIs. They are `#[ignore]` by default and read credentials from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SUBSCRIPTION_ID`, plus `AZURE_SENTINEL_WORKSPACE_NAME` / `AZURE_SENTINEL_RESOURCE_GROUP` for Sentinel and `AZURE_LOG_ANALYTICS_WORKSPACE_ID` / `AZURE_LOG_ANALYTICS_KQL` for Log Analytics. A refusal fails its test rather than passing with zero records.
+2. Live fetch tests. The env-gated tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) hit live Azure APIs. They are `#[ignore]` by default and read credentials from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SUBSCRIPTION_ID`, plus `AZURE_SENTINEL_WORKSPACE_NAME` / `AZURE_SENTINEL_RESOURCE_GROUP` for Sentinel and `AZURE_LOG_ANALYTICS_WORKSPACE_ID` / `AZURE_LOG_ANALYTICS_KQL` for Log Analytics. A refusal fails its test rather than passing with zero records.
 
    ```bash
    cargo nextest run -p dfe-fetcher --test e2e --run-ignored only azure_
@@ -269,10 +269,10 @@ sources:
 ## Cost
 
 dfe-fetcher only reads. It never enables services. The read paths generally
-carry no additional charge, but some capabilities here may have a cost
+have no additional charge, but some capabilities here may have a cost
 depending on your Azure plan and what is enabled - for example Microsoft
-Sentinel, Microsoft Defender for Cloud, and Log Analytics may carry their own
-cost when used. Confirm any cost implications against your own Azure
+Sentinel, Microsoft Defender for Cloud, and Log Analytics may have their own
+cost when used. Confirm any cost implications against your Azure
 agreement.
 
 ## References

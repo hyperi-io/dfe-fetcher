@@ -21,7 +21,7 @@ exactly one of two endpoints per connection:
 - Enterprise scope: `GET /enterprises/{enterprise}/audit-log`
 
 A service-config `include` selects `web`, `git`, or `all` event classes, and any other value is read as `all`.
-Every request carries `Accept: application/vnd.github+json` and the
+Every request has `Accept: application/vnd.github+json` and the
 `X-GitHub-Api-Version` header the profile pins. Authentication is a bearer token
 (classic Personal Access Token, fine-grained PAT, or a GitHub App
 installation token). The audit-log API is available only on GitHub
@@ -43,7 +43,7 @@ ends the tick, and a tick that fails does not advance the fetch window.
 - Ability to create a token (or register a GitHub App) for a dedicated
   service identity.
 - A note on token types: the classic PAT path (`read:audit_log`) is the
-  reliable, documented path for both endpoints today. Fine-grained PAT and
+  reliable, documented path for both endpoints. Fine-grained PAT and
   GitHub App support for the audit-log list endpoint exists but has been
   inconsistent in practice - prefer a classic PAT unless your org policy
   blocks them. Fine-grained PATs are NOT supported for the audit-log
@@ -96,7 +96,7 @@ permission (fine-grained / App).
 3. Under **Organization permissions**, set **Administration** to
    **Read-only** (enterprise endpoint: set **Enterprise administration** to
    Read). Grant nothing else.
-4. **Generate token**. If the org requires approval, the token stays pending
+4. **Generate token**. If the org needs approval, the token stays pending
    (and can read only public data) until an org owner approves it under the
    org's **Settings -> Personal access tokens -> Pending requests**.
 5. Confirm the endpoint accepts it by inspecting the
@@ -108,6 +108,11 @@ Register an App (org or enterprise **Settings -> Developer settings ->
 GitHub Apps**) with the `Administration: Read` (org) or `Enterprise
 administration: Read` permission, install it on the org/enterprise, and have
 dfe-fetcher's caller supply the short-lived installation token as `token`.
+The fetcher reads `token` once and holds it until the source is rebuilt or
+the process restarts, and it does not renew an installation token. Once the
+token expires every tick fails until a fresh one arrives through a changed
+config or a restart. Use a classic or fine-grained PAT for a fetcher that runs
+unattended.
 
 ## dfe-fetcher Configuration
 
@@ -162,7 +167,7 @@ sources:
 
 - Health check. The profile's probe calls `GET /user` with the token, and a
   2xx means the token authenticates and `api.github.com` is reachable. Note
-  this only proves the token is valid, not that it carries audit-log
+  this only proves the token is valid, not that it has audit-log
   permission.
 - e2e smoke test. `crates/fetcher/tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live tests. Export credentials, or put them in `.env-cloud` or `.env` at the repo root (both are loaded over the environment, `.env` last), then run:
 
@@ -186,8 +191,8 @@ sources:
 ## Cost
 
 dfe-fetcher only reads. The audit-log REST API adds no charge of its own,
-but it requires GitHub Enterprise Cloud, which is a paid plan. Standard API
-rate limits apply. Confirm any cost implications against your own GitHub
+but it needs GitHub Enterprise Cloud, which is a paid plan. Standard API
+rate limits apply. Confirm any cost implications against your GitHub
 plan.
 
 ## References

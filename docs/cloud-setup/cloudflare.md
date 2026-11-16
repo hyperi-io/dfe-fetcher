@@ -40,7 +40,6 @@ dfe-fetcher reads the v1 `audit_logs` endpoint, not Cloudflare's newer Audit Log
 | Service | Endpoint | Permission or Scope | Notes |
 |---------|----------|---------------------|-------|
 | `audit_logs` | `GET /accounts/{account_id}/audit_logs` (v1) | **Account Settings: Read** (`Account` -> `Account Settings` -> `Read`) | This is the permission that actually works for the v1 audit_logs endpoint. There is NO permission literally named "Account Audit Logs Read" for v1. |
-| `audit_logs` (v2, future) | `GET /accounts/{account_id}/logs/audit` | **Account Audit Logs Read** (a.k.a. "Get account audit logs (Version 2)") or Account Settings Read/Write | Only relevant once dfe-fetcher moves to the v2 endpoint. |
 
 Scope the token to the single target account (not "all accounts") and keep it
 read-only.
@@ -133,7 +132,7 @@ sources:
 
 - Health check. The profile's probe calls `GET /user/tokens/verify`, and a
   2xx confirms the token is valid and active. Note this proves the token is
-  good but not that it carries Account Settings Read - exercise the smoke
+  good but not that it has Account Settings Read - exercise the smoke
   test for that.
 - e2e smoke test. `crates/fetcher/tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live tests. Export credentials, or put them in `.env-cloud` or `.env` at the repo root (both are loaded over the environment, `.env` last), then run:
 
@@ -158,8 +157,8 @@ sources:
 ## Cost
 
 dfe-fetcher only reads. Reading account audit logs through the API is not
-expected to carry an additional charge, but this can depend on your
-Cloudflare plan. Confirm any cost implications against your own Cloudflare
+expected to have an additional charge, but this can depend on your
+Cloudflare plan. Confirm any cost implications against your Cloudflare
 plan.
 
 ## References

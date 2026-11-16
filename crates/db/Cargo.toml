@@ -28,61 +28,40 @@ dfe-fetcher-core = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 metrics = { workspace = true }
-# The MongoDB URI check decodes option values the way the driver does.
 percent-encoding = { workspace = true }
-# secrets for the connection-string spec, config-schema so SensitiveString
-# carries the secret marker into the app's config schema.
+# config-schema carries the secret marker into the app's config schema.
 scalo = { workspace = true, features = ["secrets", "secrets-vault", "config-schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
-# rt for the blocking-cursor pump, sync for its bounded channel.
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 
-# odbc: one wire crate for every engine with an ODBC driver. `prompt` (the
-# Windows connection dialog, pulls winit) is off; the driver manager is
-# unixODBC, linked dynamically (LGPL-2.1, dynamic linking only).
+# `prompt` (the Windows connection dialog) stays off. unixODBC links dynamically: docs/reference/db-drivers.md.
 odbc-api = { version = "29.3.0", default-features = false, features = ["odbc_version_3_80"], optional = true }
 arrow-odbc = { version = "26.0.3", optional = true }
-# The arrow umbrella arrow-odbc already depends on, with its JSON writer turned
-# on, so one arrow version serves both the reader and the writer.
+# arrow-odbc's own arrow line, with its JSON writer on.
 arrow = { version = "60.1.0", default-features = false, features = ["json"], optional = true }
 base64 = { workspace = true, optional = true }
 
-# clickhouse: the official HTTP client streams `FORMAT JSONEachRow` with
-# server-side parameters; dfe-clickhouse adds the ping and the typed server
-# exception. rustls only, never native-tls.
+# rustls only, never native-tls.
 clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", "rustls-tls"], optional = true }
 dfe-clickhouse = { version = "0.1.10", default-features = false, features = ["ext"], optional = true }
 url = { workspace = true, optional = true }
 
-# mongodb: the official driver, the second approved exception to the one-wire
-# rule. A dump streams `find` batches, a tail follows a change stream or a
-# keyset over `_id`. TLS is rustls over aws-lc-rs, the provider the rest of
-# the graph already links; `dns-resolver` serves the `mongodb+srv://` form
-# Atlas hands out; `compat-3-3-0` is the crate's own forward-compatibility
-# marker, demanded once default features are off. `azure-oidc` and `gcp-oidc`
-# let `MONGODB-OIDC` mint from those metadata services over the driver's own
-# reqwest, an older line than the REST path's until the driver moves;
-# `aws-auth` is deliberately absent, because it links the AWS SDK's
-# credential-provider stack and its own HTTP client. `bson` is named so its
-# relaxed extended JSON writer (`serde_json-1`) is on: ObjectId and dates land
-# as JSON, not debug text.
+# Why `aws-auth` is off: docs/reference/db-drivers.md "Authentication". `compat-3-3-0` is demanded once default features are off.
 mongodb = { version = "3.9.1", default-features = false, features = ["bson-3", "compat-3-3-0", "rustls-tls-aws-lc", "dns-resolver", "azure-oidc", "gcp-oidc"], optional = true }
+# `serde_json-1` lands ObjectIds and dates as JSON, not debug text.
 bson = { version = "3.1.0", default-features = false, features = ["serde", "serde_json-1"], optional = true }
 
 [dev-dependencies]
-# Instance YAML in tests parses with the rules the app loads it by.
 scalo = { workspace = true, features = ["yaml"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
 
 [features]
 default = []
-# Each engine is a feature so the app links only the drivers a deployment
-# ships. The config grammar and the shape are always compiled; an instance
-# naming an engine that is not built fails validation with that reason.
+# One engine per feature: docs/architecture.md "Build graph".
 odbc = ["dep:odbc-api", "dep:arrow-odbc", "dep:arrow", "dep:base64"]
 clickhouse = ["dep:clickhouse", "dep:dfe-clickhouse", "dep:url"]
 mongodb = ["dep:mongodb", "dep:bson"]

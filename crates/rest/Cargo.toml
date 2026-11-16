@@ -25,7 +25,6 @@ workspace = true
 [dependencies]
 dfe-fetcher-core = { workspace = true }
 
-# Streaming multi-member gunzip in front of a decoder.
 async-compression = { workspace = true }
 backon = { workspace = true }
 base64 = { workspace = true }
@@ -33,57 +32,38 @@ bytes = { workspace = true }
 cel = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
-# The `signature` signer: a keyed digest, hex or base64, over a canonical
-# string whose query is RFC 3986 encoded.
 hex = { workspace = true }
 hmac = { workspace = true }
-# The SigV4 signer projects a built request into an http::request::Parts.
 http = { workspace = true }
 itoa = { workspace = true }
-# The JWT-bearer signer: an RS256 assertion over the profile's claims.
 jsonwebtoken = { workspace = true }
 metrics = { workspace = true }
-# The CloudWatch metrics row builder assembles OTLP protobuf records.
 opentelemetry-proto = { workspace = true }
 percent-encoding = { workspace = true }
 prost = { workspace = true }
-# The S3 lister parses ListObjectsV2 XML pages.
 quick-xml = { workspace = true }
-# The SigV4 signer.
 reqsign = { workspace = true }
 # sha1 for Duo's legacy scheme, sha2 for every current one.
 sha1 = { workspace = true }
 sha2 = { workspace = true }
-# The one HTTP client: rustls is the only TLS; charset/http2/system-proxy keep
-# the client the fetcher always shipped; `form` is the token exchange's
-# urlencoded body.
 reqwest = { workspace = true, features = ["charset", "http2", "system-proxy", "json", "form", "rustls", "gzip", "brotli", "stream"] }
-# secrets for credential specs, http for the client config, auth for the
-# request signer the executor signs through, config-schema so SensitiveString
-# carries the secret marker into the app's config schema.
+# config-schema carries the secret marker into the app's config schema.
 scalo = { workspace = true, features = ["expression", "secrets", "secrets-vault", "http", "auth", "config-schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }
-# raw_value: zero-copy row slices out of a buffered page.
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror = { workspace = true }
-# fs: a JWT-bearer instance may name its service-account key by path.
 tokio = { workspace = true, features = ["fs", "macros", "sync", "time"] }
 tokio-util = { workspace = true, features = ["codec", "io"] }
 tracing = { workspace = true }
 url = { workspace = true }
-# A per-request nonce for a scheme that signs one.
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-# The in-test HTTP provider the fixture tests drive the shape against.
 axum = { workspace = true }
-# A throwaway RSA key per JWT-bearer test, so no private key is committed.
 aws-lc-rs = { workspace = true }
 flate2 = { workspace = true }
-# A snapshotting recorder so a test can read the executor's `metrics` series.
 metrics-util = { workspace = true }
-# Profile and instance YAML in tests parses with the rules the app loads it by.
 scalo = { workspace = true, features = ["yaml"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

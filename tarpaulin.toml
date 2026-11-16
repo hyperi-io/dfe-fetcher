@@ -6,14 +6,10 @@
 # Copyright: (c) 2026 HYPERI PTY LIMITED
 
 [default]
-# Exclude files that cannot be unit-tested:
-# - main.rs: entry point, requires full runtime to test (covered by e2e smoke tests)
-# - deployment.rs fields already covered by tests -- macros inflate line count
 exclude-files = [
-    # Entry point -- requires full runtime to test (covered by e2e smoke tests)
+    # Needs the full runtime: the e2e smoke tests cover it.
     "src/main.rs",
-    # Container/Vector extractors require Docker + Vector binary -- covered by
-    # e2e tests (tests/e2e/container.rs) which are #[ignore]d in unit runs.
+    # Need Docker and Vector: the ignored e2e tests cover them.
     "src/extractor/container/mod.rs",
     "src/extractor/vector/mod.rs",
     "benches/*",

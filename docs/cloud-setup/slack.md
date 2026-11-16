@@ -30,7 +30,7 @@ does not advance the fetch window. A missing token is refused at load, naming
 
 ## Prerequisites
 
-- A **Slack Enterprise Grid** organization (also marketed as Enterprise+).
+- A **Slack Enterprise Grid** organization (marketed as Enterprise+).
   The Audit Logs API is not available on Free, Pro, or Business+ plans.
 - The setup must be performed by an **Organization Owner** - the app must be
   installed at the org level, and only an Org Owner sees the org install
@@ -68,14 +68,14 @@ API calls.
 
    Still under **OAuth & Permissions**, add a redirect URL under **Redirect
    URLs** and save. The org install runs a standard OAuth2 flow, which
-   requires at least one redirect URL.
+   needs at least one redirect URL.
 
 4. Activate public distribution
 
    Go to **Manage Distribution**. Confirm all four checklist sections show
    green checkmarks, tick **I've reviewed and removed any hard-coded
    information**, and select **Activate Public Distribution**. This does not
-   list the app publicly. Slack requires it before the app can be installed
+   list the app publicly. Slack needs it before the app can be installed
    org-wide rather than in a single workspace.
 
 5. Install at the organization level
@@ -157,16 +157,18 @@ Common failure modes:
 - `feature_not_enabled` or empty data - app was installed on a workspace
   rather than the org. Reinstall at the org level.
 - `not_allowed_token_type` - a bot token was supplied, and the Audit Logs API
-  requires the `xoxp-` user token.
+  needs the `xoxp-` user token.
 - HTTP 429 - rate limited. The endpoint is Tier 3 (about 50 calls/min).
   dfe-fetcher retries with backoff and `Retry-After` up to the profile's
-  policy, caps at 50 pages per fetch, and polls on the configured interval.
+  policy, and polls on the configured interval. A window past 50 pages is
+  read again in halves inside the same tick, down to one second, and only a
+  one-second window past the ceiling fails the tick, so no event is skipped.
 
 ## Cost
 
 dfe-fetcher only reads. The Audit Logs API adds no charge of its own, but it
 is available only on Slack Enterprise Grid, which is a paid plan. Standard
-API rate limits apply. Confirm any cost implications against your own Slack
+API rate limits apply. Confirm any cost implications against your Slack
 plan.
 
 ## References

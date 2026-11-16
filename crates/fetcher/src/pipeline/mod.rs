@@ -13,19 +13,8 @@
 //! timestamps), the output transports, the dead-letter queue, the memory
 //! guard and the readiness answer. Nothing here batches or retries: a
 //! framework driver and an extractor both send through
-//! [`crate::emit::Emitter`], which is the one delivery path.
-//!
-//! ## Data Flow
-//!
-//! ```text
-//! Framework drivers (REST profiles, databases, files)
-//!     |
-//! Container extractors (stdout / HTTP ingest)
-//!     |
-//! Vector extractors (gRPC)
-//!     |
-//!     +--- enrich --> batch --> Emitter --> Output transport --> DFE pipeline
-//! ```
+//! [`crate::emit::Emitter`], which is the one delivery path. The data flow is
+//! drawn in the README's architecture diagram.
 
 use std::sync::Arc;
 use std::sync::LazyLock;
