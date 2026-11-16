@@ -108,6 +108,11 @@ const FRAMEWORK_METRICS: &[(&str, Kind, &str)] = &[
         "Page sequences cut at max_pages with more to fetch, by source and unit",
     ),
     (
+        fw::MANIFEST_ITEMS_SKIPPED_TOTAL,
+        Kind::Counter,
+        "Manifest items past max_items that were not fetched, by source and unit",
+    ),
+    (
         fw::WINDOWS_NARROWED_TOTAL,
         Kind::Counter,
         "Event windows split in two because a unit hit max_pages inside them, by source and unit",

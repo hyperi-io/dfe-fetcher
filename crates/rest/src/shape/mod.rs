@@ -79,6 +79,10 @@ const DEFAULT_SETTLE_SECS: u64 = 300;
 /// newer until the bucket's lifecycle rule removes it.
 const STALE_UPLOAD_HOLD: chrono::TimeDelta = chrono::TimeDelta::days(1);
 
+/// How many of the manifest items cut by `max_items` a warning names. The
+/// warning's `skipped` count is always the whole of them.
+const SKIPPED_ITEMS_NAMED: usize = 20;
+
 impl RestShape {
     /// Bind `profile` to `instance` and build its auth mode over `exchange`,
     /// plus one per scope the units name; data requests go out on `client`.
@@ -1123,6 +1127,10 @@ struct Tick<'a> {
     checkpoint: Option<CheckpointValue>,
     /// Manifest items taken for the current key, against `max_items`.
     items_taken: usize,
+    /// Manifest items of the current page read past `max_items` on a unit
+    /// that reads no window, and the first few of them by id.
+    items_skipped: usize,
+    skipped_named: Vec<String>,
     /// The rows of the current key, held for the fold.
     folding: Vec<Bytes>,
     finished: bool,
@@ -1187,7 +1195,8 @@ impl<'a> Tick<'a> {
     ///
     /// A manifest past its item cap for the key takes no more and asks for
     /// no more pages. Where the items carry a checkpoint mark the rest wait
-    /// for the next tick, and a unit that reads no window is cut short. A
+    /// for the next tick, and a unit that reads no window is cut short and
+    /// the cut is reported when its page ends ([`Tick::report_skipped_items`]). A
     /// unit that reads the window or is a dump fails instead, through the
     /// same path as a page ceiling, because nothing records the items it did
     /// not read.
@@ -1219,8 +1228,22 @@ impl<'a> Tick<'a> {
                     limit: max,
                 });
             }
-            self.current = None;
-            self.pending = None;
+            if lookup.item_mark.is_some() {
+                self.current = None;
+                self.pending = None;
+                return Ok(false);
+            }
+            // A unit that reads no window and marks no items is the provider's
+            // current state, and the rest of this page is cut from the tick.
+            // The page is read on, so the cut is counted and named when it ends.
+            self.items_skipped += 1;
+            if self.skipped_named.len() < SKIPPED_ITEMS_NAMED {
+                let id = row_id(payload, lookup.id_at.as_deref()).map_or_else(
+                    |_| String::from_utf8_lossy(payload).into_owned(),
+                    |id| id.as_str().map_or_else(|| id.to_string(), str::to_owned),
+                );
+                self.skipped_named.push(id);
+            }
             return Ok(false);
         }
         self.items_taken += 1;
@@ -1230,6 +1253,39 @@ impl<'a> Tick<'a> {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Report the manifest items a finished page left past `max_items`, and
+    /// whether there were any: no further page is read for them.
+    ///
+    /// The count goes to a counter, and the warning has it too with the first
+    /// few ids, because the provider's order is not the version or time order
+    /// and the dropped items are not the oldest.
+    fn report_skipped_items(&mut self) -> bool {
+        if self.items_skipped == 0 {
+            return false;
+        }
+        let source = &self.shape.bound.connection_id;
+        let unit = &self.endpoint.unit.name;
+        metrics::counter!(metric_names::MANIFEST_ITEMS_SKIPPED_TOTAL, "source" => source.clone(), "unit" => unit.to_string()).increment(u64::try_from(self.items_skipped).unwrap_or(u64::MAX));
+        let key = self
+            .fields
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::warn!(
+            source,
+            unit = %unit,
+            key = %key,
+            max_items = self.endpoint.lookup.as_ref().and_then(|l| l.max_items),
+            skipped = self.items_skipped,
+            first_skipped = %self.skipped_named.join(", "),
+            "manifest item cap reached; the items past it are not fetched this tick"
+        );
+        self.items_skipped = 0;
+        self.skipped_named.clear();
+        true
     }
 
     /// The row the fold makes of the current key's rows, stamped with the
@@ -1446,6 +1502,9 @@ impl<'a> Tick<'a> {
                         let Some(page) = self.current.take() else {
                             continue;
                         };
+                        if self.report_skipped_items() {
+                            continue;
+                        }
                         match self.advance(Stage::pages(self.endpoint), &page) {
                             Ok(next) => self.pending = next,
                             Err(e) => return Some(self.fail(e)),
@@ -1581,6 +1640,8 @@ impl RowSource for RestShape {
             ctx_ready: false,
             checkpoint: tick.checkpoint.cloned(),
             items_taken: 0,
+            items_skipped: 0,
+            skipped_named: Vec::new(),
             folding: Vec::new(),
             finished: false,
             records: metrics::counter!(metric_names::RECORDS_FETCHED_TOTAL, "source" => source.clone()),

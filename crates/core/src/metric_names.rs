@@ -27,6 +27,9 @@ pub const PAGES_FETCHED_TOTAL: &str = "dfe_fetcher_pages_fetched_total";
 /// `unit`: an event-window unit is fetched again over narrower windows, a
 /// dump or a listing is cut short.
 pub const PAGES_TRUNCATED_TOTAL: &str = "dfe_fetcher_pages_truncated_total";
+/// Manifest items past `max_items` that a unit reading no window did not
+/// fetch, by `source` and `unit`.
+pub const MANIFEST_ITEMS_SKIPPED_TOTAL: &str = "dfe_fetcher_manifest_items_skipped_total";
 /// Event windows split in two because a unit hit `max_pages` inside them, by
 /// `source` and `unit`.
 pub const WINDOWS_NARROWED_TOTAL: &str = "dfe_fetcher_windows_narrowed_total";
@@ -63,6 +66,7 @@ pub const ALL: &[&str] = &[
     API_ERRORS_TOTAL,
     PAGES_FETCHED_TOTAL,
     PAGES_TRUNCATED_TOTAL,
+    MANIFEST_ITEMS_SKIPPED_TOTAL,
     WINDOWS_NARROWED_TOTAL,
     TAIL_PAGES_FULL_TOTAL,
     RECORDS_FETCHED_TOTAL,
