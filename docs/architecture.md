@@ -53,7 +53,7 @@ The repo is a Cargo workspace laid out as a wide DAG off one I/O-free core, so
 the source crates compile in parallel and a profile change never rebuilds a
 database driver. What each crate holds is in the [codemap](#codemap).
 
-This diagram shows which workspace crate depends on which.
+The app depends on three source crates, each depends on the I/O-free core, and the engine drivers and the tailer hang off cargo features.
 
 ```mermaid
 flowchart LR

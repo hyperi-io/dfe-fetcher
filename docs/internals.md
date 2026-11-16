@@ -20,7 +20,7 @@ The fetcher has no raw capture setting and does not keep the bytes it fetched. P
 
 A scheduler ticks one driver per connection, and the driver pulls rows from the connection's shape: `RestShape`, `DbShape` or `FileShape`. The [README](../README.md#architecture) has the diagram this one expands.
 
-This diagram shows the parts inside the source framework.
+The scheduler ticks a driver, which feeds rows from its shape to the emitter and checkpoints to the cursor store.
 
 ```mermaid
 flowchart LR
@@ -55,7 +55,7 @@ flowchart LR
 
 *Figure 1. L4 Detail -- Source framework. The dashed box is external.* Up: [L3 Components -- dfe-fetcher](../README.md#architecture). Down: [L4 Detail -- One tick](#one-tick).
 
-The scheduler writes each connection's window cursor to the cursor store once a tick succeeds, one JSON file per key. The extractors are in [extractors.md](extractors.md).
+The scheduler writes each connection's window cursor to the cursor store once a tick succeeds, one JSON file per key.
 
 ## One tick
 
@@ -75,7 +75,7 @@ reports the batch acknowledged by the transport. A tick that fails commits
 nothing more and re-fetches next time, and a queue message is acknowledged to
 its broker once it is on the wire, never before.
 
-This diagram shows one tick of one connection.
+A tick commits each unit's checkpoint after the emitter acknowledges its last batch.
 
 ```mermaid
 sequenceDiagram
@@ -170,7 +170,7 @@ A known limitation: a single-destination route moves a dump's matching rows to t
 
 ## Configuration Cascade
 
-This diagram shows how the fetcher builds and reloads its configuration.
+Four layers merge, the first winning, and a reload runs the merge again.
 
 ```mermaid
 flowchart LR
@@ -204,7 +204,7 @@ flowchart LR
 
 *Figure 3. L4 Detail -- Configuration cascade. The dotted arrow is a reload on SIGHUP, a file change or every `config_reload_secs`.* Up: [dfe-fetcher documentation](README.md).
 
-Earlier layers win. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's cascade stands in for the file: `.env` from the working directory, then `settings.<env>.yaml`, `settings.yaml` and `defaults.yaml` from the working directory, `./config/`, `/config/` and the user's config directory. A nested name reaches its key with either separator after the prefix (`DFE_FETCHER_SOURCES__AWS__REGION` and `DFE_FETCHER__SOURCES__AWS__REGION`), an empty value counts as unset, and the flat names `apply_flat_env` reads (`DFE_FETCHER_KAFKA_BROKERS` and the like) are applied last. The runtime's sections (`logger`, `metrics`, `version_check`) come from the `--config` file, or from scalo's cascade without one.
+The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's cascade stands in for the file: `.env` from the working directory, then `settings.<env>.yaml`, `settings.yaml` and `defaults.yaml` from the working directory, `./config/`, `/config/` and the user's config directory. A nested name reaches its key with either separator after the prefix (`DFE_FETCHER_SOURCES__AWS__REGION` and `DFE_FETCHER__SOURCES__AWS__REGION`), an empty value counts as unset, and the flat names `apply_flat_env` reads (`DFE_FETCHER_KAFKA_BROKERS` and the like) are applied last. The runtime's sections (`logger`, `metrics`, `version_check`) come from the `--config` file, or from scalo's cascade without one.
 
 Validation binds every profile, database and file instance, so a bad field fails the load with its path rather than the first tick. Outside the profile grammar a key the config does not know is skipped and logged once the logger is up: a key inside a section at WARN, because a misspelt key does nothing, and a top-level key at INFO, because it may be a section the scalo runtime reads.
 
@@ -214,7 +214,7 @@ The file is polled for a change at least every 5 s. A reload that does not valid
 
 A DFE deployment on Kubernetes runs one fetcher per configured source: dfe-engine writes the fetcher's deployment when the source is written, each with a separate config, `instance_id` (the first half of every cursor key) and credentials. The docker single-host profile runs one fetcher holding every source instead.
 
-This diagram shows the fetchers of a Kubernetes deployment.
+dfe-engine writes one fetcher per configured source, and every fetcher sends to the same DFE pipeline.
 
 ```mermaid
 flowchart LR

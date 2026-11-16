@@ -10,7 +10,7 @@
 
 Beside the source framework the fetcher runs external tools: a container, read through its stdout JSON lines or HTTP posts, and Vector, received over its native gRPC protocol. Neither runs a tick or keeps a checkpoint: an extractor's records go through the same enrichment and emit path as a source's ([delivery.md](delivery.md)), and its guarantee is set out below.
 
-This diagram shows the three ways an external tool's records reach the fetcher.
+An external tool's records reach the fetcher three ways, and all three meet at the extractor sink before the emitter.
 
 ```mermaid
 flowchart LR
@@ -49,7 +49,7 @@ A container extractor runs its tool in Docker or podman and reads JSON lines fro
 
 ## Container Extractor Lifecycle
 
-This diagram shows the states of one container extractor.
+A scheduled container waits between runs, a continuous one restarts after a backoff, and either stops at shutdown or, if continuous, at its restart limit.
 
 ```mermaid
 stateDiagram-v2
@@ -100,7 +100,7 @@ A Vector push names no instance, so the listener it arrives on decides its topic
 
 ## Profile, container or Vector
 
-This diagram shows which mode a source takes.
+A REST or JSON API becomes a profile, a database or files a db or file block, and anything else a Vector or container extractor.
 
 ```mermaid
 flowchart LR

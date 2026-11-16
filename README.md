@@ -18,7 +18,7 @@ Every record goes to the DFE pipeline over Kafka or gRPC, the same way dfe-recei
 
 Two input families feed one emit path. The source framework polls: a REST profile, a database or a file per connection. The extractors take what external tools hand over: a container's stdout, posts to the ingest endpoint and Vector's gRPC protocol. Any combination runs at once.
 
-This diagram shows the parts of dfe-fetcher and where a record goes.
+Records from the source framework and the extractors meet at the emitter, which sends them to the DFE pipeline and dead-letters what the transport rejects for good.
 
 ```mermaid
 flowchart LR
