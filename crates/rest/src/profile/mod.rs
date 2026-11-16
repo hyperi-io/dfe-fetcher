@@ -3667,6 +3667,8 @@ pub struct RestInstance {
     pub interval_secs: Option<u64>,
     /// Topic base; dump units land on `<topic>-<unit>`.
     pub topic: String,
+    /// Off lands dump units on `<topic>` instead of `<topic>-<unit>`.
+    pub topic_per_dump_unit: bool,
     /// CEL keep-filter over each row, hot-reloaded.
     pub filter: Option<String>,
     /// Credential kind and refs.
@@ -3686,6 +3688,7 @@ impl Default for RestInstance {
             profile: ProfileRef::default(),
             interval_secs: None,
             topic: String::new(),
+            topic_per_dump_unit: true,
             filter: None,
             auth: InstanceAuth::default(),
             vars: BTreeMap::new(),

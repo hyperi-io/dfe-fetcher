@@ -718,6 +718,7 @@ An instance (`sources.rest.<id>`, or a typed block mapped at load) has:
 | `profile` | A shipped profile by name, or the profile itself inline. |
 | `interval_secs` | Fetch interval. The scheduler default when unset. |
 | `topic` | Topic base. Dump units land on `<topic>-<unit>`. |
+| `topic_per_dump_unit` | `true` by default. `false` lands dump units on `<topic>`, with the incremental units. |
 | `filter` | CEL keep-filter over each row, hot-reloaded. |
 | `auth` | The mode and its credentials (below). |
 | `vars` | Values the profile's templates read as `vars.*`. |

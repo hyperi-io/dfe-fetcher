@@ -144,11 +144,11 @@ and is refused at load without it. A copytruncate that keeps the fingerprint is 
 | Source | Unit kind | Checkpoint mark | Lands on |
 |-------|-----------|-----------------|----------|
 | REST profile, incremental | window of events | the scheduler's window cursor (a manifest unit marks each item) | `<topic>` |
-| REST profile, dump | the whole store per tick | none (nothing is incremental) | `<topic>-<unit>` |
+| REST profile, dump | the whole store per tick | none (nothing is incremental) | `<topic>-<unit>`, or `<topic>` with `topic_per_dump_unit: false` |
 | REST profile, queue | pulled messages | ack id per row | `<topic>` |
-| DB dump | the whole result set per tick | none | `<topic>-<unit>` |
+| DB dump | the whole result set per tick | none | `<topic>-<unit>`, or `<topic>` with `topic_per_dump_unit: false` |
 | DB tail | rows past the last key tuple | key tuple per row (the resume token on a MongoDB change stream) | `<topic>` |
-| File dump | each matched file once | file path and change time per row | `<topic>-<unit>` |
+| File dump | each matched file once | file path and change time per row | `<topic>-<unit>`, or `<topic>` with `topic_per_dump_unit: false` |
 | File tail | lines as files grow | fingerprint and end offset per line | `<topic>` |
 
 The deployment's topic suffix (`_land` by default) is appended to every topic

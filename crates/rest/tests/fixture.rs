@@ -551,20 +551,39 @@ async fn ndjson_edge_cases_over_http() {
 }
 
 #[tokio::test]
-async fn a_json_array_root_streams_and_a_dump_unit_lands_on_its_own_topic() {
+async fn a_json_array_root_streams_and_a_dump_unit_lands_on_the_topic_its_instance_names() {
     let fx = common::start().await;
     let p = format!(
         "{PLAIN}shape: dump\nendpoints:\n  - {{ unit: items, path: /array/items.json, rows: {{ decoder: json_array }} }}\n"
     );
-    let s = shape(
-        &fx,
-        &p,
-        "profile: x\ntopic: fixture\nauth: { mode: none }\n",
-    );
-    assert_eq!(fetch(&s, "items", None).await.unwrap().len(), 4);
-    let unit = &s.units()[0];
-    assert!(unit.is_dump());
-    assert_eq!(&*unit.topic, "fixture-items");
+    for (instance, topic) in [
+        (
+            "profile: x\ntopic: fixture\nauth: { mode: none }\n",
+            "fixture-items",
+        ),
+        (
+            "profile: x\ntopic: fixture\ntopic_per_dump_unit: true\nauth: { mode: none }\n",
+            "fixture-items",
+        ),
+        (
+            "profile: x\ntopic: fixture\ntopic_per_dump_unit: false\nauth: { mode: none }\n",
+            "fixture",
+        ),
+        (
+            "profile: x\ntopic: fixture\ntopic_per_dump_unit: false\nunits: { items: { topic: other } }\nauth: { mode: none }\n",
+            "other",
+        ),
+    ] {
+        let s = shape(&fx, &p, instance);
+        assert_eq!(
+            fetch(&s, "items", None).await.unwrap().len(),
+            4,
+            "{instance}"
+        );
+        let unit = &s.units()[0];
+        assert!(unit.is_dump(), "{instance}");
+        assert_eq!(&*unit.topic, topic, "{instance}");
+    }
 }
 
 /// The three placed-or-minted modes end to end, and the renewal point: a token

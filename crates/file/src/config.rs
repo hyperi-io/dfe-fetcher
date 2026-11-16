@@ -85,6 +85,8 @@ pub struct FileInstance {
     pub interval_secs: Option<u64>,
     /// Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.
     pub topic: String,
+    /// Off lands dump units on `<topic>` instead of `<topic>-<unit>`.
+    pub topic_per_dump_unit: bool,
     /// CEL keep-filter over each row, hot-reloaded.
     pub filter: Option<String>,
     /// The units, in tick order.
@@ -99,6 +101,7 @@ impl Default for FileInstance {
             enabled: true,
             interval_secs: None,
             topic: String::new(),
+            topic_per_dump_unit: true,
             filter: None,
             units: Vec::new(),
             accumulate: None,
