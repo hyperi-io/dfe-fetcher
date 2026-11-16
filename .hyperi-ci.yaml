@@ -8,7 +8,7 @@ classification: product
 
 language: rust
 
-# Why the feature sets are explicit and the tests leave db-odbc out: CONTRIBUTING.md "Commands that prove a change".
+# Why the feature sets are explicit: CONTRIBUTING.md "Commands that prove a change".
 quality:
   enabled: true
   markdownlint: blocking
@@ -33,7 +33,7 @@ test:
     features:
       - "default"
       - "jemalloc"
-      - "db-clickhouse,db-mongodb,file-tail"
+      - "db-clickhouse,db-mongodb,file-tail,db-odbc"
   # Test tiers: docs/testing.md.
   full:
     required_for_release: true

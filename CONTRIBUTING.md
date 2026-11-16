@@ -172,15 +172,15 @@ The generated files are regenerated from the binary: `dfe-fetcher emit-dockerfil
 
 Two ways a passing run says more than it proved:
 
-- CI never tests `db-odbc`. It tests `db-clickhouse`, `db-mongodb` and
-  `file-tail`, which are pure Rust and need nothing but Docker, and the feature sets
-  in `.hyperi-ci.yaml` are listed one by one, never `--all-features`.
-  Quality lints `db-odbc` and the release image ships it
-  with the PostgreSQL, MariaDB and SQLite drivers, but the test lists in
-  `.hyperi-ci.yaml` leave it out: its suites need the `odbc-postgresql` and
-  `odbc-mariadb` drivers, which the runner lacks and that config cannot
-  declare. A local `cargo nextest run --workspace --all-features` runs them,
-  and needs `libodbc`, its headers and those drivers on your host.
+- The feature sets in `.hyperi-ci.yaml` are listed one by one, never `--all-features`.
+  Test and Quality cover `db-clickhouse`, `db-mongodb`, `file-tail` and `db-odbc`.
+  The `db-odbc` suites need unixODBC, its headers and the `odbc-postgresql` and
+  `odbc-mariadb` drivers: hyperi-ci installs them on the runner when `Cargo.lock`
+  names `odbc-sys`, and a missing driver fails the test in CI. The SQL Server and
+  Oracle suites skip by name where their proprietary driver is absent, so a passing
+  run has not exercised those two. Locally,
+  `cargo nextest run --workspace --all-features` runs the same suites and needs
+  `libodbc`, its headers and those drivers on your host.
 - Live provider tests are `#[ignore]`. A passing run has not talked to AWS, Okta
   or any other provider. Each `docs/cloud-setup/*.md` says how to run that provider's tests.
 
