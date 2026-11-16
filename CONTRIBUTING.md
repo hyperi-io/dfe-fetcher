@@ -74,34 +74,6 @@ This project follows [Semantic Versioning 2.0.0](https://semver.org/):
 Versions are automatically determined by semantic-release based on commit
 messages. Do not manually update version numbers.
 
-## Developer Certificate of Origin
-
-This project uses the [Developer Certificate of Origin 1.1](https://developercertificate.org/). A `Signed-off-by` line on a commit certifies, for that contribution, the four statements in that text.
-
-### How to Sign Off Your Commits
-
-You must sign off each commit to indicate your acceptance of the DCO. Combine
-the signoff with your conventional commit message:
-
-```bash
-git commit --signoff -m "feat(auth): add two-factor authentication"
-```
-
-This produces:
-
-```text
-feat(auth): add two-factor authentication
-
-Signed-off-by: Your Name <your.email@example.com>
-```
-
-Make sure your Git configuration has your correct name and email:
-
-```bash
-git config --global user.name "Your Name"
-git config --global user.email "your.email@example.com"
-```
-
 ## License for Contributions
 
 All contributions to this project are licensed under the Business Source
@@ -115,14 +87,12 @@ anniversary of its release.
 
 1. Fork the repository and create your branch from `main`
 2. Make your changes following the commit message format above
-3. Sign off your commits with the DCO
-4. Run the tests that cover your change
-5. Submit a pull request with a clear description of what you've done
+3. Run the tests that cover your change
+4. Submit a pull request with a clear description of what you've done
 
 ### Pull Request Checklist
 
 - [ ] Commits follow the conventional commit format
-- [ ] All commits are signed off (DCO)
 - [ ] Tests pass (if applicable)
 - [ ] Documentation is updated (if applicable)
 
