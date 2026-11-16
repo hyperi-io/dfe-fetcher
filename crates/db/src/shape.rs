@@ -25,7 +25,7 @@ use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::checkpoint::CheckpointValue;
 use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::metric_names;
-use dfe_fetcher_core::{Mark, RowSource, RowStream, SourceMaturity, TickCtx, UnitSpec};
+use dfe_fetcher_core::{Mark, RowSource, RowStream, SourceMaturity, TickCtx, UnitSpec, unit_topic};
 
 use crate::config::{DbInstance, Engine, StoreShape};
 use crate::store::Store;
@@ -134,11 +134,14 @@ impl DbShape {
         ));
         let mut bound = Vec::with_capacity(instance.stores.len());
         for spec in &instance.stores {
-            let topic = match spec.shape {
-                StoreShape::Dump => format!("{}-{}", instance.topic, spec.unit),
-                StoreShape::Tail => instance.topic.clone(),
-            };
-            let mut unit = UnitSpec::new(&spec.unit, spec.shape.unit_shape(), &topic);
+            let unit_shape = spec.shape.unit_shape();
+            let topic = unit_topic(
+                &instance.topic,
+                &spec.unit,
+                unit_shape,
+                instance.topic_per_dump_unit,
+            );
+            let mut unit = UnitSpec::new(&spec.unit, unit_shape, &topic);
             unit.row_key.clone_from(&spec.row_key);
             let store = build_store(instance, spec, &secret, lease)?;
             bound.push(Bound {
@@ -438,6 +441,15 @@ stores:
             assert_eq!(&*units[1].topic, "inventory");
             assert!(shape.store("hosts").is_some());
             assert!(shape.store("nope").is_none());
+            let mut shared = inst.clone();
+            shared.topic_per_dump_unit = false;
+            let shape = DbShape::from_instance(&shared, "inv", &no_lease()).expect("odbc is built");
+            let topics: Vec<_> = shape.units().iter().map(|u| u.topic.to_string()).collect();
+            assert_eq!(
+                topics,
+                ["inventory", "inventory"],
+                "dumps share the tail's topic"
+            );
         } else {
             let err = built.expect_err("odbc is not built");
             assert!(err.to_string().contains("db-odbc"), "{err}");

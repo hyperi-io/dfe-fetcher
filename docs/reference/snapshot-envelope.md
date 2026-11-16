@@ -75,7 +75,11 @@ example config), and a dropped row is never a hole.
 
 A dump unit lands on a dedicated topic, `<topic>-<unit>` with the deployment's
 topic suffix appended (`_land` by default), so the stores of one connector
-never interleave. Incremental units land on `<topic>` plus the suffix. Two
+never interleave. Incremental units land on `<topic>` plus the suffix. An
+instance that sets `topic_per_dump_unit: false` lands its dump units on
+`<topic>` as well, for a consumer that keeps one table per instance (the
+DFE engine compiles every instance that way, so a source has one topic and
+one table), and `_source_fetcher` and `store` still tell the units apart. Two
 instances sharing a `topic` are told apart by `_source_fetcher`
 (`<connection>.<unit>`) and by `store`.
 

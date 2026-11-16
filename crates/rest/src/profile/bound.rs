@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use dfe_fetcher_core::batch::AccumulateConfig;
 use dfe_fetcher_core::error::{Error, Result};
-use dfe_fetcher_core::{RowContent, UnitShape, UnitSpec};
+use dfe_fetcher_core::{RowContent, UnitShape, UnitSpec, unit_topic};
 use serde_json::Value;
 
 use super::template::{Predicate, Template, TemplateCtx, TemplateMap};
@@ -431,10 +431,7 @@ fn bind_endpoint(
     let topic_base = over
         .and_then(|o| o.topic.as_deref())
         .unwrap_or(&instance.topic);
-    let topic = match shape {
-        UnitShape::Incremental => topic_base.to_owned(),
-        UnitShape::Dump => format!("{topic_base}-{name}"),
-    };
+    let topic = unit_topic(topic_base, name, shape, instance.topic_per_dump_unit);
     let mut ctx = ctx.clone();
     // The unit's own values over the instance's, the instance's per-unit
     // overrides over both.

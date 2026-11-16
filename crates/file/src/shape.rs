@@ -24,7 +24,9 @@ use futures::{FutureExt, StreamExt};
 use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::checkpoint::CheckpointValue;
 use dfe_fetcher_core::error::{Error, Result};
-use dfe_fetcher_core::{RowSource, RowStream, SnapshotScope, SourceMaturity, TickCtx, UnitSpec};
+use dfe_fetcher_core::{
+    RowSource, RowStream, SnapshotScope, SourceMaturity, TickCtx, UnitSpec, unit_topic,
+};
 
 use crate::FileSource;
 use crate::config::{FileInstance, FileUnit, TAIL_FEATURE};
@@ -102,11 +104,12 @@ impl FileShape {
         let mut bound = Vec::with_capacity(instance.units.len());
         for spec in &instance.units {
             let shape = spec.unit_shape();
-            let topic = if spec.tail.is_some() {
-                instance.topic.clone()
-            } else {
-                format!("{}-{}", instance.topic, spec.unit)
-            };
+            let topic = unit_topic(
+                &instance.topic,
+                &spec.unit,
+                shape,
+                instance.topic_per_dump_unit,
+            );
             let mut unit = UnitSpec::new(&spec.unit, shape, &topic);
             unit.row_key.clone_from(&spec.row_key);
             if spec.dump.is_some() {
@@ -271,6 +274,16 @@ units:
             assert!(!units[1].snapshots_per_item());
             assert!(shape.unit("assets").is_some());
             assert!(shape.unit("nope").is_none());
+            let mut shared = inst.clone();
+            shared.topic_per_dump_unit = false;
+            let shape =
+                FileShape::from_instance(&shared, "exp", &no_lease()).expect("tail is built");
+            let topics: Vec<_> = shape.units().iter().map(|u| u.topic.to_string()).collect();
+            assert_eq!(
+                topics,
+                ["exports", "exports"],
+                "dumps share the tail's topic"
+            );
         } else {
             let err = built.expect_err("tail is not built");
             assert!(err.to_string().contains("file-tail"), "{err}");

@@ -3244,6 +3244,10 @@ $defs:
         description: Topic base; dump units land on `<topic>-<unit>`.
         type: string
         default: ""
+      topic_per_dump_unit:
+        description: Off lands dump units on `<topic>` instead of `<topic>-<unit>`.
+        type: boolean
+        default: true
       filter:
         description: CEL keep-filter over each row, hot-reloaded.
         type:
@@ -5437,6 +5441,10 @@ $defs:
         description: Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.
         type: string
         default: ""
+      topic_per_dump_unit:
+        description: Off lands dump units on `<topic>` instead of `<topic>-<unit>`.
+        type: boolean
+        default: true
       filter:
         description: CEL keep-filter over each row, hot-reloaded.
         type:
@@ -5683,6 +5691,10 @@ $defs:
         description: Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.
         type: string
         default: ""
+      topic_per_dump_unit:
+        description: Off lands dump units on `<topic>` instead of `<topic>-<unit>`.
+        type: boolean
+        default: true
       filter:
         description: CEL keep-filter over each row, hot-reloaded.
         type:

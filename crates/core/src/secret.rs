@@ -158,14 +158,11 @@ mod tests {
     use super::*;
     use crate::error::Error;
 
-    static CALLS: AtomicUsize = AtomicUsize::new(0);
-
     /// Upper-cases a spec and refuses one starting with `missing:`.
     struct Upper;
 
     impl ResolveSecret for Upper {
         fn resolve(spec: &str) -> impl Future<Output = Result<SensitiveString>> + Send {
-            CALLS.fetch_add(1, Ordering::SeqCst);
             std::future::ready(match spec.strip_prefix("missing:") {
                 Some(name) => Err(Error::Credential(format!("`{name}` is not set"))),
                 None => Ok(SensitiveString::from(spec.to_ascii_uppercase())),
@@ -173,9 +170,22 @@ mod tests {
         }
     }
 
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// `Upper`, counting its calls. Only the test that reads `CALLS` uses it, so a test
+    /// running beside it on another thread cannot move the count.
+    struct CountedUpper;
+
+    impl ResolveSecret for CountedUpper {
+        fn resolve(spec: &str) -> impl Future<Output = Result<SensitiveString>> + Send {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Upper::resolve(spec)
+        }
+    }
+
     #[tokio::test]
     async fn a_spec_resolves_once_and_the_plaintext_never_reaches_debug() {
-        let secret: Secret<Upper> =
+        let secret: Secret<CountedUpper> =
             Secret::new(SensitiveString::from("Driver=x;Server=y".to_owned()));
         let before = CALLS.load(Ordering::SeqCst);
         assert_eq!(secret.value().await.unwrap(), "DRIVER=X;SERVER=Y");

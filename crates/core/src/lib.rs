@@ -235,6 +235,20 @@ pub struct UnitSpec {
     pub content: RowContent,
 }
 
+/// The topic base a unit's rows land on.
+///
+/// An incremental unit lands on `base`. A dump unit lands on `<base>-<unit>`
+/// so the stores of one connector never share a topic, unless
+/// `topic_per_dump_unit` is off, which lands it on `base` as well, for a
+/// consumer that keeps one topic and one table per instance.
+#[must_use]
+pub fn unit_topic(base: &str, unit: &str, shape: UnitShape, topic_per_dump_unit: bool) -> String {
+    match shape {
+        UnitShape::Dump if topic_per_dump_unit => format!("{base}-{unit}"),
+        UnitShape::Dump | UnitShape::Incremental => base.to_owned(),
+    }
+}
+
 impl UnitSpec {
     /// A unit with just a name, shape and topic.
     #[must_use]
@@ -370,6 +384,22 @@ mod tests {
     use super::*;
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn a_unit_lands_on_its_own_topic_only_when_it_is_a_dump_with_the_option_on() {
+        for (shape, per_dump_unit, expected) in [
+            (UnitShape::Dump, true, "inventory-hosts"),
+            (UnitShape::Dump, false, "inventory"),
+            (UnitShape::Incremental, true, "inventory"),
+            (UnitShape::Incremental, false, "inventory"),
+        ] {
+            assert_eq!(
+                unit_topic("inventory", "hosts", shape, per_dump_unit),
+                expected,
+                "{shape:?}, per_dump_unit={per_dump_unit}"
+            );
+        }
+    }
 
     #[test]
     fn row_types_are_send_sync() {

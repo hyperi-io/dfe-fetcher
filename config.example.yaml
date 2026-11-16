@@ -552,6 +552,7 @@ sources:
     runzero_self_hosted:
       enabled: false
       topic: "runzero"                  # stores land on runzero-assets, runzero-services, ...
+      # topic_per_dump_unit: false      # stores land on runzero instead, sharing its table
       interval_secs: 3600
       # filter: 'record.alive == true'  # CEL over the enveloped row; hot-reloaded
       auth:
@@ -1035,6 +1036,7 @@ scaling:
 #       connection_string: "vault:kv/data/<team>/inventory:odbc_dsn"
 #       interval_secs: 3600
 #       topic: "inventory"              # dump units land on inventory-hosts, a tail on inventory
+#       topic_per_dump_unit: true       # false lands the dump units on inventory too
 #       filter: 'record.alive == true'  # optional CEL over the enveloped row, hot-reloaded
 #       batch:
 #         max_rows: 5000                # rows per block the cursor fetches
@@ -1105,6 +1107,7 @@ scaling:
 #       enabled: true
 #       interval_secs: 300
 #       topic: "exports"                # dump units land on exports-assets, a tail on exports
+#       topic_per_dump_unit: true       # false lands the dump units on exports too
 #       filter: 'record.alive == true'  # optional CEL over the enveloped row, hot-reloaded
 #       units:
 #         - unit: assets

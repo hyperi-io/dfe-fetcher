@@ -252,6 +252,8 @@ pub struct DbInstance {
     pub interval_secs: Option<u64>,
     /// Topic base; dump units land on `<topic>-<unit>`, tails on `<topic>`.
     pub topic: String,
+    /// Off lands dump units on `<topic>` instead of `<topic>-<unit>`.
+    pub topic_per_dump_unit: bool,
     /// CEL keep-filter over each row, hot-reloaded.
     pub filter: Option<String>,
     /// Block cursor bounds.
@@ -271,6 +273,7 @@ impl Default for DbInstance {
             connection_string: SensitiveString::default(),
             interval_secs: None,
             topic: String::new(),
+            topic_per_dump_unit: true,
             filter: None,
             batch: BatchSpec::default(),
             stores: Vec::new(),
