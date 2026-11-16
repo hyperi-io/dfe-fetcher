@@ -15,11 +15,11 @@ This page covers the test levels dfe-fetcher runs and the services its tests sha
 | core | every pull request to `main`, and every push that changes more than `docs/` and Markdown (`paths-ignore` in `.github/workflows/ci.yml`) | nextest's default selection: every test not marked `#[ignore]` |
 | full | nightly (`schedule` in `.github/workflows/ci.yml`) and before every release (`test.full.required_for_release: true`) | core plus the `#[ignore]` tests, less the live-provider suites |
 
-Core holds the unit tests, the fixture and wiremock suites, and every integration test against a running service: Kafka, the Kafka TLS round trip, OpenBao, LocalStack, ClickHouse and MongoDB.
+Core holds the unit tests, the fixture and wiremock suites, and every integration test against a running service: Kafka, the Kafka TLS round trip, OpenBao, LocalStack, ClickHouse, MongoDB, and PostgreSQL and MariaDB over ODBC.
 
 Full adds the container extractor tests, the Kafka produce-and-consume tests in the `e2e` target and the batcher measurement, which moves rows through a running Kafka. `test.full.rust.filter` in `.hyperi-ci.yaml` leaves out `smoke_remote` and `runzero`, which need tenant credentials no runner holds. Run those by hand with `cargo nextest run -p dfe-fetcher --test e2e --run-ignored only <prefix>` and the variables each [cloud-setup](cloud-setup/README.md) guide names. A missing variable fails its test rather than skipping it.
 
-The `db-odbc` suites need that feature to build, and need the `odbc-postgresql` and `odbc-mariadb` drivers, so CI does not run them. Each starts a database container through testcontainers.
+The `db-odbc` suites need that feature to build and the `odbc-postgresql` and `odbc-mariadb` drivers, which hyperi-ci installs on the CI runner. Each starts a database container through testcontainers.
 
 ## Shared services, one instance each per run
 
