@@ -68,7 +68,7 @@ stateDiagram-v2
     Backoff --> Stopped: shutdown
 ```
 
-*Figure 2. L4 Detail -- Container extractor lifecycle.* Up: [L4 Detail -- Extractors](#extractors).
+*Figure 2. L4 Detail -- Container extractor lifecycle.* Up: [L4 Detail -- Extractors](extractors.md).
 
 A continuous extractor that exits is restarted after a backoff that doubles up
 to 64 s, or up to `max_restart_backoff_secs` when that is lower, so a setting

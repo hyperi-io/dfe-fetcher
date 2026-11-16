@@ -55,7 +55,7 @@ flowchart LR
     class fetcher group
 ```
 
-*Figure 1. L3 Components -- dfe-fetcher. Dashed boxes are external, and the dotted arrow is the dead-letter path.* Up: top of dfe-fetcher. Down: [L4 Detail -- Source framework](docs/internals.md#source-framework), [L4 Detail -- Extractors](docs/extractors.md#extractors).
+*Figure 1. L3 Components -- dfe-fetcher. Dashed boxes are external, and the dotted arrow is the dead-letter path.* Up: top of dfe-fetcher. Down: [L4 Detail -- Source framework](docs/internals.md#source-framework), [L4 Detail -- Extractors](docs/extractors.md).
 
 The output transport is Kafka, gRPC or both. What the emitter does with each record, the dead letters and the delivery guarantees are in [docs/delivery.md](docs/delivery.md).
 
