@@ -76,10 +76,10 @@ axum = "0.8.9"
 
 # Utilities
 chrono = { version = "0.4.45", features = ["serde"] }
-uuid = "1.29.1"
+uuid = "1.29.2"
 smallvec = "1.16.5"
 thiserror = "2.0.21"
-itoa = "1.0.18"
+itoa = "1.0.19"
 memchr = "2.8.3"
 base64 = "0.23.1"
 # The `signature` auth mode: a keyed digest over a canonical string of the
