@@ -12,7 +12,7 @@
 
 This page holds the runtime diagrams and the reasoning behind them. The codemap of the Cargo workspace is [architecture.md](architecture.md).
 
-We parse mechanical transport at max efficiency at the edge. The fetcher parses the framing of the API, file or database it reads (NDJSON lines, a JSON array, CSV rows, a response envelope) into one JSON record per row. Records leave already parsed, with the payload and its fields in the record itself.
+We parse mechanical transport at max efficiency at the edge. The fetcher parses the framing of the API, file or database it reads (NDJSON lines, a JSON array, CSV rows, a response envelope) into one JSON record per row. Records leave parsed, with the payload and its fields in the record itself.
 
 The fetcher has no raw capture setting and does not keep the bytes it fetched. Parsing a long text field with grok, dissect or a pipeline is the transforms' job, downstream. A record framed wrongly is fixed in the profile or the driver here. See the fleet rule in [design-principles.md](https://github.com/hyperi-io/dfe-infra/blob/main/docs/design-principles.md).
 
@@ -62,7 +62,7 @@ The scheduler writes each connection's window cursor to the cursor store once a 
 The driver runs each unit of a connection through one loop, pulling rows lazily. A unit is one endpoint, store,
 subscription or prefix. Its rows are either events inside the scheduler's
 window (incremental) or the whole store (a dump, wrapped in the snapshot
-envelope). Rows are polled only while the memory-pressure gate admits them,
+envelope). Rows are not polled unless the memory-pressure gate admits them,
 so not polling is what pushes back on the provider, and a held source flushes
 what it has buffered before it waits. A hold lasts at most
 `self_regulation.max_hold_secs`, then the source polls on and logs a warning,
@@ -70,10 +70,10 @@ because memory the pause cannot release would otherwise hold it for good.
 
 Each row may have a
 mark (a queue ack id, a manifest item, a keyset tuple, a file offset). The
-driver folds the marks of a batch and commits them only after the emitter
+driver folds the marks of a batch and commits them once the emitter
 reports the batch acknowledged by the transport. A tick that fails commits
 nothing more and re-fetches next time, and a queue message is acknowledged to
-its broker only after it is on the wire.
+its broker once it is on the wire, never before.
 
 This diagram shows one tick of one connection.
 
@@ -136,7 +136,7 @@ path and change time after its last row is acknowledged, so a file rewritten
 in place is read again and a file dropped in by rename is never skipped. A
 `tail` unit follows growing files through rotation and truncation on
 Vector's file tailer, copied under `third-party/`, and commits `(file fingerprint, end offset)` per line
-after the acknowledgement. It keeps the tailer's own checkpoint file in its
+after the acknowledgement. It keeps the tailer's checkpoint file in its
 `data_dir`, which defaults to `<cursor.directory>/<instance_id>.<id>.<unit>.tail`
 (lowercased, beside the unit's cursor file). It needs the `file-tail` feature
 and is refused at load without it. A copytruncate that keeps the fingerprint is re-read from byte 0.
@@ -164,9 +164,9 @@ visible before it is a backlog.
 
 ## The Snapshot Envelope
 
-A dump unit's rows travel as one `begin` frame, a `row` (or `oversize`) frame per record and one `end` frame carrying the row count, all under one UUIDv7 `snapshot_id` on the unit's own topic. A consumer rebuilds the store by `snapshot_id`, and a dump with no `end` was cut short. The frames and the consumer rules are in [reference/snapshot-envelope.md](reference/snapshot-envelope.md).
+A dump unit's rows travel as one `begin` frame, a `row` (or `oversize`) frame per record and one `end` frame carrying the row count, all under one UUIDv7 `snapshot_id` on the unit's topic. A consumer rebuilds the store by `snapshot_id`, and a dump with no `end` was cut short. The frames and the consumer rules are in [reference/snapshot-envelope.md](reference/snapshot-envelope.md).
 
-A known limitation: a single-destination route moves a dump's matching rows to that destination's table, and its `begin` and `end` frames stay in the unit's own, so neither table holds a dump that can be reassembled.
+A known limitation: a single-destination route moves a dump's matching rows to that destination's table, and its `begin` and `end` frames stay in the unit's table, so neither table holds a dump that can be reassembled.
 
 ## Configuration Cascade
 
@@ -204,7 +204,7 @@ flowchart LR
 
 *Figure 3. L4 Detail -- Configuration cascade. The dotted arrow is a reload on SIGHUP, a file change or every `config_reload_secs`.* Up: [dfe-fetcher documentation](README.md).
 
-Earlier layers win. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's cascade stands in for the file: `.env` from the working directory, then `settings.<env>.yaml`, `settings.yaml` and `defaults.yaml` from the working directory, `./config/`, `/config/` and the user's config directory. A nested name reaches its key with either separator after the prefix (`DFE_FETCHER_SOURCES__AWS__REGION` and `DFE_FETCHER__SOURCES__AWS__REGION`), an empty value counts as unset, and the flat names `apply_flat_env` reads (`DFE_FETCHER_KAFKA_BROKERS` and the like) are applied last. The runtime's own sections (`logger`, `metrics`, `version_check`) come from the `--config` file, or from scalo's cascade without one.
+Earlier layers win. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's cascade stands in for the file: `.env` from the working directory, then `settings.<env>.yaml`, `settings.yaml` and `defaults.yaml` from the working directory, `./config/`, `/config/` and the user's config directory. A nested name reaches its key with either separator after the prefix (`DFE_FETCHER_SOURCES__AWS__REGION` and `DFE_FETCHER__SOURCES__AWS__REGION`), an empty value counts as unset, and the flat names `apply_flat_env` reads (`DFE_FETCHER_KAFKA_BROKERS` and the like) are applied last. The runtime's sections (`logger`, `metrics`, `version_check`) come from the `--config` file, or from scalo's cascade without one.
 
 Validation binds every profile, database and file instance, so a bad field fails the load with its path rather than the first tick. Outside the profile grammar a key the config does not know is skipped and logged once the logger is up: a key inside a section at WARN, because a misspelt key does nothing, and a top-level key at INFO, because it may be a section the scalo runtime reads.
 
@@ -247,7 +247,7 @@ flowchart LR
 
 Several accounts of one provider type
 can share a fetcher: the typed blocks take a `connections` list, and
-`sources.rest` takes any number of instances of one profile, each with its own
+`sources.rest` takes any number of instances of one profile, each with a separate
 connection id. The connection id is the second part of every cursor key, so
 ids must differ across every source once case is ignored, and no id may be
 another followed by `.`.

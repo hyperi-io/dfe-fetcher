@@ -14,7 +14,7 @@ least-privilege, where to put credentials, and how to verify the connection.
 Every source is read-side: M365 starts its activity-feed subscription and
 Pub/Sub acknowledges what it delivered. Nothing else changes provider state.
 
-For the fetcher's own configuration (scheduler, output, credential resolution,
+For the fetcher's configuration (scheduler, output, credential resolution,
 the `sources.db` and `sources.file` blocks), see
 [config.example.yaml](../../config.example.yaml). The architecture is in
 [../internals.md](../internals.md) and the profile grammar in
@@ -44,7 +44,7 @@ the `sources.db` and `sources.file` blocks), see
 
 A source's maturity is the `maturity` field of its profile under `crates/fetcher/profiles/`: `alpha`, `beta` or `stable`. The fetcher logs a warning at startup for an enabled source below stable. The capability catalog (`docs/capability-catalog.yaml`) repeats the field, and `catalog_maturity_matches_source_maturity` keeps the two equal.
 
-Each guide's health check is the profile's probe, or its credential exchange where the profile has none. It runs from that source's live test where it has one, `cargo nextest run -p dfe-fetcher --test e2e --run-ignored only <source>_health_check`, never from a deployed fetcher, whose `/readyz` answers from startup and memory pressure alone. In a deployment the first tick is the check: it runs one fetch interval after start and logs `unit tick complete` for each unit, or `unit tick failed` with the provider's answer.
+Each guide's health check is the profile's probe, or its credential exchange where the profile has none. It runs from that source's live test where it has one, `cargo nextest run -p dfe-fetcher --test e2e --run-ignored only <source>_health_check`, never from a deployed fetcher: its `/readyz` answers from startup and memory pressure alone. In a deployment the first tick is the check: it runs one fetch interval after start and logs `unit tick complete` for each unit, or `unit tick failed` with the provider's answer.
 
 ## Credentials in Kubernetes
 
@@ -53,7 +53,7 @@ The released chart mounts one Secret, Kafka's: its `username`, `password` and `s
 A provider's credentials are yours to supply, through the chart's `extraEnv` (a map of variable name to value or `valueFrom`) or `extraEnvFrom` (a list of `envFrom` sources) values. Two ways work, and each guide's Environment Variables section names the fields:
 
 - set the field itself, `DFE_FETCHER_SOURCES__<BLOCK>__<FIELD>`, from a Secret key, e.g. `DFE_FETCHER_SOURCES__AWS__SECRET_ACCESS_KEY`
-- write the field as an `env:NAME` spec in the config, and load a Secret whose keys are those names with `extraEnvFrom`
+- write the field as an `env:NAME` spec in the config, and load a Secret keyed by those names with `extraEnvFrom`
 
 ```yaml
 extraEnv:

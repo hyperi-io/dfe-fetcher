@@ -24,7 +24,7 @@ envelope. Authentication is a scoped API token in
 
 The source is the shipped `cloudflare` profile (`crates/fetcher/profiles/cloudflare.yaml`), and the `sources.cloudflare` block below maps onto an instance of it at load. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, a 2xx carrying `success: false` fails the tick with the `errors` array as the reason, and a tick that fails does not advance the fetch window. A missing token or `account_id` is refused at load, naming `sources.cloudflare`.
 
-dfe-fetcher reads the v1 `audit_logs` endpoint, not Cloudflare's newer Audit Logs v2 endpoint (`/accounts/{account_id}/logs/audit`), whose changelog entry is in the references below.
+dfe-fetcher reads the v1 `audit_logs` endpoint, not Cloudflare's newer Audit Logs v2 endpoint (`/accounts/{account_id}/logs/audit`). Its changelog entry is in the references below.
 
 ## Prerequisites
 
@@ -69,7 +69,7 @@ It is a 32-character hex string. This is the `account_id` config field.
    grant all accounts).
 6. (Recommended) Under **Client IP Address Filtering**, restrict to the
    fetcher's egress IP, and set a **TTL** to bound the token's lifetime.
-7. **Continue to summary** -> **Create Token**. Copy the token now - it is
+7. **Continue to summary** -> **Create Token**. Copy the token before you leave the page - it is
    shown once. New tokens use the scannable `cfut_`-prefixed format.
 
    ```bash
@@ -84,7 +84,7 @@ It is a 32-character hex string. This is the `account_id` config field.
 
 ## dfe-fetcher Configuration
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -102,8 +102,6 @@ sources:
     # filter: 'action.type != "view"'   # CEL, hot-reloaded
 ```
 
-### Environment Variables
-
 Pattern is `DFE_FETCHER_SOURCES__CLOUDFLARE__<FIELD>` (double underscores).
 
 ```bash
@@ -111,8 +109,6 @@ DFE_FETCHER_SOURCES__CLOUDFLARE__ENABLED="true"
 DFE_FETCHER_SOURCES__CLOUDFLARE__ACCOUNT_ID="0123456789abcdef0123456789abcdef"
 DFE_FETCHER_SOURCES__CLOUDFLARE__TOKEN="cfut_your_api_token_here"
 ```
-
-### Secrets Manager
 
 Keep the token out of the config file with `credential_secret`, which
 resolves to the literal token value:
@@ -156,7 +152,7 @@ sources:
 
 ## Cost
 
-dfe-fetcher only reads. Reading account audit logs through the API is not
+dfe-fetcher never writes. Reading account audit logs through the API is not
 expected to have an additional charge, but this can depend on your
 Cloudflare plan. Confirm any cost implications against your Cloudflare
 plan.

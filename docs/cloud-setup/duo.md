@@ -15,12 +15,12 @@ authentication logs from a Duo tenant via the Admin API.
 
 dfe-fetcher reads Duo authentication events from the **Duo Admin API**
 endpoint `/admin/v2/logs/authentication`. Duo does NOT use a bearer token:
-every request is signed with Duo's own scheme. The fetcher computes a signature
+every request is signed with Duo's scheme. The fetcher computes a signature
 over a canonical request string and sends it in a Basic auth header, with a
 fresh `Date` header per request (no token is cached).
 
-The default is **signature version 5**, the scheme Duo documents and the only
-one some newer Admin API endpoints accept:
+The default is **signature version 5**, the scheme Duo documents and the one
+some newer Admin API endpoints accept:
 
 ```text
 canonical = HTTP_DATE \n METHOD \n LOWER(HOST) \n PATH \n SORTED_QUERY
@@ -29,11 +29,11 @@ sig       = hex(HMAC-SHA512(skey, canonical))
 Auth      = Basic base64(ikey:sig)
 ```
 
-A GET carries no body and the fetcher sends no `x-duo-` headers, so both hash
+A GET has no body and the fetcher sends no `x-duo-` headers, so both hash
 lines are the SHA-512 of the empty string.
 
 **Signature version 2** is Duo's legacy scheme: the first five lines alone,
-HMAC-SHA1. A tenant whose endpoints still verify it selects it with
+HMAC-SHA1. A tenant with endpoints that still verify it selects it with
 `signature_version: v2`, on the type or on one connection, as below. Leave it
 unset otherwise.
 
@@ -64,7 +64,7 @@ fetch window. A missing host or key is refused at load, naming `sources.duo`.
 
 ## Prerequisites
 
-- A Duo subscription whose edition includes Admin API access.
+- A Duo subscription with an edition that includes Admin API access.
 - A Duo administrator with the **Owner** (or equivalent) role - required to
   create applications and grant Admin API permissions.
 - Access to the Duo Admin Panel for your tenant
@@ -74,7 +74,7 @@ fetch window. A missing host or key is refused at load, naming `sources.duo`.
 
 | Service | Object/Endpoint | Permission or Scope | Notes |
 |---------|-----------------|---------------------|-------|
-| Authentication logs | `GET /admin/v2/logs/authentication` | **Grant read log** | Read-only. The only permission dfe-fetcher needs. |
+| Authentication logs | `GET /admin/v2/logs/authentication` | **Grant read log** | Read-only. The one permission dfe-fetcher needs. |
 | Health probe | `GET /admin/v1/check` | (covered by the same application keys) | Cheap auth check, no extra permission. |
 
 Grant **only** "Grant read log". Leave all other Admin API permission toggles
@@ -85,20 +85,20 @@ unchecked (least privilege).
 1. Sign in to the Duo Admin Panel at `https://admin.duosecurity.com` as an
    administrator with rights to create applications.
 
-2. Start a new Admin API application. Either path works depending on your
+2. Start an Admin API application. Either path works depending on your
    panel version:
    - Newer panel: **Applications > Application Catalog**, find **Admin
      API**, click **+ Add**.
    - Older panel: **Applications > Protect an Application**, search for
      `Admin API`, then click **Protect** next to it.
 
-3. Grant the log-read permission. On the new application's page, in the
+3. Grant the log-read permission. On the application's page, in the
    **Permissions** section, tick **Grant read log**. Untick everything else.
    Click **Save Changes**.
 
 4. Copy the credentials. In the application's **Details** section, copy:
    - the integration key (the `ikey`)
-   - the secret key (the `skey`), which is a password, so capture it now
+   - the secret key (the `skey`), which is a password, so capture it before you leave the page
    - the API hostname (the `api_host`, format `api-XXXXXXXX.duosecurity.com`)
 
 5. (Optional) Name the application something recognisable, e.g.
@@ -106,9 +106,9 @@ unchecked (least privilege).
 
 ## dfe-fetcher Configuration
 
-The Duo source config fields are: `enabled`, `api_host`, `integration_key` (ikey), `secret_key` (skey), `credential_secret`, `signature_version`, `api_url_override` (test mock only), `interval_secs`, `services`, `topic`, `filter`, `connections`. The only service is `authentication_logs`.
+The Duo source config fields are: `enabled`, `api_host`, `integration_key` (ikey), `secret_key` (skey), `credential_secret`, `signature_version`, `api_url_override` (test mock), `interval_secs`, `services`, `topic`, `filter`, `connections`. The one service is `authentication_logs`.
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -125,7 +125,7 @@ sources:
     # filter: 'result == "FRAUD"'  # hot-reloaded CEL expression
 ```
 
-### Environment Variables
+As environment variables:
 
 ```bash
 DFE_FETCHER_SOURCES__DUO__ENABLED="true"
@@ -157,7 +157,7 @@ and can stay inline.
 ### An Older Tenant
 
 Leave `signature_version` unset and the fetcher signs the version Duo
-documents. A tenant whose endpoints refuse it verifies the legacy scheme
+documents. A tenant with endpoints that refuse it verifies the legacy scheme
 instead, which is selected per type or per connection:
 
 ```yaml
@@ -173,7 +173,7 @@ sources:
     topic: "duo"
 ```
 
-A signature the tenant does not verify comes back as a 401 whose `message`
+A signature the tenant does not verify comes back as a 401, and its `message`
 names the credential, and the tick fails without advancing the fetch window.
 A connection on `v2` warns at startup, because SHA-1 signing is an exemption
 from the platform's crypto baseline taken for this tenant alone.
@@ -185,7 +185,7 @@ which returns `{"response": "valid", "stat": "OK"}` for working credentials.
 A `stat` other than `OK` is a health error. A healthy result confirms the
 ikey, skey, and api_host are correct and the application is active.
 
-**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d tests that hit a real tenant. They read these variables from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
+**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d tests that hit a live tenant. They read these variables from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 - `DUO_API_HOST`
 - `DUO_INTEGRATION_KEY`
@@ -215,9 +215,9 @@ delay window.
 
 ## Cost
 
-dfe-fetcher only reads. The Admin API and authentication-log reads add no
-charge of their own, but access may require a Duo plan/edition that includes
-Admin API access. Confirm any cost implications against your own Duo plan.
+dfe-fetcher never writes. The Admin API and authentication-log reads add no
+separate charge, but access may require a Duo plan/edition that includes
+Admin API access. Confirm any cost implications against your Duo plan.
 
 ## References
 

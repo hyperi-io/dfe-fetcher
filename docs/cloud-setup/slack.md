@@ -33,7 +33,7 @@ does not advance the fetch window. A missing token is refused at load, naming
 - A **Slack Enterprise Grid** organization (marketed as Enterprise+).
   The Audit Logs API is not available on Free, Pro, or Business+ plans.
 - The setup must be performed by an **Organization Owner** - the app must be
-  installed at the org level, and only an Org Owner sees the org install
+  installed at the org level, and the org install is visible to an Org Owner alone
   option.
 - No paid add-on beyond the Enterprise Grid plan.
 
@@ -100,7 +100,7 @@ API calls.
 
 ## dfe-fetcher Configuration
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -117,7 +117,7 @@ sources:
     # filter: 'action != "user_login"'   # optional, hot-reloaded
 ```
 
-### Environment Variables
+As environment variables:
 
 ```bash
 DFE_FETCHER_SOURCES__SLACK__ENABLED="true"
@@ -137,7 +137,7 @@ sources:
 ```
 
 `credential_secret` takes precedence over a literal `token` and resolves to
-the `xoxp-...` string. The only service is `audit_logs`.
+the `xoxp-...` string. The one service is `audit_logs`.
 
 ## Verification
 
@@ -161,13 +161,13 @@ Common failure modes:
 - HTTP 429 - rate limited. The endpoint is Tier 3 (about 50 calls/min).
   dfe-fetcher retries with backoff and `Retry-After` up to the profile's
   policy, and polls on the configured interval. A window past 50 pages is
-  read again in halves inside the same tick, down to one second, and only a
+  read again in halves inside the same tick, down to one second, and nothing but a
   one-second window past the ceiling fails the tick, so no event is skipped.
 
 ## Cost
 
-dfe-fetcher only reads. The Audit Logs API adds no charge of its own, but it
-is available only on Slack Enterprise Grid, which is a paid plan. Standard
+dfe-fetcher never writes. The Audit Logs API adds no separate charge, but it
+needs Slack Enterprise Grid, which is a paid plan. Standard
 API rate limits apply. Confirm any cost implications against your Slack
 plan.
 

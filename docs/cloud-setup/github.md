@@ -24,7 +24,7 @@ A service-config `include` selects `web`, `git`, or `all` event classes, and any
 Every request has `Accept: application/vnd.github+json` and the
 `X-GitHub-Api-Version` header the profile pins. Authentication is a bearer token
 (classic Personal Access Token, fine-grained PAT, or a GitHub App
-installation token). The audit-log API is available only on GitHub
+installation token). The audit-log API needs GitHub
 Enterprise Cloud - both the org-level and enterprise-level endpoints require
 your organisation to be part of an Enterprise Cloud plan.
 
@@ -47,7 +47,7 @@ ends the tick, and a tick that fails does not advance the fetch window.
   GitHub App support for the audit-log list endpoint exists but has been
   inconsistent in practice - prefer a classic PAT unless your org policy
   blocks them. Fine-grained PATs are NOT supported for the audit-log
-  streaming endpoints (dfe-fetcher does not use those, only the list
+  streaming endpoints (dfe-fetcher does not use those. It uses the list
   endpoint).
 
 ## Required Permissions
@@ -97,7 +97,7 @@ permission (fine-grained / App).
    **Read-only** (enterprise endpoint: set **Enterprise administration** to
    Read). Grant nothing else.
 4. **Generate token**. If the org needs approval, the token stays pending
-   (and can read only public data) until an org owner approves it under the
+   (and can read public data and nothing else) until an org owner approves it under the
    org's **Settings -> Personal access tokens -> Pending requests**.
 5. Confirm the endpoint accepts it by inspecting the
    `X-Accepted-GitHub-Permissions` response header on a test call.
@@ -116,8 +116,6 @@ unattended.
 
 ## dfe-fetcher Configuration
 
-### Config File
-
 Set exactly one of `org` or `enterprise`.
 
 ```yaml
@@ -134,8 +132,6 @@ sources:
     # filter: 'action != "git.clone"'   # CEL, hot-reloaded
 ```
 
-### Environment Variables
-
 Pattern is `DFE_FETCHER_SOURCES__GITHUB__<FIELD>` (double underscores).
 
 ```bash
@@ -144,8 +140,6 @@ DFE_FETCHER_SOURCES__GITHUB__ORG="your-github-org"
 # or: DFE_FETCHER_SOURCES__GITHUB__ENTERPRISE="your-enterprise-slug"
 DFE_FETCHER_SOURCES__GITHUB__TOKEN="ghp_your_token_here"
 ```
-
-### Secrets Manager
 
 Keep the token out of the config file with `credential_secret`, which
 resolves to the literal token value:
@@ -167,7 +161,7 @@ sources:
 
 - Health check. The profile's probe calls `GET /user` with the token, and a
   2xx means the token authenticates and `api.github.com` is reachable. Note
-  this only proves the token is valid, not that it has audit-log
+  this proves the token is valid, not that it has audit-log
   permission.
 - e2e smoke test. `crates/fetcher/tests/e2e/smoke_remote.rs` has `#[ignore]`-gated live tests. Export credentials, or put them in `.env-cloud` or `.env` at the repo root (both are loaded over the environment, `.env` last), then run:
 
@@ -184,13 +178,13 @@ sources:
   - `404 Not Found`: wrong `org`/`enterprise` slug, or the audit-log API is
     not available for that account tier.
   - Empty result every tick: no events in the window. Git events are
-    retained only ~7 days, so a stale window returns nothing.
+    retained for ~7 days, so a stale window returns nothing.
   - Setting both `org` and `enterprise`, or neither, is a config error: the
-    fetcher refuses the config at load, naming `sources.github`.
+    fetcher rejects the config at load, naming `sources.github`.
 
 ## Cost
 
-dfe-fetcher only reads. The audit-log REST API adds no charge of its own,
+dfe-fetcher never writes. The audit-log REST API adds no separate charge,
 but it needs GitHub Enterprise Cloud, which is a paid plan. Standard API
 rate limits apply. Confirm any cost implications against your GitHub
 plan.

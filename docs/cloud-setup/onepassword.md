@@ -22,8 +22,8 @@ and POSTs a time-window / cursor body to each `/api/v2/*` endpoint.
 
 The source is the shipped `onepassword` profile
 (`crates/fetcher/profiles/onepassword.yaml`), and the `sources.onepassword` block
-below maps onto an instance of it at load. The first call of a tick carries
-the window and the `limit`, every later call carries the returned `cursor`
+below maps onto an instance of it at load. The first call of a tick has
+the window and the `limit`, every later call has the returned `cursor`
 alone, and `has_more: false` ends the sequence. A 429 or 5xx is retried with
 backoff (honouring `Retry-After`), a 401 or 403 ends the tick, and a tick that
 fails does not advance the fetch window. A missing token or an unknown
@@ -33,7 +33,7 @@ service name is refused at load, naming `sources.onepassword`.
 
 - A **1Password Business** account (Events Reporting is a Business-tier
   feature, not available on Teams Starter, Families, or Individual).
-  1Password Enterprise also qualifies.
+  1Password Enterprise qualifies as well.
 - The person doing this setup must be an account **owner or administrator**.
 - No paid add-on beyond the Business subscription. Events Reporting and
   Events API access are included.
@@ -52,14 +52,14 @@ needs a single token that can read all three streams it polls.
 The token is **read-only** by design - the Events API exposes no write
 operations. When issuing the token, select (do not deselect) all three event
 features above. To change which event types a token can read, you must issue
-a new token. You cannot edit an existing one.
+another token. You cannot edit an existing one.
 
 ## Source-Side Setup
 
 1. Confirm Events Reporting is available
 
    Sign in at your account URL (for example `https://my.1password.com`) as an
-   owner or administrator. The host in that URL is your region - note it now,
+   owner or administrator. The host in that URL is your region - note it down,
    you need it for the base URL in step 4 (`1password.com` = US,
    `ent.1password.com` = US Enterprise, `1password.ca` = Canada,
    `1password.eu` = EU).
@@ -78,7 +78,7 @@ a new token. You cannot edit an existing one.
    selected. Select **Issue Token**, then copy the JWT (it is shown once -
    save it to a vault). This is the value for `token` below.
 
-   CLI alternative (requires the 1Password CLI signed in to a Business
+   CLI alternative (needs the 1Password CLI signed in to a Business
    account):
 
    ```bash
@@ -89,7 +89,7 @@ a new token. You cannot edit an existing one.
 
 4. Note your regional base URL
 
-   The default is the US host. Override only if your account is hosted elsewhere:
+   The default is the US host. Override it when your account is hosted elsewhere:
 
    | Account hosted on | Base URL |
    |--------|----------|
@@ -100,7 +100,7 @@ a new token. You cannot edit an existing one.
 
 ## dfe-fetcher Configuration
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -116,7 +116,7 @@ sources:
     # filter: 'category != "miss"'   # optional, hot-reloaded
 ```
 
-### Environment Variables
+As environment variables:
 
 ```bash
 DFE_FETCHER_SOURCES__ONEPASSWORD__ENABLED="true"
@@ -142,7 +142,7 @@ sources:
 ```
 
 `credential_secret` takes precedence over a literal `token`, and it resolves to
-the bearer JWT string. The only configurable service-side key is `limit`
+the bearer JWT string. The one configurable service-side key is `limit`
 (page size, default 100, max 1000).
 
 ## Verification
@@ -162,15 +162,15 @@ Common failure modes:
   base URL.
 - Empty results - the time window had no matching events. Sign-in
   attempts and item usages are sparse on small tenants.
-- 403 on one endpoint only - the token was issued without that event
-  feature. Issue a new token with all three selected.
+- 403 on one endpoint alone - the token was issued without that event
+  feature. Issue another token with all three selected.
 
 ## Cost
 
-dfe-fetcher only reads. Events Reporting and Events API reads add no charge
-of their own, but access may require a paid 1Password plan (Business or
+dfe-fetcher never writes. Events Reporting and Events API reads add no separate
+charge, but access may require a paid 1Password plan (Business or
 equivalent with Events Reporting). Fair-use rate limits apply. Confirm any
-cost implications against your own 1Password plan.
+cost implications against your 1Password plan.
 
 ## References
 

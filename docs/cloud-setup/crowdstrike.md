@@ -26,8 +26,8 @@ The `alerts` service is a **two-stage** call against the Alerts API:
 2. `POST /alerts/entities/alerts/v2` with `{"composite_ids": [...]}` - returns
    full alert entities for those IDs, in batches of up to 1000.
 
-Falcon tenants live on different cloud regions, each with its own API host.
-The admin's only job is to create an OAuth2 API client with the right scope
+Falcon tenants live on different cloud regions, each with a separate API host.
+The admin's one job is to create an OAuth2 API client with the right scope
 and tell dfe-fetcher which region to use.
 
 The source is the shipped `crowdstrike` profile (`crates/fetcher/profiles/crowdstrike.yaml`), and the `sources.crowdstrike` block below maps onto an instance of it at load. The id query walks `offset` against `meta.pagination.total` and the entity lookup runs per batch of ids. Both calls are reads, so a 429 or 5xx on either is retried with backoff (honouring `Retry-After`), a refused exchange or a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window. A missing client id or secret is refused at load, naming `sources.crowdstrike`.
@@ -54,7 +54,7 @@ The source is the shipped `crowdstrike` profile (`crates/fetcher/profiles/crowds
 | Alerts | `POST /alerts/entities/alerts/v2` (stage 2) | **Alerts: Read** | Read-only. Returns full alert entities. |
 | OAuth2 token | `POST /oauth2/token` | (no scope - the API client itself) | `client_credentials` grant. Always required. |
 
-Select only the scope your flow needs (least privilege). No write scope is
+Select the scope your flow needs and no other (least privilege). No write scope is
 required.
 
 ## Source-Side Setup
@@ -74,8 +74,8 @@ required.
    Leave all **Write** boxes unchecked.
 
 5. Save and capture credentials. Click **Create**. Falcon shows the
-   **Client ID**, **Client Secret**, and **Base URL** once only. Copy all
-   three now - the secret cannot be retrieved later (a reset is required if
+   **Client ID**, **Client Secret**, and **Base URL** once. Copy all
+   three before you leave the page - the secret cannot be retrieved later (a reset is required if
    lost).
 
 6. Note the Base URL for your region:
@@ -103,10 +103,10 @@ required.
 
 The CrowdStrike source config fields are: `enabled`, `api_url_override`
 (region base URL), `client_id`, `client_secret`, `credential_secret`,
-`interval_secs`, `services`, `connections`, `topic`, `filter`. The only
+`interval_secs`, `services`, `connections`, `topic`, `filter`. The one
 service is `alerts`.
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -125,7 +125,7 @@ sources:
     # filter: 'severity >= 70'  # hot-reloaded CEL expression
 ```
 
-### Environment Variables
+As environment variables:
 
 ```bash
 DFE_FETCHER_SOURCES__CROWDSTRIKE__ENABLED="true"
@@ -160,7 +160,7 @@ auth probe). A healthy result means the client ID/secret and region base URL
 are correct - it does NOT confirm the Alerts: Read scope. A refused exchange
 is a health error carrying the response.
 
-**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d tests that hit a real tenant. They read these variables from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
+**Live smoke tests.** `crates/fetcher/tests/e2e/smoke_remote.rs` has env-gated, `#[ignore]`d tests that hit a live tenant. They read these variables from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 - `CROWDSTRIKE_CLIENT_ID`
 - `CROWDSTRIKE_CLIENT_SECRET`
@@ -187,10 +187,10 @@ tenant or a short lookback window.
 
 ## Cost
 
-dfe-fetcher only reads. OAuth2 API clients and Alerts API reads are
-generally included with a Falcon subscription and not expected to carry an
+dfe-fetcher never writes. OAuth2 API clients and Alerts API reads are
+generally included with a Falcon subscription and not expected to have an
 additional charge, though this can depend on your CrowdStrike entitlements.
-Confirm any cost implications against your own CrowdStrike agreement.
+Confirm any cost implications against your CrowdStrike agreement.
 
 ## References
 

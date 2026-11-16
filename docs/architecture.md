@@ -4,7 +4,7 @@ The repo is a Cargo workspace: one app crate and a source framework split into
 an I/O-free core plus one leaf crate per source family, with Vector's file
 tailer copied in under `third-party/`. Every crate is `publish = false` and
 inherits its version from `[workspace.package]`, so a release bump touches the
-root manifest only. This file is the codemap, the invariants, the crate graph
+root manifest alone. This file is the codemap, the invariants, the crate graph
 and the build graph. The runtime diagrams (the source framework, a tick, the
 configuration cascade) are in [internals.md](internals.md).
 
@@ -16,7 +16,7 @@ configuration cascade) are in [internals.md](internals.md).
 | `crates/rest` (`dfe-fetcher-rest`) | The declarative REST profile grammar and its validation, `{{ cel }}` templates, the runtime axes (auth modes, pagers, streaming decoders, the request executor with retry and its per-unit origin gate), the hooks (row builders and the S3 lister), the queue unit kind, and `RestShape`, the `RowSource` for a bound profile. |
 | `crates/db` (`dfe-fetcher-db`) | The `Store` contract (dump, keyset tail), the `sources.db` grammar, `DbShape` (the `RowSource` over an instance's stores), the per-dialect keyset predicate, the blocking-cursor pump and the block-to-row framing that leases every buffered block. Engines are features: `odbc` (unixODBC + `arrow-odbc` typing + `arrow-json` writing), `clickhouse` (server-side `JSONEachRow`, `dfe-clickhouse` for the ping and typed exceptions) and `mongodb` (the official driver: `find` to dump, change stream or `_id` to tail). |
 | `crates/file` (`dfe-fetcher-file`) | The `FileSource` contract, the `sources.file` grammar, the dump reader (NDJSON, JSON array, CSV, gzip by magic) and the tail spec. The tailer sits behind the `tail` feature, over the copy of Vector's tailer in `third-party/`. |
-| `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied from Vector's repository and depended on by path from `crates/file` only. Provenance in `third-party/README.md`. |
+| `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied from Vector's repository, and `crates/file` is the one crate that depends on it, by path. Provenance in `third-party/README.md`. |
 | `crates/fetcher` (`dfe-fetcher`, the binary) | The config cascade and hot reload, the typed source blocks, their registry and their mapping onto profile instances (`crates/fetcher/src/config/builtin.rs`), the scheduler, `Driver` (the tick the scheduler runs for every framework source), the emitter, the pipeline (enrichment, DLQ, readiness), the output transports, the cursor file store, the shipped REST profiles (`profiles/*.yaml`), the deployment contract and capability catalog, the ingest server and the container and Vector extractors. |
 | `config.example.yaml`, `docs/` | Operator-facing surface, at the repo root. The app crate's tests reach them through the manifest directory. |
 
@@ -29,9 +29,9 @@ the shipped profile of the same name at load. The driver runs it like any
 
 ## Negative invariants
 
-- `dfe-fetcher-core` depends on no other workspace crate and on scalo only for
+- `dfe-fetcher-core` depends on no other workspace crate, and on scalo for nothing but
   `expression` and `rules`. It never names an HTTP client, a transport or a
-  file. Async appears only as `futures-core` stream and future types and the
+  file. Async appears as nothing but `futures-core` stream and future types and the
   `async-trait` checkpoint store. tokio is linked for its clock types and its
   once-cell and never spawns a task there.
 - `dfe-fetcher-rest`, `dfe-fetcher-db` and `dfe-fetcher-file` depend on `core`
@@ -97,7 +97,7 @@ error.
 `core` is the root, on serde, bytes, chrono, uuid, smallvec, csv-core, cel and
 scalo's `expression` and `rules`. `rest` (reqwest, async-compression,
 backon, reqsign), `db` and `file` are siblings off `core` and compile in
-parallel, and the app links all four. The shipped profiles are the app's own
+parallel, and the app links all four. The shipped profiles live in the app
 (`include_str!` in `crates/fetcher/src/profiles/mod.rs`), so editing one
 rebuilds the app alone. A pager or hook change rebuilds `rest` and the app, and
 an engine bump rebuilds `db` and the app. `db` is always linked for its grammar,
@@ -121,7 +121,7 @@ its image has unixODBC and the open-licence drivers
 
 A provider's API paces what a REST source hands over, so a fetcher mostly
 waits on remote calls. Database dumps, files and extractors can move more, and
-none has been measured against the loader, receiver, transform or archiver.
+none has a benchmark against the loader, receiver, transform or archiver.
 
 | Concern | Rest of DFE stack | dfe-fetcher |
 |---|---|---|

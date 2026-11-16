@@ -27,7 +27,7 @@ drift - the classic indicators of a hijacked package.
 | `go_modules` | `https://proxy.golang.org/<module>/@v/list` then `.../@v/<version>.info` | one record per module (the first 100 versions of the list, and their info) | no credentials |
 
 There is NO authentication for any of these sources. There are no API
-keys, OAuth flows, or service accounts to provision. The only "setup" is
+keys, OAuth flows, or service accounts to provision. The one "setup" step is
 deciding which packages you own and listing them. Each source accepts an `api_url_override` so you can point at an internal mirror or a
 test server.
 
@@ -41,7 +41,7 @@ version (a 404 on its `.info`) is left out of the row.
   above (or to your internal mirror, if you set `api_url_override`).
 - An inventory of the packages your organisation publishes (or
   namespaces you want to monitor for typosquats). This is the one
-  prerequisite that matters - the monitoring is only as good as the list.
+  prerequisite that matters - the monitoring is as good as the list and no better.
 - Nothing else. No accounts, no credentials, no tenant-side enablement.
 
 ## Required Permissions
@@ -55,7 +55,7 @@ The registries do, however, ask consumers to be polite:
 |----------|----------------------|
 | PyPI | Set a descriptive User-Agent, and respect `ETag` / `X-Cache` so repeated requests hit the CDN. No hard edge rate limit is published, but PyPI may throttle or ban irresponsible consumers. |
 | crates.io | A descriptive User-Agent is REQUIRED (a bare client UA like `reqwest/x` invites blocking). Limit to a maximum of 1 request per second. dfe-fetcher sends `dfe-fetcher (https://github.com/hyperi-io/dfe-fetcher)`. |
-| Go module proxy | Public, no auth. The proxy only ever receives module paths and versions. Use `GOPRIVATE` upstream for truly private modules so they are never queried against the public mirror. |
+| Go module proxy | Public, no auth. The proxy receives module paths and versions and nothing else. Use `GOPRIVATE` upstream for truly private modules so they are never queried against the public mirror. |
 
 ## Source-Side Setup
 
@@ -78,7 +78,7 @@ purely the inventory step:
 
 4. Keep private Go modules OUT of the monitored list and
    cover them with `GOPRIVATE` in your build environment - the public
-   proxy would only fail to find them, but there is no reason to send
+   proxy would fail to find them, but there is no reason to send
    their paths to a public mirror.
 
 ## dfe-fetcher Configuration
@@ -155,7 +155,7 @@ registry sources.
 
 ## Verification
 
-1. Confirm reachability with a manual request (substitute one of your own
+1. Confirm reachability with a manual request (substitute one of yours
    package names):
 
    ```bash
@@ -182,7 +182,7 @@ registry sources.
 
 ## Cost
 
-dfe-fetcher only reads. All three registries are public, serve metadata
+dfe-fetcher never writes. All three registries are public, serve metadata
 without credentials, and are not expected to have an additional charge.
 
 Be a good citizen to avoid being throttled or blocked: send a descriptive

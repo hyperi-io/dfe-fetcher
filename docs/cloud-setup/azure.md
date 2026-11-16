@@ -41,7 +41,7 @@ The source is the shipped `azure` profile (`crates/fetcher/profiles/azure.yaml`)
   and its resource group + workspace name.
 - For `log_analytics`: the target workspace GUID and the `Log Analytics
   Reader` role for the service principal on that workspace.
-- Cost flags: dfe-fetcher only reads, but some services here (e.g. Sentinel,
+- Cost flags: dfe-fetcher reads and never writes, but some services here (e.g. Sentinel,
   Defender for Cloud, Log Analytics) may have a cost depending on your Azure
   plan and what is enabled. See the Cost section.
 
@@ -65,7 +65,7 @@ Notes:
   separate `Security Reader` role.
 - `AuditLog.Read.All` (application permission ID
   `df021288-bdef-4463-88db-98f22de89214`) covers all three Entra audit
-  endpoints. For least privilege on provisioning only, the more scoped
+  endpoints. For least privilege when you fetch provisioning alone, the more scoped
   `ProvisioningLog.Read.All` works for `entra_provisioning`.
 - The Microsoft Graph resource app ID is always
   `00000003-0000-0000-c000-000000000000`.
@@ -90,7 +90,7 @@ tofu apply
 tofu output -json | python3 gen-env.py > ../../.env
 ```
 
-The module provisions only the subscription `Reader` role, which covers
+The module provisions the subscription `Reader` role and nothing else, which covers
 `activity_log`, `defender`, and `sentinel`. For the Entra audit feeds you
 must add the Graph application permission and grant admin consent (the module
 does not do this, so run the manual step below or extend it):
@@ -165,7 +165,7 @@ az ad app permission admin-consent --id <azure_client_id>
 
 The Azure source config fields are: `enabled`, `tenant_id`, `client_id`, `client_secret`, `credential_secret`, `subscription_id`, `interval_secs`, `services`, `connections`, `topic`, `management_url_override`, `graph_url_override`, `token_url_override`, `filter`. Each service entry is `{ name, config }`. `tenant_id`, `client_id` and a secret are required, and so is `subscription_id` when a Resource Manager unit (`activity_log`, `defender`, `sentinel`) is listed. An unknown service name is refused at load, naming `sources.azure`.
 
-The Entra feeds are split into three distinct services, each with its own
+The Entra feeds are split into three distinct services, each with a separate
 source tag and cursor. There is intentionally no combined `entra_id`
 service - configure each feed you want.
 
@@ -208,8 +208,6 @@ name), and the fetcher injects the time window as the server-side
 `timespan`, so the KQL should NOT include a `where TimeGenerated ...`
 clause.
 
-### Environment Variables
-
 Pattern: `DFE_FETCHER_SOURCES__AZURE__<FIELD>` (double underscores).
 
 ```bash
@@ -222,7 +220,7 @@ DFE_FETCHER_SOURCES__AZURE__SUBSCRIPTION_ID="your-subscription-uuid"
 
 ### Secrets Manager
 
-`credential_secret` resolves from the secrets manager using the `vault:<mount>/<path>:<key>` format: the first segment is the KV v2 mount, and a `data` segment after it is optional. It supplies the client SECRET only, so keep `client_id` as the literal application id beside it and omit the inline `client_secret`.
+`credential_secret` resolves from the secrets manager using the `vault:<mount>/<path>:<key>` format: the first segment is the KV v2 mount, and a `data` segment after it is optional. It supplies the client SECRET and nothing else, so keep `client_id` as the literal application id beside it and omit the inline `client_secret`.
 
 ```yaml
 sources:
@@ -268,10 +266,10 @@ sources:
 
 ## Cost
 
-dfe-fetcher only reads. It never enables services. The read paths generally
+dfe-fetcher never writes and never enables services. The read paths generally
 have no additional charge, but some capabilities here may have a cost
 depending on your Azure plan and what is enabled - for example Microsoft
-Sentinel, Microsoft Defender for Cloud, and Log Analytics may have their own
+Sentinel, Microsoft Defender for Cloud, and Log Analytics may have a separate
 cost when used. Confirm any cost implications against your Azure
 agreement.
 

@@ -8,7 +8,7 @@
 
 # Extractors
 
-Beside the source framework the fetcher runs external tools: a container whose stdout JSON lines or HTTP posts it collects, and Vector, whose native gRPC protocol it receives. Neither runs a tick or keeps a checkpoint: an extractor's records go through the same enrichment and emit path as a source's ([delivery.md](delivery.md)), and its guarantee is its own, below.
+Beside the source framework the fetcher runs external tools: a container, read through its stdout JSON lines or HTTP posts, and Vector, received over its native gRPC protocol. Neither runs a tick or keeps a checkpoint: an extractor's records go through the same enrichment and emit path as a source's ([delivery.md](delivery.md)), and its guarantee is set out below.
 
 This diagram shows the three ways an external tool's records reach the fetcher.
 
@@ -73,28 +73,28 @@ to 64 s, or up to `max_restart_backoff_secs` when that is lower, so a setting
 above 64 changes nothing. The backoff resets once a run has stayed
 up for `stable_after_secs`. A container that exits more than
 `max_restart_attempts` times with no stable run between stops for good (0, the
-default, restarts it for ever). No health check runs while a container is up:
+default, restarts it for ever). No health check runs during a container's run:
 an extractor is judged by its container's exit.
 
 ## Container Communication
 
-The HTTP mode listener needs `ingest.auth_token`: every `/ingest` call has `Authorization: Bearer <token>`. With no token the listener refuses to start unless `ingest.allow_unauthenticated: true` is set. The `/livez` and `/readyz` probes are exempt.
+The HTTP mode listener needs `ingest.auth_token`: every `/ingest` call has `Authorization: Bearer <token>`. With no token the listener will not start unless `ingest.allow_unauthenticated: true` is set. The `/livez` and `/readyz` probes are exempt.
 
 The stdout reader and the ingest server hand each line or body to the extractor sink as it came, and the Vector receiver converts a push's events to JSON first. The sink enriches them as [delivery.md](delivery.md) describes.
 
 What each mode guarantees:
 
-- Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is answered only after its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` as well, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. While the fetcher's memory-pressure latch holds, a push is refused `UNAVAILABLE` before any work.
-- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` only after the outputs took the record or the DLQ confirmed it, and `503` otherwise, with `Retry-After` when the outputs pushed back. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it. Such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
-- stdout: a pipe cannot be read twice, so a line the outputs cannot take yet is held and retried, pausing from 1 s up to 30 s, and the container's stdout is not read meanwhile, so the container blocks on its writes until the outputs recover. Only a failure no retry can clear (no output configured), or a line still held at shutdown after one more attempt, is dropped, counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}` and never in the received count.
+- Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is not answered until its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` as well, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. When the fetcher's memory-pressure latch holds, a push is refused `UNAVAILABLE` before any work.
+- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` once the outputs took the record, not before, or the DLQ confirmed it, and `503` otherwise, with `Retry-After` when the outputs pushed back. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it. Such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
+- stdout: a pipe cannot be read twice, so a line the outputs cannot take yet is held and retried, pausing from 1 s up to 30 s, and the container's stdout is not read meanwhile, so the container blocks on its writes until the outputs recover. A line is dropped when a failure no retry can clear (no output configured), or a line still held at shutdown after one more attempt, is dropped, counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}` and never in the received count.
 
 ## Shutdown and the Vector listeners
 
-At shutdown the extractors deliver what they hold before the outputs close, for up to 20 s: the Vector receiver refuses new pushes and delivers what it has queued, and a container extractor stops its container while still reading its stdout to the end. A scheduled container's `timeout_secs` bounds the whole run, stdout included: at the timeout the container is killed and the run fails. A line held for an output outage is not interrupted by the timeout. The kill follows once the line is delivered.
+At shutdown the extractors deliver what they hold before the outputs close, for up to 20 s: the Vector receiver rejects further pushes and delivers what it has queued, and a container extractor stops its container and reads its stdout to the end. A scheduled container's `timeout_secs` bounds the whole run, stdout included: at the timeout the container is killed and the run fails. A line held for an output outage is not interrupted by the timeout. The kill follows once the line is delivered.
 
 A Vector listener that cannot bind at start-up fails the process: it drains, stops its containers and exits non-zero, so the pod restarts rather than stay Ready with a dead intake.
 
-A Vector push names no instance, so the listener it arrives on decides its topic. The shared `extractors.vector.grpc_bind_address`, the one port the chart publishes, has at most one instance and lands on that instance's `topic`, or on `vector` when none shares it. Every other instance names its own `grpc_bind_address` and lands on that `topic`. Two instances sharing the listener are refused at load.
+A Vector push names no instance, so the listener it arrives on decides its topic. The shared `extractors.vector.grpc_bind_address`, the one port the chart publishes, has at most one instance and lands on that instance's `topic`, or on `vector` when none shares it. Every other instance names a separate `grpc_bind_address` and lands on that `topic`. Two instances sharing the listener are refused at load.
 
 ## Profile, container or Vector
 
