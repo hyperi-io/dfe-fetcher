@@ -644,7 +644,7 @@ pub(crate) fn gcp_pubsub() -> Capability {
 
 pub(crate) fn object_store() -> Capability {
     Capability::source("object_store")
-        .description("Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection.")
+        .description("Object-store tailing from S3 or an S3-compatible endpoint. Single-connection.")
         .child(
             Capability::service("s3")
                 .description("Amazon S3 (or S3-compatible: MinIO / R2 / B2 via endpoint_override).")
@@ -656,10 +656,6 @@ pub(crate) fn object_store() -> Capability {
                 .field(credential_secret())
                 .field(FieldSpec::int("settle_secs").description("Seconds an object ages before it is read where ListMultipartUploads is refused (default 300).")),
         )
-        .children(vec![
-            Capability::service("gcs").description("Google Cloud Storage (Phase-2 stub).").maturity("stable"),
-            Capability::service("azure_blob").description("Azure Blob Storage (Phase-2 stub).").maturity("stable"),
-        ])
 }
 
 #[cfg(test)]

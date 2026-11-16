@@ -1099,7 +1099,7 @@
   {
     "kind": "source",
     "name": "object_store",
-    "description": "Object-store tailing (S3 live; GCS / Azure Blob are Phase-2 stubs). Single-connection. Accepted auth modes: sigv4.",
+    "description": "Object-store tailing from S3 or an S3-compatible endpoint. Single-connection. Accepted auth modes: sigv4.",
     "maturity": "stable",
     "children": [
       {
@@ -1146,18 +1146,6 @@
             "description": "Seconds an object ages before it is read where ListMultipartUploads is refused (default 300)."
           }
         ]
-      },
-      {
-        "kind": "service",
-        "name": "gcs",
-        "description": "Google Cloud Storage (Phase-2 stub).",
-        "maturity": "stable"
-      },
-      {
-        "kind": "service",
-        "name": "azure_blob",
-        "description": "Azure Blob Storage (Phase-2 stub).",
-        "maturity": "stable"
       }
     ]
   },
