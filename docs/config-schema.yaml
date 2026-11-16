@@ -6510,7 +6510,7 @@ $defs:
     description: How backends are used when multiple are enabled.
     oneOf:
     - description: |-
-        Try backends in order; stop on first success.
+        Try backends in order. Stop on first success.
         Default order: Kafka first, file fallback.
       type: string
       const: cascade
@@ -6748,7 +6748,7 @@ $defs:
           No longer read: nothing waits on a KIP-848 join, because librdkafka
           reports no join for a member that holds no partitions.
 
-          Kept so configs that set it still parse; it has no effect.
+          Kept so configs that set it still parse. It has no effect.
         type: integer
         format: uint64
         minimum: 0
@@ -6852,7 +6852,7 @@ $defs:
         default: null
       ssl_ca_location:
         description: |-
-          SSL CA certificate file path (private-CA bundle; maps to
+          SSL CA certificate file path (private-CA bundle -- maps to
           `TlsTrust.extra_roots` -- a single combined root+intermediate PEM is
           accepted).
         type:
@@ -7324,7 +7324,7 @@ $defs:
 
           librdkafka: `queue.buffering.max.kbytes` (in KiB, default 1 GiB).
           This is the TOTAL queue, not per-batch. Set lower to bound memory
-          usage in containers. Stored as bytes in this struct; divided by 1024
+          usage in containers. Stored as bytes in this struct. Divided by 1024
           when applied to librdkafka.
         type:
         - integer

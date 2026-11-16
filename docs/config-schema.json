@@ -7423,7 +7423,7 @@
       "description": "How backends are used when multiple are enabled.",
       "oneOf": [
         {
-          "description": "Try backends in order; stop on first success.\nDefault order: Kafka first, file fallback.",
+          "description": "Try backends in order. Stop on first success.\nDefault order: Kafka first, file fallback.",
           "type": "string",
           "const": "cascade"
         },
@@ -7653,7 +7653,7 @@
           "default": "classic"
         },
         "consumer_protocol_probe_ms": {
-          "description": "No longer read: nothing waits on a KIP-848 join, because librdkafka\nreports no join for a member that holds no partitions.\n\nKept so configs that set it still parse; it has no effect.",
+          "description": "No longer read: nothing waits on a KIP-848 join, because librdkafka\nreports no join for a member that holds no partitions.\n\nKept so configs that set it still parse. It has no effect.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0,
@@ -7756,7 +7756,7 @@
           "default": null
         },
         "ssl_ca_location": {
-          "description": "SSL CA certificate file path (private-CA bundle; maps to\n`TlsTrust.extra_roots` -- a single combined root+intermediate PEM is\naccepted).",
+          "description": "SSL CA certificate file path (private-CA bundle -- maps to\n`TlsTrust.extra_roots` -- a single combined root+intermediate PEM is\naccepted).",
           "type": [
             "string",
             "null"
@@ -8114,7 +8114,7 @@
           "default": null
         },
         "buffer_memory_bytes": {
-          "description": "Total byte budget for the producer's in-memory queue.\n\nlibrdkafka: `queue.buffering.max.kbytes` (in KiB, default 1 GiB).\nThis is the TOTAL queue, not per-batch. Set lower to bound memory\nusage in containers. Stored as bytes in this struct; divided by 1024\nwhen applied to librdkafka.",
+          "description": "Total byte budget for the producer's in-memory queue.\n\nlibrdkafka: `queue.buffering.max.kbytes` (in KiB, default 1 GiB).\nThis is the TOTAL queue, not per-batch. Set lower to bound memory\nusage in containers. Stored as bytes in this struct. Divided by 1024\nwhen applied to librdkafka.",
           "type": [
             "integer",
             "null"
