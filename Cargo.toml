@@ -35,7 +35,7 @@ dfe-fetcher-db = { path = "crates/db" }
 dfe-fetcher-file = { path = "crates/file" }
 
 # Moves with `release.helm.library` in .hyperi-ci.yaml.
-scalo = { version = "2.14.29", default-features = false }
+scalo = { version = "2.14.30", default-features = false }
 # scalo's range, so the framework holds scalo's compiled `Program` type.
 cel = { version = ">=0.14.5, <0.15", features = ["json"] }
 # scalo's range, so its `SensitiveString` impl and our derives share one `JsonSchema` trait.
@@ -54,14 +54,14 @@ bytes = "1.12.1"
 
 # One reqwest line for the REST path, reqsign and scalo. Members pick its features.
 reqwest = { version = "0.13.5", default-features = false }
-async-compression = { version = "0.4.51", features = ["tokio", "gzip"] }
+async-compression = { version = "0.4.52", features = ["tokio", "gzip"] }
 backon = "1.6.0"
 url = "2.5.8"
 axum = "0.8.9"
 
 chrono = { version = "0.4.45", features = ["serde"] }
-uuid = "1.29.0"
-smallvec = "1.16.4"
+uuid = "1.29.1"
+smallvec = "1.16.5"
 thiserror = "2.0.21"
 itoa = "1.0.18"
 memchr = "2.8.3"
@@ -85,7 +85,7 @@ quick-xml = "0.42.0"
 csv-core = "0.1.13"
 glob = "0.3.4"
 parking_lot = "0.13.0"
-flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 
 tracing = "0.1.44"
 metrics = ">=0.24.6, <0.25"

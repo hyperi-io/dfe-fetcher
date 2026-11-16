@@ -40,18 +40,18 @@ tracing = { workspace = true }
 
 # `prompt` (the Windows connection dialog) stays off. unixODBC links dynamically: docs/reference/db-drivers.md.
 odbc-api = { version = "29.3.0", default-features = false, features = ["odbc_version_3_80"], optional = true }
-arrow-odbc = { version = "26.0.3", optional = true }
+arrow-odbc = { version = "26.0.4", optional = true }
 # arrow-odbc's own arrow line, with its JSON writer on.
 arrow = { version = "60.1.0", default-features = false, features = ["json"], optional = true }
 base64 = { workspace = true, optional = true }
 
 # rustls only, never native-tls.
 clickhouse = { version = "0.15.3", default-features = false, features = ["lz4", "rustls-tls"], optional = true }
-dfe-clickhouse = { version = "0.1.10", default-features = false, features = ["ext"], optional = true }
+dfe-clickhouse = { version = "0.1.11", default-features = false, features = ["ext"], optional = true }
 url = { workspace = true, optional = true }
 
 # Why `aws-auth` is off: docs/reference/db-drivers.md "Authentication". `compat-3-3-0` is demanded once default features are off.
-mongodb = { version = "3.9.1", default-features = false, features = ["bson-3", "compat-3-3-0", "rustls-tls-aws-lc", "dns-resolver", "azure-oidc", "gcp-oidc"], optional = true }
+mongodb = { version = "3.10.0", default-features = false, features = ["bson-3", "compat-3-3-0", "rustls-tls-aws-lc", "dns-resolver", "azure-oidc", "gcp-oidc"], optional = true }
 # `serde_json-1` lands ObjectIds and dates as JSON, not debug text.
 bson = { version = "3.1.0", default-features = false, features = ["serde", "serde_json-1"], optional = true }
 
