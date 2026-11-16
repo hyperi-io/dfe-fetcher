@@ -27,23 +27,17 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 cel = { workspace = true }
 chrono = { workspace = true }
-# The incremental CSV parser under the `csv` crate: records are framed as
-# chunks arrive, so a CSV body streams like NDJSON does.
 csv-core = { workspace = true }
 futures-core = { workspace = true }
 itoa = { workspace = true }
 memchr = { workspace = true }
-# The compiled CEL surface and the ordered rule set the routes compile to: no
-# I/O, no transport, no config.
 scalo = { workspace = true, features = ["expression", "rules"] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
-# Clock types, so the batcher window is testable under `tokio::time::pause`,
-# and the once-cell the secret resolves into; nothing here spawns a task or
-# builds a runtime.
+# Clock types and a once-cell only: docs/architecture.md "Negative invariants".
 tokio = { workspace = true, features = ["sync", "time"] }
 uuid = { workspace = true, features = ["v7", "serde"] }
 

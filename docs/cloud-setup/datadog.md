@@ -24,11 +24,11 @@ Each tick asks for the scheduler's window as `filter[from]` and `filter[to]`
 in RFC 3339 with millisecond precision, sorted `timestamp` so the oldest event
 comes first, `page[limit]` rows to a page. It follows `meta.page.after` into
 `page[cursor]` until Datadog leaves the cursor out, which is the last page. An
-optional `filter[query]` in Datadog's own search syntax narrows either unit.
+optional `filter[query]` in Datadog's search syntax narrows either unit.
 
 Datadog authenticates a call with two credentials in two headers.
-`DD-API-KEY` names the organisation and grants nothing on its own.
-`DD-APPLICATION-KEY` carries the permissions of the user who created it. The
+`DD-API-KEY` names the organisation and grants nothing by itself.
+`DD-APPLICATION-KEY` has the permissions of the user who created it. The
 call is refused without both. These are separate objects created in separate
 places, which is the part operators get wrong most often.
 
@@ -46,7 +46,7 @@ reports that as the tick's failure. The site's rate-limit headers
 `dfe_fetcher_api_quota_api_rate_remaining` gauges.
 
 `vars.api_url` is the API host of the organisation's site and defaults to US1.
-An organisation on any other site needs its own -- see the site table below.
+An organisation on any other site needs a different one -- see the site table below.
 
 ## Prerequisites
 
@@ -59,7 +59,7 @@ An organisation on any other site needs its own -- see the site table below.
   and generates them. Without one, `security_signals` returns empty pages.
 - An administrator who can create an API key and an application key in
   Organization Settings.
-- A Datadog user whose roles carry the two read permissions below. The
+- A Datadog user with roles that have the two read permissions below. The
   application key inherits that user's permissions, so its owner decides what
   the fetcher can read.
 - Network egress from the fetcher host to the site's API host.
@@ -74,15 +74,15 @@ An organisation on any other site needs its own -- see the site table below.
 Both are read permissions. dfe-fetcher never writes, modifies or deletes
 anything in Datadog.
 
-Grant them to the user who will own the application key, through a role under
+Grant them to the user who will hold the application key, through a role under
 **Organization Settings** -> **Roles**. A custom role does not pick up newly
 released permissions unless it is set to take automatic updates, so add each
 one explicitly. Turning Audit Trail on is a different permission again,
 **Audit Trail Write**, needed once at setup and never by the fetcher.
 
-An application key can also be scoped, which narrows it and never widens it.
+An application key can be scoped as well, which narrows it and never widens it.
 Datadog's API specification lists `security_monitoring_signals_read` among the
-authorization scopes a key can carry and lists no scope for the audit
+authorization scopes a key can have and lists no scope for the audit
 endpoint. Leave the key unscoped, or confirm `audit_events` still answers
 before relying on a scoped one.
 
@@ -105,12 +105,12 @@ The two are granted separately, so a user can hold one and not the other.
 
 **Organization Settings** -> **API Keys** -> **New Key**. Name it
 `dfe-fetcher` and copy the value. The api key names the organisation and
-carries no permissions of its own.
+has no permissions itself.
 
 ### 4. Create the application key
 
 Signed in as the user from step 2: **Organization Settings** -> **Application
-Keys** -> **New Key**. Copy the value. The key carries that user's permissions
+Keys** -> **New Key**. Copy the value. The key has that user's permissions
 as they stand at each call, and Datadog revokes a user's application keys when
 their account is disabled -- an api key the same user created stays valid.
 Pick an owner who will not be offboarded out from under the fetcher.
@@ -171,14 +171,12 @@ sources:
 ```
 
 `vars.api_url` overrides the profile's US1 default.
-`units.<name>.vars.filter_query` narrows one unit with Datadog's own search
+`units.<name>.vars.filter_query` narrows one unit with Datadog's search
 syntax, and a value that renders empty is left off the request, which is why
 the profile's default sends no `filter[query]` at all.
 `units.<name>.enabled: false` leaves a unit out -- set it on
 `security_signals` on an organisation that runs nothing producing signals.
 `vars.page_limit` sets `page[limit]`, which Datadog caps at 1000.
-
-### Environment Variables
 
 Scalar fields follow the `DFE_FETCHER_SOURCES__REST__<ID>__<FIELD>` pattern
 (double underscores, nested keys joined the same way):
@@ -206,14 +204,14 @@ config as a literal.
 ## Verification
 
 1. No health probe, deliberately. Datadog's cheap validation
-   endpoint checks the api key alone, and a health check that passed on half
+   endpoint checks the api key alone, and a health check that succeeded on half
    the credential is worse than none, so the `datadog` profile declares no
    probe. The health check resolves both credential specs instead and sends
    nothing to Datadog. A passing check proves the secrets resolve, not that
    Datadog accepts them. The first tick is what proves that.
 
 2. Validate the config. `dfe-fetcher --config <file> config-check` loads
-   the config without running (`--config` goes before the subcommand). An instance supplying only one of `api_key` and
+   the config without running (`--config` goes before the subcommand). An instance supplying one of `api_key` and
    `application_key` is refused at load, naming the field the profile could
    not read.
 
@@ -228,11 +226,11 @@ config as a literal.
 
    Both keys reach curl through `--config -` rather than an argument: a
    command line is readable by any user through `ps` and is kept in shell
-   history, and `printf` is a shell builtin, so it starts no process of its
-   own. `--globoff` stops curl reading the brackets in `page[limit]` as a
+   history, and `printf` is a shell builtin, so it starts no
+   process. `--globoff` stops curl reading the brackets in `page[limit]` as a
    range. Swap the path for `/api/v2/security_monitoring/signals` to test the
    other unit -- the two permissions are granted separately, so one endpoint
-   can answer while the other refuses.
+   can answer and the other refuse.
 
 4. Watch the first tick. The driver logs `unit tick complete` per unit
    with `rows`, `filtered`, `oversize` and `flushes`. Datadog's rate-limit
@@ -257,16 +255,16 @@ config as a literal.
      matches nothing.
    - `security_signals` returns an empty page every tick: no detection rules
      are producing signals.
-   - Everything refuses after a period of working: the application key's owner
+   - Every call is refused after a period of working: the application key's owner
      was disabled, which revokes their application keys.
 
 ## Cost
 
-dfe-fetcher only reads. Datadog's Audit Trail documentation does not state a
+dfe-fetcher never writes. Datadog's Audit Trail documentation does not state a
 plan requirement or a charge for reading audit events through the API, and
 Audit Trail does not appear on Datadog's pricing documentation. It is off
 until an administrator turns it on, so treat it as a product to enable rather
-than a feature already included, and confirm it against your own Datadog
+than a feature that is included, and confirm it against your Datadog
 contract. Cloud SIEM, which produces the security signals, is billed on the
 volume of logs it analyses -- reading the signals back adds nothing to that.
 
@@ -283,4 +281,4 @@ rather than polling aggressively, and watch the quota gauges.
 - Cloud SIEM and the Security Monitoring API: <https://docs.datadoghq.com/security/cloud_siem/>, <https://docs.datadoghq.com/api/latest/security-monitoring/>
 - API rate limits and their headers: <https://docs.datadoghq.com/api/latest/rate-limits/>
 - Datadog pricing (products and billing units): <https://docs.datadoghq.com/account_management/billing/pricing/>
-- Datadog v2 OpenAPI specification (the permission each endpoint requires, its parameters and its paging): <https://raw.githubusercontent.com/DataDog/datadog-api-client-go/master/.generator/schemas/v2/openapi.yaml>
+- Datadog v2 OpenAPI specification (the permission each endpoint needs, its parameters and its paging): <https://raw.githubusercontent.com/DataDog/datadog-api-client-go/master/.generator/schemas/v2/openapi.yaml>

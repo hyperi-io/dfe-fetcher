@@ -1,9 +1,5 @@
-# Config the PGO workload runs the fetcher against. scripts/pgo-workload.sh copies
-# it to a temp dir with @CURSOR_DIR@ filled in, and the config tests load it
-# through the normal validation so a stale service name fails a pull request.
-#
-# Aggressive 1-second intervals across all four sources push max throughput
-# through the hot path: HTTP fetch -> parse -> enrich -> filter -> produce.
+# The PGO workload's config: scripts/pgo-workload.sh fills in @CURSOR_DIR@.
+# 1-second intervals push the most rows through the hot path.
 instance_id: "pgo-workload"
 
 scheduler:
@@ -56,9 +52,7 @@ sources:
   aws:
     enabled: true
     region: "ap-southeast-2"
-    # Placeholder credentials -- fetcher SigV4-signs requests but the
-    # destination is the local mock, which ignores signatures. Use a
-    # non-AKIA prefix so static-analysis secret scanners don't flag it.
+    # The local mock ignores signatures. The non-AKIA prefix keeps secret scanners quiet.
     access_key_id: "PGOMOCK000000000000A"
     secret_access_key: "pgo-mock-secret-key-zzzzzzzzzzzzzzzzzzzzzzzz"
     interval_secs: 1

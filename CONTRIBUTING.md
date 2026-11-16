@@ -23,7 +23,7 @@ versioning and changelog generation. All commits must follow this format:
 |------|-------------|--------------|
 | `feat` | A new feature | Minor (0.X.0) |
 | `fix` | A bug fix | Patch (0.0.X) |
-| `docs` | Documentation only | None |
+| `docs` | Documentation | None |
 | `style` | Code style (formatting, semicolons, etc.) | None |
 | `refactor` | Code change that neither fixes a bug nor adds a feature | None |
 | `perf` | Performance improvement | Patch (0.0.X) |
@@ -99,8 +99,8 @@ anniversary of its release.
 ## Run the checks locally before you push
 
 HyperI projects gate every push through CI (lint, format, tests, secret scan,
-dependency audit, build). Run the SAME checks locally first so your change lands
-green instead of bouncing:
+dependency audit, build). Run the SAME checks locally first so your change passes
+instead of bouncing:
 
 ```bash
 hyperi-ci check
@@ -124,7 +124,7 @@ A merge to `main` runs CI and releases nothing by itself. A release is cut when 
 A Rust service that PULLS. It polls external providers -- cloud and SaaS APIs
 over REST, databases, files -- and hands each record to the DFE pipeline over
 Kafka or gRPC. Every REST provider is a declarative YAML profile run by one
-generic driver, so a new REST source is data, not Rust.
+generic driver, so adding a REST source is data, not Rust.
 
 It is not a default component on the Kubernetes tiers. `dfe-infra/apps.yaml` gives it `multiplicity: per_config`, so the engine writes one fetcher deployment per configured source when that source is written, binding `config.instance_id` to the source, and `default_in: [docker-single]`, where one fetcher starts idle and every instance's sources merge into its one file (`shared_instance: config.sources`). `scale_deployed: false` -- KEDA does not drive it. Compare dfe-receiver in the same manifest, which is `single` and `scale_deployed: true`.
 
@@ -132,7 +132,7 @@ Every provider connection is outbound: this service dials, nothing dials in.
 Both inbound listeners ship off -- the ingest HTTP endpoint on 8080
 (`IngestConfig::default().enabled` is false) and the Vector gRPC receiver on
 6000 (`VectorExtractorConfig::default().enabled` likewise), both in
-`crates/fetcher/src/config/mod.rs`. Only metrics and health on 9090 listen by
+`crates/fetcher/src/config/mod.rs`. Metrics and health on 9090 are what listen by
 default. So grade a dependency advisory here by reachability first and severity
 second: the same advisory in dfe-receiver, which takes untrusted input, is a
 different finding. `dfe-infra/docs/threat-model.md` is the source of truth for
@@ -140,7 +140,7 @@ that, and an entry in its accepted-risks table is settled. The one way to hand
 this service untrusted input is running ingest open:
 `/ingest/{source}/{topic}` takes the destination topic from the URL, so an open
 listener lets anything that can reach the port write to any topic. An enabled
-listener with no `auth_token` refuses to start unless
+listener with no `auth_token` will not start unless
 `ingest.allow_unauthenticated` is set.
 
 ### Where things live
@@ -151,10 +151,10 @@ listener with no `auth_token` refuses to start unless
 | `crates/rest` | The REST profile grammar and its runtime axes -- auth modes, pagers, decoders, the request executor, the hooks. |
 | `crates/db`, `crates/file` | The database and file sources. The engines and the tailer are feature-gated, and the grammars are always linked. |
 | `crates/fetcher` | The binary: config cascade and hot reload, scheduler, the per-tick `Driver`, pipeline, output transports, cursor store, ingest server, Vector and container extractors. |
-| `crates/fetcher/profiles/*.yaml` | The shipped REST profiles. A new one is registered in `crates/fetcher/src/profiles/mod.rs`. |
+| `crates/fetcher/profiles/*.yaml` | The shipped REST profiles. Each is registered in `crates/fetcher/src/profiles/mod.rs`. |
 | `crates/fetcher/src/deployment.rs` | The deployment contract, and the drift tests that hold the generated artefacts to it. The released chart is assembled from it, never committed. |
 | `Dockerfile`, `docs/config-schema.*`, `docs/capability-catalog.*` | Generated from that contract and committed. Never hand-edited -- see below. |
-| `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied in and depended on by path from `crates/file` only. |
+| `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied in, and `crates/file` is the one crate that depends on it, by path. |
 | `scripts/generics_gates.py` | The generics acceptance gates: one framework site per provider mechanism, the crate dependency direction, per-hook line budgets. |
 | `config.example.yaml` | The annotated reference. `docs/config-schema.yaml` is the generated list of every key. |
 | `docs/architecture.md`, `docs/internals.md`, `docs/delivery.md`, `docs/extractors.md` | The workspace codemap with its negative invariants, the diagrams plus rationale, the delivery path and the extractors. |
@@ -166,27 +166,32 @@ make check    # the generics gates, then hyperi-ci check
 make gates    # the gates alone -- deterministic, needs python3, git and cargo
 ```
 
-The gates also run in the test stage, as the integration test `the_generics_gates_hold`, so CI and `hyperi-ci check` fail a broken gate too. `make gates` is the quick way to run them alone, from a git checkout.
+The gates run in the test stage, as the integration test `the_generics_gates_hold`, so CI and `hyperi-ci check` fail a broken gate as well. `make gates` is the quick way to run them alone, from a git checkout.
 
-Two ways a green run says more than it proved:
+The generated files are regenerated from the binary: `dfe-fetcher emit-dockerfile > Dockerfile`, and `dfe-fetcher config-schema --dir docs` for the schema and catalogue under `docs/`. To see the chart a release would ship, build the binary and run `hyperi-ci chart assemble --binary target/debug/dfe-fetcher --image ghcr.io/hyperi-io/dfe-fetcher:<tag>@sha256:<digest>`, which prints the directory it wrote.
 
-- CI never tests `db-odbc`. Quality lints it and the release image ships it
+Two ways a passing run says more than it proved:
+
+- CI never tests `db-odbc`. It tests `db-clickhouse`, `db-mongodb` and
+  `file-tail`, which are pure Rust and need nothing but Docker, and the feature sets
+  in `.hyperi-ci.yaml` are listed one by one, never `--all-features`.
+  Quality lints `db-odbc` and the release image ships it
   with the PostgreSQL, MariaDB and SQLite drivers, but the test lists in
   `.hyperi-ci.yaml` leave it out: its suites need the `odbc-postgresql` and
   `odbc-mariadb` drivers, which the runner lacks and that config cannot
   declare. A local `cargo nextest run --workspace --all-features` runs them,
   and needs `libodbc`, its headers and those drivers on your host.
-- Live provider tests are `#[ignore]`. A green run has not talked to AWS, Okta
-  or any other provider. Each `docs/cloud-setup/*.md` says how to run its own.
+- Live provider tests are `#[ignore]`. A passing run has not talked to AWS, Okta
+  or any other provider. Each `docs/cloud-setup/*.md` says how to run that provider's tests.
 
 ### What tends to bite
 
 | Don't | Do | Why |
 |---|---|---|
 | Hand-edit `Dockerfile` or the generated files under `docs/`, or commit a chart | Change `crates/fetcher/src/deployment.rs` and regenerate | The Dockerfile is generator output and the release assembles the chart from the contract, so a hand edit is reverted or never ships, and a committed chart drifts from the contract the release renders. `checked_in_dockerfile_matches_generated` names the regenerate command in its failure, and `test_config_artifacts_do_not_drift` holds the generated schema and catalogue under `docs/` to it. |
-| Bump scalo and stop there | Regenerate the artefacts and move `release.helm.library` in `.hyperi-ci.yaml` to the same version, in the same change | scalo owns the generators -- the Dockerfile banner names `scalo::deployment::generate_dockerfile()` and the schema version it emitted -- and a scalo-service release renders only the contract version its scalo release writes. A release that moves a generator fails the drift tests until the files are regenerated. That is the guard working, not a spurious failure. |
-| Add a secret env var to a deployment by hand | Add it to the contract's `secrets` and its field to `SECRET_FIELDS` in `config_reachability.rs` | The chart mounts only the contract's secret groups, so a name added by hand to one deployment is in no chart, no contract and no test. Both env spellings reach the field (`DFE_FETCHER_KAFKA__SASL__USERNAME` and `DFE_FETCHER__KAFKA__SASL__USERNAME` alike), so the name is not the risk, its absence from the contract is. `every_declared_secret_env_var_reaches_the_config` sets each declared name and checks the one field it fills. |
-| Write a secret spec with a path and no mount in front of it | Write `vault:<mount>/<path>:<key>` | scalo reads the first segment as the KV v2 mount, and a `data` segment after it is accepted and ignored. A spec with one segment only is filed under the default `secret` mount, which is not the mount a reader of that spec would guess, and a wrong guess fails at fetch time, not at config load. `every_documented_vault_spec_names_a_mount_and_a_path` scans README.md, config.example.yaml and every doc under `docs/` for this spec, which is why the wrong form is described here rather than spelled out: a counter-example written in full fails that test. |
+| Bump scalo and stop there | Regenerate the artefacts and move `release.helm.library` in `.hyperi-ci.yaml` to the same version, in the same change | scalo owns the generators -- the Dockerfile banner names `scalo::deployment::generate_dockerfile()` and the schema version it emitted -- and a scalo-service release renders the contract version its scalo release writes and no other. A release that moves a generator fails the drift tests until the files are regenerated. That is the guard working, not a spurious failure. |
+| Add a secret env var to a deployment by hand | Add it to the contract's `secrets` and its field to `SECRET_FIELDS` in `config_reachability.rs` | The chart mounts the contract's secret groups and nothing else, so a name added by hand to one deployment is in no chart, no contract and no test. Both env spellings reach the field (`DFE_FETCHER_KAFKA__SASL__USERNAME` and `DFE_FETCHER__KAFKA__SASL__USERNAME` alike), so the name is not the risk, its absence from the contract is. `every_declared_secret_env_var_reaches_the_config` sets each declared name and checks the one field it fills. |
+| Write a secret spec with a path and no mount in front of it | Write `vault:<mount>/<path>:<key>` | scalo reads the first segment as the KV v2 mount, and a `data` segment after it is accepted and ignored. A spec with a single segment is filed under the default `secret` mount, which is not the mount a reader of that spec would guess, and a wrong guess fails at fetch time, not at config load. `every_documented_vault_spec_names_a_mount_and_a_path` scans README.md, config.example.yaml and every doc under `docs/` for this spec, which is why the wrong form is described here rather than spelled out: a counter-example written in full fails that test. |
 | Add a config knob and assume it lands | Add a case to `crates/fetcher/tests/integration/config_reachability.rs` | `metrics.address` shipped in the old chart's values, the contract default and `config.example.yaml`, and was read by nothing: the runtime resolves it from scalo's cascade, which `--config` did not populate, so the listener bound the hard-coded default. Every failure in this class looks identical from outside -- the process starts, logs a healthy line, and runs on a value the operator did not set. |
 | Sleep to wait for a tick, a tail or a file timestamp | Bound the wait on the thing itself, or cross the boundary | Repeated flakes: `8e205c5` bounded the file-tail and dump-listing races instead of sleeping, `33b53aa` crossed a second boundary instead of polling for a change time, `9dfb307` used a port nothing can bind rather than one just handed back. |
 | Add per-provider Rust | Write a profile, or add a variant on the matching axis in `crates/rest` | The generics gates fail a provider mechanism written twice, and every hook has a line budget. `741e28c` is the gate itself being fixed after it matched the word "sigv4" in a comment instead of a signer. |

@@ -13,7 +13,7 @@ log entries delivered through a Cloud Logging sink into a Pub/Sub topic.
 
 ## Overview
 
-dfe-fetcher consumes Pub/Sub via **REST synchronous pull**. For each configured subscription it calls `POST /v1/projects/<project>/subscriptions/<sub>:pull` once per tick, delivers the messages, and only then acknowledges them with `POST /v1/projects/<project>/subscriptions/<sub>:acknowledge`, 500 ids a request: a batch the transport refuses is never acknowledged, so the broker redelivers it rather than losing it. Each message's base64 `data` field is decoded. A JSON object (typical for Cloud Logging sink payloads, where `data` is a base64-encoded `LogEntry`) is emitted as itself, any other JSON value as `{"payload": <value>}`, and text that is not JSON as `{"data": "..."}`. The Pub/Sub envelope (the subscription's full `projects/<p>/subscriptions/<s>` path, message ID, publish time, attributes, ordering key) is attached under `_dfe_fetcher_pubsub` on every record. Each subscription produces records tagged `gcp_pubsub.<subscription-id>`.
+dfe-fetcher consumes Pub/Sub via **REST synchronous pull**. For each configured subscription it calls `POST /v1/projects/<project>/subscriptions/<sub>:pull` once per tick, delivers the messages, and then, not before, acknowledges them with `POST /v1/projects/<project>/subscriptions/<sub>:acknowledge`, 500 ids a request: a batch the transport rejects is never acknowledged, so the broker redelivers it rather than losing it. Each message's base64 `data` field is decoded. A JSON object (typical for Cloud Logging sink payloads, where `data` is a base64-encoded `LogEntry`) is emitted as itself, any other JSON value as `{"payload": <value>}`, and text that is not JSON as `{"data": "..."}`. The Pub/Sub envelope (the subscription's full `projects/<p>/subscriptions/<s>` path, message ID, publish time, attributes, ordering key) is attached under `_dfe_fetcher_pubsub` on every record. Each subscription produces records tagged `gcp_pubsub.<subscription-id>`.
 
 The source is the shipped `gcp_pubsub` profile (`crates/fetcher/profiles/gcp_pubsub.yaml`) on the framework's queue unit kind. The `sources.gcp_pubsub` block below maps onto an instance of it at load, one unit per subscription. A pull that keeps failing fails that subscription's tick and the others still run. A refused token exchange fails the tick before any pull.
 
@@ -27,13 +27,13 @@ token from the GCE metadata server:
 The tenant side owns the delivery pipeline: a Cloud Logging **log sink** routes
 matching entries to a Pub/Sub **topic**, a **pull subscription** sits on that
 topic, and the fetcher's service account holds `roles/pubsub.subscriber` on that
-subscription. dfe-fetcher only pulls and acknowledges. It never publishes or
+subscription. dfe-fetcher pulls and acknowledges, nothing more. It never publishes or
 administers Pub/Sub.
 
 ## Prerequisites
 
-- A GCP project to own the topic, subscription, and log sink. A separate project
-  can own the fetcher service account if you prefer.
+- A GCP project to hold the topic, subscription, and log sink. A separate project
+  can hold the fetcher service account if you prefer.
 - `gcloud` CLI authenticated with at least `roles/pubsub.editor` and
   `roles/logging.configWriter` (or Owner) on the destination project.
 - Owner (or equivalent) on the destination project to bind the sink writer
@@ -126,7 +126,7 @@ key.
 
 ### 6. Grant the fetcher SA subscriber rights on the subscription
 
-Subscription-scoped grant (least privilege - the SA can read only this one
+Subscription-scoped grant (least privilege - the SA can read this one and no other
 subscription):
 
 ```bash
@@ -140,7 +140,7 @@ gcloud pubsub subscriptions add-iam-policy-binding dfe-audit-fetcher \
 
 Each entry under `subscriptions` is one `project_id` + `subscription_id` pair. `max_messages` defaults to 1000 (the REST cap), and `return_immediately` defaults to `true` (single-shot per tick, fitting the polling model). The `subscription_id` is the short name, not the fully-qualified path. A repeated id, or the id `pull`, is refused at load.
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -165,7 +165,7 @@ DFE_FETCHER_SOURCES__GCP_PUBSUB__ENABLED="true"
 DFE_FETCHER_SOURCES__GCP_PUBSUB__SERVICE_ACCOUNT_KEY="/etc/gcp/pubsub-sa.json"
 ```
 
-`service_account_key` also takes the key JSON itself: a value that opens with `{` is the key, anything else the path of its file.
+`service_account_key` takes the key JSON itself as well: a value that opens with `{` is the key, anything else the path of its file.
 
 The `subscriptions` list is a structured array - set it in the config file (or a
 vault-backed config), not via individual environment variables.
@@ -217,10 +217,10 @@ Common failures:
 
 ## Cost
 
-dfe-fetcher only reads (pull + acknowledge). Pub/Sub and log routing may
+dfe-fetcher reads, and writes nothing back except Pub/Sub acknowledgements. Pub/Sub and log routing may
 generate usage charges depending on message throughput and retention, so
 there could be a cost at higher volumes. Keep the sink `--log-filter` tight
-to limit what is routed. Confirm any cost implications against your own GCP
+to limit what is routed. Confirm any cost implications against your GCP
 agreement.
 
 ## References

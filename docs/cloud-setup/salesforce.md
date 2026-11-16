@@ -19,7 +19,7 @@ which config fields are set:
 
 - **JWT bearer** (recommended): an RS256-signed JWT with claims
   `{iss: client_id, sub: username, aud: login_url, exp: now+5m}`, signed with
-  the app's RSA private key. No secret stored in dfe-fetcher, only the private
+  the app's RSA private key. No secret stored in dfe-fetcher, just the private
   key. Chosen when `private_key` or `private_key_secret` is set.
 - **Client credentials**: `client_id` + `client_secret` form post. Chosen when
   a secret is set and no private key is.
@@ -54,7 +54,7 @@ The source is the shipped `salesforce` profile (`crates/fetcher/profiles/salesfo
 
 ## Required Permissions
 
-All permissions are read-only. The OAuth scope only needs **`api`** (Access the
+All permissions are read-only. The OAuth scope needs nothing but **`api`** (Access the
 Salesforce API) - no `full` or write scope.
 
 | Service | sObject / endpoint | Integration-user permission | Add-on |
@@ -78,7 +78,7 @@ config cleanly. Follow the manual steps below.
 > JWT-bearer configured under Flow Enablement and policies under the app's
 > Policies tab. Existing connected apps keep working.
 
-### 1. (JWT only) Generate an RSA keypair + self-signed certificate
+### 1. (JWT) Generate an RSA keypair + self-signed certificate
 
 ```bash
 # RSA private key - dfe-fetcher signs JWTs with this
@@ -99,9 +99,9 @@ Setup -> App Manager -> New Connected App -> Create a Connected App.
 - Connected App Name: `dfe-fetcher`, with a contact email.
 - Tick **Enable OAuth Settings**.
 - Callback URL: `https://login.salesforce.com/services/oauth2/callback`
-  (unused server-to-server, but the form requires a value).
+  (unused server-to-server, but the form needs a value).
 - Selected OAuth Scopes: add **Access the Salesforce API (api)**.
-- JWT bearer only: tick **Use digital signatures** and upload
+- JWT bearer: tick **Use digital signatures** and upload
   `salesforce_dfe.crt`.
 - Save (provisioning takes a few minutes).
 
@@ -150,7 +150,7 @@ curl -s https://login.salesforce.com/services/oauth2/token \
   -d client_secret=<CONSUMER_SECRET>
 ```
 
-A success response carries `access_token` and `instance_url`. `invalid_grant`
+A success response has `access_token` and `instance_url`. `invalid_grant`
 on JWT usually means: the user is not pre-authorised (step 4), the cert does not
 match the key, or `aud` is wrong (must be `https://login.salesforce.com`, or
 `https://test.salesforce.com` for sandboxes).
@@ -184,8 +184,6 @@ sources:
 Client credentials: replace `username` + `private_key` with `client_secret`.
 
 Recognised top-level fields: `enabled`, `login_url`, `api_version`, `client_id`, `username`, `private_key`, `private_key_secret`, `client_secret`, `credential_secret`, `instance_url_override`, `interval_secs`, `services`, `topic`, `filter`, `connections`. The `event_log_file` service config accepts `interval` (`Daily`/`Hourly`) and `event_types` (an allow-list, omitted to pull every available type).
-
-### Environment Variables
 
 Pattern: `DFE_FETCHER_SOURCES__SALESFORCE__<FIELD>` (double underscores).
 
@@ -222,7 +220,7 @@ sources:
 - `private_key_secret` resolves to the full RSA private-key PEM.
 - `credential_secret` resolves to the consumer secret.
 
-Sandboxes: set `login_url: "https://test.salesforce.com"`. My Domain: token exchange still goes through `login_url`, and the returned `instance_url` is your My Domain host. Each org needs its own app (and cert for JWT) and integration user. Run one dfe-fetcher per org with a distinct `instance_id`, or list each org as an entry under `connections` in one fetcher.
+Sandboxes: set `login_url: "https://test.salesforce.com"`. My Domain: token exchange still goes through `login_url`, and the returned `instance_url` is your My Domain host. Each org needs a separate app (and cert for JWT) and integration user. Run one dfe-fetcher per org with a distinct `instance_id`, or list each org as an entry under `connections` in one fetcher.
 
 ## Verification
 
@@ -248,13 +246,13 @@ Sandboxes: set `login_url: "https://test.salesforce.com"`. My Domain: token exch
 
 ## Cost
 
-dfe-fetcher only reads. The SOQL surfaces (`setup_audit_trail`,
+dfe-fetcher never writes. The SOQL surfaces (`setup_audit_trail`,
 `login_history`) and a small built-in set of `event_log_file` event types
 are available on standard orgs. The full EventLogFile event-type set and
 longer retention may require a paid add-on (Event Monitoring or Salesforce
 Shield), so there could be a cost depending on what you need. API calls
 count against the org's API request allowance. Confirm any cost implications
-against your own Salesforce agreement.
+against your Salesforce agreement.
 
 ## References
 

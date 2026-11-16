@@ -15,27 +15,27 @@ operational data from AWS.
 
 dfe-fetcher polls AWS service APIs on an interval and hands each record to the DFE pipeline over Kafka or gRPC. It supports these AWS services: CloudTrail (management-event audit trail), GuardDuty (threat-detection findings), SecurityHub (aggregated security findings), Config (resource configuration through `SelectResourceConfig`), CloudWatch Logs (log events), CloudWatch Metrics (monitoring data, emitted as JSON or OTLP), Inspector (Inspector v2 vulnerability findings), and Health (AWS Health events). All access is read-only: dfe-fetcher never writes, modifies, or deletes resources. Requests are direct AWS REST/JSON API calls signed with SigV4, not the AWS SDK. Authentication is a static access key pair, inline or from a secrets manager, which may assume a role (see Cross-Account Access).
 
-The source is the shipped `aws` profile (`crates/fetcher/profiles/aws.yaml`), and the `sources.aws` block below maps onto an instance of it at load. Every unit is its own AWS service, signed for that service in the configured region (Health is region-locked to `us-east-1`), and every list pages on the token the API documents. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window. The health check is STS `GetCallerIdentity`, the one call every key may make.
+The source is the shipped `aws` profile (`crates/fetcher/profiles/aws.yaml`), and the `sources.aws` block below maps onto an instance of it at load. Every unit is a separate AWS service, signed for that service in the configured region (Health is region-locked to `us-east-1`), and every list pages on the token the API documents. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick, and a tick that fails does not advance the fetch window. The health check is STS `GetCallerIdentity`, the one call every key may make.
 
-A CloudTrail row is the event itself (`eventName`, `eventTime`, `userIdentity` at the top), the format CloudTrail delivers to S3. `LookupEvents` wraps each event as a JSON string beside its own lookup fields, and the fetcher lifts the event out of it. A record whose `CloudTrailEvent` is not a JSON object lands as the lookup record with the reason under `_dfe_fetcher_parse_error`, so one bad record neither fails the tick nor is lost. A `filter` on this unit therefore names event fields (`eventName`), not lookup fields (`EventName`).
+A CloudTrail row is the event itself (`eventName`, `eventTime`, `userIdentity` at the top), the format CloudTrail delivers to S3. `LookupEvents` wraps each event as a JSON string beside its lookup fields, and the fetcher lifts the event out of it. A record with a `CloudTrailEvent` that is not a JSON object lands as the lookup record with the reason under `_dfe_fetcher_parse_error`, so one bad record neither fails the tick nor is lost. A `filter` on this unit therefore names event fields (`eventName`), not lookup fields (`EventName`).
 
 ## Prerequisites
 
-- An AWS account with the services you intend to fetch already enabled
+- An AWS account with the services you intend to fetch enabled
   (GuardDuty, SecurityHub, Config recording, and Inspector v2 must be turned
   on tenant-side or their APIs return empty or refuse).
 - An IAM user (or role) for dfe-fetcher, plus permission to create it.
 - AWS CLI v2 authenticated (SSO or a profile) if using the manual or OpenTofu
   paths.
-- Cost flags: dfe-fetcher only reads, but some capabilities here may carry a
-  cost depending on your AWS plan. The Health API requires a paid support
+- Cost flags: dfe-fetcher reads and never writes, but some capabilities here may have a
+  cost depending on your AWS plan. The Health API needs a paid support
   plan (lesser tiers answer `SubscriptionRequiredException`), and services
-  such as Inspector v2 may carry their own cost when enabled. See the Cost
+  such as Inspector v2 may cost extra when enabled. See the Cost
   section.
 
 ## Required Permissions
 
-Grant only the actions for the services you configure. None support
+Grant the actions for the services you configure, and no others. None support
 resource-level ARN scoping for these read operations, so use
 `"Resource": "*"`. The health check's `sts:GetCallerIdentity` needs no
 permission.
@@ -44,14 +44,14 @@ permission.
 |---------|-------------|-------|
 | CloudTrail | `cloudtrail:LookupEvents` (or managed policy `AWSCloudTrail_ReadOnlyAccess`) | `LookupEvents` covers the last 90 days of management events |
 | GuardDuty | `guardduty:ListDetectors`, `guardduty:ListFindings`, `guardduty:GetFindings` | One detector per region. The fetcher walks all detectors and looks findings up under the detector that listed them |
-| SecurityHub | `securityhub:GetFindings` | Requires SecurityHub enabled in the account. Fetches every finding whose record changed in the window, in any workflow status, so a finding's resolution arrives as an update. The `workflow_status` knob narrows it |
-| Config | `config:SelectResourceConfig` | Requires AWS Config recording in the account. The `expression` knob replaces the default query |
-| CloudWatch Logs | `logs:FilterLogEvents` | Per-service config must set `log_group_name`. Each event carries `logGroupName` and `awsRegion` from the call, and `awsAccountId` when the connection sets `assume_role_arn` (the role's account) |
+| SecurityHub | `securityhub:GetFindings` | Needs SecurityHub enabled in the account. Fetches every finding with a record changed in the window, in any workflow status, so a finding's resolution arrives as an update. The `workflow_status` knob narrows it |
+| Config | `config:SelectResourceConfig` | Needs AWS Config recording in the account. The `expression` knob replaces the default query |
+| CloudWatch Logs | `logs:FilterLogEvents` | Per-service config must set `log_group_name`. Each event has `logGroupName` and `awsRegion` from the call, and `awsAccountId` when the connection sets `assume_role_arn` (the role's account) |
 | CloudWatch Metrics | `cloudwatch:ListMetrics`, `cloudwatch:GetMetricData` | Per-service config must set `namespaces` |
 | Inspector | `inspector2:ListFindings` (or managed policy `AmazonInspector2ReadOnlyAccess`) | Inspector v2, which returns empty unless enabled tenant-side |
-| Health | `health:DescribeEvents` | Requires Business / Enterprise On-Ramp / Enterprise Support tier |
+| Health | `health:DescribeEvents` | Needs Business / Enterprise On-Ramp / Enterprise Support tier |
 
-### Least-Privilege Policy (All Services)
+The least-privilege policy for every service:
 
 ```json
 {
@@ -141,13 +141,13 @@ CloudWatch Logs and Metrics read actions, and creates an access key.
 ```bash
 cd infra/test
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars - set aws_profile and aws_region
+# Edit terraform.tfvars - set aws_profile, azure_subscription_id and gcp_project_id. One apply provisions AWS, Azure, M365 and GCP, so az and gcloud must be signed in as well.
 tofu init
 tofu apply
 tofu output -json | python3 gen-env.py > ../../.env
 ```
 
-The module provisions CloudTrail and CloudWatch permissions only. For
+The module provisions CloudTrail and CloudWatch permissions and no others. For
 GuardDuty, SecurityHub, Config, Inspector, or Health, attach additional
 statements to the inline policy (see the Required Permissions table) or
 extend the module.
@@ -193,10 +193,11 @@ If you prefer not to use OpenTofu:
 
 Set `assume_role_arn` to an IAM role ARN and the fetcher signs with that role
 instead of the key it is given: it calls STS `AssumeRole` once per connection
-(on the regional STS endpoint of the connection's region, session name
+(on the regional STS endpoint of the region the first signed request uses,
+which is `us-east-1` when the Health unit signs first, session name
 `dfe-fetcher`), keeps the session credentials until shortly before they
-expire, then assumes the role again, and every signed request carries the
-session token in `x-amz-security-token`. The key's own principal needs
+expire, then assumes the role again, and every signed request has the
+session token in `x-amz-security-token`. The key's principal needs
 `sts:AssumeRole` on the role, and the role's trust policy must name that
 principal. The role then needs the read permissions listed above, not the
 key. A role in another partition (GovCloud, China) is checked against the
@@ -272,8 +273,6 @@ names the configuration item's top-level properties (`SELECT *` would not
 return `configuration`), and the `expression` knob replaces it. Each `Results`
 string lands as the document it holds.
 
-### Environment Variables
-
 Pattern: `DFE_FETCHER_SOURCES__AWS__<FIELD>` (double underscores).
 
 ```bash
@@ -285,7 +284,7 @@ DFE_FETCHER_SOURCES__AWS__SECRET_ACCESS_KEY="wJalrXUtnFEMI..."
 
 ### Secrets Manager
 
-`credential_secret` resolves from the secrets manager. Format is `vault:<mount>/<path>:<key>`, e.g. `vault:kv/data/aws:credentials`: the first segment is the KV v2 mount, and a `data` segment after it is optional and ignored. A path with no `/` at all is read under the default `secret` mount. Individual `access_key_id` / `secret_access_key` values may also be `env:` or `vault:` prefixed. Credentials are resolved once per instance, not per API call.
+`credential_secret` resolves from the secrets manager. Format is `vault:<mount>/<path>:<key>`, e.g. `vault:kv/data/aws:credentials`: the first segment is the KV v2 mount, and a `data` segment after it is optional and ignored. A path with no `/` at all is read under the default `secret` mount. Individual `access_key_id` / `secret_access_key` values may be `env:` or `vault:` prefixed. Credentials are resolved once per instance, not per API call.
 
 ```yaml
 sources:
@@ -300,7 +299,7 @@ sources:
 ```
 
 The vault secret must be JSON with these keys (PascalCase `AccessKeyId` /
-`SecretAccessKey` are also accepted):
+`SecretAccessKey` are accepted as well):
 
 ```json
 {
@@ -320,7 +319,7 @@ The vault secret must be JSON with these keys (PascalCase `AccessKeyId` /
    cargo nextest run -p dfe-fetcher --test e2e --run-ignored only aws_health_check
    ```
 
-2. Live fetch tests. The env-gated tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) hit real AWS APIs. They are `#[ignore]` by default and read credentials from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (optional, `ap-southeast-2` by default) and `AWS_CLOUDWATCH_LOG_GROUP` (optional). A refusal fails its test rather than passing with zero records.
+2. Live fetch tests. The env-gated tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) hit live AWS APIs. They are `#[ignore]` by default and read credentials from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (optional, `ap-southeast-2` by default) and `AWS_CLOUDWATCH_LOG_GROUP` (optional). A refusal fails its test rather than passing with zero records.
 
    ```bash
    cargo nextest run -p dfe-fetcher --test e2e --run-ignored only aws_
@@ -339,12 +338,12 @@ The vault secret must be JSON with these keys (PascalCase `AccessKeyId` /
 
 ## Cost
 
-dfe-fetcher only reads. It never enables services or creates trails, log
-groups, detectors, or recorders. The core read paths generally carry no
+dfe-fetcher never writes. It never enables services or creates trails, log
+groups, detectors, or recorders. The core read paths generally have no
 additional charge, but some capabilities here may have a cost depending on
 your AWS plan and what is enabled - for example the Health programmatic API
-requires a paid support plan, and services such as Inspector or Config are
-billed when enabled. Confirm any cost implications against your own AWS
+needs a paid support plan, and services such as Inspector or Config are
+billed when enabled. Confirm any cost implications against your AWS
 agreement.
 
 ## References
@@ -352,7 +351,7 @@ agreement.
 - AWS managed policy AWSCloudTrail_ReadOnlyAccess: <https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AWSCloudTrail_ReadOnlyAccess.html>
 - CloudTrail LookupEvents (90-day window): <https://docs.aws.amazon.com/awscloudtrail/latest/APIReference/API_LookupEvents.html>
 - AWS Config SelectResourceConfig: <https://docs.aws.amazon.com/config/latest/APIReference/API_SelectResourceConfig.html>
-- AWS Config query limitations (`SELECT *` returns scalar properties only): <https://docs.aws.amazon.com/config/latest/developerguide/querying-AWS-resources.html>
+- AWS Config query limitations (`SELECT *` returns scalar properties alone): <https://docs.aws.amazon.com/config/latest/developerguide/querying-AWS-resources.html>
 - GuardDuty ListFindings / GetFindings: <https://docs.aws.amazon.com/guardduty/latest/APIReference/API_ListFindings.html>
 - Amazon Inspector2 IAM actions: <https://docs.aws.amazon.com/service-authorization/latest/reference/list_inspector2.html>
 - Amazon Inspector managed policies: <https://docs.aws.amazon.com/inspector/latest/user/security-iam-awsmanpol.html>

@@ -17,8 +17,8 @@ dfe-fetcher polls Google Cloud REST APIs on a schedule and hands each record to 
 
 The source is the shipped `gcp` profile (`crates/fetcher/profiles/gcp.yaml`), and the `sources.gcp` block below maps onto an instance of it at load. Each Cloud Logging unit sends its documented filter clause ANDed with the tick's window and pages on `nextPageToken`. A 429 or 5xx is retried with backoff (honouring `Retry-After`), a 401 or 403 ends the tick with the API's `error.message`, and a tick that fails does not advance the fetch window.
 
-The GCP source exposes these services (each emits its own source tag
-`gcp.<service>` and tracks its own cursor):
+The GCP source exposes these services (each emits its source tag
+`gcp.<service>` and tracks its cursor):
 
 - Cloud Audit Logs, split per subtype: `admin_activity`, `data_access`,
   `system_event`, `policy_denied`. There is no combined `audit_logs` service -
@@ -37,7 +37,7 @@ with a Logging Query Language filter, and `scc` reads
 
 ## Prerequisites
 
-- A GCP project (`project_id`) whose logs you want to read.
+- A GCP project (`project_id`) with the logs you want to read.
 - `gcloud` CLI authenticated as a project owner/editor, or OpenTofu with
   application-default credentials (`gcloud auth application-default login`).
 - For `scc`: Security Command Center activated on the organisation (Standard or
@@ -49,13 +49,13 @@ with a Logging Query Language filter, and `scc` reads
 
 ## Required Permissions
 
-Grant only what you need. All roles are read-only.
+Grant what you need and no more. All roles are read-only.
 
 | Service(s) | IAM Role | Scope | Notes |
 |------------|----------|-------|-------|
 | `admin_activity`, `system_event`, `policy_denied`, `vpc_flow_logs`, `dns_queries`, `cloud_logging` | `roles/logging.viewer` | Project | Reads the `_Required`/`_Default` buckets, excluding Data Access logs |
 | `data_access`, `storage_access` | `roles/logging.privateLogViewer` | Project | REQUIRED for Data Access audit logs - `roles/logging.viewer` alone CANNOT read them |
-| `scc` | `roles/securitycenter.findingsViewer` | Organisation | Requires SCC activated, and `organization_id` in the service config |
+| `scc` | `roles/securitycenter.findingsViewer` | Organisation | Needs SCC activated, and `organization_id` in the service config |
 
 Notes:
 
@@ -65,8 +65,6 @@ Notes:
 - SCC findings require **organisation-level** access. An `scc` service
   without `organization_id` in its config is refused at load, naming
   `sources.gcp`.
-
-### Least-Privilege Custom Role (Alternative)
 
 If the predefined logging roles are too broad, a custom role needs at least:
 
@@ -88,14 +86,14 @@ key.
 ```bash
 cd infra/test
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars - set gcp_project_id
+# Edit terraform.tfvars - set aws_profile, azure_subscription_id and gcp_project_id. One apply provisions AWS, Azure, M365 and GCP, so az and gcloud must be signed in as well.
 gcloud auth application-default login
 tofu init
 tofu apply
 tofu output -json | python3 gen-env.py > ../../.env
 ```
 
-The provided module grants `roles/logging.viewer` only. To read Data Access
+The provided module grants `roles/logging.viewer` and nothing else. To read Data Access
 logs, raise the binding to `roles/logging.privateLogViewer`:
 
 ```hcl
@@ -141,7 +139,7 @@ resource "google_organization_iam_member" "scc_viewer" {
      --role="roles/logging.privateLogViewer"
    ```
 
-3. **Enable Data Access audit logs** (only if you fetch `data_access` /
+3. **Enable Data Access audit logs** (when you fetch `data_access` /
    `storage_access`, which are OFF by default)
 
    In the console: IAM and Admin -> Audit Logs -> select the service(s) ->
@@ -160,7 +158,7 @@ resource "google_organization_iam_member" "scc_viewer" {
    gcloud projects set-iam-policy your-project-id policy.yaml
    ```
 
-   dfe-fetcher only reads logs. It never enables logging.
+   dfe-fetcher reads logs and never enables logging.
 
 4. **Grant the SCC role** (optional, organisation level)
 
@@ -230,7 +228,7 @@ DFE_FETCHER_SOURCES__GCP__SERVICE_ACCOUNT_KEY="/etc/gcp/sa-key.json"
 
 ### Secrets Manager
 
-On this block `credential_secret` resolves to an OAuth2 ACCESS TOKEN that is sent as the bearer on every call -- not the service-account key. The fetcher resolves it once, when the source first fetches, and holds it for the life of the source: a token rotated behind the spec is read only after a restart or a change to the block's own settings. An access token expires within the hour, so prefer `service_account_key` or the metadata server, which the fetcher renews itself.
+On this block `credential_secret` resolves to an OAuth2 ACCESS TOKEN that is sent as the bearer on every call -- not the service-account key. The fetcher resolves it once, when the source first fetches, and holds it for the life of the source: a token rotated behind the spec is not read until a restart or a change to the block's settings. An access token expires within the hour, so prefer `service_account_key` or the metadata server, which the fetcher renews itself.
 
 ```yaml
 sources:
@@ -262,13 +260,13 @@ extraVolumeMounts:
   - { name: gcp-key, mountPath: /etc/gcp, readOnly: true }
 ```
 
-For multiple projects, run one dfe-fetcher per project with a distinct `instance_id`, or list each project as an entry under `connections` (its own `id` and `project_id`) in one fetcher. A single service account can hold the logging role on several projects.
+For multiple projects, run one dfe-fetcher per project with a distinct `instance_id`, or list each project as an entry under `connections` (a separate `id` and `project_id`) in one fetcher. A single service account can hold the logging role on several projects.
 
 ## Verification
 
 1. **Health check.** The health check is the token exchange (or, with
    `credential_secret`, the resolution of the token), so a healthy result
-   confirms the credential only - not per-service IAM grants.
+   confirms the credential and not the per-service IAM grants.
 
 2. **Env-gated smoke tests.** Live tests live in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs), all `#[ignore]`'d. They read `GCP_PROJECT_ID` and `GCP_SERVICE_ACCOUNT_KEY` from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it, and `GCP_ORGANIZATION_ID` for the SCC test. `GCP_SERVICE_ACCOUNT_KEY` is the path of the key file, which must exist from the directory the test runs in, so give an absolute path. A refusal fails its test rather than passing with zero records.
 
@@ -291,13 +289,13 @@ For multiple projects, run one dfe-fetcher per project with a distinct `instance
 
 ## Cost
 
-dfe-fetcher only reads. It never enables logging or services. The read calls
+dfe-fetcher never writes, and never enables logging or services. The read calls
 and the always-on audit logs (admin_activity, system_event, policy_denied)
-are not expected to carry an additional charge. Some capabilities here may
+are not expected to have an additional charge. Some capabilities here may
 have a cost depending on what you enable - for example turning on Data Access
 audit logs (to populate `data_access`/`storage_access`) can generate logging
 charges, and SCC findings depend on your activated SCC tier. Confirm any cost
-implications against your own GCP agreement.
+implications against your GCP agreement.
 
 ## References
 

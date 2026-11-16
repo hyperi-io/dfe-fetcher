@@ -8,20 +8,9 @@ classification: product
 
 language: rust
 
-# Feature sets are listed explicitly rather than `all`. The database GRAMMAR
-# (`sources.db`) is in the default build, so a config naming an engine this
-# binary lacks is refused at load; the ENGINES are features. `db-clickhouse`,
-# `db-mongodb` and `file-tail` are pure Rust and their tests need only Docker,
-# so they are built and tested here -- without them CI compiles none of the
-# database or file-tail proofs and clippy never reads those engines.
-#
-# `db-odbc` links unixODBC (`libodbc.so.2`). hyperi-ci installs `unixodbc-dev`
-# for it, so quality lints it. Its tests also need the `odbc-postgresql` and
-# `odbc-mariadb` drivers, which the runner lacks, so the test lists leave it
-# out. Never ask a runner for `--all-features`.
+# Why the feature sets are explicit and the tests leave db-odbc out: CONTRIBUTING.md "Commands that prove a change".
 quality:
   enabled: true
-  # The docs lint clean, so a new warning fails the run rather than piling up.
   markdownlint: blocking
   # No RustSec entry for this one, so only osv-scanner sees it and deny.toml has no ignore.
   ignore:
@@ -38,15 +27,14 @@ quality:
 test:
   enabled: true
   rust:
-    # Required, not auto: the tests that set `SSL_CERT_FILE` or a credential's
-    # env var rely on one process per test, which only nextest gives.
+    # Tests that set an env var need nextest's one process per test.
     nextest: true
     tier: all
     features:
       - "default"
       - "jemalloc"
       - "db-clickhouse,db-mongodb,file-tail"
-  # A release runs the full tier. docs/testing.md says which tests are which.
+  # Test tiers: docs/testing.md.
   full:
     required_for_release: true
     rust:
@@ -59,20 +47,13 @@ build:
     - native
   rust:
     glibc_max: "2.41"
-    # librdkafka, OpenSSL, zstd and zlib link from hyperi-ci's static prefix,
-    # so the image installs none of them. rdkafka keeps `dynamic-linking`.
+    # librdkafka, OpenSSL, zstd and zlib link from hyperi-ci's static prefix.
     static_libs: true
     optimize:
       pgo:
         # Built before the workload clock starts: an uncached arm64 runner takes longer than the workload timeout to compile it.
         workload_setup_cmd: "cargo build --release --features pgo-driver --bin pgo-driver"
-    # What the release image ships. Without an engine here, a `sources.db` or
-    # `file-tail` config is refused at load by a binary that never compiled it.
-    # `db-odbc` links unixODBC dynamically, the one C library here that is not
-    # static: odbc-sys has no load-on-demand mode, so the binary NEEDS
-    # `libodbc.so.2` at start, and the driver manager dlopens each engine's
-    # driver at connect time by design. The image installs `libodbc2` and the
-    # open-licence drivers (deployment.rs), which register in odbcinst.ini.
+    # What the release image ships, and why unixODBC alone links dynamically: docs/reference/db-drivers.md.
     features:
       - "jemalloc"
       - "db-odbc"
@@ -83,11 +64,9 @@ build:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
 
-# Release (where the artefacts go). The thin chart is assembled from the
-# emitted contract and ships beside the image.
 release:
   enabled: true
-  # Keep `library` at the scalo version in Cargo.toml: the library renders only the contract version its scalo release writes.
+  # Moves with the scalo version in Cargo.toml: CONTRIBUTING.md "What tends to bite".
   helm:
     enabled: true
     contract: emit

@@ -25,7 +25,7 @@ The source is the shipped `bitwarden` profile (`crates/fetcher/profiles/bitwarde
 
 - A **Bitwarden Teams or Enterprise** organization (the Public API is
   available to Teams and Enterprise plans, not Free or Families).
-- The setup must be done by an organization **Owner** - only an owner can
+- The setup must be done by an organization **Owner** - no other role can
   view or rotate the organization API key.
 - Works on Bitwarden Cloud (US or EU) and self-hosted servers.
 - No paid add-on beyond the Teams/Enterprise subscription.
@@ -37,7 +37,7 @@ The source is the shipped `bitwarden` profile (`crates/fetcher/profiles/bitwarde
 | Identity | `/connect/token` on the identity host | grant_type `client_credentials`, scope `api.organization` | Token lives ~60 min, and dfe-fetcher caches and refreshes it |
 | Public API | `/public/events` | Organization API key | Read-only event log, GET with `start`/`end`/`continuationToken` |
 
-The credential is the **organization** API key, whose `client_id` has the
+The credential is the **organization** API key. Its `client_id` has the
 form `organization.<uuid>`. A personal API key (`user.<uuid>`) will not work
 against the Public API. Access is read-only.
 
@@ -85,7 +85,7 @@ against the Public API. Access is read-only.
 
 ## dfe-fetcher Configuration
 
-### Config File
+In the config file:
 
 ```yaml
 sources:
@@ -102,7 +102,7 @@ sources:
     # filter: 'type < 1500'   # optional, hot-reloaded
 ```
 
-### Environment Variables
+As environment variables:
 
 ```bash
 DFE_FETCHER_SOURCES__BITWARDEN__ENABLED="true"
@@ -130,7 +130,7 @@ sources:
 
 `credential_secret` takes precedence over a literal `client_secret` and
 resolves to the secret string. `client_id` is always supplied in clear (it is
-not sensitive). The only service is `events`, and it has no service-side config
+not sensitive). The one service is `events`, and it has no service-side config
 keys.
 
 ## Verification
@@ -155,14 +155,16 @@ Common failure modes:
   `api_url_override` and `identity_url_override`.
 - HTTP 429 - rate limited. dfe-fetcher retries with backoff and
   `Retry-After` up to the profile's policy, then fails the tick without
-  advancing. The page ceiling is 50 per fetch.
+  advancing. A window reads at most 50 pages. A busier window is read again
+  in halves inside the same tick, down to one second, and nothing but a one-second
+  window past the ceiling fails the tick, so no event is skipped.
 
 ## Cost
 
-dfe-fetcher only reads. The Public API and `/public/events` reads add no
-charge of their own, but access may require a paid Bitwarden plan (the
+dfe-fetcher never writes. The Public API and `/public/events` reads add no
+separate charge, but access may require a paid Bitwarden plan (the
 Events/Public API is an organization feature). Fair-use server-side rate
-limits apply. Confirm any cost implications against your own Bitwarden
+limits apply. Confirm any cost implications against your Bitwarden
 plan.
 
 ## References

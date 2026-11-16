@@ -15,7 +15,7 @@ count, all on the same topic and all stamped with the same `snapshot_id` and
 `snapshot_at`. A dump that aborts emits no `end`, which is the consumer-side
 incompleteness signal. The writer and a reference reassembler live in
 `crates/core/src/envelope.rs`. The driver applies the envelope to every unit
-whose `shape` is `dump` (a REST profile dump, a `sources.db` dump store, a
+with `shape: dump` (a REST profile dump, a `sources.db` dump store, a
 `sources.file` dump unit).
 
 - [Frames](#frames)
@@ -28,16 +28,16 @@ whose `shape` is `dump` (a REST profile dump, a `sources.db` dump store, a
 
 ## Frames
 
-| `kind` | When | Carries |
+| `kind` | When | Has |
 |--------|------|---------|
-| `begin` | First frame of a dump, buffered before the first row is polled | `total`, the store's own count, when the connector knows it (optional) |
+| `begin` | First frame of a dump, buffered before the first row is polled | Nothing beyond the common fields |
 | `row` | One provider record | `record`, the record as the provider sent it |
 | `oversize` | A record that exceeded the transport limit, replaced by a stub | `bytes`, the size of the record not sent. `row_key`, its identity per the unit's `row_key` when it had one |
 | `end` | Last frame of a dump | `row_count`, rows and stubs emitted. `completed_at`, when the dump finished |
 
 ## Fields
 
-Every frame carries the head. The kind-specific fields follow it.
+Every frame has the head. The kind-specific fields follow it.
 
 | Field | Every frame | Meaning |
 |-------|-------------|---------|
@@ -46,9 +46,9 @@ Every frame carries the head. The kind-specific fields follow it.
 | `snapshot_at` | yes | when the dump started, RFC 3339 with milliseconds |
 | `timestamp` | yes | equal to `snapshot_at`, so the loader's `_timestamp` groups the whole dump |
 | `store` | yes | `<connection>.<unit>` |
-| `seq` | yes | 0-based position: the row's own for `row` and `oversize`, 0 for `begin`, the row count for `end` |
-| `total` | `begin`, optional | the store's own count when the connector knows it |
-| `record` | `row` | the record as the provider sent it, under its own key so the provider's fields cannot collide with the envelope's |
+| `seq` | yes | 0-based position: the row's position for `row` and `oversize`, 0 for `begin`, the row count for `end` |
+| `total` | `begin`, optional | reserved for the store's count. No shipped connector sets it |
+| `record` | `row` | the record as the provider sent it, under one key so the provider's fields cannot collide with the envelope's |
 | `bytes`, `row_key` | `oversize` | the size of the record that was not sent, and its identity per the unit's `row_key` (absent when the unit names none or the row had none) |
 | `row_count`, `completed_at` | `end` | rows and oversize stubs emitted -- what a consumer must count -- and when the dump finished |
 
@@ -73,15 +73,15 @@ example config), and a dropped row is never a hole.
 | `sources.db` dump store | one tick of one store | before the first row, likewise |
 | `sources.file` dump unit | one file | at the file's first row. Closed -- `end`, flush, checkpoint -- when the next file starts, so an idle tick publishes nothing and a bad file leaves the files before it complete and committed |
 
-A dump unit lands on its own topic, `<topic>-<unit>` with the deployment's
+A dump unit lands on a dedicated topic, `<topic>-<unit>` with the deployment's
 topic suffix appended (`_land` by default), so the stores of one connector
 never interleave. Incremental units land on `<topic>` plus the suffix. Two
 instances sharing a `topic` are told apart by `_source_fetcher`
 (`<connection>.<unit>`) and by `store`.
 
 An output route that names one destination stamps the rows it matches with
-that destination's `_source`, so they land in its table, while the dump's
-`begin` and `end` frames keep the unit's own. Neither table then holds a
+that destination's `_source`, so they land in its table, and the dump's
+`begin` and `end` frames keep the unit's topic. Neither table then holds a
 snapshot that reassembles.
 
 ## Oversize rows
@@ -100,7 +100,7 @@ count includes it.
 ## Consuming a snapshot
 
 Frames may arrive in any order and more than once (at-least-once delivery).
-A snapshot is complete only when its `end` has arrived and every `seq` in
+A snapshot is not complete until its `end` has arrived and every `seq` in
 `0..row_count` is present as a `row` or an `oversize` stub. `end` seen with a
 `seq` missing is truncated, and no `end` is open. The `Reassembler` in
 `crates/core/src/envelope.rs` is that check as code: feed it frames, ask its

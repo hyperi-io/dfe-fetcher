@@ -20,15 +20,15 @@ with a `startTime`/`endTime` window, follows `nextPageToken` until the window is
 drained, and emits one record per activity tagged `google_workspace.<app>`.
 
 Authentication is an OAuth2 **service account with domain-wide delegation**,
-using the JWT-with-subject variant. The service account signs an RS256 JWT whose
-`sub` claim impersonates a designated Workspace admin email, then exchanges it
-for an access token scoped to that admin's tenant. The only scope requested is
+using the JWT-with-subject variant. The service account signs an RS256 JWT with a
+`sub` claim that impersonates a designated Workspace admin email, then exchanges it
+for an access token scoped to that admin's tenant. The one scope requested is
 read-only:
 
 - `https://www.googleapis.com/auth/admin.reports.audit.readonly`
 
 Two trust steps are required and they live in different consoles: the service
-account and the Admin SDK API enablement are in **Google Cloud**, while the
+account and the Admin SDK API enablement are in **Google Cloud**, and the
 domain-wide-delegation scope grant is in the **Workspace Admin console**. The
 Admin console step is human-only - there is no IaC path for it.
 
@@ -38,12 +38,12 @@ dfe-fetcher never writes, modifies, or deletes anything.
 
 ## Prerequisites
 
-- A Google Cloud project (any project, since it only hosts the service account).
+- A Google Cloud project (any project, since it does nothing but host the service account).
 - A **super administrator** account in the target Workspace tenant - required
   to authorise domain-wide delegation in the Admin console.
 - The Workspace admin email that the service account will impersonate. It must
   hold the **Reports** administrator privilege (Alert Center view access is
-  also useful if you later add alert feeds).
+  useful if you later add alert feeds as well).
 - `gcloud` CLI authenticated against the host project
   (`gcloud auth login`).
 
@@ -91,7 +91,7 @@ signs JWTs with.
 
 ### 4. Find the service account's numeric client ID
 
-The Admin console only accepts the **numeric** client ID (the unique ID), not
+The Admin console accepts nothing but the **numeric** client ID (the unique ID), not
 the service-account email. Console path: Google Cloud console -> IAM and Admin
 -> Service Accounts -> select the account -> Advanced settings -> copy the
 Client ID. Or via CLI:
@@ -125,7 +125,7 @@ Notes:
 
 ### 6. Confirm the impersonated admin has Reports access
 
-The `admin_email` you set must be a real Workspace admin with the **Reports**
+The `admin_email` you set must be an existing Workspace admin with the **Reports**
 administrator privilege. Console path: Admin console -> Account -> Admin roles.
 
 ## dfe-fetcher Configuration
@@ -164,9 +164,9 @@ sources:
 
 `customer_id` defaults to `my_customer`, which resolves to the tenant the
 impersonated admin belongs to - correct for single-tenant deployments. Set an
-explicit C-prefixed ID only for reseller scenarios.
+explicit C-prefixed ID for reseller scenarios alone.
 
-### Environment Variables
+As environment variables:
 
 ```bash
 DFE_FETCHER_SOURCES__GOOGLE_WORKSPACE__ENABLED="true"
@@ -175,7 +175,7 @@ DFE_FETCHER_SOURCES__GOOGLE_WORKSPACE__ADMIN_EMAIL="audit-admin@example.com"
 DFE_FETCHER_SOURCES__GOOGLE_WORKSPACE__CUSTOMER_ID="my_customer"
 ```
 
-`service_account_key` also takes the key JSON itself: a value that opens with `{` is the key, anything else the path of its file.
+`service_account_key` takes the key JSON itself as well: a value that opens with `{` is the key, anything else the path of its file.
 
 ### Secrets Manager
 
@@ -197,7 +197,7 @@ sources:
 
 ## Verification
 
-The health check is the delegated token exchange, so a healthy result proves the key and the delegation grant for the impersonated admin. It does not call the Reports API, so the admin's Reports privilege shows only on the first fetch (a `403`, below). The env-gated e2e tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) exercise the live path. They are `#[ignore]`'d until the tenant side is provisioned, and read `GOOGLE_WORKSPACE_SA_KEY` (the key JSON or its path) or `GOOGLE_WORKSPACE_CREDENTIAL_SECRET`, `GOOGLE_WORKSPACE_ADMIN_EMAIL` and, optionally, `GOOGLE_WORKSPACE_CUSTOMER_ID`, `GOOGLE_WORKSPACE_API_URL` and `GOOGLE_WORKSPACE_TOKEN_URL` from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
+The health check is the delegated token exchange, so a healthy result proves the key and the delegation grant for the impersonated admin. It does not call the Reports API, so the admin's Reports privilege does not show until the first fetch (a `403`, below). The env-gated e2e tests in [`crates/fetcher/tests/e2e/smoke_remote.rs`](../../crates/fetcher/tests/e2e/smoke_remote.rs) exercise the live path. They are `#[ignore]`'d until the tenant side is provisioned, and read `GOOGLE_WORKSPACE_SA_KEY` (the key JSON or its path) or `GOOGLE_WORKSPACE_CREDENTIAL_SECRET`, `GOOGLE_WORKSPACE_ADMIN_EMAIL` and, optionally, `GOOGLE_WORKSPACE_CUSTOMER_ID`, `GOOGLE_WORKSPACE_API_URL` and `GOOGLE_WORKSPACE_TOKEN_URL` from the environment, with `.env-cloud` and then `.env` at the repo root loaded over it:
 
 ```bash
 # Token exchange, then a login-activity fetch (an empty window is a valid pass):
@@ -217,10 +217,10 @@ Common failures:
 
 ## Cost
 
-dfe-fetcher only reads. Service accounts, the Admin SDK / Reports API, and
-audit activity reads are not expected to carry an additional charge, though
+dfe-fetcher never writes. Service accounts, the Admin SDK / Reports API, and
+audit activity reads are not expected to have an additional charge, though
 this can depend on your Google Workspace plan. Confirm any cost implications
-against your own Google Workspace and Google Cloud agreements.
+against your Google Workspace and Google Cloud agreements.
 
 ## References
 

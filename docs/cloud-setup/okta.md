@@ -13,18 +13,18 @@ Log events from an Okta org.
 
 ## Overview
 
-dfe-fetcher pulls events from the Okta System Log API at `{tenant_url}/api/v1/logs`, one Okta org per connection (a block reads several through `connections`). It requests a time-bounded, ascending window (`since` / `until` / `limit` / `sortOrder=ASCENDING`) and pages through the RFC 5988 `Link: rel="next"` header. An optional service-config `filter` (a SCIM filter expression, the System Log's own syntax) narrows results server-side. Authentication is one of three schemes:
+dfe-fetcher pulls events from the Okta System Log API at `{tenant_url}/api/v1/logs`, one Okta org per connection (a block reads several through `connections`). It requests a time-bounded, ascending window (`since` / `until` / `limit` / `sortOrder=ASCENDING`) and pages through the RFC 5988 `Link: rel="next"` header. An optional service-config `filter` (a SCIM filter expression, the System Log's syntax) narrows results server-side. Authentication is one of three schemes:
 
 - `use_ssws_header: true` (default on the `sources.okta` block) - sends
   `Authorization: SSWS <token>` using a legacy Okta API token.
 - `use_ssws_header: false` - sends `Authorization: Bearer <token>` using an
   OAuth 2.0 access token someone else minted with the `okta.logs.read` scope.
 - An API Services app and its key pair, configured as a `sources.rest`
-  instance of the same profile: the fetcher mints its own access token, signing
+  instance of the same profile: the fetcher mints the access token itself, signing
   a private-key JWT for the client-credentials exchange.
 
 Okta recommends OAuth 2.0 over SSWS for management APIs, and the service-app
-key pair over both: an SSWS token is static and carries the permissions of the
+key pair over both: an SSWS token is static and has the permissions of the
 admin who minted it, where a service app is granted `okta.logs.read` alone and
 the private half of its key never leaves the deployment. SSWS remains supported
 and is the simplest path.
@@ -37,12 +37,12 @@ The source is the shipped `okta` REST profile (`crates/fetcher/profiles/okta.yam
   available on all tiers, and no add-on is required.
 - An administrator account to create the credential:
   - SSWS path: an admin who can mint API tokens. The token inherits that
-    admin's privileges, so use a dedicated service account whose role is
+    admin's privileges, so use a dedicated service account with a role that stays
     stable (a deactivated creator deprovisions the token).
   - OAuth path: an admin who can create an API Service / OAuth service app
     and grant it the `okta.logs.read` scope.
 - Least-privilege option: the standard **Read-only Administrator** role can
-  view System Log data and manage its own API token. Or use a custom admin
+  view System Log data and manage its API token. Or use a custom admin
   role carrying the **System Log query** permission.
 
 ## Required Permissions
@@ -64,7 +64,7 @@ All access is read-only.
 3. Name it `dfe-fetcher`. Optionally restrict the origin: pick **Any IP**,
    any defined network zone, or specific zones (recommend pinning the
    fetcher's egress IP/zone).
-4. Click **Copy to clipboard** - the token value is shown only once. Store it
+4. Click **Copy to clipboard** - the token value is shown once. Store it
    in your secrets manager.
 5. Note: SSWS tokens auto-renew on each use but are revoked after 30 days of
    inactivity, and are deprovisioned if the creating user is deactivated.
@@ -115,10 +115,10 @@ sources:
     # filter: 'eventType != "user.session.access_token"'   # CEL, hot-reloaded
 ```
 
-For an access token someone else mints, set `use_ssws_header: false` and supply it as `token` (preferably via `credential_secret`). The fetcher reads that token once and holds it for the life of the source, so a token that expires is replaced only by a restart. The service app below renews its own.
+For an access token someone else mints, set `use_ssws_header: false` and supply it as `token` (preferably via `credential_secret`). The fetcher reads that token once and holds it for the life of the source, so a token that expires is not replaced until a restart. The service app below renews its token itself.
 
 For the service app, configure the same profile as a `sources.rest` instance so
-the fetcher can hold the key and mint its own token:
+the fetcher can hold the key and mint the token itself:
 
 ```yaml
 sources:
@@ -135,7 +135,7 @@ sources:
         base_url: "https://your-tenant.okta.com"
 ```
 
-The private key is the app's own RSA PEM, the one whose public half was uploaded
+The private key is the app's RSA PEM, the one with its public half uploaded
 to Okta. Scope and assertion lifetime come from the profile, so nothing about the
 exchange has to be restated here.
 
@@ -144,11 +144,9 @@ secret. An app with ONE registered key pair is resolved without it. An app with
 two is not: Okta reads the `kid` and answers
 `The client_assertion JWT kid is invalid.` to an assertion that names none. Two
 key pairs is what a rotation looks like, so **set it before you upload a second
-public key**, not after - roll it forward as: add the new key pair in Okta, set
-`private_key` and `private_key_id` to the new pair, confirm a tick, then remove
+public key**, not after - roll it forward as: add the replacement key pair in Okta, set
+`private_key` and `private_key_id` to the replacement pair, confirm a tick, then remove
 the old public key from the app.
-
-### Environment Variables
 
 Pattern is `DFE_FETCHER_SOURCES__OKTA__<FIELD>` (double underscores).
 
@@ -158,8 +156,6 @@ DFE_FETCHER_SOURCES__OKTA__TENANT_URL="https://your-tenant.okta.com"
 DFE_FETCHER_SOURCES__OKTA__TOKEN="00your_ssws_token_here"
 DFE_FETCHER_SOURCES__OKTA__USE_SSWS_HEADER="true"
 ```
-
-### Secrets Manager
 
 Keep the token out of the config file with `credential_secret`, which
 resolves to the literal token value (SSWS token or OAuth access token):
@@ -209,9 +205,9 @@ sources:
 
 ## Cost
 
-dfe-fetcher only reads. The System Log API is not expected to carry an
+dfe-fetcher never writes. The System Log API is not expected to have an
 additional charge, though rate limits and any plan-specific terms depend on
-your Okta org. Confirm any cost implications against your own Okta plan.
+your Okta org. Confirm any cost implications against your Okta plan.
 
 ## References
 
