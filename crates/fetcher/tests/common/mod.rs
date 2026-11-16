@@ -319,8 +319,7 @@ impl VaultTestConfig {
 ///
 /// renovate: datasource=docker depName=localstack/localstack versioning=semver
 const LOCALSTACK_TAG: &str = "4.14";
-
-/// Digest of `LOCALSTACK_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `LOCALSTACK_TAG`.
 const LOCALSTACK_DIGEST: &str =
     "sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a";
 
@@ -330,15 +329,13 @@ const LOCALSTACK_DIGEST: &str =
 ///
 /// renovate: datasource=docker depName=openbao/openbao
 const OPENBAO_TAG: &str = "2.6.1";
-
-/// Digest of `OPENBAO_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `OPENBAO_TAG`.
 const OPENBAO_DIGEST: &str =
     "sha256:5b2486ab0fb90bbc788cc345b0a08616dfb375873ee8be5df3a2fd4d378a67e0";
 
 /// renovate: datasource=docker depName=postgres
 const POSTGRES_TAG: &str = "18.6-alpine";
-
-/// Digest of `POSTGRES_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `POSTGRES_TAG`.
 const POSTGRES_DIGEST: &str =
     "sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873";
 
@@ -346,8 +343,7 @@ const POSTGRES_DIGEST: &str =
 ///
 /// renovate: datasource=docker depName=mariadb
 const MARIADB_TAG: &str = "11.8.9";
-
-/// Digest of `MARIADB_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `MARIADB_TAG`.
 const MARIADB_DIGEST: &str =
     "sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15";
 
@@ -356,8 +352,7 @@ const MARIADB_DIGEST: &str =
 ///
 /// renovate: datasource=docker depName=clickhouse/clickhouse-server
 const CLICKHOUSE_TAG: &str = "26.3.42.3";
-
-/// Digest of `CLICKHOUSE_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `CLICKHOUSE_TAG`.
 const CLICKHOUSE_DIGEST: &str =
     "sha256:21d572843e59539c7d100286b6f5a6053c341fe4b33c2d7b74b1ff7cb24c5399";
 
@@ -366,8 +361,7 @@ const CLICKHOUSE_DIGEST: &str =
 ///
 /// renovate: datasource=docker depName=mongo
 const MONGO_TAG: &str = "8.3.9";
-
-/// Digest of `MONGO_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `MONGO_TAG`.
 const MONGO_DIGEST: &str =
     "sha256:81a1c8842a09589fc8d5f285266f3340bf4abdf66700ba22988f14cc9b2b3118";
 
@@ -383,9 +377,7 @@ const MONGO_KERNEL_WORKAROUND: (&str, &str) = ("GLIBC_TUNABLES", "glibc.pthread.
 ///
 /// renovate: datasource=docker depName=mcr.microsoft.com/mssql/server
 const MSSQL_TAG: &str = "2025-CU8-ubuntu-24.04";
-
-/// Digest of `MSSQL_TAG`, apart from it because the Renovate regex stops at a colon.
-/// This tag is a single amd64 manifest, not a multi-arch index.
+/// Digest of `MSSQL_TAG`, a single amd64 manifest, not a multi-arch index.
 const MSSQL_DIGEST: &str =
     "sha256:4bab24f36c1ecd48e85f7d37df26e6bf301641d84c3fe652f9a0dcc947d512e1";
 
@@ -394,8 +386,7 @@ const MSSQL_DIGEST: &str =
 ///
 /// renovate: datasource=docker depName=gvenzl/oracle-free
 const ORACLE_TAG: &str = "23.26.3-slim-faststart";
-
-/// Digest of `ORACLE_TAG`, apart from it because the Renovate regex stops at a colon.
+/// Digest of `ORACLE_TAG`.
 const ORACLE_DIGEST: &str =
     "sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093";
 

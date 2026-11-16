@@ -25,9 +25,7 @@ use dfe_fetcher::pipeline::PipelineState;
 ///
 /// renovate: datasource=docker depName=alpine
 const ALPINE_TAG: &str = "3.24.2";
-
-/// Digest of `ALPINE_TAG`, apart from it because the Renovate regex stops at a colon.
-/// This is the multi-arch index digest, so the pin holds on x64 and arm64 hosts.
+/// Digest of `ALPINE_TAG`, the multi-arch index, so the pin holds on x64 and arm64 hosts.
 const ALPINE_DIGEST: &str =
     "sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6";
 
