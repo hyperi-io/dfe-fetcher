@@ -8,9 +8,17 @@
 
 # Extractors
 
-Beside the source framework the fetcher runs external tools: a container, read through its stdout JSON lines or HTTP posts, and Vector, received over its native gRPC protocol. Neither runs a tick or keeps a checkpoint: an extractor's records go through the same enrichment and emit path as a source's ([delivery.md](delivery.md)), and its guarantee is set out below.
+The extractors are the part of [dfe-fetcher](architecture.md) that runs external tools and takes their records, with no tick and no checkpoint behind them.
 
-An external tool's records reach the fetcher three ways, and all three meet at the extractor sink before the emitter.
+| | |
+|---|---|
+| Repo | [hyperi-io/dfe-fetcher](https://github.com/hyperi-io/dfe-fetcher), `crates/fetcher/src/extractor/` and `crates/fetcher/src/ingest/` |
+| Image and chart | `ghcr.io/hyperi-io/dfe-fetcher`, and the thin chart each release assembles from `crates/fetcher/src/deployment.rs` |
+| Config reference | `extractors` and `ingest` in [config.example.yaml](../config.example.yaml). Every change needs a restart |
+| Endpoints | Ingest HTTP on 8080 (`POST /ingest/{source}`, `POST /ingest/{source}/{topic}`), Vector gRPC on 6000. Both ship off |
+| Metrics | `dfe_fetcher_extractor_*` and `dfe_fetcher_ingest_*` on `:9090/metrics` |
+
+A container can reach the fetcher two ways: printing JSON lines to stdout, or posting JSON to the ingest server. Vector runs in a container or as a sidecar and pushes over its native gRPC protocol.
 
 ```mermaid
 ---
@@ -58,28 +66,29 @@ config:
     .ui .label-icon{color:#D9480F}
     .ext .label-icon{color:#64748B}
 ---
-flowchart LR
+flowchart TB
     accTitle: L4 Detail -- Extractors
-    accDescr: External tools reach the extractors three ways. The container extractor reads a container's stdout line by line, the ingest server takes HTTP posts and the Vector receiver takes Vector's gRPC protocol. All three hand JSON records to the extractor sink, which enriches and batches them for the emitter.
+    accDescr: External tools reach the extractors three ways. The container extractor reads a container's stdout line by line, the ingest server takes HTTP posts and the Vector receiver takes Vector's gRPC protocol. All three hand JSON records to the extractor sink, which stamps and batches them for the emitter.
 
-    tools["<b>External tools</b>"]
+    tools("<b>External tools</b><br/><span>a container, Vector, a shipper</span>")
 
-    subgraph extractors["Extractors"]
-        container[["<b>Container</b><br/><span>stdout reader</span>"]]
-        ingest["<b>Ingest server</b><br/><span>HTTP 8080</span>"]
-        vector["<b>Vector receiver</b><br/><span>gRPC 6000</span>"]
-        sink["<b>Extractor sink</b>"]
+    subgraph EX["Extractors"]
+        direction LR
+        container("<b>Container</b><br/><span>stdout reader</span>")
+        ingest("<b>Ingest server</b><br/><span>HTTP 8080</span>")
+        vector("<b>Vector receiver</b><br/><span>gRPC 6000</span>")
+        sink("<b>Extractor sink</b><br/><span>stamp, batch</span>")
+        container --> sink
+        ingest --> sink
+        vector --> sink
     end
 
-    emitter["<b>Emitter</b>"]
+    emitter("<b>Emitter</b><br/><span>send, retry, dead-letter</span>")
 
-    tools -->|records| container
-    tools -->|records| ingest
-    tools -->|records| vector
-    container --> sink
-    ingest --> sink
-    vector --> sink
-    sink -->|records| emitter
+    tools -->|records| EX
+    EX -->|records| emitter
+  class tools ext
+  class container,ingest,vector,sink,emitter part
   classDef ext fill:#F4F6F8,stroke:#94A3B8,stroke-width:1.5px,stroke-dasharray:5 4,color:#0F172A
   classDef ingest fill:#FFFFFF,stroke:#0E8A7D,stroke-width:3px,color:#0F172A
   classDef xform fill:#FFFFFF,stroke:#7B4FB0,stroke-width:3px,color:#0F172A
@@ -91,39 +100,37 @@ flowchart LR
   classDef error fill:#FFFFFF,stroke:#C2410C,stroke-width:3px,color:#0F172A
   classDef control fill:#FFFFFF,stroke:#334155,stroke-width:3px,color:#0F172A
   classDef part fill:#FFFFFF,stroke:#94A3B8,stroke-width:1.5px,color:#0F172A
-  class tools ext
-  class container,ingest,vector,sink,emitter part
-  style extractors fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style EX fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
 ```
 
-*Figure 1. L4 Detail -- Extractors. The dashed box is external.* Up: [L3 Components -- dfe-fetcher](../README.md#architecture). Down: [L4 Detail -- Container extractor lifecycle](#container-extractor-lifecycle).
+*Figure 1. L4 Detail -- Extractors. The dashed box is outside DFE.* Up: [L3 Components -- dfe-fetcher](architecture.md). Down: [L4 Detail -- Container extractor lifecycle](#how-it-works).
 
-A container extractor runs its tool in Docker or podman and reads JSON lines from its stdout. A container can instead post JSON to the ingest server, and Vector, in a container or a sidecar, pushes over Vector's gRPC protocol. The ingest server and the Vector receiver are off until a deployment enables them.
+## How it works
 
-## Container Extractor Lifecycle
-
-A scheduled container waits between runs, a continuous one restarts after a backoff, and either stops at shutdown or, if continuous, at its restart limit.
+A container extractor runs its tool in Docker or podman. A scheduled one runs every `interval_secs` and waits between runs. A continuous one starts at once and is restarted after it exits.
 
 ```mermaid
 ---
 config:
   theme: base
-  look: neo
   fontFamily: Inter, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif
   themeVariables:
     fontSize: 15px
     lineColor: "#64748B"
     primaryTextColor: "#0F172A"
-    clusterBorder: "#0072B2"
-    edgeLabelBackground: "#FFFFFF"
-    primaryColor: "#FFFFFF"
-    primaryBorderColor: "#94A3B8"
-    tertiaryColor: "#F4F6F8"
+    actorBkg: "#FFFFFF"
+    actorBorder: "#94A3B8"
+    actorTextColor: "#0F172A"
+    actorLineColor: "#64748B"
+    signalColor: "#64748B"
+    signalTextColor: "#0F172A"
+  themeCSS: >-
+    .messageText{paint-order:stroke;stroke:#FFFFFF;stroke-width:3px;stroke-linejoin:round}
 ---
 stateDiagram-v2
     direction LR
     accTitle: L4 Detail -- Container extractor lifecycle
-    accDescr: A scheduled container waits an interval, runs, and waits again. A continuous container runs at once and, when it exits, waits out a backoff and runs again, It stops for good when it exits more than max_restart_attempts times with no stable run between. Shutdown stops it from any state.
+    accDescr: A scheduled container waits an interval, runs, and waits again. A continuous container runs at once and, when it exits, waits out a backoff and runs again. It stops for good when it exits more than max_restart_attempts times with no stable run between. Shutdown stops it from any state.
     [*] --> Running: continuous
     [*] --> Waiting: scheduled
     Waiting --> Running: tick
@@ -138,37 +145,29 @@ stateDiagram-v2
 
 *Figure 2. L4 Detail -- Container extractor lifecycle.* Up: [L4 Detail -- Extractors](extractors.md).
 
-A continuous extractor that exits is restarted after a backoff that doubles up
-to 64 s, or up to `max_restart_backoff_secs` when that is lower, so a setting
-above 64 changes nothing. The backoff resets once a run has stayed
-up for `stable_after_secs`. A container that exits more than
-`max_restart_attempts` times with no stable run between stops for good (0, the
-default, restarts it for ever). No health check runs during a container's run:
-an extractor is judged by its container's exit.
+The backoff doubles up to 64 s, or up to `max_restart_backoff_secs` when that is lower. It resets once a run stays up for `stable_after_secs`. A container that exits more than `max_restart_attempts` times with no stable run between stops for good (0, the default, restarts it forever). No health check runs during a run: an extractor is judged by its container's exit.
 
-## Container Communication
+The stdout reader and the ingest server hand each line or body to the sink as it came. The Vector receiver converts a push's events to JSON first. The sink stamps them as the [Emitter](delivery.md) page sets out.
 
-The HTTP mode listener needs `ingest.auth_token`: every `/ingest` call has `Authorization: Bearer <token>`. With no token the listener will not start unless `ingest.allow_unauthenticated: true` is set. The `/livez` and `/readyz` probes are exempt.
+## Interfaces
 
-The stdout reader and the ingest server hand each line or body to the extractor sink as it came, and the Vector receiver converts a push's events to JSON first. The sink enriches them as [delivery.md](delivery.md) describes.
+The ingest server needs `ingest.auth_token`, and every `/ingest` call carries `Authorization: Bearer <token>`. With no token it won't start unless `ingest.allow_unauthenticated: true` is set. `/livez` and `/readyz` are exempt. `/ingest/{source}/{topic}` takes its topic from the URL, so an open listener lets anything that reaches the port write to any topic.
 
-What each mode guarantees:
+The Vector receiver speaks cleartext gRPC, so a proxy in front of it must speak h2c. A Vector push names no instance, so the listener it arrives on decides its topic. The shared `extractors.vector.grpc_bind_address`, the one port the chart publishes, takes at most one instance and lands on its `topic`, or on `vector` when none shares it. Every other instance names a separate `grpc_bind_address`. Two instances sharing a listener are refused at load.
 
-- Vector: the receiver is built armed, so with `extractors.vector.acknowledgements.enabled` (the default) a push is not answered until its events are emitted: `OK` once the outputs took them or the DLQ confirmed them, `UNAVAILABLE` otherwise, which Vector's sink retries. A push still unanswered near its hold budget (25 s, less when Vector sets a deadline) is answered `UNAVAILABLE` as well, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. When the fetcher's memory-pressure latch holds, a push is refused `UNAVAILABLE` before any work.
-- HTTP: with `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` once the outputs took the record, not before, or the DLQ confirmed it, and `503` otherwise, with `Retry-After` when the outputs pushed back. Disabled, a ready pipeline answers `200` at once and delivers the record after, so a failed delivery or a crash loses it. Such a loss counts in `dfe_fetcher_extractor_records_failed_total{extractor="ingest",outcome="dropped"}`.
-- stdout: a pipe cannot be read twice, so a line the outputs cannot take yet is held and retried, pausing from 1 s up to 30 s, and the container's stdout is not read meanwhile, so the container blocks on its writes until the outputs recover. A line is dropped when a failure no retry can clear (no output configured), or a line still held at shutdown after one more attempt, is dropped, counted in `dfe_fetcher_extractor_records_failed_total{extractor="container",outcome="dropped"}` and never in the received count.
+## Scaling and failure
 
-## Shutdown and the Vector listeners
+What each mode guarantees its sender:
 
-At shutdown the extractors deliver what they hold before the outputs close, for up to 20 s: the Vector receiver rejects further pushes and delivers what it has queued, and a container extractor stops its container and reads its stdout to the end. A scheduled container's `timeout_secs` bounds the whole run, stdout included: at the timeout the container is killed and the run fails. A line held for an output outage is not interrupted by the timeout. The kill follows once the line is delivered.
+- Vector: With `extractors.vector.acknowledgements.enabled` (the default), a push is answered `OK` once the outputs took its events or the DLQ confirmed them, and `UNAVAILABLE` otherwise. Vector's sink retries. A push still unanswered near its 25 s hold budget is answered `UNAVAILABLE` too, so a slow output can duplicate but not lose. Disabled, a push is answered once queued and a crash loses it. Under memory pressure a push is refused `UNAVAILABLE` before any work.
+- HTTP: With `ingest.acknowledgements.enabled` (the default), `/ingest` answers `200` once the outputs took the record or the DLQ confirmed it, and `503` otherwise, with `Retry-After` on backpressure. Disabled, it answers `200` at once and a failed delivery loses the record.
+- stdout: A pipe can't be read twice, so a line the outputs can't take is held and retried from 1 s up to 30 s. The container blocks on its writes meanwhile. A line with no output to go to, or still held at shutdown, is dropped and counted.
 
-A Vector listener that cannot bind at start-up fails the process: it drains, stops its containers and exits non-zero, so the pod restarts rather than stay Ready with a dead intake.
-
-A Vector push names no instance, so the listener it arrives on decides its topic. The shared `extractors.vector.grpc_bind_address`, the one port the chart publishes, has at most one instance and lands on that instance's `topic`, or on `vector` when none shares it. Every other instance names a separate `grpc_bind_address` and lands on that `topic`. Two instances sharing the listener are refused at load.
+At shutdown the extractors deliver what they hold for up to 20 s before the outputs close. A scheduled container's `timeout_secs` bounds the whole run, stdout included. A Vector listener that can't bind at start-up fails the process, so the pod restarts rather than stay Ready with a dead intake.
 
 ## Profile, container or Vector
 
-A REST or JSON API becomes a profile, a database or files a db or file block, and anything else a Vector or container extractor.
+A REST or JSON API becomes a profile, a database or files a `sources.db` or `sources.file` block, and anything else an extractor.
 
 ```mermaid
 ---
@@ -216,24 +215,38 @@ config:
     .ui .label-icon{color:#D9480F}
     .ext .label-icon{color:#64748B}
 ---
-flowchart LR
+flowchart TB
     accTitle: L4 Detail -- Choosing a mode for a source
     accDescr: A REST or JSON API becomes a profile. A database or a set of files becomes a sources.db or sources.file block. Anything else runs on Vector when Vector has a source for it, and in a container otherwise.
 
-    api{"<b>REST or<br/>JSON API?</b>"}
-    profile(["<b>Profile</b>"])
-    store{"<b>Database<br/>or files?</b>"}
-    dbfile(["<b>sources.db or<br/>sources.file</b>"])
-    hasvector{"<b>Vector has<br/>a source?</b>"}
-    vector(["<b>Vector</b>"])
-    container(["<b>Container</b>"])
+    subgraph Q1["API"]
+        direction LR
+        api{"<b>REST or<br/>JSON API?</b>"}
+        profile(["<b>Profile</b>"])
+        api -->|yes| profile
+    end
 
-    api -->|yes| profile
-    api -->|no| store
-    store -->|yes| dbfile
-    store -->|no| hasvector
-    hasvector -->|yes| vector
-    hasvector -->|no| container
+    subgraph Q2["Store"]
+        direction LR
+        store{"<b>Database<br/>or files?</b>"}
+        dbfile(["<b>sources.db or<br/>sources.file</b>"])
+        store -->|yes| dbfile
+    end
+
+    subgraph Q3["Anything else"]
+        direction LR
+        hasvector{"<b>Vector has<br/>a source?</b>"}
+        vector(["<b>Vector</b>"])
+        container(["<b>Container</b>"])
+        hasvector -->|yes| vector
+        hasvector -->|no| container
+    end
+
+    Q1 -->|no| Q2
+    Q2 -->|no| Q3
+
+  class api,store,hasvector decision
+  class profile,dbfile,vector,container part
   classDef ext fill:#F4F6F8,stroke:#94A3B8,stroke-width:1.5px,stroke-dasharray:5 4,color:#0F172A
   classDef ingest fill:#FFFFFF,stroke:#0E8A7D,stroke-width:3px,color:#0F172A
   classDef xform fill:#FFFFFF,stroke:#7B4FB0,stroke-width:3px,color:#0F172A
@@ -245,11 +258,12 @@ flowchart LR
   classDef error fill:#FFFFFF,stroke:#C2410C,stroke-width:3px,color:#0F172A
   classDef control fill:#FFFFFF,stroke:#334155,stroke-width:3px,color:#0F172A
   classDef part fill:#FFFFFF,stroke:#94A3B8,stroke-width:1.5px,color:#0F172A
-  class api,store,hasvector decision
-  class profile,dbfile,vector,container part
+  style Q1 fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style Q2 fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style Q3 fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
 ```
 
-*Figure 3. L4 Detail -- Choosing a mode for a source.* Up: [L3 Components -- dfe-fetcher](../README.md#architecture).
+*Figure 3. L4 Detail -- Choosing a mode for a source.* Up: [L4 Detail -- Extractors](extractors.md).
 
 A profile that needs a signer, a lister, a row builder or a paging quirk adds a hook on the matching axis in `crates/rest` and stays a profile.
 
@@ -262,8 +276,6 @@ A profile that needs a signer, a lister, a row builder or a paging quirk adds a 
 | Third-party maintained | - | Yes | Yes |
 | Wanted: checkpoint after ack, the snapshot envelope, the memory brake | Yes | - | - |
 
-Sources the fetcher pulls, and the mode each takes:
-
 | Source | Mode | Reason |
 |--------|------|--------|
 | AWS CloudTrail | Profile | JSON API signed with the `sigv4` auth mode |
@@ -273,21 +285,22 @@ Sources the fetcher pulls, and the mode each takes:
 | An inventory database | `sources.db` | A table dumped whole or tailed by key |
 | Prometheus exporters | Container | A mature exporter run as a sidecar |
 | Syslog collection | Vector | Vector has a native syslog source |
+| Network captures | Container | Zeek or Suricata printing JSON lines |
 
-For log sources that established tools handle well, use container extractors
-with a collection agent that can print JSON lines or POST JSON, such as Vector
-or Fluent Bit. Filebeat has no HTTP output ([its outputs](https://www.elastic.co/docs/reference/beats/filebeat/configuring-output) are Elastic Cloud, Elasticsearch, Logstash, Kafka, Redis, file, console and discard), so ship Beats data to dfe-receiver's Lumberjack listener instead.
+A log file the fetcher can read is a `sources.file` tail unit, not a container. Filebeat has no HTTP output ([its outputs](https://www.elastic.co/docs/reference/beats/filebeat/configuring-output)), so Beats data goes to dfe-receiver's Lumberjack listener instead.
 
-| Source Type | Sidecar Tool | Communication |
-|-------------|-------------|---------------|
-| Syslog | Vector or Fluent Bit | HTTP POST to `/ingest/syslog` |
-| Windows Event Logs | A forwarder that POSTs JSON (winlogbeat is a separate Beat with the same output limits) | HTTP POST to `/ingest/windows_events` |
-| Custom app logs | A shipper that prints JSON lines | stdout JSON lines |
-| Network captures | Zeek / Suricata | stdout JSON lines |
-| Cloud provider logs | Cloud-specific CLI tools | stdout JSON lines |
+## Key metrics
 
-Each sidecar runs as a container extractor with `mode: continuous` and
-communicates via stdout (JSON lines) or HTTP POST to the ingest endpoint.
-The fetcher manages the container lifecycle including restart-on-crash with
-exponential backoff. A log file the fetcher itself can reach is a
-`sources.file` tail unit instead.
+| Metric | Healthy when |
+|---|---|
+| `dfe_fetcher_active_extractors` | Matches the extractors configured |
+| `dfe_fetcher_extractor_runs_error_total` | Flat. A rise is a container exiting non-zero |
+| `dfe_fetcher_extractor_restart_exhausted_total` | Zero. Any count is a container stopped for good |
+| `dfe_fetcher_extractor_records_failed_total{extractor,outcome}` | No `dropped` outcomes |
+| `dfe_fetcher_ingest_requests_total` | `503`s stay rare |
+
+## Related
+
+- [Emitter](delivery.md), where the sink's batches go
+- [Source framework](internals.md), the scheduled path for APIs, databases and files
+- [config.example.yaml](../config.example.yaml), every extractor and ingest key

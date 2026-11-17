@@ -1,63 +1,177 @@
 <!-- Project:   dfe-fetcher                                                -->
 <!-- File:      docs/delivery.md                                           -->
-<!-- Purpose:   What happens to a record between its source and the output -->
+<!-- Purpose:   The emitter: sends, dead letters, guarantees and stamps    -->
 <!-- Language:  Markdown                                                   -->
 <!--                                                                       -->
 <!-- License:   BUSL-1.1                                                   -->
 <!-- Copyright: (c) 2026 HYPERI PTY LIMITED                                -->
 
-# Delivery, enrichment and cursors
+# Emitter
 
-What happens to a record between its source and the output: the emit path, its dead letters, the guarantee each intake gives, the fields enrichment stamps, and what a tick does with no cursor. The tick itself is in [internals.md](internals.md#one-tick).
+The emitter is the one delivery path in [dfe-fetcher](architecture.md): every batch from the source framework and the extractors leaves through it.
 
-## Emit
+| | |
+|---|---|
+| Repo | [hyperi-io/dfe-fetcher](https://github.com/hyperi-io/dfe-fetcher), `crates/fetcher/src/emit.rs` and `crates/fetcher/src/pipeline/` |
+| Image and chart | `ghcr.io/hyperi-io/dfe-fetcher`, and the thin chart each release assembles from `crates/fetcher/src/deployment.rs` |
+| Config reference | `output`, `kafka`, `accumulate` and `dlq` in [config.example.yaml](../config.example.yaml) |
+| Endpoints | Outbound to Kafka, or to a gRPC endpoint such as `http://dfe-loader:6000` |
+| Metrics | `pipeline_dead_letters_dropped_total`, `pipeline_delivery_guarantee`, `usage_ingested_bytes_total` on `:9090/metrics` |
 
-The emitter issues a flush's sends as concurrent futures (`accumulate.in_flight`
-at a time). Every record gets a terminal outcome: sent, dead-lettered (the
-transport refused that record and would again, so the record goes to the DLQ
-with its payload cut at `dlq.max_payload_bytes`), or backpressured. The
-backpressured subset is retried with a bounded backoff and, if still refused,
-the whole tick aborts without a checkpoint so the scheduler's stall handling
-takes over. A failure every record shares (the transport closed or timed out,
-the broker gone) is not a dead letter: the tick aborts and the rows are
-fetched again.
+The emitter batches nothing itself. The driver and the extractor sink build the batches and stamp each record first, through one shared enrichment step.
 
-## Dead letters
+```mermaid
+---
+config:
+  theme: base
+  look: neo
+  fontFamily: Inter, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif
+  flowchart:
+    curve: linear
+    nodeSpacing: 40
+    rankSpacing: 64
+    padding: 18
+    wrappingWidth: 280
+    htmlLabels: true
+  elk:
+    preset: modelOrder
+  themeVariables:
+    fontSize: 15px
+    lineColor: "#64748B"
+    primaryTextColor: "#0F172A"
+    clusterBorder: "#0072B2"
+    edgeLabelBackground: "#FFFFFF"
+  themeCSS: >-
+    p{margin:0}
+    .node[data-look] rect,.node[data-look] path,.node[data-look] polygon,.node[data-look] .outer-path{filter:drop-shadow(0 1px 2px rgba(15,23,42,.10)) drop-shadow(0 6px 14px rgba(15,23,42,.10))}
+    .node rect{rx:10px;ry:10px}
+    .cluster rect{rx:16px;ry:16px}
+    .node .label div{min-width:150px}
+    .node.decision .label div{min-width:0}
+    .cluster[data-look] rect{filter:none}
+    .nodeLabel{line-height:1.35}
+    .nodeLabel b{font-weight:600;font-size:15px;letter-spacing:-0.01em}
+    .nodeLabel span{font-size:12.5px;font-weight:400;color:#334155}
+    .cluster-label span.nodeLabel{display:inline-block;background:#FFFFFF;color:#0B2A3F;border:1.5px solid #0072B2;border-radius:999px;padding:2px 12px;font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+    .flowchart-link{stroke-width:1.75px}
+    .labelBkg{background:transparent!important}
+    span.edgeLabel{display:inline-block;background:#FFFFFF!important;color:#1E293B;border:1px solid #94A3B8;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500}
+    span.edgeLabel p{background:transparent!important}
+    .label-icon{width:20px;height:20px;vertical-align:-4px;margin-right:6px}
+    .ingest .label-icon{color:#0E8A7D}
+    .xform .label-icon{color:#7B4FB0}
+    .load .label-icon{color:#0072B2}
+    .bus .label-icon{color:#A8517F}
+    .store .label-icon{color:#00785A}
+    .ui .label-icon{color:#D9480F}
+    .ext .label-icon{color:#64748B}
+---
+flowchart TB
+    accTitle: L4 Detail -- Emitter
+    accDescr: The source framework and the extractors hand stamped batches to the emitter. The emitter sends each batch's records concurrently, retries the backpressured ones and writes a refused record to the dead letters. Records go to Kafka topics or a DFE service over gRPC.
 
-A dead letter does not count until the DLQ confirms a backend holds it (scalo's `Dlq::write_confirmed`: on disk for the file backend, acked by the broker for Kafka). A write the DLQ rejects or cannot confirm aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds and the record is fetched again.
+    subgraph FROM["Into the emitter"]
+        direction LR
+        framework("<b>Source framework</b><br/><span>batches per unit</span>")
+        extractors("<b>Extractors</b><br/><span>batches per push or line</span>")
+    end
 
-An enabled DLQ with no backend that starts (an unwritable spool directory, a Kafka backend with no client config) logs an ERROR at startup and rejects every dead-letter write, so a refused record stays unacknowledged: its tick aborts and fetches it again rather than counting it held. A DLQ config that does not parse fails startup.
+    subgraph EM["Emitter"]
+        direction LR
+        send("<b>Send</b><br/><span>accumulate.in_flight at once</span>")
+        retry("<b>Retry</b><br/><span>backpressured records</span>")
+        dead("<b>Dead-letter</b><br/><span>refused records</span>")
+        send --> retry
+        send --> dead
+    end
 
-With no DLQ configured, or a disabled one, a record the transport rejects is still refused for good, so fetching it again would hold the source back and gain nothing. It is dropped and counted in `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, an oversize row in `{reason="too_large"}` (with a warn-level log line, debounced to one every 10 seconds a connection) and a row enrichment refused in `{reason="unstampable"}`, and the tick goes on. A dead letter no DLQ backend can ever hold (scalo's `Dlq::refusal`) is left out of the DLQ write and dropped the same way, counted under scalo's reason. A `kafka_only` DLQ has such a ceiling, the producer's `message.max.bytes` once encoded, and the default `dlq.max_payload_bytes` cut keeps an entry under it. Any other DLQ failure can clear, so it still aborts the tick.
+    subgraph TO["Destinations"]
+        direction LR
+        kafka[("<b>Kafka</b><br/><span>*_land topics</span>")]
+        grpc("<b>DFE service</b><br/><span>over gRPC</span>")
+    end
 
-## Delivery guarantees
+    subgraph DL["Dead letters"]
+        direction LR
+        dlq[("<b>DLQ</b><br/><span>Kafka topic or file spool</span>")]
+    end
 
-Each intake reports the guarantee it gives in `pipeline_delivery_guarantee{listener, guarantee, reason}`, from scalo's `EffectiveGuarantee::publish_for` against what the outputs confirm. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. The ingest listener and Vector follow their `acknowledgements` setting, and a container's stdout is `best_effort` (`source_cannot_ack`).
+    FROM --> EM
+    EM --> TO
+    EM -.->|refused for good| DL
+  class framework,extractors,send,retry,dead part
+  class kafka,dlq bus
+  class grpc load
+  classDef ext fill:#F4F6F8,stroke:#94A3B8,stroke-width:1.5px,stroke-dasharray:5 4,color:#0F172A
+  classDef ingest fill:#FFFFFF,stroke:#0E8A7D,stroke-width:3px,color:#0F172A
+  classDef xform fill:#FFFFFF,stroke:#7B4FB0,stroke-width:3px,color:#0F172A
+  classDef load fill:#FFFFFF,stroke:#0072B2,stroke-width:3px,color:#0F172A
+  classDef bus fill:#FFFFFF,stroke:#A8517F,stroke-width:3px,color:#0F172A
+  classDef store fill:#FFFFFF,stroke:#00785A,stroke-width:3px,color:#0F172A
+  classDef ui fill:#FFFFFF,stroke:#D9480F,stroke-width:3px,color:#0F172A
+  classDef decision fill:#FFFFFF,stroke:#9A6700,stroke-width:3px,color:#0F172A
+  classDef error fill:#FFFFFF,stroke:#C2410C,stroke-width:3px,color:#0F172A
+  classDef control fill:#FFFFFF,stroke:#334155,stroke-width:3px,color:#0F172A
+  classDef part fill:#FFFFFF,stroke:#94A3B8,stroke-width:1.5px,color:#0F172A
+  style FROM fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style EM fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style TO fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style DL fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+```
 
-## Enrichment
+*Figure 1. L4 Detail -- Emitter. The dotted arrow is the dead-letter path.* Up: [L3 Components -- dfe-fetcher](architecture.md).
 
-Five names are reserved on every record: `_timestamp_fetcher`, `_timestamp_received`, `_source` (the topic base, or the destination a single-destination route names), `_source_fetcher` (`<connection>.<unit>`) and `_org_id` (`org_id`, else `default_org_id`). The per-source CEL filter runs on the provider's row before they are added, so a filter cannot reference them. A payload that has one keeps its value under `<key>_original` and the fetcher's value takes the name: the loader routes on `_source` and the record's org is its `_org_id`, so the fetcher's values have to be the ones that survive, and a record carrying the same top-level key twice is rejected outright by ClickHouse rather than dead-lettered.
+## How it works
 
-`<key>_original` is never overwritten. A payload that has both the
-reserved name and its `_original` -- a replayed record on a second enrich
-pass, say -- keeps the `_original` it arrived with, and the colliding value is
-parked under the next free `<key>_original_<n>` counting from 2, with a
-warning naming the key.
+1. A flush's records go out as concurrent sends, `accumulate.in_flight` at a time.
+2. Every record ends sent, dead-lettered or backpressured.
+3. The backpressured ones are retried with a bounded backoff. If they are still refused, the whole tick aborts with no checkpoint and the scheduler's stall handling takes over.
+4. A record the transport refuses, and would refuse again, goes to the DLQ with its payload cut at `dlq.max_payload_bytes`.
 
-## Payloads that are not one object
+A failure every record shares (the transport closed or timed out, the broker gone) is not a dead letter. The tick aborts and the rows are fetched again. That is the at-least-once side of the contract.
 
-A payload that opens as a JSON object, after whitespace or a UTF-8 byte-order mark, and cannot be stamped is refused, because sent as it came it would keep any `_org_id` its sender gave it. That is an object with no closing brace, or one that may have a reserved key and does not parse. "May have" is a byte scan for the names and for any backslash, since an escape can spell a name, so a payload that fails to parse cannot be shown free of one, and appending the fetcher's stamp could give the record two `_org_id`. A refused row is never sent: it is dead-lettered with the reason, or with no DLQ dropped and counted in `pipeline_dead_letters_dropped_total{reason="unstampable"}`, and its bytes count for no org. A stamped row leaves without the byte-order mark.
+A flush that settles adds each sent record's fetched length to `usage_ingested_bytes_total{org_id}`. A dead-lettered or dropped record isn't counted, and neither is any record of a flush that aborts, because the fetch sends it again.
 
-A JSON array of objects goes out as one record per element, each stamped, because the loader splits an array into its elements and an element with no `_org_id` lands in its default org. A body of two or more whitespace-separated objects and nothing else, newline-delimited records in one payload, is split the same way, exactly where the loader's split would fan it out: the stamp lands before the last closing brace, so sent whole it would reach the last record and no other. Each record counts for usage at its length before the stamp, and the row's mark rides its last record. `[]` goes out as nothing.
+## Interfaces
 
-A binary row, and a payload that is neither an object nor such a split body (a scalar, plain text, an array holding a non-object), goes out verbatim with no `_org_id`. The loader rejects it, though the archiver may keep it. Its usage counts under `default_org_id`, because usage measures ingest into the platform, not what the loader stores.
+`output.type` picks `kafka`, `grpc` or `both`. `output.destinations` names other places a record can go, and `output.routes` sends matching records there. A route to one destination stamps that name as `_source`, so the record lands in that source's table. A fan-out keeps the fetching source's `_source`.
 
-## Cursor cold start
+Every record leaves with five reserved fields:
 
-A tick with no window cursor stored, or no cursor store at all, is a cold start. Every one counts in `dfe_fetcher_cursor_cold_start_total{source}`, because an empty store cannot tell a new source from a lost cursor: a cursor directory with no volume behind it loses every cursor on a restart. Under `lookback` the first cold start of a source logs a WARN and later ones log at DEBUG, since with no store at all every tick is one. Under `refuse` the tick is refused and logs an ERROR, at most once every 10 s.
+| Field | Value |
+|---|---|
+| `_timestamp_fetcher`, `_timestamp_received` | When the fetcher took the record |
+| `_source` | The topic base, or the destination a single-destination route names |
+| `_source_fetcher` | `<connection>.<unit>` |
+| `_org_id` | `org_id`, else `default_org_id` |
 
-A window cursor read that fails is a fault, not a cold start. The cursor may still be stored further back than the lookback, so the tick is refused under either `on_missing_cursor` setting and the next tick reads again. The window stays where the stored cursor left it, rather than sliding forward and skipping what sat behind it. Each refusal counts in `dfe_fetcher_cursor_read_failures_total{source}` and as a failed fetch, and logs an ERROR at most once every 10 s per source.
+The per-source CEL filter runs before these are added, so it can't reference them. A payload that has one keeps its value under `<key>_original`, and the fetcher's value takes the name. The loader routes on `_source` and a record's org is its `_org_id`, so the fetcher's values must be the ones that survive. `<key>_original` is never overwritten: a second collision goes to `<key>_original_<n>`, counting from 2.
 
-A unit checkpoint (a tail's key, a lister's last object, a file's offset) is read differently. A read of it that fails logs `checkpoint read failed; starting the unit over` and the unit runs as if it had none, so it reads again what an empty checkpoint starts from.
+A JSON array of objects goes out as one record per element, each stamped, because the loader splits arrays and an unstamped element would land in the default org. A body of several whitespace-separated objects is split the same way. `[]` goes out as nothing.
 
-`cursor.on_missing_cursor` decides what the tick does. `lookback` (the default) fetches the last `default_window_hours`, so a new source starts unaided and a lost cursor skips anything older. `refuse` fetches nothing and fails the tick until a cursor exists, so a lost cursor never skips data and a new source never starts unaided. Each refused tick counts as a failed fetch, and the refusal logs an ERROR at most once every 10 s per source.
+A payload that opens as a JSON object and can't be stamped is refused, because sent as it came it would keep any `_org_id` its sender gave it. A binary row, a scalar or plain text goes out verbatim with no `_org_id`. The loader rejects it, and the archiver may keep it.
+
+## Scaling and failure
+
+A dead letter counts once the DLQ confirms a backend holds it: on disk for the file backend, acked by the broker for Kafka. A DLQ write that is rejected or unconfirmed aborts the tick like a transport failure, so the checkpoint never passes a record nothing holds. On Kubernetes the chart sets `dlq.mode: kafka_only`, so dead letters go to the `dfe_fetcher_dlq` topic.
+
+An enabled DLQ with no backend that starts logs an ERROR at startup and rejects every dead-letter write, so a refused record is fetched again. A DLQ config that doesn't parse fails startup.
+
+With no DLQ, a refused record is dropped and counted in `pipeline_dead_letters_dropped_total{reason}`: `transport_refused`, `too_large` for an oversize row and `unstampable` for a row enrichment refused. Fetching it again would hold the source back for nothing. A dead letter too big for any DLQ backend is dropped the same way. The default `dlq.max_payload_bytes` cut keeps an entry under Kafka's `message.max.bytes`.
+
+Each intake reports its guarantee in `pipeline_delivery_guarantee{listener,guarantee,reason}`. A scheduled source and the ingest listener hold their cursor or answer until delivery, so over Kafka or gRPC they are `at_least_once`. A container's stdout is `best_effort`.
+
+## Key metrics
+
+| Metric | Healthy when |
+|---|---|
+| `pipeline_dead_letters_dropped_total{reason}` | Flat. Any rise is records lost with no DLQ |
+| `pipeline_delivery_guarantee{listener,guarantee}` | `at_least_once` on every scheduled source |
+| `dfe_fetcher_transport_send_duration_seconds` | Steady. A climb is the transport pushing back |
+| `usage_ingested_bytes_total{org_id}` | Tracks what the providers hand over |
+
+## Related
+
+- [Source framework](internals.md), where batches come from and when cursors commit
+- [Extractors](extractors.md), what each extractor guarantees its sender
+- [reference/snapshot-envelope.md](reference/snapshot-envelope.md), how a dump is framed

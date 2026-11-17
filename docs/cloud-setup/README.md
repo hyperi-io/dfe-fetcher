@@ -17,7 +17,7 @@ Pub/Sub acknowledges what it delivered. Nothing else changes provider state.
 For the fetcher's configuration (scheduler, output, credential resolution,
 the `sources.db` and `sources.file` blocks), see
 [config.example.yaml](../../config.example.yaml). The architecture is in
-[../internals.md](../internals.md) and the profile grammar in
+[../architecture.md](../architecture.md) and the profile grammar in
 [../reference/profile-grammar.md](../reference/profile-grammar.md).
 
 | Provider | Data it pulls | Guide |
