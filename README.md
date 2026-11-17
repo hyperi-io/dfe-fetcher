@@ -16,9 +16,7 @@ Every record goes to the DFE pipeline over Kafka or gRPC, the same way dfe-recei
 
 ## Architecture
 
-Two input families feed one emit path. The source framework polls: a REST profile, a database or a file per connection. The extractors take what external tools hand over: a container's stdout, posts to the ingest endpoint and Vector's gRPC protocol. Any combination runs at once.
-
-Records from the source framework and the extractors meet at the emitter, which sends them to the DFE pipeline and dead-letters what the transport rejects for good.
+The source framework polls APIs, databases and files on a schedule. The extractors take what external tools hand over. Any combination runs at once, and every record leaves through one emitter.
 
 ```mermaid
 ---
@@ -66,30 +64,50 @@ config:
     .ui .label-icon{color:#D9480F}
     .ext .label-icon{color:#64748B}
 ---
-flowchart LR
+flowchart TB
     accTitle: L3 Components -- dfe-fetcher
-    accDescr: APIs, databases and files feed the source framework, and external tools feed the extractors. Both hand records to the emitter, which sends them through the output transport to the DFE pipeline and dead-letters a record the transport refuses for good, when a DLQ is configured.
+    accDescr: dfe-engine writes the fetcher's config. APIs, databases and files feed the source framework, and external tools feed the extractors. Inside dfe-fetcher both hand records to the emitter, which sends them to Kafka topics or a DFE service over gRPC. A record the transport refuses for good goes to the dead letters.
 
-    providers["<b>APIs, databases, files</b>"]
-    tools["<b>External tools</b>"]
-
-    subgraph fetcher["dfe-fetcher"]
-        framework[["<b>Source framework</b>"]]
-        extractors[["<b>Extractors</b>"]]
-        emitter["<b>Emitter</b>"]
-        output["<b>Output transport</b>"]
-        dlq[("<b>Dead letters</b>")]
+    subgraph CTRL["Control"]
+        direction LR
+        engine("<b>dfe-engine</b><br/><span>writes the config</span>")
     end
 
-    dfe["<b>DFE pipeline</b>"]
+    subgraph IN["Inputs"]
+        direction LR
+        providers("<b>APIs, databases, files</b><br/><span>polled by the framework</span>")
+        tools("<b>External tools</b><br/><span>run or heard by extractors</span>")
+    end
 
-    providers -->|records| framework
-    tools -->|records| extractors
-    framework --> emitter
-    extractors --> emitter
-    emitter --> output
-    emitter -.-> dlq
-    output -->|records| dfe
+    subgraph FETCH["dfe-fetcher"]
+        direction LR
+        framework("<b>Source framework</b><br/><span>REST, DB and file readers</span>")
+        extractors("<b>Extractors</b><br/><span>container, ingest, Vector</span>")
+        emitter("<b>Emitter</b><br/><span>send, retry, dead-letter</span>")
+        framework --> emitter
+        extractors --> emitter
+    end
+
+    subgraph OUT["Destinations"]
+        direction LR
+        kafka[("<b>Kafka</b><br/><span>*_land topics</span>")]
+        grpc("<b>DFE service</b><br/><span>over gRPC</span>")
+    end
+
+    subgraph DL["Dead letters"]
+        direction LR
+        dlq[("<b>DLQ</b><br/><span>Kafka topic or file spool</span>")]
+    end
+
+    CTRL -.->|config| FETCH
+    IN --> FETCH
+    FETCH --> OUT
+    FETCH -.->|refused for good| DL
+  class providers,tools ext
+  class engine control
+  class framework,extractors,emitter part
+  class kafka,dlq bus
+  class grpc load
   classDef ext fill:#F4F6F8,stroke:#94A3B8,stroke-width:1.5px,stroke-dasharray:5 4,color:#0F172A
   classDef ingest fill:#FFFFFF,stroke:#0E8A7D,stroke-width:3px,color:#0F172A
   classDef xform fill:#FFFFFF,stroke:#7B4FB0,stroke-width:3px,color:#0F172A
@@ -101,15 +119,16 @@ flowchart LR
   classDef error fill:#FFFFFF,stroke:#C2410C,stroke-width:3px,color:#0F172A
   classDef control fill:#FFFFFF,stroke:#334155,stroke-width:3px,color:#0F172A
   classDef part fill:#FFFFFF,stroke:#94A3B8,stroke-width:1.5px,color:#0F172A
-  class providers,tools ext
-  class framework,extractors,emitter,output part
-  class dlq,dfe bus
-  style fetcher fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style CTRL fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style IN fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style FETCH fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style OUT fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+  style DL fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
 ```
 
-*Figure 1. L3 Components -- dfe-fetcher. Dashed boxes are external, and the dotted arrow is the dead-letter path.* Up: top of dfe-fetcher. Down: [L4 Detail -- Source framework](docs/internals.md#source-framework), [L4 Detail -- Extractors](docs/extractors.md).
+*Figure 1. L3 Components -- dfe-fetcher. Dashed boxes are outside DFE, and dotted arrows are config and dead letters.* Up: top of dfe-fetcher. Down: [dfe-fetcher architecture](docs/architecture.md).
 
-The output transport is Kafka, gRPC or both. What the emitter does with each record, the dead letters and the delivery guarantees are in [docs/delivery.md](docs/delivery.md).
+What each part does, what the fetcher depends on and why it is built this way are in [docs/architecture.md](docs/architecture.md).
 
 ## Quick start
 
@@ -128,7 +147,7 @@ A default build has the REST sources and the file dump. The database engines and
 
 ## Configuration
 
-[config.example.yaml](config.example.yaml) is the annotated reference, [docs/config-schema.yaml](docs/config-schema.yaml) the generated list of every key, and [docs/reference/profile-grammar.md](docs/reference/profile-grammar.md) the profile grammar field by field. Settings load through a cascade: CLI flags, then `DFE_FETCHER_*` environment variables, then the config file, then defaults. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's search for `settings.yaml` and `defaults.yaml` stands in, with `.env` read from the working directory, as [docs/internals.md](docs/internals.md#configuration-cascade) sets out. Each provider has its typed block (`sources.aws`, `sources.okta`, and so on), and `sources.rest.<id>` takes a shipped or inline profile. A second account of a provider, or an API with no typed block, is a `sources.rest.<id>` instance. The id is the connection id: the cursor key, the metric and log label, and the prefix of `_source_fetcher` on every record.
+[config.example.yaml](config.example.yaml) is the annotated reference, [docs/config-schema.yaml](docs/config-schema.yaml) the generated list of every key, and [docs/reference/profile-grammar.md](docs/reference/profile-grammar.md) the profile grammar field by field. Settings load through a cascade: CLI flags, then `DFE_FETCHER_*` environment variables, then the config file, then defaults. The file is the one `--config` names, and there is no `DFE_FETCHER_CONFIG` variable. Without `--config`, scalo's search for `settings.yaml` and `defaults.yaml` stands in, with `.env` read from the working directory, as [docs/reference/configuration.md](docs/reference/configuration.md) sets out. Each provider has its typed block (`sources.aws`, `sources.okta`, and so on), and `sources.rest.<id>` takes a shipped or inline profile. A second account of a provider, or an API with no typed block, is a `sources.rest.<id>` instance. The id is the connection id: the cursor key, the metric and log label, and the prefix of `_source_fetcher` on every record.
 
 Credential and identity fields take a spec: `vault:<mount>/<path>:<key>` (or its `bao:` and `openbao:` spellings), `env:NAME`, `file:<path>`, or a literal. Identity fields (tenant, account, client id and the like) resolve at startup, and one that cannot be resolved stops the process with a configuration error. A reload that changes a source resolves its specs again. A provider secret resolves on first use and is held until its source is rebuilt or the process restarts, so a secret rotated behind an unchanged spec takes a restart. An `aws:` spec is refused at load, because the fetcher is not built with the AWS Secrets Manager resolver. [Credentials in Kubernetes](docs/cloud-setup/README.md#credentials-in-kubernetes) shows how a deployment supplies them.
 
@@ -153,10 +172,10 @@ An API starts as a profile, shipped under `crates/fetcher/profiles/` or inline u
 
 ## Documentation
 
-- [docs/internals.md](docs/internals.md): the system, the framework's tick and the configuration cascade, with diagrams.
-- [docs/delivery.md](docs/delivery.md) and [docs/extractors.md](docs/extractors.md): what happens to a record on its way out, and the container and Vector extractors.
-- [docs/architecture.md](docs/architecture.md): the codemap of the Cargo workspace.
-- [docs/reference/](docs/reference/profile-grammar.md): the profile grammar, the snapshot envelope and the database drivers.
+- [docs/architecture.md](docs/architecture.md): the parts, how data flows through them and why it is built this way.
+- [docs/internals.md](docs/internals.md): the source framework, its readers and the tick.
+- [docs/delivery.md](docs/delivery.md) and [docs/extractors.md](docs/extractors.md): the emitter, and the container and Vector extractors.
+- [docs/reference/](docs/reference/README.md): the profile grammar, the snapshot envelope, the database drivers and the configuration cascade.
 - [docs/cloud-setup/](docs/cloud-setup/README.md): one setup guide per provider.
 - [docs/testing.md](docs/testing.md): the test tiers and the live-API suites.
 

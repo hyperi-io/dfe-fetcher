@@ -157,7 +157,106 @@ listener with no `auth_token` will not start unless
 | `third-party/vector-file-source{,-common}` | Vector's file tailer (MIT), copied in, and `crates/file` is the one crate that depends on it, by path. |
 | `scripts/generics_gates.py` | The generics acceptance gates: one framework site per provider mechanism, the crate dependency direction, per-hook line budgets. |
 | `config.example.yaml` | The annotated reference. `docs/config-schema.yaml` is the generated list of every key. |
-| `docs/architecture.md`, `docs/internals.md`, `docs/delivery.md`, `docs/extractors.md` | The workspace codemap with its negative invariants, the diagrams plus rationale, the delivery path and the extractors. |
+| `docs/architecture.md` | The parts, how data flows and why. Each part's page is linked from its Components table. |
+
+The workspace is one I/O-free core, three source crates off it and the app on top. The source crates compile in parallel, and a profile change never rebuilds a database driver.
+
+```mermaid
+---
+config:
+  theme: base
+  look: neo
+  fontFamily: Inter, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif
+  flowchart:
+    curve: linear
+    nodeSpacing: 40
+    rankSpacing: 64
+    padding: 18
+    wrappingWidth: 280
+    htmlLabels: true
+  elk:
+    preset: modelOrder
+  themeVariables:
+    fontSize: 15px
+    lineColor: "#64748B"
+    primaryTextColor: "#0F172A"
+    clusterBorder: "#0072B2"
+    edgeLabelBackground: "#FFFFFF"
+  themeCSS: >-
+    p{margin:0}
+    .node[data-look] rect,.node[data-look] path,.node[data-look] polygon,.node[data-look] .outer-path{filter:drop-shadow(0 1px 2px rgba(15,23,42,.10)) drop-shadow(0 6px 14px rgba(15,23,42,.10))}
+    .node rect{rx:10px;ry:10px}
+    .cluster rect{rx:16px;ry:16px}
+    .node .label div{min-width:150px}
+    .node.decision .label div{min-width:0}
+    .cluster[data-look] rect{filter:none}
+    .nodeLabel{line-height:1.35}
+    .nodeLabel b{font-weight:600;font-size:15px;letter-spacing:-0.01em}
+    .nodeLabel span{font-size:12.5px;font-weight:400;color:#334155}
+    .cluster-label span.nodeLabel{display:inline-block;background:#FFFFFF;color:#0B2A3F;border:1.5px solid #0072B2;border-radius:999px;padding:2px 12px;font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+    .flowchart-link{stroke-width:1.75px}
+    .labelBkg{background:transparent!important}
+    span.edgeLabel{display:inline-block;background:#FFFFFF!important;color:#1E293B;border:1px solid #94A3B8;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500}
+    span.edgeLabel p{background:transparent!important}
+    .label-icon{width:20px;height:20px;vertical-align:-4px;margin-right:6px}
+    .ingest .label-icon{color:#0E8A7D}
+    .xform .label-icon{color:#7B4FB0}
+    .load .label-icon{color:#0072B2}
+    .bus .label-icon{color:#A8517F}
+    .store .label-icon{color:#00785A}
+    .ui .label-icon{color:#D9480F}
+    .ext .label-icon{color:#64748B}
+---
+flowchart LR
+    accTitle: L4 Detail -- Workspace crates
+    accDescr: The dfe-fetcher app crate depends on the three source crates, and each source crate depends on the I/O-free core crate. The database crate's engine drivers and the file crate's copy of Vector's tailer are optional, each behind a cargo feature.
+
+    app["<b>dfe-fetcher</b>"]
+
+    subgraph sources["Source crates"]
+        rest["<b>dfe-fetcher-rest</b>"]
+        db["<b>dfe-fetcher-db</b>"]
+        file["<b>dfe-fetcher-file</b>"]
+    end
+
+    engines["<b>Engine drivers</b>"]
+    tailer["<b>vector-file-source</b>"]
+    core["<b>dfe-fetcher-core</b>"]
+
+    app --> sources
+    sources --> core
+    db -.-> engines
+    file -.-> tailer
+  class app ingest
+  class rest,db,file,core part
+  class engines,tailer ext
+  classDef ext fill:#F4F6F8,stroke:#94A3B8,stroke-width:1.5px,stroke-dasharray:5 4,color:#0F172A
+  classDef ingest fill:#FFFFFF,stroke:#0E8A7D,stroke-width:3px,color:#0F172A
+  classDef xform fill:#FFFFFF,stroke:#7B4FB0,stroke-width:3px,color:#0F172A
+  classDef load fill:#FFFFFF,stroke:#0072B2,stroke-width:3px,color:#0F172A
+  classDef bus fill:#FFFFFF,stroke:#A8517F,stroke-width:3px,color:#0F172A
+  classDef store fill:#FFFFFF,stroke:#00785A,stroke-width:3px,color:#0F172A
+  classDef ui fill:#FFFFFF,stroke:#D9480F,stroke-width:3px,color:#0F172A
+  classDef decision fill:#FFFFFF,stroke:#9A6700,stroke-width:3px,color:#0F172A
+  classDef error fill:#FFFFFF,stroke:#C2410C,stroke-width:3px,color:#0F172A
+  classDef control fill:#FFFFFF,stroke:#334155,stroke-width:3px,color:#0F172A
+  classDef part fill:#FFFFFF,stroke:#94A3B8,stroke-width:1.5px,color:#0F172A
+  style sources fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
+```
+
+*Figure 1. L4 Detail -- Workspace crates. Dashed boxes are not ours, and dotted arrows are behind a cargo feature.* Up: [L3 Components -- dfe-fetcher](docs/architecture.md).
+
+The app depends on `dfe-fetcher-core` directly as well, and links all four crates unconditionally, so a `sources.db` or `sources.file` block is always parsed and validated. The features decide whether the engine behind it is present: `db-odbc`, `db-clickhouse`, `db-mongodb` and `file-tail`, named `<capability>-<backend>` as in scalo. Beside them are `file` (the dump is always built), `jemalloc`, `full` and `pgo-driver`. The shipped profiles are `include_str!`'d into the app, so editing one rebuilds the app alone.
+
+Rules the crate graph holds:
+
+- `dfe-fetcher-core` depends on no other workspace crate, and on scalo for `expression` and `rules` alone. It names no HTTP client, transport or file. tokio is linked for its clock types and once-cell, and never spawns a task there.
+- `rest`, `db` and `file` depend on `core` and never on each other or the app. None sends to a transport, writes a cursor or reads the config cascade. Each receives bound units and yields rows.
+- The app never re-implements a source, pager, decoder or auth mode. There is no per-provider Rust in it: a provider is a profile, and what a profile can't say is a hook on an axis in `crates/rest`.
+- No crate depends on a Vector crate from a registry. The tailer is the copy under `third-party/`, depended on by path from `dfe-fetcher-file` alone.
+- Nothing deployment-specific: no hostnames, addresses, vault paths or licence detail outside `config.example.yaml` placeholders and tests.
+
+The fetcher skips the hot-path rules the loader and receiver follow: `serde_json` over `sonic-rs`, an allocation per row, a mutex around a token cache. The driver's two shortcuts (fetch and emit don't overlap, and the row stream is boxed) are marked in `crates/fetcher/src/driver.rs` with the measurement that would lift them. Measure a source before changing them.
 
 ### Commands that prove a change
 
