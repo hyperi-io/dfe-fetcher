@@ -18,9 +18,9 @@ The fetcher has no raw capture setting and does not keep the bytes it fetched. P
 
 ## Source framework
 
-A scheduler ticks one driver per connection, and the driver pulls rows from the connection's shape: `RestShape`, `DbShape` or `FileShape`. The [README](../README.md#architecture) has the diagram this one expands.
+A scheduler ticks one driver per connection, and the driver pulls rows through the connection's reader type: `RestShape`, `DbShape` or `FileShape`. The [README](../README.md#architecture) has the diagram this one expands.
 
-The scheduler ticks a driver, which feeds rows from its shape to the emitter and checkpoints to the cursor store.
+The scheduler ticks a driver, which feeds rows from its reader to the emitter and checkpoints to the cursor store.
 
 ```mermaid
 flowchart LR
