@@ -1722,6 +1722,50 @@ mod tests {
             assert_eq!(state.is_ready(), sent, "outputs down: {down:?}");
             assert_eq!(state.output_healthy(), sent, "outputs down: {down:?}");
         }
+
+        // Named destinations with no default transport never build an output
+        // manager with an empty default list, so `all` over none is never read.
+        // With no default broker or endpoint no manager is built: the pipeline
+        // stays ready and every send is refused as unconfigured.
+        let destinations =
+            "  destinations:\n    loader:\n      grpc:\n        endpoint: http://127.0.0.1:1\n";
+        let parse = |yaml: String| {
+            let (mut config, _) = Config::parse_yaml(&yaml, "fetcher.yaml").expect("config");
+            config.dlq.enabled = false;
+            config.output.validate_routes().expect("accepted");
+            config
+        };
+        let orchestrator = crate::pipeline::Orchestrator::new(
+            parse(format!("output:\n{destinations}")),
+            Arc::new(crate::metrics::Metrics::new()),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("orchestrator");
+        let state = orchestrator.state();
+        assert!(state.is_ready(), "destinations only");
+        assert!(matches!(
+            state
+                .send_all("t", Bytes::from_static(br#"{"id":"r"}"#))
+                .await,
+            Err(Error::Config(_))
+        ));
+        assert!(matches!(
+            state
+                .send_to(&["loader"], "t", Bytes::from_static(br#"{"id":"r"}"#))
+                .await,
+            Err(Error::Config(_))
+        ));
+        // A default endpoint under an output type that names no transport fails startup.
+        let refused = crate::pipeline::Orchestrator::new(
+            parse(format!(
+                "output:\n  type: none\n  grpc:\n    endpoint: http://127.0.0.1:1\n{destinations}"
+            )),
+            Arc::new(crate::metrics::Metrics::new()),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(refused, Err(Error::Config(_))));
     }
 
     /// A record over a bus destination's `message.max.bytes` is refused by
