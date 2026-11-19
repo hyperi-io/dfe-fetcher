@@ -3,6 +3,13 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.57](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.56...v1.4.57) (2026-11-19)
+
+### Bug Fixes
+
+* **fetcher:** rebuild on scalo 2.14.32 ([abb446c](https://github.com/hyperi-io/dfe-fetcher/commit/abb446cb06476eb4f4c18ac5e151ef6c6d6e9dd8))
+* **security:** bump libz-sys to 1.1.33 ([be336ac](https://github.com/hyperi-io/dfe-fetcher/commit/be336acee6b1e9dc2bad30522c6941bfc34362f3))
+
 ## [1.4.56](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.55...v1.4.56) (2026-11-16)
 
 ### Bug Fixes
