@@ -628,14 +628,15 @@ impl PipelineState {
         self.shared_config.clone()
     }
 
-    /// Check if the pipeline is ready.
+    /// Whether the scheduler may fetch: the probe passes and every default
+    /// transport is healthy, since a send needs each of them to take the record.
     pub fn is_ready(&self) -> bool {
         if !self.probe_ready() {
             return false;
         }
 
         if let Some(ref output) = self.output
-            && !output.any_healthy()
+            && !output.defaults_healthy()
         {
             return false;
         }
@@ -896,14 +897,14 @@ impl PipelineState {
         &self.memory_guard
     }
 
-    /// Check if any output transport is healthy.
+    /// Check if the output can deliver a record.
     ///
-    /// Returns `true` if no output is configured (nothing to fail) or if at
-    /// least one transport reports healthy. Used by the scaling pressure
+    /// Returns `true` if no output is configured (nothing to fail) or if
+    /// every default transport reports healthy. Used by the scaling pressure
     /// circuit-breaker gate.
     pub fn output_healthy(&self) -> bool {
         match self.output {
-            Some(ref output) => output.any_healthy(),
+            Some(ref output) => output.defaults_healthy(),
             None => true,
         }
     }
@@ -1008,7 +1009,7 @@ impl Orchestrator {
                         metrics_state.update_metrics(&metrics_ref).await;
                         // Track transport health gauge
                         if let Some(ref output) = metrics_state.output {
-                            metrics_ref.set_transport_healthy(output.any_healthy());
+                            metrics_ref.set_transport_healthy(output.defaults_healthy());
                         }
                     }
                     _ = metrics_shutdown.cancelled() => break,
