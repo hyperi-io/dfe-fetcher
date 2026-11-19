@@ -106,6 +106,7 @@ async fn the_batcher_and_concurrent_emit_measured_against_real_kafka() {
         return;
     };
     let suffix = format!("-{}", Utc::now().timestamp_millis());
+    kf.create_topic(&format!("measure{suffix}")).await;
 
     let mut config = Config::default();
     config.output = OutputConfig {
@@ -148,8 +149,7 @@ async fn the_batcher_and_concurrent_emit_measured_against_real_kafka() {
         })
     };
 
-    // One row first, so topic creation and the producer's first connection
-    // are not on the clock.
+    // One row first, so the producer's first connection is not on the clock.
     driver(Fake::new("warm", small, 1), config.accumulate.in_flight)
         .run_tick(None)
         .await

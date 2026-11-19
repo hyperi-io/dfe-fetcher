@@ -58,6 +58,7 @@ async fn a_postgres_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id
     };
     let suffix = format!("-{}", Utc::now().timestamp_millis());
     let topic = format!("pgdump-assets{suffix}");
+    kf.create_topic(&topic).await;
     let connection_string = format!(
         "Driver={{{driver_name}}};Server={};Port={};Database=postgres;Uid=postgres;Pwd=postgres;UseDeclareFetch=1;BoolsAsChar=0",
         db.host, db.port

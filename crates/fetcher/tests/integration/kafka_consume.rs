@@ -42,6 +42,7 @@ async fn a_read_short_of_its_frames_names_the_frames_step() {
         return;
     };
     let topic = common::test_topic("consume-short");
+    kf.create_topic(&topic).await;
     let output = dfe_fetcher::output::OutputManager::new(
         &dfe_fetcher::config::OutputConfig {
             output_type: "kafka".to_string(),

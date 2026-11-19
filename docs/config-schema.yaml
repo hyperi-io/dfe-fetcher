@@ -6899,6 +6899,34 @@ $defs:
           only for an audited case (e.g. mesh-encrypted in-cluster traffic).
         type: boolean
         default: false
+      allow_auto_create_topics:
+        description: |-
+          Let scalo's producers ask the broker to create a topic they write to
+          (librdkafka `allow.auto.create.topics`, default `false`).
+
+          Applies to every producer scalo builds: the transport's, `KafkaProducer`
+          and the Kafka DLQ's. Never to a consumer or an admin client. Off, a send
+          to a missing topic backpressures until the topic exists, and a producer
+          that once wrote to a topic does not bring it back after a delete. On,
+          a broker with `auto.create.topics.enable` creates it. A raw
+          `librdkafka_overrides` or `sizing.producer_librdkafka` value wins.
+        type: boolean
+        default: false
+      auth_refusal_grace_secs:
+        description: |-
+          Seconds a client a broker has accepted may go on failing authentication
+          or TLS, with no success between, before it counts as refused again
+          (default 120).
+
+          Inside it a failure is a restarting broker and changes nothing. Past it
+          readiness fails and the clients are rebuilt to read a rotated CA bundle,
+          certificate or password. Raising it rides out a longer broker restart
+          at the cost of that many seconds of a ready pod delivering nothing after
+          a rotation. No record is lost either way: a refused client backpressures.
+        type: integer
+        format: uint64
+        minimum: 0
+        default: 120
       enable_auto_commit:
         description: "Enable auto-commit (default: false for manual commit)."
         type: boolean

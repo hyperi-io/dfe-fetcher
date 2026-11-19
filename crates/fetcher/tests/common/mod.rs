@@ -176,6 +176,17 @@ impl KafkaTestConfig {
             .unwrap_or(false)
     }
 
+    /// Create `topic` with one partition before a test produces to it: scalo's
+    /// producers do not create the topics they write to.
+    pub async fn create_topic(&self, topic: &str) {
+        let admin = scalo::transport::kafka::KafkaAdmin::new(&self.to_scalo_config())
+            .unwrap_or_else(|e| panic!("admin client for {}: {e}", self.brokers));
+        admin
+            .create_topics(&[(topic, 1, 1)])
+            .await
+            .unwrap_or_else(|e| panic!("create {topic} on {}: {e}", self.brokers));
+    }
+
     /// Convert to scalo KafkaConfig for use with KafkaTransport.
     pub fn to_scalo_config(&self) -> scalo::transport::KafkaConfig {
         let mut config = scalo::transport::KafkaConfig {

@@ -198,6 +198,7 @@ fn kv(key: &str, value: &str) -> KeyValue {
         value: Some(AnyValue {
             value: Some(any_value::Value::StringValue(value.to_owned())),
         }),
+        ..Default::default()
     }
 }
 

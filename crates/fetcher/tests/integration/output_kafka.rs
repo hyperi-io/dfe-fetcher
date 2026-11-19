@@ -49,6 +49,7 @@ async fn test_output_kafka_single_message_roundtrip() {
         return;
     };
     let topic = common::test_topic("integration-single");
+    kf.create_topic(&topic).await;
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
@@ -99,6 +100,7 @@ async fn test_output_kafka_pipeline_enrichment_roundtrip() {
         return;
     };
     let topic = common::test_topic("integration-enrich");
+    kf.create_topic(&topic).await;
 
     let mut config = Config::default();
     config.output = OutputConfig {
@@ -181,6 +183,8 @@ async fn a_routed_record_lands_on_the_destinations_topic() {
     let suffix = "_land";
     let origin_topic = format!("{origin}{suffix}");
     let target_topic = format!("{target}{suffix}");
+    kf.create_topic(&origin_topic).await;
+    kf.create_topic(&target_topic).await;
 
     let mut config = Config::default();
     config.output = OutputConfig {
@@ -264,6 +268,7 @@ async fn test_output_kafka_batch_roundtrip() {
         return;
     };
     let topic = common::test_topic("integration-batch");
+    kf.create_topic(&topic).await;
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
@@ -325,6 +330,7 @@ async fn test_output_manager_close_when_already_closed() {
         return;
     };
     let topic = common::test_topic("integration-close");
+    kf.create_topic(&topic).await;
 
     let output_config = OutputConfig {
         output_type: "kafka".to_string(),
