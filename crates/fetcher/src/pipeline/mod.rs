@@ -514,6 +514,8 @@ pub struct PipelineState {
     ready: AtomicBool,
     /// The extractor tasks shutdown waits for before the outputs close.
     intake: TaskTracker,
+    /// Cancelled at shutdown, when a batch held for a backpressured output stops waiting.
+    shutdown: CancellationToken,
 }
 
 impl PipelineState {
@@ -545,7 +547,7 @@ impl PipelineState {
                 &dlq_config,
                 "dfe-fetcher",
                 dlq_kafka.as_ref(),
-                shutdown,
+                shutdown.clone(),
             )?)
         } else {
             None
@@ -559,6 +561,7 @@ impl PipelineState {
             metrics,
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown,
         })
     }
 
@@ -586,6 +589,7 @@ impl PipelineState {
             metrics,
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -607,6 +611,11 @@ impl PipelineState {
     /// outputs open until it finishes or [`INTAKE_DRAIN_DEADLINE`] passes.
     pub fn intake(&self) -> &TaskTracker {
         &self.intake
+    }
+
+    /// The token cancelled at shutdown.
+    pub fn shutdown(&self) -> &CancellationToken {
+        &self.shutdown
     }
 
     /// Get the current configuration.
@@ -1470,6 +1479,7 @@ mod tests {
             metrics,
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         };
         // Add bytes to trigger pressure
         state.memory_guard.add_bytes(100);
@@ -1815,6 +1825,7 @@ mod tests {
             metrics: Arc::clone(&metrics),
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         };
 
         // Push some bytes through the guard so current_bytes > 0

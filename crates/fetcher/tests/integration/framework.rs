@@ -1591,8 +1591,11 @@ async fn a_unit_that_folds_two_kinds_of_mark_fails_the_tick_and_commits_nothing(
     );
 }
 
+/// A full transport holds the batch rather than aborting the tick: nothing is
+/// checkpointed while it is held, past the 6.2 s a fixed retry budget gave,
+/// and the tick commits once the output takes the rows.
 #[tokio::test]
-async fn a_full_transport_is_backpressure_and_the_tick_aborts_without_a_checkpoint() {
+async fn a_full_transport_holds_the_batch_and_the_tick_commits_once_it_is_taken() {
     let dir = tempfile::TempDir::new().unwrap();
     let store: Arc<dyn CursorStore> = Arc::new(
         dfe_fetcher::cursor::file::FileCursorStore::new(dir.path().to_str().unwrap()).unwrap(),
@@ -1618,22 +1621,37 @@ async fn a_full_transport_is_backpressure_and_the_tick_aborts_without_a_checkpoi
         Some(Arc::clone(&store)),
         CancellationToken::new(),
     );
-    let err = d
-        .run_tick(None)
-        .await
-        .expect_err("held records abort the tick");
+    let tick = d.run_tick(None);
+    tokio::pin!(tick);
+
     assert!(
-        matches!(err, dfe_fetcher::Error::Backpressured(_)),
-        "{err:?}"
+        tokio::time::timeout(Duration::from_secs(8), &mut tick)
+            .await
+            .is_err(),
+        "the batch is held, not aborted"
     );
     assert!(
         store.get("inst.conn.events").await.unwrap().is_none(),
-        "no checkpoint after backpressure"
+        "no checkpoint while held"
     );
+    let rendered = h.metrics.render();
     assert!(
-        h.metrics
-            .render()
-            .contains("dfe_transport_backpressured_total 1")
+        !rendered.contains("dfe_transport_backpressured_total 0\n"),
+        "each held pass counts: {rendered}"
+    );
+
+    let drain = async {
+        let mut landed = 0;
+        while landed < 3 {
+            landed += h.transport.recv(10).await.expect("recv").records.len();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let (outcome, ()) = tokio::join!(tick, drain);
+    outcome.expect("the tick completes once the rows are taken");
+    assert!(
+        store.get("inst.conn.events").await.unwrap().is_some(),
+        "committed after the last emit is acknowledged"
     );
 }
 

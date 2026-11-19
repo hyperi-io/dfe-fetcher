@@ -63,8 +63,8 @@ static DROPPED_AFTER_ANSWER: AtomicU64 = AtomicU64::new(0);
 struct IngestState {
     sink: ExtractorSink,
     /// With `acknowledgements` off, the sink a record is delivered through
-    /// after its POST is answered: it holds a backpressured record for the
-    /// emitter's retries, since no client is waiting.
+    /// after its POST is answered: it holds a backpressured record until the
+    /// output takes it, since no client is waiting.
     after_answer: Option<ExtractorSink>,
     metrics: Arc<Metrics>,
     /// Resolved bearer token. `None` means no authentication required.
@@ -419,7 +419,7 @@ mod tests {
     /// A pipeline whose output is down is not ready (the predicate the
     /// scheduler stalls on), and the intake says so at once: `503` with
     /// `Retry-After`, before the record reaches the output, and long before
-    /// the emitter's retries would have held the POST.
+    /// a held send would have kept the POST waiting.
     #[tokio::test]
     async fn a_pipeline_that_is_not_ready_refuses_the_post_at_once_with_retry_after() {
         use scalo::transport::{MemoryConfig, MemoryTransport, TransportBase};
@@ -450,7 +450,7 @@ mod tests {
         );
         assert!(
             started.elapsed() < Duration::from_secs(2),
-            "answered at once, not after the emitter's retries: {:?}",
+            "answered at once, not after a held send: {:?}",
             started.elapsed()
         );
     }

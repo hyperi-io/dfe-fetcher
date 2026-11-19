@@ -125,7 +125,7 @@ flowchart TB
 
 1. A flush's records go out as concurrent sends, `accumulate.in_flight` at a time.
 2. Every record ends sent, dead-lettered or backpressured.
-3. The backpressured ones are retried with a bounded backoff. If they are still refused, the whole tick aborts with no checkpoint and the scheduler's stall handling takes over.
+3. The backpressured ones are held and sent again, the wait doubling from 200 ms to 5 s, until the output takes them or the fetcher shuts down. The batch keeps its memory lease meanwhile, so the memory brake stops new fetches. Shutdown gives a held batch one more pass, then the tick ends with no checkpoint and the rows are fetched again on restart.
 4. A record the transport refuses, and would refuse again, goes to the DLQ with its payload cut at `dlq.max_payload_bytes`.
 
 A failure every record shares (the transport closed or timed out, the broker gone) is not a dead letter. The tick aborts and the rows are fetched again. That is the at-least-once side of the contract.
@@ -168,6 +168,7 @@ Each intake reports its guarantee in `pipeline_delivery_guarantee{listener,guara
 | `pipeline_dead_letters_dropped_total{reason}` | Flat. Any rise is records lost with no DLQ |
 | `pipeline_delivery_guarantee{listener,guarantee}` | `at_least_once` on every scheduled source |
 | `dfe_fetcher_transport_send_duration_seconds` | Steady. A climb is the transport pushing back |
+| `dfe_transport_backpressured_total` | Flat. A steady climb is a batch held for an output that keeps refusing it |
 | `usage_ingested_bytes_total{org_id}` | Tracks what the providers hand over |
 
 ## Related

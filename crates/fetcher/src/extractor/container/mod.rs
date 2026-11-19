@@ -1016,10 +1016,9 @@ mod tests {
         )
     }
 
-    /// An output outage longer than the emitter's own retries (about 6 s)
-    /// loses no line: the line is held, the container's stdout is not read
-    /// meanwhile, and the line is delivered once the output takes records
-    /// again.
+    /// An output outage loses no line: the line is held, the container's
+    /// stdout is not read meanwhile, and the line is delivered once the
+    /// output takes records again.
     #[tokio::test(start_paused = true)]
     async fn a_line_is_held_through_an_output_outage_not_dropped() {
         use scalo::transport::{MemoryConfig, MemoryTransport, TransportReceiver, TransportSender};

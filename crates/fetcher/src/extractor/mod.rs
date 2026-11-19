@@ -89,7 +89,7 @@ pub struct ExtractorSink {
     lease: Arc<dyn Lease>,
     accumulate: AccumulateConfig,
     /// Whether a backpressured record is refused at once rather than held
-    /// through the emitter's bounded retries.
+    /// until the output takes it.
     immediate: bool,
 }
 
@@ -111,7 +111,7 @@ impl ExtractorSink {
 
     /// The same sink for an intake that answers a waiting client: a
     /// backpressured record is refused at once with [`crate::Error::Backpressured`]
-    /// so the client can back off, never held for the emitter's retries.
+    /// so the client can back off, never held until the output takes it.
     #[must_use]
     pub fn immediate(state: Arc<PipelineState>, metrics: Arc<Metrics>) -> Self {
         Self {
@@ -150,10 +150,10 @@ impl ExtractorSink {
     ///
     /// # Errors
     ///
-    /// As [`Emitter::emit`]: [`crate::Error::Backpressured`] when the output
-    /// refuses (after the bounded retries, or at once for an
-    /// [`ExtractorSink::immediate`] sink), [`crate::Error::Config`] when no
-    /// output is configured, [`crate::Error::Transport`] when the transport
+    /// As [`Emitter::emit`]: [`crate::Error::Shutdown`] when shutdown ends
+    /// the hold, [`crate::Error::Backpressured`] when the output refuses an
+    /// [`ExtractorSink::immediate`] sink's pass, [`crate::Error::Config`] when
+    /// no output is configured, [`crate::Error::Transport`] when the transport
     /// fails or a refused record cannot be dead-lettered.
     pub async fn emit(&self, records: Vec<Outbound>) -> Result<EmitReport> {
         if records.is_empty() {
