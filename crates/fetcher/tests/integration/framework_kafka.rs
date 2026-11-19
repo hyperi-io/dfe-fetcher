@@ -100,6 +100,7 @@ async fn a_rest_dump_reaches_kafka_and_a_consumer_rebuilds_it_by_snapshot_id() {
     let base_url = provider(Arc::clone(&store)).await;
     let suffix = format!("-{}", Utc::now().timestamp_millis());
     let topic = format!("fixture-assets{suffix}");
+    kf.create_topic(&topic).await;
 
     let mut config = Config::default();
     config.output = OutputConfig {
