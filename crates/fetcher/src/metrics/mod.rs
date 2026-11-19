@@ -214,7 +214,7 @@ pub struct Metrics {
     // Backpressure / transport health
     transport_backpressured_total: AtomicU64,
     transport_send_errors_total: AtomicU64,
-    transport_healthy: AtomicU64, // gauge: 1=healthy, 0=unhealthy
+    transport_healthy: AtomicU64, // gauge: 1=every default output healthy, 0=any down
 
     // Filtering / extractor lifecycle
     records_filtered_total: AtomicU64,
@@ -693,7 +693,8 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Set transport health gauge (1=healthy, 0=unhealthy).
+    /// Set the transport health gauge: 1 when every default output transport
+    /// is healthy, 0 when any is down.
     #[inline]
     pub fn set_transport_healthy(&self, healthy: bool) {
         self.transport_healthy
@@ -1091,7 +1092,7 @@ impl Metrics {
         ));
 
         output.push_str(
-            "# HELP dfe_transport_healthy Transport health status (1=healthy, 0=unhealthy)\n",
+            "# HELP dfe_transport_healthy 1 when every default output transport is healthy, 0 when any is down\n",
         );
         output.push_str("# TYPE dfe_transport_healthy gauge\n");
         output.push_str(&format!(

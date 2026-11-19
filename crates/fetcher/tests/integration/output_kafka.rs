@@ -354,7 +354,7 @@ async fn test_output_manager_close_when_already_closed() {
 
     // The double-close below only means something over a live transport.
     assert!(
-        output.any_healthy(),
+        output.defaults_healthy(),
         "transport must be healthy after a successful produce, else the \
          double-close below closes nothing"
     );

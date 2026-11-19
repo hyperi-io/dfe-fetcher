@@ -53,7 +53,7 @@ async fn test_output_transport_kafka_send() {
 
     // Verify transport reports healthy
     assert!(
-        output.any_healthy(),
+        output.defaults_healthy(),
         "transport should be healthy after send"
     );
 

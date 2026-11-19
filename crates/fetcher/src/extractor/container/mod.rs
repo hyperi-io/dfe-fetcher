@@ -204,8 +204,9 @@ impl ContainerExtractor {
     /// held and retried with a growing pause rather than dropped. Nothing
     /// reads the container's stdout meanwhile, so the container blocks on its
     /// own writes until the outputs recover. Only a failure no retry can clear
-    /// (no output configured) drops the line, and at shutdown a held line gets
-    /// one more attempt before it is dropped. Either way it is counted.
+    /// (no output configured) drops the line, and at shutdown the emitter
+    /// re-sends a held line for up to 6 s before it is dropped. Either way it
+    /// is counted.
     async fn deliver_counted(&self, line: &Line) -> bool {
         let line = match line {
             Line::Whole(bytes) => bytes.trim_ascii(),
@@ -1016,10 +1017,9 @@ mod tests {
         )
     }
 
-    /// An output outage longer than the emitter's own retries (about 6 s)
-    /// loses no line: the line is held, the container's stdout is not read
-    /// meanwhile, and the line is delivered once the output takes records
-    /// again.
+    /// An output outage loses no line: the line is held, the container's
+    /// stdout is not read meanwhile, and the line is delivered once the
+    /// output takes records again.
     #[tokio::test(start_paused = true)]
     async fn a_line_is_held_through_an_output_outage_not_dropped() {
         use scalo::transport::{MemoryConfig, MemoryTransport, TransportReceiver, TransportSender};

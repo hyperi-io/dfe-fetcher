@@ -514,6 +514,8 @@ pub struct PipelineState {
     ready: AtomicBool,
     /// The extractor tasks shutdown waits for before the outputs close.
     intake: TaskTracker,
+    /// Cancelled at shutdown, when a batch held for a backpressured output stops waiting.
+    shutdown: CancellationToken,
 }
 
 impl PipelineState {
@@ -545,7 +547,7 @@ impl PipelineState {
                 &dlq_config,
                 "dfe-fetcher",
                 dlq_kafka.as_ref(),
-                shutdown,
+                shutdown.clone(),
             )?)
         } else {
             None
@@ -559,6 +561,7 @@ impl PipelineState {
             metrics,
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown,
         })
     }
 
@@ -586,6 +589,7 @@ impl PipelineState {
             metrics,
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -609,6 +613,11 @@ impl PipelineState {
         &self.intake
     }
 
+    /// The token cancelled at shutdown.
+    pub fn shutdown(&self) -> &CancellationToken {
+        &self.shutdown
+    }
+
     /// Get the current configuration.
     pub fn config(&self) -> Config {
         self.shared_config.get()
@@ -628,14 +637,15 @@ impl PipelineState {
         self.shared_config.clone()
     }
 
-    /// Check if the pipeline is ready.
+    /// Whether the scheduler may fetch: the probe passes and every default
+    /// transport is healthy, since a send needs each of them to take the record.
     pub fn is_ready(&self) -> bool {
         if !self.probe_ready() {
             return false;
         }
 
         if let Some(ref output) = self.output
-            && !output.any_healthy()
+            && !output.defaults_healthy()
         {
             return false;
         }
@@ -896,14 +906,14 @@ impl PipelineState {
         &self.memory_guard
     }
 
-    /// Check if any output transport is healthy.
+    /// Check if the output can deliver a record.
     ///
-    /// Returns `true` if no output is configured (nothing to fail) or if at
-    /// least one transport reports healthy. Used by the scaling pressure
+    /// Returns `true` if no output is configured (nothing to fail) or if
+    /// every default transport reports healthy. Used by the scaling pressure
     /// circuit-breaker gate.
     pub fn output_healthy(&self) -> bool {
         match self.output {
-            Some(ref output) => output.any_healthy(),
+            Some(ref output) => output.defaults_healthy(),
             None => true,
         }
     }
@@ -1008,7 +1018,7 @@ impl Orchestrator {
                         metrics_state.update_metrics(&metrics_ref).await;
                         // Track transport health gauge
                         if let Some(ref output) = metrics_state.output {
-                            metrics_ref.set_transport_healthy(output.any_healthy());
+                            metrics_ref.set_transport_healthy(output.defaults_healthy());
                         }
                     }
                     _ = metrics_shutdown.cancelled() => break,
@@ -1469,6 +1479,7 @@ mod tests {
             metrics,
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         };
         // Add bytes to trigger pressure
         state.memory_guard.add_bytes(100);
@@ -1814,6 +1825,7 @@ mod tests {
             metrics: Arc::clone(&metrics),
             ready: AtomicBool::new(true),
             intake: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
         };
 
         // Push some bytes through the guard so current_bytes > 0

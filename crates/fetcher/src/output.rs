@@ -454,12 +454,13 @@ impl OutputManager {
                 .is_none_or(|set| set.sender.is_healthy())
     }
 
-    /// Check if any transport is healthy.
+    /// Whether every default transport is healthy, which is what
+    /// [`Self::send_all`] needs to deliver a record.
     ///
-    /// The scheduler stalls on this, so it stays a whole-output signal: one
+    /// The scheduler stalls on this, so named destinations are left out: one
     /// sick named destination must not stop every source fetching.
-    pub fn any_healthy(&self) -> bool {
-        self.transports.iter().any(OutputTransport::is_healthy)
+    pub fn defaults_healthy(&self) -> bool {
+        self.transports.iter().all(OutputTransport::is_healthy)
     }
 
     /// Close all transports gracefully.
@@ -1688,6 +1689,83 @@ mod tests {
             };
             assert_eq!(got, want, "{outputs:?}");
         }
+    }
+
+    /// The scheduler fetches only when a send can deliver: with one default
+    /// output down, every send fails, so the pipeline is not ready.
+    #[tokio::test]
+    async fn readiness_matches_what_a_send_to_every_default_output_needs() {
+        use scalo::transport::MemoryConfig;
+
+        for down in [vec![], vec![0], vec![1], vec![0, 1]] {
+            let mut transports = Vec::new();
+            for i in 0..2 {
+                let memory = Arc::new(MemoryTransport::new(&MemoryConfig::default()).unwrap());
+                if down.contains(&i) {
+                    memory.close().await.unwrap();
+                }
+                transports.push(OutputTransport::Memory(memory));
+            }
+            let output = OutputManager {
+                transports,
+                destinations: None,
+            };
+            let sent = output
+                .send_all("t", Bytes::from_static(br#"{"id":"r"}"#))
+                .await
+                .is_ok();
+            let state = crate::pipeline::PipelineState::for_tests(
+                crate::config::SharedConfig::new(Config::default()),
+                Arc::new(crate::metrics::Metrics::new()),
+                Some(output),
+            );
+            assert_eq!(state.is_ready(), sent, "outputs down: {down:?}");
+            assert_eq!(state.output_healthy(), sent, "outputs down: {down:?}");
+        }
+
+        // Named destinations with no default transport never build an output
+        // manager with an empty default list, so `all` over none is never read.
+        // With no default broker or endpoint no manager is built: the pipeline
+        // stays ready and every send is refused as unconfigured.
+        let destinations =
+            "  destinations:\n    loader:\n      grpc:\n        endpoint: http://127.0.0.1:1\n";
+        let parse = |yaml: String| {
+            let (mut config, _) = Config::parse_yaml(&yaml, "fetcher.yaml").expect("config");
+            config.dlq.enabled = false;
+            config.output.validate_routes().expect("accepted");
+            config
+        };
+        let orchestrator = Box::pin(crate::pipeline::Orchestrator::new(
+            parse(format!("output:\n{destinations}")),
+            Arc::new(crate::metrics::Metrics::new()),
+            tokio_util::sync::CancellationToken::new(),
+        ))
+        .await
+        .expect("orchestrator");
+        let state = orchestrator.state();
+        assert!(state.is_ready(), "destinations only");
+        assert!(matches!(
+            state
+                .send_all("t", Bytes::from_static(br#"{"id":"r"}"#))
+                .await,
+            Err(Error::Config(_))
+        ));
+        assert!(matches!(
+            state
+                .send_to(&["loader"], "t", Bytes::from_static(br#"{"id":"r"}"#))
+                .await,
+            Err(Error::Config(_))
+        ));
+        // A default endpoint under an output type that names no transport fails startup.
+        let refused = Box::pin(crate::pipeline::Orchestrator::new(
+            parse(format!(
+                "output:\n  type: none\n  grpc:\n    endpoint: http://127.0.0.1:1\n{destinations}"
+            )),
+            Arc::new(crate::metrics::Metrics::new()),
+            tokio_util::sync::CancellationToken::new(),
+        ))
+        .await;
+        assert!(matches!(refused, Err(Error::Config(_))));
     }
 
     /// A record over a bus destination's `message.max.bytes` is refused by
