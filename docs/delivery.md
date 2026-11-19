@@ -168,6 +168,7 @@ Each intake reports its guarantee in `pipeline_delivery_guarantee{listener,guara
 | `pipeline_dead_letters_dropped_total{reason}` | Flat. Any rise is records lost with no DLQ |
 | `pipeline_delivery_guarantee{listener,guarantee}` | `at_least_once` on every scheduled source |
 | `dfe_fetcher_transport_send_duration_seconds` | Steady. A climb is the transport pushing back |
+| `dfe_transport_healthy` | 1. It reads 0 while any default output is down, and the scheduler fetches nothing until it is back |
 | `dfe_transport_backpressured_total` | Flat. A steady climb is a batch held for an output that keeps refusing it |
 | `usage_ingested_bytes_total{org_id}` | Tracks what the providers hand over |
 
