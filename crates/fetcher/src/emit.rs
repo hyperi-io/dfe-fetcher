@@ -21,7 +21,7 @@
 //! or backpressured -- the backpressured subset is held and re-sent, the
 //! wait doubling up to a few seconds, until the output takes it, so a slow
 //! output never makes the tick fetch its window again. Once shutdown is
-//! signalled it is re-sent for [`SHUTDOWN_RESEND_FOR`] more, since an intake
+//! signalled it is re-sent for 6 s more, since an intake
 //! record has no upstream copy, and then given up. The batch keeps its memory lease while held, so the memory brake
 //! stops new fetches, and each pass that leaves records held counts one in
 //! `dfe_transport_backpressured_total`. An intake that answers a waiting
@@ -167,7 +167,7 @@ impl Emitter {
     /// # Errors
     ///
     /// Returns [`Error::Shutdown`] when a held subset is still refused
-    /// [`SHUTDOWN_RESEND_FOR`] after shutdown is signalled, [`Error::Config`] when
+    /// 6 s after shutdown is signalled, [`Error::Config`] when
     /// no output is configured, and [`Error::Transport`] when the transport
     /// fails for every record or a refused record cannot be dead-lettered.
     pub async fn emit(&self, batch: Batch) -> Result<EmitReport> {
