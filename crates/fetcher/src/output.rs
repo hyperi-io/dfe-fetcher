@@ -1735,11 +1735,11 @@ mod tests {
             config.output.validate_routes().expect("accepted");
             config
         };
-        let orchestrator = crate::pipeline::Orchestrator::new(
+        let orchestrator = Box::pin(crate::pipeline::Orchestrator::new(
             parse(format!("output:\n{destinations}")),
             Arc::new(crate::metrics::Metrics::new()),
             tokio_util::sync::CancellationToken::new(),
-        )
+        ))
         .await
         .expect("orchestrator");
         let state = orchestrator.state();
@@ -1757,13 +1757,13 @@ mod tests {
             Err(Error::Config(_))
         ));
         // A default endpoint under an output type that names no transport fails startup.
-        let refused = crate::pipeline::Orchestrator::new(
+        let refused = Box::pin(crate::pipeline::Orchestrator::new(
             parse(format!(
                 "output:\n  type: none\n  grpc:\n    endpoint: http://127.0.0.1:1\n{destinations}"
             )),
             Arc::new(crate::metrics::Metrics::new()),
             tokio_util::sync::CancellationToken::new(),
-        )
+        ))
         .await;
         assert!(matches!(refused, Err(Error::Config(_))));
     }
