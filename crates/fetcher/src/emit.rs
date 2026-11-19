@@ -19,9 +19,10 @@
 //! `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, so a
 //! record the transport always refuses cannot hold its source back for good),
 //! or backpressured -- the backpressured subset is held and re-sent, the
-//! wait doubling up to a few seconds, until the output takes it or shutdown
-//! is signalled, so a slow output never makes the tick fetch its window
-//! again. The batch keeps its memory lease while held, so the memory brake
+//! wait doubling up to a few seconds, until the output takes it, so a slow
+//! output never makes the tick fetch its window again. Once shutdown is
+//! signalled it is re-sent for [`SHUTDOWN_RESEND_FOR`] more, since an intake
+//! record has no upstream copy, and then given up. The batch keeps its memory lease while held, so the memory brake
 //! stops new fetches, and each pass that leaves records held counts one in
 //! `dfe_transport_backpressured_total`. An intake that answers a waiting
 //! client sends once instead ([`Emitter::emit_once`]). A row enrichment refused (it
@@ -61,6 +62,8 @@ use crate::pipeline::{DeadLetter, DeadLettered, PipelineState};
 const BACKPRESSURE_BACKOFF: Duration = Duration::from_millis(200);
 /// Longest wait between two re-sends of a held subset.
 const BACKPRESSURE_BACKOFF_MAX: Duration = Duration::from_secs(5);
+/// How long a held subset is still re-sent once shutdown is signalled.
+const SHUTDOWN_RESEND_FOR: Duration = Duration::from_secs(6);
 /// How long a batch is held before it is warned of, and the least time between two such warnings.
 const HELD_WARN_EVERY_MS: u64 = 30_000;
 /// Least time between two warnings of refused records dropped.
@@ -78,7 +81,7 @@ static HELD_WARNED_AT: AtomicU64 = AtomicU64::new(0);
 enum Hold {
     /// Refuse them after one pass, for an intake that answers a waiting client.
     Once,
-    /// Re-send them until the output takes them or shutdown is signalled.
+    /// Re-send them until the output takes them, or for [`SHUTDOWN_RESEND_FOR`] after shutdown.
     UntilTaken,
 }
 
@@ -163,8 +166,8 @@ impl Emitter {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Shutdown`] when shutdown is signalled while a subset
-    /// is held and one more pass does not deliver it, [`Error::Config`] when
+    /// Returns [`Error::Shutdown`] when a held subset is still refused
+    /// [`SHUTDOWN_RESEND_FOR`] after shutdown is signalled, [`Error::Config`] when
     /// no output is configured, and [`Error::Transport`] when the transport
     /// fails for every record or a refused record cannot be dead-lettered.
     pub async fn emit(&self, batch: Batch) -> Result<EmitReport> {
@@ -210,6 +213,7 @@ impl Emitter {
         let held_since = tokio::time::Instant::now();
         let mut backoff = BACKPRESSURE_BACKOFF;
         let mut attempts: u32 = 0;
+        let mut give_up_at: Option<tokio::time::Instant> = None;
         while !pending.is_empty() {
             let before = pending.len();
             pending = self.send_round(pending, &mut report, &mut usage).await?;
@@ -228,10 +232,6 @@ impl Emitter {
                     pending.len(),
                 )));
             }
-            // The wait below ends at shutdown, so the subset has had one more pass.
-            if shutdown.is_cancelled() {
-                return Err(Error::Shutdown);
-            }
             if held_since.elapsed() >= Duration::from_millis(HELD_WARN_EVERY_MS)
                 && scalo::logger::log_debounced(&HELD_WARNED_AT, HELD_WARN_EVERY_MS)
             {
@@ -249,10 +249,19 @@ impl Emitter {
                 retry_in_ms = backoff.as_millis(),
                 "re-sending the backpressured subset of a batch"
             );
-            tokio::select! {
-                biased;
-                () = shutdown.cancelled() => {}
-                () = tokio::time::sleep(backoff) => {}
+            if shutdown.is_cancelled() {
+                let now = tokio::time::Instant::now();
+                let deadline = *give_up_at.get_or_insert(now + SHUTDOWN_RESEND_FOR);
+                if now >= deadline {
+                    return Err(Error::Shutdown);
+                }
+                tokio::time::sleep(backoff.min(deadline - now)).await;
+            } else {
+                tokio::select! {
+                    biased;
+                    () = shutdown.cancelled() => {}
+                    () = tokio::time::sleep(backoff) => {}
+                }
             }
             backoff = backoff.saturating_mul(2).min(BACKPRESSURE_BACKOFF_MAX);
         }
@@ -678,10 +687,11 @@ mod tests {
         let _recording = recorder.install();
         for hold in [Hold::Once, Hold::UntilTaken] {
             let emitter = emitter_on("{}\n", full_transport().await);
+            let signalled = tokio::time::Instant::now() + Duration::from_secs(60);
             if hold == Hold::UntilTaken {
                 let shutdown = emitter.state().shutdown().clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    tokio::time::sleep_until(signalled).await;
                     shutdown.cancel();
                 });
             }
@@ -693,7 +703,15 @@ mod tests {
 
             match hold {
                 Hold::Once => assert!(matches!(err, Error::Backpressured(_)), "{err:?}"),
-                Hold::UntilTaken => assert!(matches!(err, Error::Shutdown), "{err:?}"),
+                Hold::UntilTaken => {
+                    assert!(matches!(err, Error::Shutdown), "{err:?}");
+                    let after = tokio::time::Instant::now() - signalled;
+                    assert!(
+                        after >= SHUTDOWN_RESEND_FOR
+                            && after < SHUTDOWN_RESEND_FOR + Duration::from_secs(1),
+                        "re-sent for {after:?} after the signal"
+                    );
+                }
             }
             assert_eq!(
                 recorder.counter("usage_ingested_bytes_total", &[("org_id", "default")]),
@@ -709,9 +727,16 @@ mod tests {
     }
 
     /// A backpressured batch is held past any fixed retry budget, keeps its
-    /// memory lease, and is delivered whole once the output takes records.
+    /// memory lease, and is delivered whole once the output takes records,
+    /// including when the output opens 1 s after shutdown is signalled.
     #[tokio::test(start_paused = true)]
     async fn a_backpressured_batch_is_held_until_the_output_takes_it() {
+        for shut_down_first in [false, true] {
+            held_until_taken(shut_down_first).await;
+        }
+    }
+
+    async fn held_until_taken(shut_down_first: bool) {
         use scalo::transport::TransportReceiver;
 
         let transport = full_transport().await;
@@ -739,13 +764,21 @@ mod tests {
                 && !output.contains("dfe_transport_backpressured_total 1\n"),
             "each held pass counts: {output}"
         );
+        if shut_down_first {
+            emitter.state().shutdown().cancel();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert!(!held.is_finished(), "still re-sent 1 s after the signal");
+        }
 
         let mut landed = 0;
         while landed < 3 {
             landed += transport.recv(10).await.expect("recv").records.len();
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let report = held.await.expect("joined").expect("delivered");
+        let report = held
+            .await
+            .expect("joined")
+            .unwrap_or_else(|e| panic!("shut down first {shut_down_first}: {e:?}"));
         assert_eq!(report.sent, 2);
         assert_eq!(guard.current_bytes(), 0, "released once delivered");
     }

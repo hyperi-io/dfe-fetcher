@@ -125,7 +125,7 @@ flowchart TB
 
 1. A flush's records go out as concurrent sends, `accumulate.in_flight` at a time.
 2. Every record ends sent, dead-lettered or backpressured.
-3. The backpressured ones are held and sent again, the wait doubling from 200 ms to 5 s, until the output takes them or the fetcher shuts down. The batch keeps its memory lease meanwhile, so the memory brake stops new fetches. Shutdown gives a held batch one more pass, then the tick ends with no checkpoint and the rows are fetched again on restart.
+3. The backpressured ones are held and sent again, the wait doubling from 200 ms to 5 s, until the output takes them or the fetcher shuts down. The batch keeps its memory lease meanwhile, so the memory brake stops new fetches. After the shutdown signal a held batch is still sent for up to 6 s, because an intake record has no upstream copy. Then the tick ends with no checkpoint and the rows are fetched again on restart.
 4. A record the transport refuses, and would refuse again, goes to the DLQ with its payload cut at `dlq.max_payload_bytes`.
 
 A failure every record shares (the transport closed or timed out, the broker gone) is not a dead letter. The tick aborts and the rows are fetched again. That is the at-least-once side of the contract.
