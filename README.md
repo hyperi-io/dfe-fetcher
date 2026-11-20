@@ -151,7 +151,7 @@ A default build has the REST sources and the file dump. The database engines and
 
 Credential and identity fields take a spec: `vault:<mount>/<path>:<key>` (or its `bao:` and `openbao:` spellings), `env:NAME`, `file:<path>`, or a literal. Identity fields (tenant, account, client id and the like) resolve at startup, and one that cannot be resolved stops the process with a configuration error. A reload that changes a source resolves its specs again. A provider secret resolves on first use and is held until its source is rebuilt or the process restarts, so a secret rotated behind an unchanged spec takes a restart. An `aws:` spec is refused at load, because the fetcher is not built with the AWS Secrets Manager resolver. [Credentials in Kubernetes](docs/cloud-setup/README.md#credentials-in-kubernetes) shows how a deployment supplies them.
 
-Each REST source is a shipped profile under `crates/fetcher/profiles/`, and databases and files are separate source kinds (`sources.db`, `sources.file`). A profile's `maturity` is repeated in [docs/capability-catalog.yaml](docs/capability-catalog.yaml), and the fetcher warns at startup for any enabled source that is not stable. [docs/cloud-setup/README.md](docs/cloud-setup/README.md) indexes the setup guides.
+Each REST source is a shipped profile under `crates/fetcher/profiles/`, and databases and files are separate source kinds (`sources.db`, `sources.file`). A profile's `maturity` is repeated in [docs/capability-catalog.yaml](docs/capability-catalog.yaml), and the fetcher warns at startup for any enabled source that is not stable. The database and file sources are alpha, code-complete but not production-validated, so every `sources.db` and `sources.file` instance logs that warning. Promoting them is tracked in <https://github.com/hyperi-io/dfe-fetcher/issues/323>. [docs/cloud-setup/README.md](docs/cloud-setup/README.md) indexes the setup guides.
 
 | Source | Block | What it pulls |
 |--------|-------|---------------|
@@ -165,8 +165,8 @@ Each REST source is a shipped profile under `crates/fetcher/profiles/`, and data
 | Bitwarden, 1Password, Slack, GitHub, Salesforce | `sources.bitwarden`, `sources.onepassword`, `sources.slack`, `sources.github`, `sources.salesforce` | Each product's audit and event logs |
 | Object store | `sources.object_store` | S3 and S3-compatible bucket prefixes, each object read at least once |
 | PyPI, crates.io, Go modules | `sources.pypi`, `sources.crates_io`, `sources.go_modules` | Package metadata for supply-chain monitoring |
-| Databases | `sources.db` | Any ODBC-reachable database, ClickHouse or MongoDB, dumped whole or tailed by key |
-| Files | `sources.file` | Directories of NDJSON, JSON or CSV dumps, or log files tailed |
+| Databases (alpha) | `sources.db` | Any ODBC-reachable database, ClickHouse or MongoDB, dumped whole or tailed by key |
+| Files (alpha) | `sources.file` | Directories of NDJSON, JSON or CSV dumps, or log files tailed |
 
 An API starts as a profile, shipped under `crates/fetcher/profiles/` or inline under `sources.rest.<id>.profile`. Rust is added for what the grammar cannot express and nothing else, as a variant on the matching axis in `crates/rest`.
 
