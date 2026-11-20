@@ -8,6 +8,8 @@
 
 # Database drivers
 
+Status: alpha. Every `sources.db` instance logs a startup warning that it is not production-validated (`crates/db/src/shape.rs`), and the gaps are under [What is proven where](#what-is-proven-where). Tracked in <https://github.com/hyperi-io/dfe-fetcher/issues/323>.
+
 A `sources.db` instance names an engine, and the engine decides what has to
 be in the image: `odbc` speaks to any SQL engine through unixODBC and that
 engine's ODBC driver, `clickhouse` and `mongodb` are pure Rust clients
