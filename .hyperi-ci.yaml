@@ -66,6 +66,7 @@ build:
 
 release:
   enabled: true
+  candidates: true
   # Moves with the scalo version in Cargo.toml: CONTRIBUTING.md "What tends to bite".
   helm:
     enabled: true
