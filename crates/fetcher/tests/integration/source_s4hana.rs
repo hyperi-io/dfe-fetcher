@@ -451,5 +451,5 @@ async fn the_shape_reports_the_profile_overlap_and_an_instances_own() {
 
     let own = bind_shape(&format!("{base}window: {{ delay: 20m, overlap: 1h }}\n")).unwrap();
     assert_eq!(own.window_overlap(), std::time::Duration::from_secs(3600));
-    assert_eq!(own.window_delay(), std::time::Duration::from_secs(1200));
+    assert_eq!(own.window_delay(), std::time::Duration::from_mins(20));
 }
