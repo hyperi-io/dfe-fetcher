@@ -27,7 +27,9 @@
 //! them one row at a time, closing a block at `batch.max_rows` rows or
 //! `batch.max_bytes` bytes, so a stalled consumer leaves the rest of the
 //! result set on the server. A LOB or a string or binary value over the
-//! `batch` caps fails the tick, as it does on the other engines.
+//! `batch` caps fails the tick, as it does on the other engines. The driver holds
+//! the `batch.max_rows` rows of a round trip before this engine reads the first,
+//! outside the memory lease, so a table of wide rows wants a lower `batch.max_rows`.
 //!
 //! # Type mapping
 //!
@@ -45,8 +47,9 @@
 //! never written into the SQL. The key columns' types are read once, from the
 //! query's own result metadata, because a timestamp checkpoint is text in the
 //! cursor store and has to be cast back (`CAST(? AS TIMESTAMP)`) to compare
-//! as one. A key column must be `NOT NULL`: a null never compares greater than
-//! anything, so a row with one would be skipped.
+//! as one. A key column must be `NOT NULL`, and one the result reports as nullable
+//! is refused at the first tail: a null never compares greater than anything, so
+//! a row with one would be skipped.
 
 use std::sync::{Arc, Once};
 
@@ -403,6 +406,9 @@ impl HanaStore {
         if url.starts_with("hdbsqls://") {
             ensure_crypto_provider();
         }
+        // SHORTCUT: the driver fetches by rows, not bytes, so a round trip holds up to
+        // `batch.max_rows` of the widest row outside the lease. Lift it when the driver
+        // bounds a fetch by bytes.
         let fetch_size = u32::try_from(self.batch.max_rows)
             .unwrap_or(u32::MAX)
             .max(1);
@@ -424,10 +430,9 @@ impl HanaStore {
                 self.columns
                     .iter()
                     .map(|column| {
-                        metadata
+                        let field = metadata
                             .iter()
                             .find(|field| field.displayname() == column)
-                            .map(|field| KeyKind::of(field.type_id()))
                             .ok_or_else(|| {
                                 Error::Config(format!(
                                     "key column `{column}` is not in the query's result; it has {:?}",
@@ -436,7 +441,16 @@ impl HanaStore {
                                         .map(FieldMetadata::displayname)
                                         .collect::<Vec<_>>()
                                 ))
-                            })
+                            })?;
+                        if field.is_nullable() {
+                            return Err(Error::Config(format!(
+                                "key column `{column}` is nullable in the query's result. A NULL key \
+                                 never compares greater than a checkpoint, so its rows would be \
+                                 skipped. Write `COALESCE({column}, <default>) AS {column}`, or key \
+                                 on a NOT NULL column"
+                            )));
+                        }
+                        Ok(KeyKind::of(field.type_id()))
                     })
                     .collect()
             })

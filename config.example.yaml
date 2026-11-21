@@ -1084,10 +1084,11 @@ scaling:
 #       connection_string: "vault:kv/data/<team>/hana:url"   # hdbsqls://user:password@host:443?use_mozillas_root_certificates
 #       topic: "sap_audit"
 #       stores:
-#         # Every column of SYS.AUDIT_LOG is nullable and the view has no unique id. A null key is never
-#         # read again, so coalesce each key in the query. Two events with the same TIMESTAMP,
-#         # CONNECTION_ID and EVENT_ACTION read as one, past a page boundary.
-#         - { unit: audit_log, shape: tail, limit: 5000, key: [TIMESTAMP, CONNECTION_ID, EVENT_ACTION], query: "SELECT COALESCE(TIMESTAMP, '1970-01-01 00:00:00') AS TIMESTAMP, COALESCE(CONNECTION_ID, 0) AS CONNECTION_ID, COALESCE(EVENT_ACTION, '') AS EVENT_ACTION, USER_NAME, EVENT_STATUS, STATEMENT_STRING FROM SYS.AUDIT_LOG" }
+#         # Every column of SYS.AUDIT_LOG is nullable and the view has no unique id. A nullable key is
+#         # refused at the first tail, because a NULL key is never read again, so each key is coalesced.
+#         # The key ends in a hash of the columns that tell events apart. Two events identical in every
+#         # hashed column share a key, and the second is not read across a page or checkpoint boundary.
+#         - { unit: audit_log, shape: tail, limit: 5000, key: [TIMESTAMP, CONNECTION_ID, ROW_HASH], query: "SELECT COALESCE(TIMESTAMP, '1970-01-01 00:00:00') AS TIMESTAMP, COALESCE(CONNECTION_ID, 0) AS CONNECTION_ID, COALESCE(BINTOHEX(HASH_SHA256(TO_VARBINARY(COALESCE(USER_NAME, '')), TO_VARBINARY(COALESCE(EVENT_ACTION, '')), TO_VARBINARY(COALESCE(EVENT_STATUS, '')), TO_VARBINARY(COALESCE(AUDIT_POLICY_NAME, '')), TO_VARBINARY(COALESCE(OBJECT_NAME, '')))), '') AS ROW_HASH, USER_NAME, EVENT_ACTION, EVENT_STATUS, STATEMENT_STRING FROM SYS.AUDIT_LOG" }
 
 # A `mssql` instance uses Microsoft's ODBC Driver 18 for SQL Server and is
 # refused at load until its licence (https://aka.ms/odbc18eula) is accepted

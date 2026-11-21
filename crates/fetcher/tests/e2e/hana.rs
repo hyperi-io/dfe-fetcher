@@ -281,16 +281,20 @@ async fn a_lob_over_the_batch_cap_fails_the_read_naming_the_cap() {
 
 /// Every column of `SYS.AUDIT_LOG` is nullable, the timestamp included, and a
 /// null key never compares greater than anything: a row with one would be
-/// skipped. So the keys are coalesced in the query, which is how an operator
-/// reads this view, and the view has no unique id.
+/// skipped. The view has no unique id either. So the query coalesces each key
+/// and ends the key in a hash of the columns that tell events apart, which is
+/// how an operator reads this view.
 const AUDIT_QUERY: &str = "SELECT COALESCE(TIMESTAMP, '1970-01-01 00:00:00') AS TIMESTAMP, \
-    COALESCE(CONNECTION_ID, 0) AS CONNECTION_ID, COALESCE(EVENT_ACTION, '') AS EVENT_ACTION, \
-    COALESCE(USER_NAME, '') AS USER_NAME, EVENT_STATUS, STATEMENT_STRING FROM SYS.AUDIT_LOG";
+    COALESCE(CONNECTION_ID, 0) AS CONNECTION_ID, \
+    COALESCE(BINTOHEX(HASH_SHA256(TO_VARBINARY(COALESCE(USER_NAME, '')), \
+    TO_VARBINARY(COALESCE(EVENT_ACTION, '')), TO_VARBINARY(COALESCE(EVENT_STATUS, '')), \
+    TO_VARBINARY(COALESCE(AUDIT_POLICY_NAME, '')), TO_VARBINARY(COALESCE(OBJECT_NAME, '')))), '') \
+    AS ROW_HASH, USER_NAME, EVENT_ACTION, EVENT_STATUS, STATEMENT_STRING FROM SYS.AUDIT_LOG";
 
 #[tokio::test]
 #[ignore = "needs a live HANA system: see the module doc"]
 async fn sys_audit_log_is_read_in_key_order_and_a_one_row_page_resume_reads_what_one_read_does() {
-    let keys = ["TIMESTAMP", "CONNECTION_ID", "EVENT_ACTION"];
+    let keys = ["TIMESTAMP", "CONNECTION_ID", "ROW_HASH"];
     let audit = store(AUDIT_QUERY, &keys);
 
     let all = rows(audit.tail(None, 10_000))
@@ -332,4 +336,28 @@ async fn sys_audit_log_is_read_in_key_order_and_a_one_row_page_resume_reads_what
         );
         assert!(json["CONNECTION_ID"].is_number());
     }
+}
+
+#[tokio::test]
+#[ignore = "needs a live HANA system: see the module doc"]
+async fn a_nullable_key_is_refused_and_a_coalesced_one_is_accepted() {
+    let table = Table::create().await;
+    table.insert(&[("2026-11-20 01:00:00.1000000", 1)]).await;
+
+    let nullable = store(&table.query(), &["TS", "NOTE"]);
+    let err = rows(nullable.tail(None, 10)).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::Config(text) if text.contains("`NOTE` is nullable")),
+        "{err:?}"
+    );
+
+    let query = format!(
+        "SELECT TS, ID, COALESCE(NOTE, '') AS NOTE FROM {}",
+        table.name
+    );
+    let coalesced = store(&query, &["TS", "NOTE"]);
+    let read = rows(coalesced.tail(None, 10)).await;
+
+    table.drop_table().await;
+    assert_eq!(read.expect("a coalesced key reads").len(), 1);
 }
