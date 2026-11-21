@@ -48,8 +48,8 @@ entry.
 | Auth mode (`auth.accepts`, instance `auth.mode`) | `none` | pypi, crates_io, go_modules |
 | | `bearer` (static token) | github, cloudflare, onepassword, slack, okta, runzero, gcp |
 | | `api_key` (named header with a prefix, or a query parameter) | okta (`SSWS`) |
-| | `basic` | none shipped |
-| | `oauth2_client_credentials` (cached until shortly before expiry. Per-unit `auth.scope`. `expose` allow-lists token-response fields for templates. `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
+| | `basic` | s4hana |
+| | `oauth2_client_credentials` (cached until shortly before expiry. Per-unit `auth.scope`. `expose` allow-lists token-response fields for templates. `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta, s4hana |
 | | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM. Claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
 | | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical layout and placement the profile names. Duo's versions are presets of it) | duo |
@@ -61,10 +61,10 @@ entry.
 | | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path, and a list cursor is comma-joined) | aws, bitwarden, datadog, duo, gcp, google_workspace, onepassword, slack |
 | | `page_number` (bounded by `total_pages_at`) | cloudflare |
 | | `offset` (advanced by rows received, bounded by `total_at` or a short page) | crowdstrike |
-| | `request_path` (the next URL from the body or a header, relative resolved against the page) | azure, m365, salesforce |
+| | `request_path` (the next URL from the body or a header, relative resolved against the page) | azure, m365, salesforce, s4hana |
 | Decoder (`rows.decoder`) | `json_array` (streamed) | github, okta, m365 |
 | | `ndjson` (streamed) | runzero, object_store |
-| | `json_at` (a wrapped page, rows at a JSON pointer) | aws, azure, bitwarden, cloudflare, crowdstrike, datadog, duo, gcp, gcp_pubsub, google_workspace, m365 `alerts`, onepassword, salesforce, slack |
+| | `json_at` (a wrapped page, rows at a JSON pointer) | aws, azure, bitwarden, cloudflare, crowdstrike, datadog, duo, gcp, gcp_pubsub, google_workspace, m365 `alerts`, onepassword, s4hana, salesforce, slack |
 | | `document` (the whole body is one row) | pypi, crates_io, go_modules, aws `cloudwatch_metrics` |
 | | `json` (an array is its elements, anything else one row) | object_store |
 | | `lines` (plain text, one row per line) | go_modules, object_store |
@@ -573,6 +573,7 @@ counted as an API error.
 | `window.step` | Split the window into steps of at most this length (`<n>s\|m\|h\|d`), one page sequence each. |
 | `window.lookback` | Window of a tick run with none. The scheduler always passes one, from the stored cursor or `cursor.default_window_hours` back, so a scheduled tick never reads this. |
 | `window.delay` | How long after the fact the provider publishes a record (`<n>s\|m\|h\|d`). Every window ends at least this long before now, so the cursor never passes a record not yet visible. Duo's is `2m`. |
+| `window.overlap` | How far back from the scheduler's window start each tick reads again (`<n>s\|m\|h\|d`). A record that becomes visible within `delay` plus `overlap` of its timestamp is read, and the rows read twice are delivered twice, so use it where the consumer takes at-least-once delivery. The driver widens the window once, before any split under a page ceiling, so the halves tile the widened window. A tick with no scheduler window reads its `lookback` and no more. s4hana's is `5m`. |
 | `endpoints[].window.format` | A unit's rendering when its API differs from the profile's. |
 
 A unit with templates that read no `window` runs once per tick, whatever the
@@ -723,6 +724,7 @@ An instance (`sources.rest.<id>`, or a typed block mapped at load) has:
 | `auth` | The mode and its credentials (below). |
 | `vars` | Values the profile's templates read as `vars.*`. |
 | `units` | Per-unit narrowing, keyed by unit name (below). |
+| `window` | `delay` and `overlap` for this instance, over the profile's. How long a system takes to make a record visible is a property of the system, so the instance sets it. |
 | `accumulate` | Batch bounds for this instance. The deployment's when unset. |
 
 Every secret in `auth` is a credential spec (`vault:<mount>/data/<path>:<key>`,

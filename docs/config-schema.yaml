@@ -3289,6 +3289,12 @@ $defs:
         additionalProperties:
           $ref: "#/$defs/UnitOverride"
         default: {}
+      window:
+        description: This instance's `delay` and `overlap` over the profile's.
+        $ref: "#/$defs/InstanceWindow"
+        default:
+          delay: null
+          overlap: null
       accumulate:
         description: Batch bounds for this instance; the deployment's when unset.
         anyOf:
@@ -3430,6 +3436,7 @@ $defs:
           step: null
           lookback: 3600s
           delay: null
+          overlap: null
       probe:
         description: The health-check request, when the API has a cheap one.
         anyOf:
@@ -4225,6 +4232,16 @@ $defs:
         description: |-
           How long after the fact the provider makes a record visible. Every
           window ends at least this far before now.
+        anyOf:
+        - $ref: "#/$defs/DurationText"
+        - type: "null"
+        default: null
+      overlap:
+        description: |-
+          How far before the window's start every tick reads again. A record
+          that became visible up to this long after its window closed is read
+          by the next tick, which also delivers the rows it saw before a second
+          time.
         anyOf:
         - $ref: "#/$defs/DurationText"
         - type: "null"
@@ -5364,6 +5381,26 @@ $defs:
         type: object
         additionalProperties: true
         default: {}
+    additionalProperties: false
+  InstanceWindow:
+    description: |-
+      An instance's own `delay` and `overlap`, over the profile's: how long
+      this provider takes to make a record visible is a property of the system,
+      not of the shape.
+    type: object
+    properties:
+      delay:
+        description: Replaces the profile's `window.delay` when set.
+        anyOf:
+        - $ref: "#/$defs/DurationText"
+        - type: "null"
+        default: null
+      overlap:
+        description: Replaces the profile's `window.overlap` when set.
+        anyOf:
+        - $ref: "#/$defs/DurationText"
+        - type: "null"
+        default: null
     additionalProperties: false
   AccumulateConfig:
     description: |-

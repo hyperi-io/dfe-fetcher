@@ -282,6 +282,7 @@ A profile that needs a signer, a lister, a row builder or a paging quirk adds a 
 | Azure Activity Log | Profile | REST API paged by `nextLink` |
 | M365 Audit Log | Profile | A prelude, a paged content list and a manifest per blob |
 | runZero inventory | Profile | NDJSON exports as snapshot dumps |
+| SAP S/4HANA entity set | Profile | OData V2 pages followed by `d.__next` |
 | An inventory database | `sources.db` | A table dumped whole or tailed by key |
 | Prometheus exporters | Container | A mature exporter run as a sidecar |
 | Syslog collection | Vector | Vector has a native syslog source |

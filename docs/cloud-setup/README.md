@@ -39,6 +39,7 @@ the `sources.db` and `sources.file` blocks), see
 | GitHub | Audit log | [github.md](github.md) |
 | Salesforce | Setup audit trail, login history, event log files | [salesforce.md](salesforce.md) |
 | runZero | Asset inventory snapshots | [runzero.md](runzero.md) |
+| SAP S/4HANA | An OData V2 entity set read by timestamp | [s4hana.md](s4hana.md) |
 | Object store | Buckets (S3 and compatible) | [object-store.md](object-store.md) |
 | Package registries | PyPI, crates.io, Go modules | [supply-chain.md](supply-chain.md) |
 

@@ -3698,6 +3698,14 @@
           },
           "default": {}
         },
+        "window": {
+          "description": "This instance's `delay` and `overlap` over the profile's.",
+          "$ref": "#/$defs/InstanceWindow",
+          "default": {
+            "delay": null,
+            "overlap": null
+          }
+        },
         "accumulate": {
           "description": "Batch bounds for this instance; the deployment's when unset.",
           "anyOf": [
@@ -3873,7 +3881,8 @@
             "format": "rfc3339_secs",
             "step": null,
             "lookback": "3600s",
-            "delay": null
+            "delay": null,
+            "overlap": null
           }
         },
         "probe": {
@@ -4773,6 +4782,18 @@
         },
         "delay": {
           "description": "How long after the fact the provider makes a record visible. Every\nwindow ends at least this far before now.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurationText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overlap": {
+          "description": "How far before the window's start every tick reads again. A record\nthat became visible up to this long after its window closed is read\nby the next tick, which also delivers the rows it saw before a second\ntime.",
           "anyOf": [
             {
               "$ref": "#/$defs/DurationText"
@@ -6123,6 +6144,37 @@
           "type": "object",
           "additionalProperties": true,
           "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "InstanceWindow": {
+      "description": "An instance's own `delay` and `overlap`, over the profile's: how long\nthis provider takes to make a record visible is a property of the system,\nnot of the shape.",
+      "type": "object",
+      "properties": {
+        "delay": {
+          "description": "Replaces the profile's `window.delay` when set.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurationText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overlap": {
+          "description": "Replaces the profile's `window.overlap` when set.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurationText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

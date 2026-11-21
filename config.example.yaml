@@ -528,7 +528,7 @@ sources:
   # Shipped profiles (see crates/fetcher/profiles/): aws, azure, bitwarden,
   # cloudflare, crates_io, crowdstrike, duo, gcp, gcp_pubsub, github,
   # go_modules, google_workspace, m365, object_store, okta, onepassword,
-  # pypi, runzero, salesforce, slack. Every typed block above with one of
+  # pypi, runzero, s4hana, salesforce, slack. Every typed block above with one of
   # those names is the same profile behind its typed config: each block maps
   # onto an instance at load, so the blocks stay as they are and
   # `sources.rest` is for a second instance of a shape or an API with no
@@ -614,6 +614,32 @@ sources:
       #   audit_events: { vars: { filter_query: "@evt.name:Dashboard" } }
       #   security_signals: { enabled: false }
       profile: datadog
+    # -------------------------------------------------------------------------
+    # SAP S/4HANA -- an OData V2 entity set read by timestamp
+    # -------------------------------------------------------------------------
+    # One unit reads one entity set: rows whose `time_field` falls in the
+    # window, oldest first, following `d.__next` until it is absent. SAP
+    # publishes no audit or change-log entity set for S/4HANA OData V2, so the
+    # service and entity set are yours. Setup and limits:
+    # docs/cloud-setup/s4hana.md.
+    s4_changes:
+      enabled: false
+      topic: "s4hana"
+      interval_secs: 900
+      auth:
+        mode: basic
+        username: "SVC_DFE_FETCHER"
+        password: "vault:kv/data/s4hana/prod:password"
+      vars:
+        base_url: "https://s4.example.internal:44300"   # required, no default
+        service: "ZAUDIT_SRV"
+        entity_set: "ChangeLogEntries"
+        time_field: "ChangedAt"
+        key_field: "EntryId"            # required, unique per row: orders equal timestamps
+        # time_type: datetimeoffset     # or `datetime` for an Edm.DateTime property
+        # sap_client: "100"             # sent as a header, unset for the user's default client
+        # extra_filter: "ObjectClass eq 'ORDER'"
+      profile: s4hana
     # A one-off API needs no shipped profile: write the shape inline. The same
     # grammar, with paging and a wrapped page body:
     # inventory_paged:

@@ -165,6 +165,15 @@ impl RowSource for Shape {
         }
     }
 
+    fn window_overlap(&self) -> Duration {
+        match self {
+            Shape::Rest(s) => s.window_overlap(),
+            Shape::Db(s) => s.window_overlap(),
+            Shape::File(s) => s.window_overlap(),
+            Shape::Custom(s) => s.window_overlap(),
+        }
+    }
+
     fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a> {
         match self {
             Shape::Rest(s) => s.rows(tick),
@@ -998,7 +1007,7 @@ impl Driver {
 
     /// Run one unit over `window`, loading its checkpoint afresh for each run.
     ///
-    /// A windowed run that stops at the unit's page ceiling is run again over
+    /// The window is read from `window_overlap` before its start. A windowed run that stops at the unit's page ceiling is run again over
     /// the earlier half of its window and then the later half, halving down
     /// to one second, so the unit covers the whole window inside this tick
     /// and the connection's other units never fetch it twice. A window that
@@ -1015,7 +1024,14 @@ impl Driver {
         window: Option<&FetchWindow>,
         settings: &TickSettings,
     ) -> Result<TickReport> {
-        let mut spans = vec![window.cloned()];
+        // The overlap is added once, to the whole window, so a split under a
+        // page ceiling tiles the widened window and never adds it again.
+        let overlap = chrono::Duration::from_std(self.shape.window_overlap())
+            .unwrap_or_else(|_| chrono::Duration::zero());
+        let mut spans = vec![window.map(|w| FetchWindow {
+            start: w.start - overlap,
+            end: w.end,
+        })];
         let mut total = TickReport::default();
         while let Some(span) = spans.pop() {
             let checkpoint = self.load_checkpoint(unit).await;

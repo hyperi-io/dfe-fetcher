@@ -1,0 +1,32 @@
+{
+  "d": {
+    "results": [
+      {
+        "__metadata": {
+          "id": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000003')",
+          "uri": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000003')",
+          "type": "API_SYNTHETIC_SRV.ChangeLogEntry"
+        },
+        "EntryId": "0000000003",
+        "ObjectClass": "SYNTH_INVOICE",
+        "ObjectId": "9100000001",
+        "Action": "D",
+        "ChangedBy": "SYNTH_USER_01",
+        "ChangedAt": "/Date(1795138269000)/"
+      },
+      {
+        "__metadata": {
+          "id": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000004')",
+          "uri": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000004')",
+          "type": "API_SYNTHETIC_SRV.ChangeLogEntry"
+        },
+        "EntryId": "0000000004",
+        "ObjectClass": "SYNTH_INVOICE",
+        "ObjectId": "9100000002",
+        "Action": "U",
+        "ChangedBy": "SYNTH_USER_03",
+        "ChangedAt": "/Date(1795139090000)/"
+      }
+    ]
+  }
+}

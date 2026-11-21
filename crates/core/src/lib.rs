@@ -358,6 +358,13 @@ pub trait RowSource: Send + Sync {
         std::time::Duration::ZERO
     }
 
+    /// How far before the scheduler's window start a tick reads again, so a
+    /// record that became visible after its window closed is still read. The
+    /// driver widens the window once, before any split under a page ceiling.
+    fn window_overlap(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
     /// The rows of one unit for one tick.
     fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a>;
 

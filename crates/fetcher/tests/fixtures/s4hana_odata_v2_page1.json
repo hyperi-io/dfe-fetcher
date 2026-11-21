@@ -1,0 +1,33 @@
+{
+  "d": {
+    "results": [
+      {
+        "__metadata": {
+          "id": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000001')",
+          "uri": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000001')",
+          "type": "API_SYNTHETIC_SRV.ChangeLogEntry"
+        },
+        "EntryId": "0000000001",
+        "ObjectClass": "SYNTH_ORDER",
+        "ObjectId": "9000000001",
+        "Action": "U",
+        "ChangedBy": "SYNTH_USER_01",
+        "ChangedAt": "/Date(1795136711000)/"
+      },
+      {
+        "__metadata": {
+          "id": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000002')",
+          "uri": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries('0000000002')",
+          "type": "API_SYNTHETIC_SRV.ChangeLogEntry"
+        },
+        "EntryId": "0000000002",
+        "ObjectClass": "SYNTH_ORDER",
+        "ObjectId": "9000000002",
+        "Action": "I",
+        "ChangedBy": "SYNTH_USER_02",
+        "ChangedAt": "/Date(1795137462000)/"
+      }
+    ],
+    "__next": "{{host}}/sap/opu/odata/sap/API_SYNTHETIC_SRV/ChangeLogEntries?$format=json&$orderby=ChangedAt%20asc,EntryId%20asc&$filter=ChangedAt%20ge%20datetimeoffset'2026-11-20T01:00:00Z'%20and%20ChangedAt%20lt%20datetimeoffset'2026-11-20T02:00:00Z'&$skiptoken=2"
+  }
+}

@@ -1221,6 +1221,35 @@ pub struct WindowSpec {
     /// How long after the fact the provider makes a record visible. Every
     /// window ends at least this far before now.
     pub delay: Option<DurationText>,
+    /// How far before the window's start every tick reads again. A record
+    /// that became visible up to this long after its window closed is read
+    /// by the next tick, which also delivers the rows it saw before a second
+    /// time.
+    pub overlap: Option<DurationText>,
+}
+
+/// An instance's own `delay` and `overlap`, over the profile's: how long
+/// this provider takes to make a record visible is a property of the system,
+/// not of the shape.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct InstanceWindow {
+    /// Replaces the profile's `window.delay` when set.
+    pub delay: Option<DurationText>,
+    /// Replaces the profile's `window.overlap` when set.
+    pub overlap: Option<DurationText>,
+}
+
+impl InstanceWindow {
+    /// Write the fields this instance sets over `spec`.
+    pub fn apply(&self, spec: &mut WindowSpec) {
+        if self.delay.is_some() {
+            spec.delay = self.delay;
+        }
+        if self.overlap.is_some() {
+            spec.overlap = self.overlap;
+        }
+    }
 }
 
 impl Default for WindowSpec {
@@ -1230,6 +1259,7 @@ impl Default for WindowSpec {
             step: None,
             lookback: DurationText(Duration::from_secs(3600)),
             delay: None,
+            overlap: None,
         }
     }
 }
@@ -3677,6 +3707,8 @@ pub struct RestInstance {
     pub vars: BTreeMap<String, serde_json::Value>,
     /// Per-unit narrowing, keyed by unit name.
     pub units: BTreeMap<String, UnitOverride>,
+    /// This instance's `delay` and `overlap` over the profile's.
+    pub window: InstanceWindow,
     /// Batch bounds for this instance; the deployment's when unset.
     pub accumulate: Option<AccumulateConfig>,
 }
@@ -3693,6 +3725,7 @@ impl Default for RestInstance {
             auth: InstanceAuth::default(),
             vars: BTreeMap::new(),
             units: BTreeMap::new(),
+            window: InstanceWindow::default(),
             accumulate: None,
         }
     }
