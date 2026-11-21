@@ -8160,7 +8160,7 @@
           "default": null
         },
         "max_poll_records": {
-          "description": "Maximum number of messages the recv() loop returns per call.\n\nNOTE: `max.poll.records` does NOT exist in librdkafka -- there is no\nbroker-level property for this. This is a purely CLIENT-SIDE cap,\nenforced by passing this value as the `max` argument to\n`KafkaTransport::recv()` via `KafkaSizingConfig::effective_poll_cap()`.\nIt bounds the batch size delivered to the WorkBatch layer, not the\nnetwork fetch size (which is byte-governed by the knobs above).",
+          "description": "Maximum number of messages one `KafkaTransport::recv()` or `recv_limited()`\ncall returns, whatever `max` the caller passes. At least 1: a receiving\ntransport refuses 0 when it is built, because a receive always takes its\nfirst record.\n\n`max.poll.records` does NOT exist in librdkafka, so this is a CLIENT-SIDE\ncap, read through `KafkaSizingConfig::effective_poll_cap()` when the\ntransport is built. It bounds the batch size delivered to the WorkBatch\nlayer, not the network fetch size (which is byte-governed by the knobs\nabove).",
           "type": [
             "integer",
             "null"
