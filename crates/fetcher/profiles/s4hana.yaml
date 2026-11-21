@@ -34,8 +34,8 @@ window:
   # A window ends this long before now so a row committed just after its
   # timestamp is still read.
   delay: 5m
-  # The next tick reads this far back, so a row visible up to this long after
-  # its window closed is still read.
+  # Each tick reads this far back, so a row visible within delay plus overlap
+  # of its timestamp is read.
   overlap: 5m
 retry:
   never_retry: [401, 403]
