@@ -77,7 +77,7 @@ Rows land on `<topic>` tagged `<connection>.<unit>`.
 - A window ends 5 minutes before now, so a row whose transaction commits just after its timestamp is still read. The 5 minutes is a guess, not measured against SAP. A row that becomes visible later is never read, because a closed window is not read again. To allow longer, copy the profile inline under the instance with a larger `window.delay`.
 - Rows come back ordered by `time_field` then `key_field`. `key_field` has no default and must be unique per row, so rows with equal timestamps page in a fixed order. An instance without one does not bind.
 - A date-only property (an `Edm.DateTime` shown as a date) holds no time of day. Its rows fall in the window that contains midnight, so rows created after that window closed are never read. Use a time-of-day property.
-- A unit that reads 100 pages fails the tick rather than stopping short, and the window is read again in halves.
+- A unit that reads 100 pages fails the tick rather than stopping short, and the window is read again in halves. Delivery is at least once, so a window read again after a failed page or the page limit can deliver a row twice. Deduplicate downstream on `key_field`.
 
 **Paging.** The server answers `{"d": {"results": [...], "__next": "<uri>"}}` while rows remain, and leaves `__next` out of the last page ([OData V2 JSON format](https://www.odata.org/documentation/odata-version-2-0/json-format/)). SAP Gateway builds the link with `$skiptoken` from Gateway 2.0 SP04 ([SAP Gateway feature overview](https://help.sap.com/saphelp_snc700_ehp04/helpdata/en/97/422751c639276ee10000000a445394/content.htm)).
 
