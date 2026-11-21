@@ -13,7 +13,7 @@
 //! committed key tuple (`WHERE key > $last ORDER BY key LIMIT n`, or for
 //! MongoDB a change stream resumed from its token) and each row carries its
 //! key as `Mark::Keyset`, committed only after the batch is acknowledged.
-//! Engines are opt-in features (`odbc`, `clickhouse`, `mongodb`) so a
+//! Engines are opt-in features (`odbc`, `clickhouse`, `mongodb`, `hana`) so a
 //! deployment links only the drivers it ships; the config grammar and the
 //! shape compile regardless, and an instance naming an engine that is not
 //! built fails validation with that reason.
@@ -37,6 +37,8 @@
 #[cfg(feature = "clickhouse")]
 pub mod clickhouse;
 pub mod config;
+#[cfg(feature = "hana")]
+pub mod hana;
 pub mod keyset;
 pub mod lines;
 #[cfg(feature = "mongodb")]

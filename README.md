@@ -6,7 +6,7 @@ Pulls data from cloud and SaaS APIs, databases and files into a DFE deployment.
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
 
 - A REST provider is a YAML profile, with no Rust: the base URL, auth modes, endpoints, decoder and pager, checked at load with the line of any unknown key.
-- Database sources over ODBC, the ClickHouse HTTP interface and MongoDB, dumped whole or tailed, by key tuple on SQL and by change stream or `_id` on MongoDB.
+- Database sources over ODBC, the ClickHouse HTTP interface, MongoDB and SAP HANA, dumped whole or tailed, by key tuple on SQL and by change stream or `_id` on MongoDB.
 - Any tool run in a Docker or podman container as a source, its stdout JSON lines or HTTP posts collected, and Vector's native gRPC protocol received.
 - A cursor or checkpoint written once the transport has taken the batch, never before, so a failed tick fetches again rather than losing records. A dump travels as one snapshot, framed `begin`, rows and `end`.
 - A per-source CEL filter, re-read every tick, and a memory brake that pauses polling a provider when the service is under memory pressure, for at most `self_regulation.max_hold_secs` at a time.
@@ -143,7 +143,7 @@ cargo build --release
 
 `--config` goes before the subcommand. [config.example.yaml](config.example.yaml) enables no source, so the fetcher starts idle and logs `no work configured` until a source, an extractor or the ingest listener is switched on. Metrics and health answer on port 9090 (`/metrics`, `/livez`, `/readyz`), and `/readyz` answers `{"status":"ready"}` when idle. The ingest HTTP endpoint on 8080 and the Vector gRPC receiver on 6000 are off until a deployment turns them on.
 
-A default build has the REST sources and the file dump. The database engines and the file tailer are cargo features of `crates/fetcher/Cargo.toml` (`db-odbc`, `db-clickhouse`, `db-mongodb`, `file-tail`), and a config naming an engine the binary lacks is refused at load with the feature to build. The release image is built with all four and `jemalloc` (`build.rust.features` in `.hyperi-ci.yaml`).
+A default build has the REST sources and the file dump. The database engines and the file tailer are cargo features of `crates/fetcher/Cargo.toml` (`db-odbc`, `db-clickhouse`, `db-mongodb`, `db-hana`, `file-tail`), and a config naming an engine the binary lacks is refused at load with the feature to build. The release image is built with all five and `jemalloc` (`build.rust.features` in `.hyperi-ci.yaml`).
 
 ## Configuration
 
@@ -165,7 +165,7 @@ Each REST source is a shipped profile under `crates/fetcher/profiles/`, and data
 | Bitwarden, 1Password, Slack, GitHub, Salesforce | `sources.bitwarden`, `sources.onepassword`, `sources.slack`, `sources.github`, `sources.salesforce` | Each product's audit and event logs |
 | Object store | `sources.object_store` | S3 and S3-compatible bucket prefixes, each object read at least once |
 | PyPI, crates.io, Go modules | `sources.pypi`, `sources.crates_io`, `sources.go_modules` | Package metadata for supply-chain monitoring |
-| Databases (alpha) | `sources.db` | Any ODBC-reachable database, ClickHouse or MongoDB, dumped whole or tailed by key |
+| Databases (alpha) | `sources.db` | Any ODBC-reachable database, ClickHouse, MongoDB or SAP HANA, dumped whole or tailed by key |
 | Files (alpha) | `sources.file` | Directories of NDJSON, JSON or CSV dumps, or log files tailed |
 
 An API starts as a profile, shipped under `crates/fetcher/profiles/` or inline under `sources.rest.<id>.profile`. Rust is added for what the grammar cannot express and nothing else, as a variant on the matching axis in `crates/rest`.

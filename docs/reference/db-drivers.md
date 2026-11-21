@@ -12,7 +12,7 @@ Status: alpha. Every `sources.db` instance logs a startup warning that it is not
 
 A `sources.db` instance names an engine, and the engine decides what has to
 be in the image: `odbc` speaks to any SQL engine through unixODBC and that
-engine's ODBC driver, `clickhouse` and `mongodb` are pure Rust clients
+engine's ODBC driver, `clickhouse`, `mongodb` and `hana` are pure Rust clients
 with nothing to install. The table below is one row per engine: the driver,
 its licence, whether the runtime image ships it or the operator adds it in a driver layer,
 the connection form, what a tail needs of its key, and what the tail commits.
@@ -28,16 +28,16 @@ annotated in `config.example.yaml`. The code is `crates/db/src/`.
 
 ## What the image ships
 
-The release binary is built with `db-odbc`, `db-clickhouse` and `db-mongodb`
-(`build.rust.features` in `.hyperi-ci.yaml`), and the runtime image the
+The release binary is built with `db-odbc`, `db-clickhouse`, `db-mongodb` and
+`db-hana` (`build.rust.features` in `.hyperi-ci.yaml`), and the runtime image the
 deployment contract generates (`Dockerfile`, from `dfe-fetcher
 emit-dockerfile`) installs the unixODBC driver manager (`libodbc2`) and the
 three open-licence drivers as Debian packages: psqlodbc (`odbc-postgresql`),
 MariaDB Connector/ODBC (`odbc-mariadb`) and sqliteodbc (`libsqliteodbc`). Each
 registers itself in `/etc/odbcinst.ini` on install, so `odbcinst -q -d` in the
 image lists `MariaDB Unicode`, `SQLite`, `SQLite3`, `PostgreSQL ANSI` and
-`PostgreSQL Unicode`. `db-clickhouse` and `db-mongodb` need nothing from the
-image.
+`PostgreSQL Unicode`. `db-clickhouse`, `db-mongodb` and `db-hana` need nothing
+from the image.
 
 unixODBC is the one C library the binary links dynamically: odbc-sys has no
 load-on-demand mode, so the binary needs `libodbc.so.2` at start, and the
@@ -79,6 +79,7 @@ USER 1000
 | BigQuery | `odbc` / `bigquery` | Simba Google BigQuery ODBC Connector (Google-distributed) | Proprietary, click-through | Operator driver layer | `Driver={Simba Google BigQuery ODBC Connector};Catalog=<project>;OAuthMechanism=0;Email=<service account>;KeyFilePath=<key.json>` | NOT NULL columns. Names keep their case, `` `name` `` delimits | Key tuple of the last acknowledged row |
 | Redshift with Amazon's driver | `odbc` / `postgres` | Amazon Redshift ODBC driver, or psqlodbc over the PostgreSQL wire | Apache-2.0 (Amazon's), LGPL-2.1 (psqlodbc) | Operator driver layer (Amazon's), shipped (psqlodbc) | As PostgreSQL, with Amazon's driver name when used | As PostgreSQL | Key tuple of the last acknowledged row |
 | MongoDB, Atlas, and the MongoDB wire (DocumentDB, Cosmos DB for MongoDB) | `mongodb` | The official `mongodb` crate and `bson` (pure Rust) | Apache-2.0 (driver), MIT (bson) | Nothing to install | `mongodb://user:password@host:27017/?authSource=admin`, or `mongodb+srv://...` for Atlas | Change stream (the default): none, the server orders events, but the deployment must be a replica set. Keyset: `_id` | Change stream: the resume token of the last acknowledged event. Keyset: the `_id` of the last acknowledged document |
+| SAP HANA, HANA Cloud, HANA Express | `hana` | `hdbconnect_async` 0.33 (pure Rust, TLS through rustls). SAP's ODBC driver is not used | MIT OR Apache-2.0 | Nothing to install | `hdbsqls://user:password@host:443?use_mozillas_root_certificates` for HANA Cloud, `hdbsql://user:password@host:39017` plain. Percent-encode `@ : / ? # %` in the user name and password | `NOT NULL` columns of the query's result, and a nullable one is refused at the first tail. `SYS.AUDIT_LOG` has no `NOT NULL` column and no unique id, so `config.example.yaml` coalesces its keys and ends them in a hash. A plain name folds to UPPER case, `"Name"` keeps its case | Key tuple of the last acknowledged row |
 | DynamoDB, Cosmos DB SQL API, Elasticsearch, OpenSearch | not a `sources.db` engine | -- | -- | -- | A REST profile under `sources.rest` (see `docs/reference/profile-grammar.md`) | -- | -- |
 
 The driver name in a connection string is whatever `odbcinst -q -d` lists on
@@ -113,6 +114,7 @@ to be mounted into the image. The spec mechanism does not fetch it.
 | BigQuery | A service-account key (`OAuthMechanism=0` with `Email` and `KeyFilePath`, or `KeyFile` for the key inline). Application Default Credentials (`OAuthMechanism=3`), which falls back to the metadata server's default service account and so needs no key at all. Workload identity federation (`OAuthMechanism=4`). Service-account impersonation (`SAI_Email`, `SAI_Lifetime`, `SAI_Scopes`) | The key file, unless `KeyFile` has it inline or `OAuthMechanism=3` is used | -- |
 | Redshift | IAM with explicit keys (`IAM=1` with `AccessKeyID`, `SecretAccessKey`, optional `SessionToken`), a shared profile (`Profile`), or the instance role (`InstanceProfile=1`). The driver calls STS and requests cluster credentials itself | `Profile` reads a shared credentials file | The IdP token plugin, which Amazon states the calling application must generate |
 | SQLite | Nothing: the file is the database and the driver takes no credential | The database file itself | -- |
+| SAP HANA | User and password in the URL, authenticated with SCRAM-SHA-256 or SCRAM-PBKDF2-SHA256, the two methods the driver has (its `authentication` module holds those two). TLS is `hdbsqls://` with one trust option: `use_mozillas_root_certificates` (HANA Cloud), `tls_certificate_dir=<dir>` or `tls_certificate_env=<variable>` | The CA certificates for the two private-authority forms | SAML, JWT, X.509 client certificates and Kerberos: the driver has no method for them, as of 0.33 |
 | MongoDB | SCRAM (`authMechanism=SCRAM-SHA-256` or `SCRAM-SHA-1`, with `authSource`), which is the on-prem form and the one this engine is for. Workload identity (`authMechanism=MONGODB-OIDC` with `authMechanismProperties=ENVIRONMENT:k8s`, `azure` or `gcp`, the latter two with `TOKEN_RESOURCE`), where the driver mints the token from that environment itself | The projected service-account token for the `k8s` form, which Kubernetes mounts itself | `MONGODB-AWS` and `GSSAPI`: driver build features this binary does not enable, the first because it links the AWS SDK's credential stack. `MONGODB-OIDC` with no `ENVIRONMENT`, which needs a token callback the driver expects the application to supply. Each is refused naming the reason: at load for a literal connection string, at connect for a `vault:` or other spec. `MONGODB-X509` is set through the URI and needs no auth feature, but the driver's documentation demonstrates X.509 through a programmatic credential and no other way, so it is unproven here rather than supported |
 
 ### Forms that need a token minted per connection
@@ -144,7 +146,8 @@ and the unit tests there pin each of these:
 - The predicate. Engines with row-value comparison take `(a, b) > (?, ?)`.
   SQL Server and Oracle do not, and take the expanded
   `a > ? OR (a = ? AND b > ?)` with the leading values bound once per
-  disjunct. Values are always bound as parameters (ODBC `?`, ClickHouse
+  disjunct. HANA takes the expanded form as well, because ordered comparison of
+  row values is not in the SAP reference pages we read. Values are always bound as parameters (ODBC `?`, ClickHouse
   `{k<i>:Type}`), never written into the SQL text.
 - The cap. `LIMIT n` everywhere except SQL Server, where
   `OFFSET 0 ROWS FETCH NEXT n ROWS ONLY` is a sub-clause of `ORDER BY` (so
@@ -163,7 +166,24 @@ and the unit tests there pin each of these:
   it. The row JSON has the column under the folded name, which is where
   the tail reads its checkpoint value. Write a case-sensitive column
   delimited.
-- Timestamps. Every engine reports timestamps as RFC 3339 UTC (the session
+- HANA types. A `TIMESTAMP`, `SECONDDATE`, `DATE` or `TIME` lands as ISO text
+  with no zone (`2026-11-20T01:02:03.1234567`), because HANA stores none. The
+  checkpoint binds it back as `CAST(? AS TIMESTAMP)` with a space for the `T`.
+  The key columns' types come from the query's own result metadata, and each
+  bound value is parsed by the prepared statement's parameter descriptor,
+  because the driver rejects an `INT` parameter given a `BIGINT`. `DECIMAL`
+  lands as a number when 15 digits hold it exactly and as text otherwise, so a
+  `DECIMAL` key beyond that is better written as an integer or a string in the
+  query. An NCLOB, CLOB or BLOB is read in full and held to `batch.max_text_bytes`
+  or `batch.max_binary_bytes`. The driver fetches by rows. The first round trip
+  fetches one row. Each later one is sized from the width of the recent rows to
+  about `batch.max_bytes`, capped at `batch.max_rows` and at twice the round
+  trip before. A second cap holds whatever the rows look like: `batch.max_bytes`
+  over the widest row the declared column types allow, with a string held to
+  `batch.max_text_bytes` and a binary to `batch.max_binary_bytes`. A table with a
+  wide declared column therefore fetches few rows a round trip. The rows of a
+  round trip sit outside the memory lease.
+- Timestamps. Every other engine reports timestamps as RFC 3339 UTC (the session
   is pinned to UTC on PostgreSQL and MariaDB) and the checkpoint binds that
   text back. ClickHouse's parameter parser takes the ISO form without the
   `Z`, so the store binds a `DateTime` key without it under
@@ -212,3 +232,5 @@ the same proof, gated on their operator-supplied driver being registered
 with the host's driver manager: absent the driver the test skips saying so,
 in CI as well, because the driver is a click-through licence no shared runner
 has. The dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI lints the `db-odbc` feature, but neither CI nor the release gate tests it.
+
+SAP HANA runs by hand, as the module comment of `crates/fetcher/tests/e2e/hana.rs` sets out. Seven tests ran against SAP HANA Cloud over TLS with a password login: a probe and a refused wrong password, a tail resumed past rows that tie on the first key, a LOB over its batch cap, a nullable key refused and a coalesced one accepted, wide rows under a small byte budget, narrow rows followed by wide ones, and `SYS.AUDIT_LOG` paged one row at a time on a hashed key. A HANA Express container over plain `hdbsql://` ran earlier forms of the first four, before the nullable-key test and the hashed audit key existed. The Cloud audit log held one row when they ran, so the multi-row resume is proven on the test table and the audit view proves the query and its keys. Neither CI nor the release gate runs them. The tail statement, the type mapping and the URL decoding are unit tests.

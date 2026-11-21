@@ -21,7 +21,7 @@ quality:
     features:
       - "default"
       - "jemalloc"
-      - "db-clickhouse,db-mongodb,file-tail"
+      - "db-clickhouse,db-mongodb,db-hana,file-tail"
       - "db-odbc"
 
 test:
@@ -33,13 +33,13 @@ test:
     features:
       - "default"
       - "jemalloc"
-      - "db-clickhouse,db-mongodb,file-tail,db-odbc"
+      - "db-clickhouse,db-mongodb,db-hana,file-tail,db-odbc"
   # Test tiers: docs/testing.md.
   full:
     required_for_release: true
     rust:
       # The live-provider suites need tenant credentials no runner holds.
-      filter: "not (test(/^smoke_remote::/) | test(/^runzero::/))"
+      filter: "not (test(/^smoke_remote::/) | test(/^runzero::/) | test(/^hana::/))"
 
 build:
   enabled: true
@@ -59,6 +59,7 @@ build:
       - "db-odbc"
       - "db-clickhouse"
       - "db-mongodb"
+      - "db-hana"
       - "file-tail"
     targets:
       - x86_64-unknown-linux-gnu

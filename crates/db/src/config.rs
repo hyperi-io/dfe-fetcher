@@ -41,6 +41,8 @@ pub enum Engine {
     /// The official MongoDB driver: a collection dumped by `find`, tailed by
     /// change stream or by `_id`.
     Mongodb,
+    /// SAP HANA over its own wire protocol, pure Rust, TLS through rustls.
+    Hana,
 }
 
 impl Engine {
@@ -51,6 +53,7 @@ impl Engine {
             Engine::Odbc => "odbc",
             Engine::Clickhouse => "clickhouse",
             Engine::Mongodb => "mongodb",
+            Engine::Hana => "hana",
         }
     }
 
@@ -61,6 +64,7 @@ impl Engine {
             Engine::Odbc => "db-odbc",
             Engine::Clickhouse => "db-clickhouse",
             Engine::Mongodb => "db-mongodb",
+            Engine::Hana => "db-hana",
         }
     }
 
@@ -71,6 +75,7 @@ impl Engine {
             Engine::Odbc => cfg!(feature = "odbc"),
             Engine::Clickhouse => cfg!(feature = "clickhouse"),
             Engine::Mongodb => cfg!(feature = "mongodb"),
+            Engine::Hana => cfg!(feature = "hana"),
         }
     }
 
@@ -242,7 +247,7 @@ pub struct DbInstance {
     pub enabled: bool,
     /// The client library.
     pub engine: Engine,
-    /// The SQL dialect; required for `odbc`, implied for `clickhouse`.
+    /// The SQL dialect. Required for `odbc`, implied for `clickhouse` and `hana`.
     pub dialect: Option<Dialect>,
     /// The connection string or URL as a credential spec (`vault:...`, also
     /// spelled `bao:` or `openbao:`, `env:VAR`, `file:<path>`, or a literal),
@@ -337,13 +342,38 @@ pub fn mongodb_auth_issue(uri: &str) -> Option<String> {
     }
 }
 
+/// What is wrong with a literal HANA connection string, if anything: the
+/// driver takes `hdbsql://` and `hdbsqls://` only, and a secure URL names how
+/// the server's certificate is trusted.
+#[must_use]
+pub fn hana_url_issue(url: &str) -> Option<String> {
+    let secure = url.starts_with("hdbsqls://");
+    if !secure && !url.starts_with("hdbsql://") {
+        return Some(
+            "the hana engine takes `hdbsql://user:password@host:port` or `hdbsqls://...` with a TLS option"
+                .to_owned(),
+        );
+    }
+    let trust = [
+        "use_mozillas_root_certificates",
+        "tls_certificate_dir=",
+        "tls_certificate_env=",
+        "insecure_omit_server_certificate_check",
+    ];
+    (secure && !trust.iter().any(|option| url.contains(option))).then(|| {
+        "`hdbsqls://` needs one of `use_mozillas_root_certificates`, `tls_certificate_dir=<dir>` or `tls_certificate_env=<variable>`"
+            .to_owned()
+    })
+}
+
 impl DbInstance {
-    /// The dialect in force: the configured one, ClickHouse for that engine,
-    /// none for MongoDB.
+    /// The dialect in force: the configured one, ClickHouse and HANA for their
+    /// own engines, none for MongoDB.
     #[must_use]
     pub fn dialect(&self) -> Option<Dialect> {
         match (self.engine, self.dialect) {
             (Engine::Clickhouse, None) => Some(Dialect::Clickhouse),
+            (Engine::Hana, None) => Some(Dialect::Hana),
             (Engine::Mongodb, _) => None,
             (_, d) => d,
         }
@@ -390,11 +420,23 @@ impl DbInstance {
                 "dialect: the clickhouse engine is always `clickhouse`, not `{}`",
                 d.as_str()
             )),
+            (Engine::Odbc, Some(Dialect::Hana)) => issues
+                .push("dialect: HANA is read by the `hana` engine, not through ODBC".to_owned()),
+            (Engine::Hana, Some(d)) if d != Dialect::Hana => issues.push(format!(
+                "dialect: the hana engine is always `hana`, not `{}`",
+                d.as_str()
+            )),
             (Engine::Mongodb, Some(d)) => issues.push(format!(
                 "dialect: the mongodb engine speaks no SQL dialect, drop `{}`",
                 d.as_str()
             )),
             _ => {}
+        }
+        if self.engine == Engine::Hana
+            && let Some(literal) = self.literal_connection_string()
+            && let Some(issue) = hana_url_issue(literal)
+        {
+            issues.push(format!("connection_string: {issue}"));
         }
         if self.engine == Engine::Mongodb
             && let Some(literal) = self.literal_connection_string()
@@ -758,6 +800,66 @@ stores:
                 "missing `{expected}` in {issues:?}"
             );
         }
+    }
+
+    #[test]
+    fn hana_implies_its_dialect_and_accepts_a_tail() {
+        let inst = instance(
+            "engine: hana\nconnection_string: \"env:HANA\"\ntopic: t\nstores: [{ unit: audit, shape: tail, query: 'SELECT * FROM SYS.AUDIT_LOG', key: [TIMESTAMP, CONNECTION_ID] }]\n",
+        );
+        assert_eq!(inst.dialect(), Some(Dialect::Hana));
+        assert_eq!(Engine::Hana.feature(), "db-hana");
+        assert_eq!(Engine::Hana.as_str(), "hana");
+        assert!(Engine::Hana.is_sql());
+        assert_eq!(without_build_gate(inst.validate()), [] as [String; 0]);
+    }
+
+    #[test]
+    fn hana_is_not_an_odbc_dialect() {
+        let inst = instance(
+            "engine: odbc\ndialect: hana\nconnection_string: \"env:DSN\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1 FROM DUMMY' }]\n",
+        );
+        assert!(
+            without_build_gate(inst.validate())
+                .iter()
+                .any(|i| i == "dialect: HANA is read by the `hana` engine, not through ODBC")
+        );
+    }
+
+    #[test]
+    fn a_hana_instance_with_another_dialect_is_refused() {
+        let inst = instance(
+            "engine: hana\ndialect: postgres\nconnection_string: \"env:HANA\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1 FROM DUMMY' }]\n",
+        );
+        assert!(
+            without_build_gate(inst.validate())
+                .iter()
+                .any(|i| i.starts_with("dialect: the hana engine is always `hana`"))
+        );
+    }
+
+    #[test]
+    fn a_literal_hana_connection_string_must_be_a_driver_url_that_names_its_trust() {
+        assert_eq!(hana_url_issue("hdbsql://u:p@h:39017"), None);
+        assert_eq!(
+            hana_url_issue("hdbsqls://u:p@h:443?use_mozillas_root_certificates"),
+            None
+        );
+        assert_eq!(
+            hana_url_issue("hdbsqls://u:p@h:443?tls_certificate_dir=/etc/ca"),
+            None
+        );
+        for bad in ["jdbc:sap://h:443", "postgres://h", "hdbsqls://u:p@h:443"] {
+            assert!(hana_url_issue(bad).is_some(), "{bad}");
+        }
+        let inst = instance(
+            "engine: hana\nconnection_string: \"hdbsqls://u:p@h:443\"\ntopic: t\nstores: [{ unit: a, query: 'SELECT 1 FROM DUMMY' }]\n",
+        );
+        assert!(
+            without_build_gate(inst.validate())
+                .iter()
+                .any(|i| i.starts_with("connection_string: `hdbsqls://` needs"))
+        );
     }
 
     #[test]

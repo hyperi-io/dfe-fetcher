@@ -1470,8 +1470,8 @@ pub struct SourcesConfig {
 
     /// Database sources on the source framework, keyed by instance id.
     ///
-    /// Each entry names an engine (`odbc` with a dialect, or `clickhouse`),
-    /// its connection string as a credential spec, the block-cursor bounds,
+    /// Each entry names an engine (`odbc` with a dialect, `clickhouse`,
+    /// `mongodb` or `hana`), its connection string as a credential spec, the block-cursor bounds,
     /// and the stores: each a query dumped whole into the snapshot envelope
     /// or tailed by keyset. The id is the connection id, as for `rest`. An
     /// engine this binary was built without is refused at load.

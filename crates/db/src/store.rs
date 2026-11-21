@@ -41,14 +41,17 @@ pub enum Dialect {
     Bigquery,
     /// Databricks.
     Databricks,
+    /// SAP HANA, read by the `hana` engine. Not an ODBC dialect.
+    Hana,
 }
 
 impl Dialect {
-    /// Whether the engine accepts `(a, b) > (?, ?)`; the others take the
-    /// expanded `a > ? OR (a = ? AND b > ?)` form.
+    /// Whether the engine accepts `(a, b) > (?, ?)`. The others take the
+    /// expanded `a > ? OR (a = ? AND b > ?)` form, and HANA does because its
+    /// ordered comparison of row values is not documented.
     #[must_use]
     pub const fn supports_row_values(self) -> bool {
-        !matches!(self, Dialect::Mssql | Dialect::Oracle)
+        !matches!(self, Dialect::Mssql | Dialect::Oracle | Dialect::Hana)
     }
 
     /// The config spelling.
@@ -64,6 +67,7 @@ impl Dialect {
             Dialect::Snowflake => "snowflake",
             Dialect::Bigquery => "bigquery",
             Dialect::Databricks => "databricks",
+            Dialect::Hana => "hana",
         }
     }
 
@@ -126,12 +130,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_mssql_and_oracle_lack_row_value_comparison() {
+    fn only_mssql_oracle_and_hana_lack_row_value_comparison() {
         assert!(Dialect::Postgres.supports_row_values());
         assert!(Dialect::Mysql.supports_row_values());
         assert!(Dialect::Clickhouse.supports_row_values());
         assert!(!Dialect::Mssql.supports_row_values());
         assert!(!Dialect::Oracle.supports_row_values());
+        assert!(!Dialect::Hana.supports_row_values());
     }
 
     #[test]

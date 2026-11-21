@@ -246,7 +246,7 @@ flowchart LR
 
 *Figure 1. L4 Detail -- Workspace crates. Dashed boxes are not ours, and dotted arrows are behind a cargo feature.* Up: [L3 Components -- dfe-fetcher](docs/architecture.md).
 
-The app depends on `dfe-fetcher-core` directly as well, and links all four crates unconditionally, so a `sources.db` or `sources.file` block is always parsed and validated. The features decide whether the engine behind it is present: `db-odbc`, `db-clickhouse`, `db-mongodb` and `file-tail`, named `<capability>-<backend>` as in scalo. Beside them are `file` (the dump is always built), `jemalloc`, `full` and `pgo-driver`. The shipped profiles are `include_str!`'d into the app, so editing one rebuilds the app alone.
+The app depends on `dfe-fetcher-core` directly as well, and links all four crates unconditionally, so a `sources.db` or `sources.file` block is always parsed and validated. The features decide whether the engine behind it is present: `db-odbc`, `db-clickhouse`, `db-mongodb`, `db-hana` and `file-tail`, named `<capability>-<backend>` as in scalo. Beside them are `file` (the dump is always built), `jemalloc`, `full` and `pgo-driver`. The shipped profiles are `include_str!`'d into the app, so editing one rebuilds the app alone.
 
 Rules the crate graph holds:
 
@@ -272,7 +272,7 @@ The generated files are regenerated from the binary: `dfe-fetcher emit-dockerfil
 Two ways a passing run says more than it proved:
 
 - The feature sets in `.hyperi-ci.yaml` are listed one by one, never `--all-features`.
-  Test and Quality cover `db-clickhouse`, `db-mongodb`, `file-tail` and `db-odbc`.
+  Test and Quality cover `db-clickhouse`, `db-mongodb`, `db-hana`, `file-tail` and `db-odbc`.
   The `db-odbc` suites need unixODBC, its headers and the `odbc-postgresql` and
   `odbc-mariadb` drivers: hyperi-ci installs them on the runner when `Cargo.lock`
   names `odbc-sys`, and a missing driver fails the test in CI. The SQL Server and

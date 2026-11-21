@@ -614,7 +614,7 @@
           "default": {}
         },
         "db": {
-          "description": "Database sources on the source framework, keyed by instance id.\n\nEach entry names an engine (`odbc` with a dialect, or `clickhouse`),\nits connection string as a credential spec, the block-cursor bounds,\nand the stores: each a query dumped whole into the snapshot envelope\nor tailed by keyset. The id is the connection id, as for `rest`. An\nengine this binary was built without is refused at load.",
+          "description": "Database sources on the source framework, keyed by instance id.\n\nEach entry names an engine (`odbc` with a dialect, `clickhouse`,\n`mongodb` or `hana`), its connection string as a credential spec, the block-cursor bounds,\nand the stores: each a query dumped whole into the snapshot envelope\nor tailed by keyset. The id is the connection id, as for `rest`. An\nengine this binary was built without is refused at load.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/DbInstance"
@@ -6177,7 +6177,7 @@
           "default": "odbc"
         },
         "dialect": {
-          "description": "The SQL dialect; required for `odbc`, implied for `clickhouse`.",
+          "description": "The SQL dialect. Required for `odbc`, implied for `clickhouse` and `hana`.",
           "anyOf": [
             {
               "$ref": "#/$defs/Dialect"
@@ -6273,6 +6273,11 @@
           "description": "The official MongoDB driver: a collection dumped by `find`, tailed by\nchange stream or by `_id`.",
           "type": "string",
           "const": "mongodb"
+        },
+        {
+          "description": "SAP HANA over its own wire protocol, pure Rust, TLS through rustls.",
+          "type": "string",
+          "const": "hana"
         }
       ]
     },
@@ -6323,6 +6328,11 @@
           "description": "Databricks.",
           "type": "string",
           "const": "databricks"
+        },
+        {
+          "description": "SAP HANA, read by the `hana` engine. Not an ODBC dialect.",
+          "type": "string",
+          "const": "hana"
         }
       ]
     },
