@@ -402,3 +402,48 @@ async fn wide_rows_read_in_full_and_in_order_under_a_small_byte_budget() {
     assert_eq!(ids, (1..=60).collect::<Vec<i64>>());
     assert_eq!(json_of(&read[0])["BODY"].as_str().unwrap().len(), 8000);
 }
+
+#[tokio::test]
+#[ignore = "needs a live HANA system: see the module doc"]
+async fn narrow_rows_followed_by_wide_ones_still_read_in_full_and_in_order() {
+    let table = Table::create().await;
+    let seed = store("SELECT 1 FROM DUMMY", &[]);
+    let connection = seed.connect().await.expect("log in");
+    for id in 1..=120 {
+        let body = if id <= 80 {
+            "'n'"
+        } else {
+            "RPAD('x', 8000, 'x')"
+        };
+        connection
+            .dml(format!(
+                "INSERT INTO {} VALUES ('2026-11-20 01:00:00.{id:07}', {id}, 'row', 1.5, {body}, \
+                 TRUE, '2026-11-20')",
+                table.name
+            ))
+            .await
+            .expect("insert a row");
+    }
+    connection.commit().await.expect("commit");
+    let budget = BatchSpec {
+        max_rows: 1000,
+        max_bytes: 32 * 1024,
+        ..BatchSpec::default()
+    };
+    let tail = store_with(
+        &connection_string(None),
+        &table.query(),
+        &["TS", "ID"],
+        budget,
+    );
+
+    let read = rows(tail.tail(None, 1000)).await;
+
+    table.drop_table().await;
+    let ids: Vec<i64> = read
+        .expect("the rows read")
+        .iter()
+        .map(|r| json_of(r)["ID"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, (1..=120).collect::<Vec<i64>>());
+}

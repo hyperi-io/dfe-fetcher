@@ -176,10 +176,10 @@ and the unit tests there pin each of these:
   `DECIMAL` key beyond that is better written as an integer or a string in the
   query. An NCLOB, CLOB or BLOB is read in full and held to `batch.max_text_bytes`
   or `batch.max_binary_bytes`. The driver fetches by rows. The first round trip
-  fetches 16 and each later one is sized from the width of the rows read, to
-  about `batch.max_bytes`, capped at `batch.max_rows`. The rows of a round trip
-  sit outside the memory lease, and the first 16 rows of a very wide table are
-  fetched before their width is known.
+  fetches one row. Each later one is sized from the width of the recent rows to
+  about `batch.max_bytes`, capped at `batch.max_rows` and at twice the round
+  trip before, so a run of narrow rows followed by wide ones is caught one
+  doubling late. The rows of a round trip sit outside the memory lease.
 - Timestamps. Every other engine reports timestamps as RFC 3339 UTC (the session
   is pinned to UTC on PostgreSQL and MariaDB) and the checkpoint binds that
   text back. ClickHouse's parameter parser takes the ISO form without the
@@ -230,4 +230,4 @@ with the host's driver manager: absent the driver the test skips saying so,
 in CI as well, because the driver is a click-through licence no shared runner
 has. The dialect each needs is pinned by unit test regardless. The PostgreSQL and MariaDB ODBC proofs run by hand: CI lints the `db-odbc` feature, but neither CI nor the release gate tests it.
 
-SAP HANA runs by hand, as the module comment of `crates/fetcher/tests/e2e/hana.rs` sets out. Six tests ran against SAP HANA Cloud over TLS with a password login: a probe and a refused wrong password, a tail resumed past rows that tie on the first key, a LOB over its batch cap, a nullable key refused and a coalesced one accepted, wide rows under a small byte budget, and `SYS.AUDIT_LOG` paged one row at a time on a hashed key. A HANA Express container over plain `hdbsql://` ran earlier forms of the first four, before the nullable-key test and the hashed audit key existed. The Cloud audit log held one row when they ran, so the multi-row resume is proven on the test table and the audit view proves the query and its keys. Neither CI nor the release gate runs them. The tail statement, the type mapping and the URL decoding are unit tests.
+SAP HANA runs by hand, as the module comment of `crates/fetcher/tests/e2e/hana.rs` sets out. Seven tests ran against SAP HANA Cloud over TLS with a password login: a probe and a refused wrong password, a tail resumed past rows that tie on the first key, a LOB over its batch cap, a nullable key refused and a coalesced one accepted, wide rows under a small byte budget, narrow rows followed by wide ones, and `SYS.AUDIT_LOG` paged one row at a time on a hashed key. A HANA Express container over plain `hdbsql://` ran earlier forms of the first four, before the nullable-key test and the hashed audit key existed. The Cloud audit log held one row when they ran, so the multi-row resume is proven on the test table and the audit view proves the query and its keys. Neither CI nor the release gate runs them. The tail statement, the type mapping and the URL decoding are unit tests.

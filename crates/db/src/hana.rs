@@ -29,8 +29,8 @@
 //! result set on the server. A LOB or a string or binary value over the
 //! `batch` caps fails the tick, as it does on the other engines. The driver holds
 //! the `batch.max_rows` rows of a round trip before this engine reads the first,
-//! outside the memory lease. The first round trip fetches 16 rows and each later one
-//! is sized from the width of the rows read, to about `batch.max_bytes`.
+//! outside the memory lease. The first round trip fetches one row. Each later one is
+//! sized from the width of the recent rows to about `batch.max_bytes`, at most doubling.
 //!
 //! # Type mapping
 //!
@@ -347,15 +347,25 @@ fn value_json<'a>(value: HdbValue<'static>, batch: &'a BatchSpec) -> BoxFuture<'
 }
 
 /// Rows the first round trip of a read fetches, before any row's width is known.
-const FIRST_FETCH_ROWS: u32 = 16;
+const FIRST_FETCH_ROWS: u32 = 1;
 
 /// The rows the next round trip fetches so its rows hold about `max_bytes` of
-/// JSON, given what the rows read so far came to. Never fewer than one row and
-/// never more than `max_rows`.
-fn next_fetch_rows(max_rows: usize, max_bytes: usize, rows: usize, bytes: usize) -> u32 {
+/// JSON, given `rows` recent rows that came to `bytes`. Never fewer than one row,
+/// never more than `max_rows`, and never more than twice the round trip before,
+/// so a run of narrow rows followed by wide ones is caught one doubling late.
+fn next_fetch_rows(
+    max_rows: usize,
+    max_bytes: usize,
+    current: u32,
+    rows: usize,
+    bytes: usize,
+) -> u32 {
     let width = bytes.checked_div(rows).unwrap_or(0).max(1);
     let fit = (max_bytes / width).clamp(1, max_rows.max(1));
-    u32::try_from(fit).unwrap_or(u32::MAX)
+    let growth = usize::try_from(current)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(2);
+    u32::try_from(fit.min(growth.max(1))).unwrap_or(u32::MAX)
 }
 
 /// The SQL of one read and the text its placeholders are bound with, in order.
@@ -419,8 +429,8 @@ impl HanaStore {
         if url.starts_with("hdbsqls://") {
             ensure_crypto_provider();
         }
-        // The driver fetches by rows. The first round trip is small and `blocks` resizes
-        // each later one from the width of the rows read, so a round trip holds about
+        // The driver fetches by rows. The first round trip is one row and `blocks` resizes
+        // each later one from the width of the recent rows, so a round trip holds about
         // `batch.max_bytes` of rows rather than `batch.max_rows` of the widest.
         let first = FIRST_FETCH_ROWS.min(u32::try_from(self.batch.max_rows).unwrap_or(u32::MAX));
         let configuration = ConnectionConfiguration::default().with_fetch_size(first.max(1));
@@ -507,6 +517,9 @@ impl HanaStore {
             names: Vec<String>,
             /// The rows a round trip is fetching now.
             fetch: u32,
+            /// Rows and JSON bytes read since the fetch size was last reviewed.
+            recent_rows: usize,
+            recent_bytes: usize,
             done: bool,
         }
 
@@ -550,6 +563,8 @@ impl HanaStore {
                 rows,
                 names,
                 fetch,
+                recent_rows: 0,
+                recent_bytes: 0,
                 done: false,
             };
             Ok::<_, Error>(
@@ -562,6 +577,7 @@ impl HanaStore {
                     while count < self.batch.max_rows && block.len() < self.batch.max_bytes {
                         match read.rows.next_row().await {
                             Ok(Some(mut row)) => {
+                                let before = block.len();
                                 let mut object = Map::with_capacity(read.names.len());
                                 for name in &read.names {
                                     let value = row.next_value().unwrap_or(HdbValue::NULL);
@@ -584,13 +600,19 @@ impl HanaStore {
                                 }
                                 block.push(b'\n');
                                 count += 1;
-                                if u32::try_from(count).is_ok_and(|n| n % read.fetch == 0) {
+                                read.recent_rows += 1;
+                                read.recent_bytes += block.len() - before;
+                                // Reviewed every `fetch` rows across blocks, from those rows alone.
+                                if u32::try_from(read.recent_rows).is_ok_and(|n| n >= read.fetch) {
                                     let next = next_fetch_rows(
                                         self.batch.max_rows,
                                         self.batch.max_bytes,
-                                        count,
-                                        block.len(),
+                                        read.fetch,
+                                        read.recent_rows,
+                                        read.recent_bytes,
                                     );
+                                    read.recent_rows = 0;
+                                    read.recent_bytes = 0;
                                     if next != read.fetch {
                                         read.connection.set_fetch_size(next).await;
                                         read.fetch = next;
@@ -726,14 +748,34 @@ mod tests {
 
     #[test]
     fn a_round_trip_is_sized_to_the_byte_budget_and_clamped_to_the_row_cap() {
-        // 100 rows of 1 KiB against a 64 KiB budget: 64 rows.
-        assert_eq!(next_fetch_rows(5000, 65_536, 100, 102_400), 64);
+        // 100 rows of 1 KiB against a 64 KiB budget: 64 rows, within double the 40 before.
+        assert_eq!(next_fetch_rows(5000, 65_536, 40, 100, 102_400), 64);
         // Narrow rows are held to max_rows.
-        assert_eq!(next_fetch_rows(500, 4_194_304, 100, 5_000), 500);
+        assert_eq!(next_fetch_rows(500, 4_194_304, 400, 100, 5_000), 500);
         // A row wider than the whole budget still fetches one.
-        assert_eq!(next_fetch_rows(5000, 1_000, 3, 30_000), 1);
+        assert_eq!(next_fetch_rows(5000, 1_000, 16, 3, 30_000), 1);
         // No rows read yet reads as a 1 byte row, never a divide by zero.
-        assert_eq!(next_fetch_rows(40, 1_000_000, 0, 0), 40);
+        assert_eq!(next_fetch_rows(40, 1_000_000, 16, 0, 0), 32);
+    }
+
+    #[test]
+    fn a_fetch_at_most_doubles_so_a_narrow_run_followed_by_wide_rows_is_caught_early() {
+        // 16 narrow rows would fit 5000, but the next round trip is 32.
+        let narrow = next_fetch_rows(5000, 4_194_304, 16, 16, 1_600);
+        assert_eq!(narrow, 32);
+        // A first round trip of one row reaches the cap in 13 doublings.
+        let mut fetch = FIRST_FETCH_ROWS;
+        let mut trips = 0;
+        while fetch < 5000 {
+            fetch = next_fetch_rows(5000, 4_194_304, fetch, 1, 100);
+            trips += 1;
+        }
+        assert_eq!((fetch, trips), (5000, 13));
+        // And it shrinks at once when the rows turn wide.
+        assert_eq!(
+            next_fetch_rows(5000, 4_194_304, 2048, 2048, 2048 * 8_000),
+            524
+        );
     }
 
     #[test]
