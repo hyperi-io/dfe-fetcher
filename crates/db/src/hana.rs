@@ -30,7 +30,8 @@
 //! `batch` caps fails the tick, as it does on the other engines. The driver holds
 //! the `batch.max_rows` rows of a round trip before this engine reads the first,
 //! outside the memory lease. The first round trip fetches one row. Each later one is
-//! sized from the width of the recent rows to about `batch.max_bytes`, at most doubling.
+//! sized from the width of the recent rows to about `batch.max_bytes`, at most doubling,
+//! and never past `batch.max_bytes` over the widest row the declared column types allow.
 //!
 //! # Type mapping
 //!
@@ -368,6 +369,57 @@ fn next_fetch_rows(
     u32::try_from(fit.min(growth.max(1))).unwrap_or(u32::MAX)
 }
 
+/// The most JSON bytes one value of `type_id` can take, from its declared
+/// `precision` and the batch caps: a string is held to `max_text_bytes` and a
+/// binary to `max_binary_bytes` as base64, so no column is unbounded.
+fn field_bound(type_id: TypeId, precision: i16, batch: &BatchSpec) -> usize {
+    let declared = usize::try_from(precision).unwrap_or(0);
+    let text = |chars: usize| {
+        // A character takes up to 4 bytes of UTF-8, and a string escapes to 6 at worst.
+        chars.saturating_mul(6).min(batch.max_text_bytes)
+    };
+    let binary = |bytes: usize| {
+        bytes
+            .saturating_mul(2)
+            .min(batch.max_binary_bytes.saturating_mul(2))
+    };
+    match type_id {
+        TypeId::TINYINT
+        | TypeId::SMALLINT
+        | TypeId::INT
+        | TypeId::BIGINT
+        | TypeId::REAL
+        | TypeId::DOUBLE
+        | TypeId::BOOLEAN => 32,
+        TypeId::DECIMAL | TypeId::FIXED8 | TypeId::FIXED12 | TypeId::FIXED16 => 64,
+        TypeId::LONGDATE | TypeId::SECONDDATE | TypeId::DAYDATE | TypeId::SECONDTIME => 48,
+        TypeId::CHAR
+        | TypeId::VARCHAR
+        | TypeId::NCHAR
+        | TypeId::NVARCHAR
+        | TypeId::ALPHANUM
+        | TypeId::SHORTTEXT => text(declared),
+        TypeId::BINARY | TypeId::VARBINARY => binary(declared),
+        TypeId::GEOMETRY | TypeId::POINT | TypeId::BLOB | TypeId::BLOCATOR | TypeId::BINTEXT => {
+            batch.max_binary_bytes.saturating_mul(2)
+        }
+        // CLOB, NCLOB, STRING, TEXT and anything else with no declared bound.
+        _ => batch.max_text_bytes,
+    }
+}
+
+/// The widest one row of `fields` can be as a JSON line: each column's bound
+/// plus its name and the punctuation around it.
+fn row_bound<'a>(fields: impl Iterator<Item = (&'a str, TypeId, i16)>, batch: &BatchSpec) -> usize {
+    fields
+        .map(|(name, type_id, precision)| {
+            field_bound(type_id, precision, batch)
+                .saturating_add(name.len())
+                .saturating_add(8)
+        })
+        .fold(2, usize::saturating_add)
+}
+
 /// The SQL of one read and the text its placeholders are bound with, in order.
 struct Statement {
     sql: String,
@@ -520,6 +572,8 @@ impl HanaStore {
             /// Rows and JSON bytes read since the fetch size was last reviewed.
             recent_rows: usize,
             recent_bytes: usize,
+            /// The most rows whose widest possible form fits `batch.max_bytes`.
+            hard_cap: usize,
             done: bool,
         }
 
@@ -558,6 +612,13 @@ impl HanaStore {
                 .collect();
             tracing::debug!(unit = %self.unit, sql = %statement.sql, "hana statement");
             let fetch = connection.fetch_size().await;
+            let widest = row_bound(
+                rows.metadata()
+                    .iter()
+                    .map(|f| (f.displayname(), f.type_id(), f.precision())),
+                &self.batch,
+            );
+            let hard_cap = (self.batch.max_bytes / widest.max(1)).max(1);
             let read = Read {
                 connection,
                 rows,
@@ -565,6 +626,7 @@ impl HanaStore {
                 fetch,
                 recent_rows: 0,
                 recent_bytes: 0,
+                hard_cap,
                 done: false,
             };
             Ok::<_, Error>(
@@ -605,7 +667,7 @@ impl HanaStore {
                                 // Reviewed every `fetch` rows across blocks, from those rows alone.
                                 if u32::try_from(read.recent_rows).is_ok_and(|n| n >= read.fetch) {
                                     let next = next_fetch_rows(
-                                        self.batch.max_rows,
+                                        self.batch.max_rows.min(read.hard_cap),
                                         self.batch.max_bytes,
                                         read.fetch,
                                         read.recent_rows,
@@ -775,6 +837,29 @@ mod tests {
         assert_eq!(
             next_fetch_rows(5000, 4_194_304, 2048, 2048, 2048 * 8_000),
             524
+        );
+    }
+
+    #[test]
+    fn a_rows_widest_form_is_bounded_by_its_declared_columns_and_the_batch_caps() {
+        let batch = BatchSpec {
+            max_text_bytes: 1000,
+            max_binary_bytes: 500,
+            ..BatchSpec::default()
+        };
+        assert_eq!(field_bound(TypeId::INT, 0, &batch), 32);
+        // 10 characters at up to 6 bytes each.
+        assert_eq!(field_bound(TypeId::NVARCHAR, 10, &batch), 60);
+        // A declared width over the text cap is held to the cap.
+        assert_eq!(field_bound(TypeId::NVARCHAR, 5000, &batch), 1000);
+        assert_eq!(field_bound(TypeId::NCLOB, 0, &batch), 1000);
+        assert_eq!(field_bound(TypeId::BLOB, 0, &batch), 1000);
+        assert_eq!(field_bound(TypeId::VARBINARY, 20, &batch), 40);
+        let fields = [("ID", TypeId::INT, 0), ("NOTE", TypeId::NVARCHAR, 10)];
+        // 2 for the braces, then each column plus its name and 8 of punctuation.
+        assert_eq!(
+            row_bound(fields.into_iter(), &batch),
+            2 + (32 + 2 + 8) + (60 + 4 + 8)
         );
     }
 

@@ -178,8 +178,11 @@ and the unit tests there pin each of these:
   or `batch.max_binary_bytes`. The driver fetches by rows. The first round trip
   fetches one row. Each later one is sized from the width of the recent rows to
   about `batch.max_bytes`, capped at `batch.max_rows` and at twice the round
-  trip before, so a run of narrow rows followed by wide ones is caught one
-  doubling late. The rows of a round trip sit outside the memory lease.
+  trip before. A second cap holds whatever the rows look like: `batch.max_bytes`
+  over the widest row the declared column types allow, with a string held to
+  `batch.max_text_bytes` and a binary to `batch.max_binary_bytes`. A table with a
+  wide declared column therefore fetches few rows a round trip. The rows of a
+  round trip sit outside the memory lease.
 - Timestamps. Every other engine reports timestamps as RFC 3339 UTC (the session
   is pinned to UTC on PostgreSQL and MariaDB) and the checkpoint binds that
   text back. ClickHouse's parameter parser takes the ISO form without the
