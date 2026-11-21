@@ -10,7 +10,8 @@
 # The window is half open: `time_field >= window.start and < window.end`, to the
 # second, so a row is read in exactly one window.
 # The pager follows `d.__next` verbatim, so the server's own filter, order and
-# `$skiptoken` stay intact.
+# `$skiptoken` stay intact. `sap-client` goes in a header, which every page
+# carries, because a next link may omit it from its query.
 # `time_type` is the timestamp's OData type, `datetimeoffset` or `datetime`.
 # A date-only property cannot be windowed finer than a day.
 profile: s4hana
@@ -27,32 +28,31 @@ headers:
 window:
   format: "strftime:%Y-%m-%dT%H:%M:%S"
   lookback: 1h
-  # A row is stamped when it is created and visible when its transaction
-  # commits, so a window ends this long before now to let late commits land.
+  # A window ends this long before now so a row committed just after its
+  # timestamp is still read. A row visible later than this is never read.
   delay: 5m
 retry:
   never_retry: [401, 403]
 # A refusal is `{"error": {"code": ..., "message": {"lang": ..., "value": ...}}}`.
 error:
   at: "/error/message/value"
-# `base_url` has no default: every system has its own host. An empty
-# `sap_client`, `key_field` or `extra_filter` is left out of the request.
+# `base_url`, `service`, `entity_set`, `time_field` and `key_field` have no
+# default, so an instance that leaves one out does not bind. `key_field` is
+# the tie-break that keeps rows with equal timestamps in a fixed order across
+# pages. An empty `sap_client` or `extra_filter` is left out of the request.
 vars:
   token_path: /sap/bc/sec/oauth2/token
-  service: ""
-  entity_set: ""
-  time_field: ""
   time_type: datetimeoffset
-  key_field: ""
   extra_filter: ""
   sap_client: ""
 endpoints:
   - unit: entity_set
     path: "/sap/opu/odata/sap/{{ vars.service }}/{{ vars.entity_set }}"
+    headers:
+      sap-client: "{{ vars.sap_client }}"
     query:
       $format: json
-      sap-client: "{{ vars.sap_client }}"
-      $orderby: "{{ vars.time_field }} asc{{ vars.key_field != '' ? ',' + vars.key_field + ' asc' : '' }}"
+      $orderby: "{{ vars.time_field }} asc,{{ vars.key_field }} asc"
       $filter: "{{ vars.time_field }} ge {{ vars.time_type }}'{{ window.start }}{{ vars.time_type == 'datetimeoffset' ? 'Z' : '' }}' and {{ vars.time_field }} lt {{ vars.time_type }}'{{ window.end }}{{ vars.time_type == 'datetimeoffset' ? 'Z' : '' }}'{{ vars.extra_filter != '' ? ' and (' + vars.extra_filter + ')' : '' }}"
     rows: { decoder: json_at, at: /d/results }
     paginate: { strategy: request_path, from: "body:/d/__next" }

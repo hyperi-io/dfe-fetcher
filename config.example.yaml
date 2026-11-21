@@ -635,9 +635,9 @@ sources:
         service: "ZAUDIT_SRV"
         entity_set: "ChangeLogEntries"
         time_field: "ChangedAt"
+        key_field: "EntryId"            # required, unique per row: orders equal timestamps
         # time_type: datetimeoffset     # or `datetime` for an Edm.DateTime property
-        # key_field: "EntryId"          # tie-break for equal timestamps
-        # sap_client: "100"             # unset for the user's default client
+        # sap_client: "100"             # sent as a header, unset for the user's default client
         # extra_filter: "ObjectClass eq 'ORDER'"
       profile: s4hana
     # A one-off API needs no shipped profile: write the shape inline. The same

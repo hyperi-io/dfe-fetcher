@@ -1055,6 +1055,18 @@ mod tests {
             profile.allow_hosts.is_empty(),
             "a next link on another host is refused, not allowed"
         );
+        for required in [
+            "base_url",
+            "service",
+            "entity_set",
+            "time_field",
+            "key_field",
+        ] {
+            assert!(
+                !profile.vars.contains_key(required),
+                "`{required}` has no default, so an instance that omits it does not bind"
+            );
+        }
     }
 
     /// The object-store profile is the S3 contract the characterisation

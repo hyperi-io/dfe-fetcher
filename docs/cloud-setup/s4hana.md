@@ -54,8 +54,8 @@ sources:
         entity_set: "ChangeLogEntries"                  # your entity set
         time_field: "ChangedAt"                         # the timestamp property
         time_type: datetimeoffset                       # or datetime
-        key_field: "EntryId"                            # tie-break for equal timestamps
-        sap_client: "100"                               # unset to use the user's default client
+        key_field: "EntryId"                            # required, unique per row
+        sap_client: "100"                               # sent as a header, unset for the user's default client
         # extra_filter: "ObjectClass eq 'ORDER'"        # ANDed onto the window filter
       profile: s4hana
 ```
@@ -74,17 +74,17 @@ Rows land on `<topic>` tagged `<connection>.<unit>`.
 ## Reading a Window
 
 - The filter is `time_field ge <start> and time_field lt <end>`, both bounds cut to the second, so a row falls in exactly one window. `time_type: datetimeoffset` sends `datetimeoffset'2026-11-20T01:00:00Z'` and `datetime` sends `datetime'2026-11-20T01:00:00'`. Both literal forms are from the [OData V2 overview](https://www.odata.org/documentation/odata-version-2-0/overview/).
-- A window ends 5 minutes before now, so a row whose transaction commits after its timestamp is still read. The 5 minutes is a guess, not measured against SAP.
-- Rows come back ordered by `time_field` then `key_field`. Without a `key_field`, rows with equal timestamps have no fixed order, and server paging can then repeat or skip one at a page edge.
+- A window ends 5 minutes before now, so a row whose transaction commits just after its timestamp is still read. The 5 minutes is a guess, not measured against SAP. A row that becomes visible later is never read, because a closed window is not read again. To allow longer, copy the profile inline under the instance with a larger `window.delay`.
+- Rows come back ordered by `time_field` then `key_field`. `key_field` has no default and must be unique per row, so rows with equal timestamps page in a fixed order. An instance without one does not bind.
 - A date-only property (an `Edm.DateTime` shown as a date) holds no time of day. Its rows fall in the window that contains midnight, so rows created after that window closed are never read. Use a time-of-day property.
 - A unit that reads 100 pages fails the tick rather than stopping short, and the window is read again in halves.
 
 **Paging.** The server answers `{"d": {"results": [...], "__next": "<uri>"}}` while rows remain, and leaves `__next` out of the last page ([OData V2 JSON format](https://www.odata.org/documentation/odata-version-2-0/json-format/)). SAP Gateway builds the link with `$skiptoken` from Gateway 2.0 SP04 ([SAP Gateway feature overview](https://help.sap.com/saphelp_snc700_ehp04/helpdata/en/97/422751c639276ee10000000a445394/content.htm)).
 
-dfe-fetcher requests the link exactly as given. Two things follow, both unconfirmed on a live system:
+dfe-fetcher requests the link exactly as given, except that `sap-client` travels as a header on every page. SAP's own cloud SDK sends it that way (`header-builder-for-destination.ts` in SAP/cloud-sdk-js). Two things follow, both unconfirmed on a live system:
 
 - If the link omits `$filter`, the next page is not windowed. The link must carry the first request's filter. Check one real `__next` before enabling.
-- The link is not given `sap-client`. If your link omits it, page two runs in the user's default client.
+- If the link names a different `sap-client` in its query than the header carries, which one SAP honours is not confirmed.
 
 If the link names a host other than `base_url`, the tick fails and the credential is never sent there. Gateway can build the link with an internal host name. Make the system answer with the host the fetcher calls.
 
@@ -98,8 +98,8 @@ dfe-fetcher only reads. Each tick is one call per page, so size `interval_secs` 
 
    ```bash
    printf 'user = "SVC_DFE_FETCHER:%s"\n' "$S4_PASSWORD" |
-     curl -sS --config - -H 'Accept: application/json' \
-       "https://s4.example.internal:44300/sap/opu/odata/sap/ZAUDIT_SRV/ChangeLogEntries?\$format=json&\$top=2&sap-client=100"
+     curl -sS --config - -H 'Accept: application/json' -H 'sap-client: 100' \
+       "https://s4.example.internal:44300/sap/opu/odata/sap/ZAUDIT_SRV/ChangeLogEntries?\$format=json&\$top=2"
    ```
 
    A good answer has `d.results`. Note whether `d.__next` appears when you leave `$top` off.
@@ -118,4 +118,5 @@ dfe-fetcher only reads. Each tick is one call per page, so size `interval_secs` 
 - OData V2 literals (`datetime'...'`, `datetimeoffset'...'`): <https://www.odata.org/documentation/odata-version-2-0/overview/>
 - SAP Gateway feature overview, server-driven paging: <https://help.sap.com/saphelp_snc700_ehp04/helpdata/en/97/422751c639276ee10000000a445394/content.htm>
 - SAP's authentication guide for S/4HANA Cloud (Basic, client certificate, SAML bearer): <https://help.sap.com/doc/6ce62b6bdda340ffbeae3f138c3cb71b/SHIP/en-US/Set_Up_Authentication_for_SAP_S4HANA_Cloud_Extensions.pdf>
+- How SAP's cloud SDK sends `sap-client` (a header): <https://github.com/SAP/cloud-sdk-js/blob/main/packages/connectivity/src/scp-cf/header-builder-for-destination.ts>
 - SAP Business Accelerator Hub catalog: <https://api.sap.com/odata/1.0/catalog.svc/APIContent.APIs>

@@ -45,6 +45,7 @@ struct Seen {
     /// Decoded query pairs in request order.
     query: Vec<(String, String)>,
     authorization: Option<String>,
+    sap_client: Option<String>,
     body: String,
 }
 
@@ -77,6 +78,10 @@ fn record(server: &Server, path: &str, raw_query: Option<String>, headers: &Head
         query,
         authorization: headers
             .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
+        sap_client: headers
+            .get("sap-client")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned),
         body: body.to_owned(),
@@ -166,10 +171,19 @@ fn at(rfc3339: &str) -> DateTime<Utc> {
 /// `instance_yaml` is everything under the instance's keys after `profile`;
 /// the window starts mid-second to show the bounds are cut to the second.
 async fn tick(base_url: &str, instance_yaml: &str) -> Result<Vec<Value>, Error> {
+    tick_with_vars(base_url, "key_field: EntryId, ", instance_yaml).await
+}
+
+/// `tick` with the `key_field` entry of the instance's vars given by the caller.
+async fn tick_with_vars(
+    base_url: &str,
+    key_field: &str,
+    instance_yaml: &str,
+) -> Result<Vec<Value>, Error> {
     let yaml = format!(
         "profile: s4hana\ntopic: s4\nvars: {{ base_url: \"{base_url}\", \
          service: API_SYNTHETIC_SRV, entity_set: ChangeLogEntries, time_field: ChangedAt, \
-         key_field: EntryId, sap_client: \"100\" }}\n{instance_yaml}"
+         {key_field}sap_client: \"100\" }}\n{instance_yaml}"
     );
     let instance: RestInstance =
         scalo::yaml::from_str(&yaml, "s4hana.yaml", scalo::yaml::Profile::Config)
@@ -185,8 +199,7 @@ async fn tick(base_url: &str, instance_yaml: &str) -> Result<Vec<Value>, Error> 
         "s4",
         dfe_fetcher_rest::http_client().expect("http client"),
         &dfe_fetcher_rest::exchange_client().expect("exchange client"),
-    )
-    .unwrap_or_else(|e| panic!("bind failed: {e}"));
+    )?;
     let spec = shape
         .units()
         .iter()
@@ -259,7 +272,7 @@ async fn both_pages_are_read_once_each_in_order_and_the_next_link_is_followed_ve
         Some("ChangedAt asc,EntryId asc")
     );
     assert_eq!(first.query_value("$format"), Some("json"));
-    assert_eq!(first.query_value("sap-client"), Some("100"));
+    assert_eq!(first.sap_client.as_deref(), Some("100"));
     assert_eq!(first.query_value("$skiptoken"), None);
     assert_eq!(
         first.authorization.as_deref(),
@@ -278,6 +291,11 @@ async fn both_pages_are_read_once_each_in_order_and_the_next_link_is_followed_ve
         second.query_value("sap-client"),
         None,
         "the link is followed as given, not rebuilt from the unit's query"
+    );
+    assert_eq!(
+        second.sap_client.as_deref(),
+        Some("100"),
+        "a link without `sap-client` still reads the selected client: it is a header"
     );
     assert_eq!(second.authorization, first.authorization);
 }
@@ -323,7 +341,23 @@ async fn an_extra_filter_is_joined_with_and_and_an_empty_sap_client_is_left_out(
         "{:?}",
         first.query_value("$filter")
     );
-    assert_eq!(first.query_value("sap-client"), None);
+    assert_eq!(first.sap_client, None);
+}
+
+#[tokio::test]
+async fn an_instance_without_a_key_field_does_not_bind() {
+    let (base_url, seen) = start(None).await;
+
+    let err = tick_with_vars(&base_url, "", BASIC).await.unwrap_err();
+
+    assert!(
+        err.to_string().contains("key_field"),
+        "names the var: {err}"
+    );
+    assert!(
+        entity_requests(&seen).is_empty(),
+        "no request without a tie-break key"
+    );
 }
 
 #[tokio::test]
