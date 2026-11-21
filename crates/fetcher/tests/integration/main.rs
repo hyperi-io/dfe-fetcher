@@ -64,5 +64,6 @@ mod source_object_store;
 mod source_okta;
 mod source_onepassword;
 mod source_pypi;
+mod source_s4hana;
 mod source_salesforce;
 mod source_slack;

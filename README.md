@@ -161,7 +161,7 @@ Each REST source is a shipped profile under `crates/fetcher/profiles/`, and data
 | Google Cloud | `sources.gcp` | Cloud Audit Logs, VPC flow and DNS query logs, any Cloud Logging filter, Security Command Center findings |
 | Google Cloud Pub/Sub, Google Workspace | `sources.gcp_pubsub`, `sources.google_workspace` | Pull subscriptions, Reports API activity |
 | Okta, Cisco Duo, CrowdStrike, Cloudflare | `sources.okta`, `sources.duo`, `sources.crowdstrike`, `sources.cloudflare` | System Log, authentication logs, Falcon alerts, account audit logs |
-| Datadog, runZero | `sources.rest` with the shipped profile | Audit trail and security signals, asset inventory snapshots |
+| Datadog, runZero, SAP S/4HANA (beta) | `sources.rest` with the shipped profile | Audit trail and security signals, asset inventory snapshots, an OData V2 entity set read by timestamp |
 | Bitwarden, 1Password, Slack, GitHub, Salesforce | `sources.bitwarden`, `sources.onepassword`, `sources.slack`, `sources.github`, `sources.salesforce` | Each product's audit and event logs |
 | Object store | `sources.object_store` | S3 and S3-compatible bucket prefixes, each object read at least once |
 | PyPI, crates.io, Go modules | `sources.pypi`, `sources.crates_io`, `sources.go_modules` | Package metadata for supply-chain monitoring |

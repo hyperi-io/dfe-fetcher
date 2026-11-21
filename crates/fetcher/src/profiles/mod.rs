@@ -52,6 +52,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ),
     ("pypi", include_str!("../../profiles/pypi.yaml")),
     ("runzero", include_str!("../../profiles/runzero.yaml")),
+    ("s4hana", include_str!("../../profiles/s4hana.yaml")),
     ("salesforce", include_str!("../../profiles/salesforce.yaml")),
     ("slack", include_str!("../../profiles/slack.yaml")),
 ];
@@ -1019,6 +1020,40 @@ mod tests {
         assert!(
             manifest.key.is_none(),
             "the window narrows the files, not a checkpoint"
+        );
+    }
+
+    /// The s4hana profile reads one OData V2 entity set per unit: basic or
+    /// client credentials, rows under `d.results`, the next page named by
+    /// `d.__next`, and a refusal's text under `error.message.value`.
+    #[test]
+    fn s4hana_ships_as_a_beta_odata_v2_entity_set_feed() {
+        use dfe_fetcher_core::{SourceMaturity, UnitShape};
+        use dfe_fetcher_rest::profile::{AuthKind, DecoderKind, PagerStrategy};
+
+        let profile = shipped().get("s4hana").expect("s4hana is shipped");
+        assert_eq!(profile.maturity, SourceMaturity::Beta);
+        assert_eq!(profile.shape, UnitShape::Incremental);
+        assert_eq!(
+            profile.auth.accepts,
+            [AuthKind::Basic, AuthKind::Oauth2ClientCredentials]
+        );
+        assert_eq!(
+            profile.auth.oauth2_client_credentials.token_url,
+            "{{ base_url }}{{ vars.token_path }}"
+        );
+        assert_eq!(profile.error.at.as_deref(), Some("/error/message/value"));
+        assert!(!profile.retry.retries(401) && !profile.retry.retries(403));
+        assert_eq!(profile.unit_names(), ["entity_set"]);
+        let endpoint = &profile.endpoints[0];
+        assert_eq!(profile.rows_of(endpoint).decoder, DecoderKind::JsonAt);
+        assert_eq!(profile.rows_of(endpoint).at.as_deref(), Some("/d/results"));
+        let pager = profile.paginate_of(endpoint);
+        assert_eq!(pager.strategy, PagerStrategy::RequestPath);
+        assert_eq!(pager.from.as_deref(), Some("body:/d/__next"));
+        assert!(
+            profile.allow_hosts.is_empty(),
+            "a next link on another host is refused, not allowed"
         );
     }
 

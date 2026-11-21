@@ -48,8 +48,8 @@ entry.
 | Auth mode (`auth.accepts`, instance `auth.mode`) | `none` | pypi, crates_io, go_modules |
 | | `bearer` (static token) | github, cloudflare, onepassword, slack, okta, runzero, gcp |
 | | `api_key` (named header with a prefix, or a query parameter) | okta (`SSWS`) |
-| | `basic` | none shipped |
-| | `oauth2_client_credentials` (cached until shortly before expiry. Per-unit `auth.scope`. `expose` allow-lists token-response fields for templates. `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta |
+| | `basic` | s4hana |
+| | `oauth2_client_credentials` (cached until shortly before expiry. Per-unit `auth.scope`. `expose` allow-lists token-response fields for templates. `client_assertion` authenticates the exchange with a private-key JWT in place of a client secret) | azure, m365, bitwarden, crowdstrike, salesforce, runzero, okta, s4hana |
 | | `jwt_bearer` (RFC 7523 RS256 assertion from a service-account key, a key file or a bare PEM. Claim templates) | gcp, gcp_pubsub, google_workspace, salesforce |
 | | `gce_metadata` (the workload's token from the metadata server) | gcp, gcp_pubsub |
 | | `signature` (a keyed digest over a canonical string of the request, in the digest, canonical layout and placement the profile names. Duo's versions are presets of it) | duo |
@@ -61,10 +61,10 @@ entry.
 | | `cursor` (a token from the body or a header, injected into `query:`, `body:`, `body_replace:` or the path, and a list cursor is comma-joined) | aws, bitwarden, datadog, duo, gcp, google_workspace, onepassword, slack |
 | | `page_number` (bounded by `total_pages_at`) | cloudflare |
 | | `offset` (advanced by rows received, bounded by `total_at` or a short page) | crowdstrike |
-| | `request_path` (the next URL from the body or a header, relative resolved against the page) | azure, m365, salesforce |
+| | `request_path` (the next URL from the body or a header, relative resolved against the page) | azure, m365, salesforce, s4hana |
 | Decoder (`rows.decoder`) | `json_array` (streamed) | github, okta, m365 |
 | | `ndjson` (streamed) | runzero, object_store |
-| | `json_at` (a wrapped page, rows at a JSON pointer) | aws, azure, bitwarden, cloudflare, crowdstrike, datadog, duo, gcp, gcp_pubsub, google_workspace, m365 `alerts`, onepassword, salesforce, slack |
+| | `json_at` (a wrapped page, rows at a JSON pointer) | aws, azure, bitwarden, cloudflare, crowdstrike, datadog, duo, gcp, gcp_pubsub, google_workspace, m365 `alerts`, onepassword, s4hana, salesforce, slack |
 | | `document` (the whole body is one row) | pypi, crates_io, go_modules, aws `cloudwatch_metrics` |
 | | `json` (an array is its elements, anything else one row) | object_store |
 | | `lines` (plain text, one row per line) | go_modules, object_store |
