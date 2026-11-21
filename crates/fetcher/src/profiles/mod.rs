@@ -1027,12 +1027,18 @@ mod tests {
     /// client credentials, rows under `d.results`, the next page named by
     /// `d.__next`, and a refusal's text under `error.message.value`.
     #[test]
-    fn s4hana_ships_as_a_beta_odata_v2_entity_set_feed() {
+    fn s4hana_ships_as_a_stable_odata_v2_entity_set_feed() {
         use dfe_fetcher_core::{SourceMaturity, UnitShape};
         use dfe_fetcher_rest::profile::{AuthKind, DecoderKind, PagerStrategy};
 
         let profile = shipped().get("s4hana").expect("s4hana is shipped");
-        assert_eq!(profile.maturity, SourceMaturity::Beta);
+        assert_eq!(profile.maturity, SourceMaturity::Stable);
+        assert_eq!(profile.window.delay.map(|d| d.0.as_secs()), Some(300));
+        assert_eq!(
+            profile.window.overlap.map(|d| d.0.as_secs()),
+            Some(300),
+            "the next tick reads back as far as the window delay"
+        );
         assert_eq!(profile.shape, UnitShape::Incremental);
         assert_eq!(
             profile.auth.accepts,
@@ -1067,6 +1073,42 @@ mod tests {
                 "`{required}` has no default, so an instance that omits it does not bind"
             );
         }
+    }
+
+    /// An instance's `window` replaces the profile's delay and overlap, and
+    /// an instance that sets none keeps the profile's.
+    #[test]
+    fn an_instance_window_overrides_the_profiles_delay_and_overlap() {
+        use dfe_fetcher_rest::profile::RestInstance;
+        use dfe_fetcher_rest::profile::bound::bind;
+
+        let profile = shipped().get("s4hana").expect("s4hana is shipped");
+        let base = "profile: s4hana\ntopic: t\nauth: { mode: basic, username: u, password: p }\nvars: { base_url: \"https://s4.example.internal\", service: S, entity_set: E, time_field: T, key_field: K }\n";
+        let load = |extra: &str| -> RestInstance {
+            scalo::yaml::from_str(
+                &format!("{base}{extra}"),
+                "instance.yaml",
+                scalo::yaml::Profile::Config,
+            )
+            .expect("instance loads")
+        };
+        let secs = |instance: &RestInstance| {
+            let bound = bind(profile, instance, "s4").expect("binds");
+            (
+                bound.window.delay.map(|d| d.0.as_secs()),
+                bound.window.overlap.map(|d| d.0.as_secs()),
+            )
+        };
+        assert_eq!(secs(&load("")), (Some(300), Some(300)));
+        assert_eq!(
+            secs(&load("window: { delay: 20m, overlap: 1h }\n")),
+            (Some(1200), Some(3600))
+        );
+        assert_eq!(
+            secs(&load("window: { overlap: 30m }\n")),
+            (Some(300), Some(1800)),
+            "a field the instance leaves out keeps the profile's"
+        );
     }
 
     /// The object-store profile is the S3 contract the characterisation

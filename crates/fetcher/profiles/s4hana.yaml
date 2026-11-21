@@ -8,14 +8,17 @@
 # The shape of an S/4HANA OData V2 entity set read as an event feed. An instance
 # names the host, the service, the entity set and its change timestamp.
 # The window is half open: `time_field >= window.start and < window.end`, to the
-# second, so a row is read in exactly one window.
+# second. Each tick also reads `overlap` back from its start, so a row that
+# becomes visible after its window closed is read by the next tick, and the
+# rows seen twice are delivered twice. An instance sets `window.delay` and
+# `window.overlap` for its own system.
 # The pager follows `d.__next` verbatim, so the server's own filter, order and
 # `$skiptoken` stay intact. `sap-client` goes in a header, which every page
 # carries, because a next link may omit it from its query.
 # `time_type` is the timestamp's OData type, `datetimeoffset` or `datetime`.
 # A date-only property cannot be windowed finer than a day.
 profile: s4hana
-maturity: beta
+maturity: stable
 base_url: "{{ vars.base_url }}"
 shape: incremental
 auth:
@@ -29,8 +32,11 @@ window:
   format: "strftime:%Y-%m-%dT%H:%M:%S"
   lookback: 1h
   # A window ends this long before now so a row committed just after its
-  # timestamp is still read. A row visible later than this is never read.
+  # timestamp is still read.
   delay: 5m
+  # The next tick reads this far back, so a row visible up to this long after
+  # its window closed is still read.
+  overlap: 5m
 retry:
   never_retry: [401, 403]
 # A refusal is `{"error": {"code": ..., "message": {"lang": ..., "value": ...}}}`.

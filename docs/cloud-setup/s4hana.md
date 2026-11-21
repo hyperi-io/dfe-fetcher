@@ -8,7 +8,7 @@
 
 # SAP S/4HANA Setup for dfe-fetcher
 
-Status: beta. This profile has not been run against a live S/4HANA system. Its filter, paging and error handling are tested against synthetic OData V2 pages (`crates/fetcher/tests/fixtures/s4hana_odata_v2_page1.json` and `_page2.json`) shaped from the OData V2 JSON format, so the first tick on your system is the proof. The fetcher warns at startup for an enabled instance below stable.
+Status: stable, validated against SAP's documented OData V2 shapes and synthetic fixtures, not against a live S/4HANA system. The filter, paging and error handling are tested against synthetic OData V2 pages (`crates/fetcher/tests/fixtures/s4hana_odata_v2_page1.json` and `_page2.json`) shaped from the OData V2 JSON format. The first tick on your system is the proof.
 
 What an SAP administrator configures so dfe-fetcher can read an OData V2 entity set from S/4HANA (read-only, pull-mode).
 
@@ -74,7 +74,7 @@ Rows land on `<topic>` tagged `<connection>.<unit>`.
 ## Reading a Window
 
 - The filter is `time_field ge <start> and time_field lt <end>`, both bounds cut to the second, so a row falls in exactly one window. `time_type: datetimeoffset` sends `datetimeoffset'2026-11-20T01:00:00Z'` and `datetime` sends `datetime'2026-11-20T01:00:00'`. Both literal forms are from the [OData V2 overview](https://www.odata.org/documentation/odata-version-2-0/overview/).
-- A window ends 5 minutes before now, so a row whose transaction commits just after its timestamp is still read. The 5 minutes is a guess, not measured against SAP. A row that becomes visible later is never read, because a closed window is not read again. To allow longer, copy the profile inline under the instance with a larger `window.delay`.
+- A window ends 5 minutes before now, and each tick reads 5 minutes back from its start. A row that becomes visible up to 5 minutes after its window closed is read by the next tick, and the rows read twice arrive twice. Both 5 minutes are guesses, not measured against SAP. Set your system's own with `window: { delay: 20m, overlap: 20m }` on the instance.
 - Rows come back ordered by `time_field` then `key_field`. `key_field` has no default and must be unique per row, so rows with equal timestamps page in a fixed order. An instance without one does not bind.
 - A date-only property (an `Edm.DateTime` shown as a date) holds no time of day. Its rows fall in the window that contains midnight, so rows created after that window closed are never read. Use a time-of-day property.
 - A unit that reads 100 pages fails the tick rather than stopping short, and the window is read again in halves. Delivery is at least once, so a window read again after a failed page or the page limit can deliver a row twice. Deduplicate downstream on `key_field`.

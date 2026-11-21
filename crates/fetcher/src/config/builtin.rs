@@ -23,7 +23,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use dfe_fetcher_rest::profile::{AuthKind, InstanceAuth, ProfileRef, RestInstance, UnitOverride};
+use dfe_fetcher_rest::profile::{
+    AuthKind, InstanceAuth, InstanceWindow, ProfileRef, RestInstance, UnitOverride,
+};
 use scalo::config::sensitive::SensitiveString;
 use scalo::deployment::Capability;
 use serde_json::Value;
@@ -127,6 +129,7 @@ fn instance(common: Common<'_>, auth: InstanceAuth, vars: BTreeMap<String, Value
         auth,
         vars,
         units,
+        window: InstanceWindow::default(),
         accumulate: None,
     }
 }
@@ -810,6 +813,7 @@ impl ObjectStoreSourceConfig {
                 auth,
                 vars,
                 units,
+                window: InstanceWindow::default(),
                 accumulate: None,
             },
         }])
@@ -1023,6 +1027,7 @@ impl GcpPubsubSourceConfig {
                 auth,
                 vars,
                 units,
+                window: InstanceWindow::default(),
                 accumulate: None,
             },
         }])

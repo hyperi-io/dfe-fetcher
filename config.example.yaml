@@ -615,7 +615,7 @@ sources:
       #   security_signals: { enabled: false }
       profile: datadog
     # -------------------------------------------------------------------------
-    # SAP S/4HANA -- an OData V2 entity set read by timestamp (beta)
+    # SAP S/4HANA -- an OData V2 entity set read by timestamp
     # -------------------------------------------------------------------------
     # One unit reads one entity set: rows whose `time_field` falls in the
     # window, oldest first, following `d.__next` until it is absent. SAP

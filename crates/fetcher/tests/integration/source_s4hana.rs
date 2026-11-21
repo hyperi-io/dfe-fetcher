@@ -260,12 +260,12 @@ async fn both_pages_are_read_once_each_in_order_and_the_next_link_is_followed_ve
         2,
         "one request per page, none after the last"
     );
-    let filter = "ChangedAt ge datetimeoffset'2026-11-20T01:00:00Z' and ChangedAt lt datetimeoffset'2026-11-20T02:00:00Z'";
+    let filter = "ChangedAt ge datetimeoffset'2026-11-20T00:55:00Z' and ChangedAt lt datetimeoffset'2026-11-20T02:00:00Z'";
     let first = &requests[0];
     assert_eq!(
         first.query_value("$filter"),
         Some(filter),
-        "bounds cut to the second"
+        "start is the window start less the 5 minute overlap, both bounds cut to the second"
     );
     assert_eq!(
         first.query_value("$orderby"),
@@ -284,8 +284,10 @@ async fn both_pages_are_read_once_each_in_order_and_the_next_link_is_followed_ve
     assert_eq!(second.query_value("$skiptoken"), Some("2"));
     assert_eq!(
         second.query_value("$filter"),
-        Some(filter),
-        "the server's own filter, kept"
+        Some(
+            "ChangedAt ge datetimeoffset'2026-11-20T01:00:00Z' and ChangedAt lt datetimeoffset'2026-11-20T02:00:00Z'"
+        ),
+        "the link's own filter, kept as the fixture wrote it"
     );
     assert_eq!(
         second.query_value("sap-client"),
@@ -314,7 +316,7 @@ async fn a_datetime_property_is_filtered_with_a_zoneless_literal() {
     assert_eq!(
         entity_requests(&seen)[0].query_value("$filter"),
         Some(
-            "ChangedAt ge datetime'2026-11-20T01:00:00' and ChangedAt lt datetime'2026-11-20T02:00:00'"
+            "ChangedAt ge datetime'2026-11-20T00:55:00' and ChangedAt lt datetime'2026-11-20T02:00:00'"
         )
     );
 }

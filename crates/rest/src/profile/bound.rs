@@ -23,8 +23,8 @@ use serde_json::Value;
 
 use super::template::{Predicate, Template, TemplateCtx, TemplateMap};
 use super::{
-    AuthKind, AuthSpec, EndpointSpec, LookupRequest, Method, ProfileRef, QuotaSpec, RestInstance,
-    RestProfile, RetrySpec, WindowSpec,
+    AuthKind, AuthSpec, EndpointSpec, InstanceWindow, LookupRequest, Method, ProfileRef, QuotaSpec,
+    RestInstance, RestProfile, RetrySpec, WindowSpec,
 };
 use crate::decode::Decoder;
 use crate::hooks::{Lister, RowBuilder};
@@ -842,6 +842,16 @@ pub fn bind(
                 .join("; "),
         ));
     }
+
+    let windowed_profile;
+    let profile = if instance.window == InstanceWindow::default() {
+        profile
+    } else {
+        let mut copy = profile.clone();
+        instance.window.apply(&mut copy.window);
+        windowed_profile = copy;
+        &windowed_profile
+    };
 
     let mut ctx = TemplateCtx::new();
     let mut vars = profile.vars.clone();

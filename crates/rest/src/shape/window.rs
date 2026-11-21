@@ -43,14 +43,23 @@ pub fn steps(
             json: Value::Null,
         }];
     }
-    let window = window.cloned().unwrap_or_else(|| {
-        let lookback =
-            ChronoDuration::from_std(spec.lookback.0).unwrap_or(ChronoDuration::hours(1));
-        FetchWindow {
-            start: now - lookback,
-            end: now,
-        }
-    });
+    let overlap = spec
+        .overlap
+        .and_then(|d| ChronoDuration::from_std(d.0).ok())
+        .unwrap_or_else(ChronoDuration::zero);
+    let window = window
+        .map(|w| FetchWindow {
+            start: w.start - overlap,
+            end: w.end,
+        })
+        .unwrap_or_else(|| {
+            let lookback =
+                ChronoDuration::from_std(spec.lookback.0).unwrap_or(ChronoDuration::hours(1));
+            FetchWindow {
+                start: now - lookback,
+                end: now,
+            }
+        });
     let step = spec
         .step
         .and_then(|d| ChronoDuration::from_std(d.0).ok())
@@ -109,6 +118,35 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].json["start"], "100");
         assert_eq!(s[0].json["end"], "200");
+    }
+
+    #[test]
+    fn an_overlap_moves_the_scheduler_windows_start_back_and_leaves_its_end() {
+        let spec = WindowSpec {
+            format: WindowFormat::EpochSecs,
+            overlap: Some(DurationText(std::time::Duration::from_secs(60))),
+            ..WindowSpec::default()
+        };
+        let window = FetchWindow {
+            start: at(300),
+            end: at(400),
+        };
+        let s = steps(&spec, UnitShape::Incremental, Some(&window), at(999));
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].json["start"], "240");
+        assert_eq!(s[0].json["end"], "400");
+    }
+
+    #[test]
+    fn an_overlap_does_not_widen_the_lookback_of_a_tick_with_no_window() {
+        let spec = WindowSpec {
+            format: WindowFormat::EpochSecs,
+            lookback: DurationText(std::time::Duration::from_secs(100)),
+            overlap: Some(DurationText(std::time::Duration::from_secs(60))),
+            ..WindowSpec::default()
+        };
+        let s = steps(&spec, UnitShape::Incremental, None, at(500));
+        assert_eq!(s[0].json["start"], "400");
     }
 
     #[test]
