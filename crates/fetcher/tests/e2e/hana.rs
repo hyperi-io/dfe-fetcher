@@ -361,3 +361,44 @@ async fn a_nullable_key_is_refused_and_a_coalesced_one_is_accepted() {
     table.drop_table().await;
     assert_eq!(read.expect("a coalesced key reads").len(), 1);
 }
+
+#[tokio::test]
+#[ignore = "needs a live HANA system: see the module doc"]
+async fn wide_rows_read_in_full_and_in_order_under_a_small_byte_budget() {
+    let table = Table::create().await;
+    let seed = store("SELECT 1 FROM DUMMY", &[]);
+    let connection = seed.connect().await.expect("log in");
+    for id in 1..=60 {
+        connection
+            .dml(format!(
+                "INSERT INTO {} VALUES ('2026-11-20 01:00:00.{id:07}', {id}, 'wide', 1.5, \
+                 RPAD('x', 8000, 'x'), TRUE, '2026-11-20')",
+                table.name
+            ))
+            .await
+            .expect("insert a wide row");
+    }
+    connection.commit().await.expect("commit");
+    let budget = BatchSpec {
+        max_rows: 1000,
+        max_bytes: 32 * 1024,
+        ..BatchSpec::default()
+    };
+    let tail = store_with(
+        &connection_string(None),
+        &table.query(),
+        &["TS", "ID"],
+        budget,
+    );
+
+    let read = rows(tail.tail(None, 1000)).await;
+
+    table.drop_table().await;
+    let read = read.expect("wide rows read");
+    let ids: Vec<i64> = read
+        .iter()
+        .map(|r| json_of(r)["ID"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, (1..=60).collect::<Vec<i64>>());
+    assert_eq!(json_of(&read[0])["BODY"].as_str().unwrap().len(), 8000);
+}

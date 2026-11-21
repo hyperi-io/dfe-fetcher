@@ -29,7 +29,8 @@
 //! result set on the server. A LOB or a string or binary value over the
 //! `batch` caps fails the tick, as it does on the other engines. The driver holds
 //! the `batch.max_rows` rows of a round trip before this engine reads the first,
-//! outside the memory lease, so a table of wide rows wants a lower `batch.max_rows`.
+//! outside the memory lease. The first round trip fetches 16 rows and each later one
+//! is sized from the width of the rows read, to about `batch.max_bytes`.
 //!
 //! # Type mapping
 //!
@@ -345,6 +346,18 @@ fn value_json<'a>(value: HdbValue<'static>, batch: &'a BatchSpec) -> BoxFuture<'
     .boxed()
 }
 
+/// Rows the first round trip of a read fetches, before any row's width is known.
+const FIRST_FETCH_ROWS: u32 = 16;
+
+/// The rows the next round trip fetches so its rows hold about `max_bytes` of
+/// JSON, given what the rows read so far came to. Never fewer than one row and
+/// never more than `max_rows`.
+fn next_fetch_rows(max_rows: usize, max_bytes: usize, rows: usize, bytes: usize) -> u32 {
+    let width = bytes.checked_div(rows).unwrap_or(0).max(1);
+    let fit = (max_bytes / width).clamp(1, max_rows.max(1));
+    u32::try_from(fit).unwrap_or(u32::MAX)
+}
+
 /// The SQL of one read and the text its placeholders are bound with, in order.
 struct Statement {
     sql: String,
@@ -406,13 +419,11 @@ impl HanaStore {
         if url.starts_with("hdbsqls://") {
             ensure_crypto_provider();
         }
-        // SHORTCUT: the driver fetches by rows, not bytes, so a round trip holds up to
-        // `batch.max_rows` of the widest row outside the lease. Lift it when the driver
-        // bounds a fetch by bytes.
-        let fetch_size = u32::try_from(self.batch.max_rows)
-            .unwrap_or(u32::MAX)
-            .max(1);
-        let configuration = ConnectionConfiguration::default().with_fetch_size(fetch_size);
+        // The driver fetches by rows. The first round trip is small and `blocks` resizes
+        // each later one from the width of the rows read, so a round trip holds about
+        // `batch.max_bytes` of rows rather than `batch.max_rows` of the widest.
+        let first = FIRST_FETCH_ROWS.min(u32::try_from(self.batch.max_rows).unwrap_or(u32::MAX));
+        let configuration = ConnectionConfiguration::default().with_fetch_size(first.max(1));
         Connection::with_configuration(connect_params(url)?, &configuration)
             .await
             .map_err(|e| hana_error(&e))
@@ -490,10 +501,12 @@ impl HanaStore {
     fn blocks(&self, statement: Statement) -> BoxStream<'_, Result<LeasedBlock>> {
         /// Where a read is up to.
         struct Read {
-            /// Held so the session outlives its result set.
-            _connection: Connection,
+            /// Held so the session outlives its result set, and resized as rows arrive.
+            connection: Connection,
             rows: ResultSet,
             names: Vec<String>,
+            /// The rows a round trip is fetching now.
+            fetch: u32,
             done: bool,
         }
 
@@ -531,10 +544,12 @@ impl HanaStore {
                 .map(|field| field.displayname().to_owned())
                 .collect();
             tracing::debug!(unit = %self.unit, sql = %statement.sql, "hana statement");
+            let fetch = connection.fetch_size().await;
             let read = Read {
-                _connection: connection,
+                connection,
                 rows,
                 names,
+                fetch,
                 done: false,
             };
             Ok::<_, Error>(
@@ -569,6 +584,18 @@ impl HanaStore {
                                 }
                                 block.push(b'\n');
                                 count += 1;
+                                if u32::try_from(count).is_ok_and(|n| n % read.fetch == 0) {
+                                    let next = next_fetch_rows(
+                                        self.batch.max_rows,
+                                        self.batch.max_bytes,
+                                        count,
+                                        block.len(),
+                                    );
+                                    if next != read.fetch {
+                                        read.connection.set_fetch_size(next).await;
+                                        read.fetch = next;
+                                    }
+                                }
                             }
                             Ok(None) => {
                                 read.done = true;
@@ -695,6 +722,18 @@ mod tests {
             assert!(matches!(err, Error::Config(_)), "{bad}: {err:?}");
             assert!(!err.to_string().contains("hunter2"), "{err}");
         }
+    }
+
+    #[test]
+    fn a_round_trip_is_sized_to_the_byte_budget_and_clamped_to_the_row_cap() {
+        // 100 rows of 1 KiB against a 64 KiB budget: 64 rows.
+        assert_eq!(next_fetch_rows(5000, 65_536, 100, 102_400), 64);
+        // Narrow rows are held to max_rows.
+        assert_eq!(next_fetch_rows(500, 4_194_304, 100, 5_000), 500);
+        // A row wider than the whole budget still fetches one.
+        assert_eq!(next_fetch_rows(5000, 1_000, 3, 30_000), 1);
+        // No rows read yet reads as a 1 byte row, never a divide by zero.
+        assert_eq!(next_fetch_rows(40, 1_000_000, 0, 0), 40);
     }
 
     #[test]
