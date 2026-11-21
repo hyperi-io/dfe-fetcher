@@ -192,11 +192,12 @@ fn the_example_config_carries_a_pasteable_db_stanza() {
     let config: Config =
         scalo::yaml::from_str(&stanza, "config.yaml", scalo::yaml::Profile::Config)
             .expect("the stanza parses as config");
-    assert_eq!(config.sources.db.len(), 3);
+    assert_eq!(config.sources.db.len(), 4);
     for (id, engine) in [
         ("inventory", Engine::Odbc),
         ("audit", Engine::Clickhouse),
         ("assets", Engine::Mongodb),
+        ("sap_audit", Engine::Hana),
     ] {
         let instance = &config.sources.db[id];
         assert_eq!(instance.engine, engine);

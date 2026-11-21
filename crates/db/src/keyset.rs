@@ -10,7 +10,7 @@
 //!
 //! A tail resumes from the last committed key tuple with `WHERE (a, b) > (?, ?)
 //! ORDER BY a, b LIMIT n`. The tuple comparison is invalid on MSSQL and Oracle,
-//! which take the expanded `a > ? OR (a = ? AND b > ?)` form. Values are always
+//! and not documented for HANA, which all take the expanded `a > ? OR (a = ? AND b > ?)` form. Values are always
 //! bound as parameters, never written into the SQL text: ODBC binds a `?` per
 //! value, ClickHouse a typed `{name:Type}` placeholder the server fills.
 //!
@@ -62,9 +62,11 @@ impl Dialect {
             Dialect::Mysql | Dialect::Clickhouse | Dialect::Bigquery | Dialect::Databricks => {
                 QuoteStyle::Backtick
             }
-            Dialect::Postgres | Dialect::Oracle | Dialect::Sqlite | Dialect::Snowflake => {
-                QuoteStyle::DoubleQuote
-            }
+            Dialect::Postgres
+            | Dialect::Oracle
+            | Dialect::Sqlite
+            | Dialect::Snowflake
+            | Dialect::Hana => QuoteStyle::DoubleQuote,
         }
     }
 
@@ -82,7 +84,7 @@ impl Dialect {
     pub const fn case_fold(self) -> CaseFold {
         match self {
             Dialect::Postgres => CaseFold::Lower,
-            Dialect::Oracle | Dialect::Snowflake => CaseFold::Upper,
+            Dialect::Oracle | Dialect::Snowflake | Dialect::Hana => CaseFold::Upper,
             Dialect::Mysql
             | Dialect::Mssql
             | Dialect::Clickhouse
@@ -308,6 +310,18 @@ mod tests {
             "a > ? OR (a = ? AND b > ?) OR (a = ? AND b = ? AND c > ?) ORDER BY a, b, c"
         );
         assert_eq!(bind_order(Dialect::Oracle, 3), [0, 0, 1, 0, 1, 2]);
+    }
+
+    #[test]
+    fn hana_expands_the_disjunction_quotes_with_double_quotes_and_folds_to_upper_case() {
+        assert_eq!(
+            odbc(Dialect::Hana, "SELECT * FROM t", &["ts", "id"], true, 5),
+            "SELECT * FROM (SELECT * FROM t) AS dfe_tail WHERE ts > ? OR (ts = ? AND id > ?) \
+             ORDER BY ts, id LIMIT 5"
+        );
+        assert_eq!(bind_order(Dialect::Hana, 2), [0, 0, 1]);
+        assert_eq!(quote(Dialect::Hana, "Order Date"), "\"Order Date\"");
+        assert_eq!(column(Dialect::Hana, "timestamp"), "TIMESTAMP");
     }
 
     #[test]

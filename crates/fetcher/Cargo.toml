@@ -144,10 +144,11 @@ pgo-driver = []
 db-odbc = ["dfe-fetcher-db/odbc"]
 db-clickhouse = ["dfe-fetcher-db/clickhouse"]
 db-mongodb = ["dfe-fetcher-db/mongodb"]
+db-hana = ["dfe-fetcher-db/hana"]
 # `file` is a name only: the dump is always built.
 file = []
 file-tail = ["file", "dfe-fetcher-file/tail"]
-full = ["jemalloc", "db-odbc", "db-clickhouse", "db-mongodb", "file-tail"]
+full = ["jemalloc", "db-odbc", "db-clickhouse", "db-mongodb", "db-hana", "file-tail"]
 
 [[bench]]
 name = "pipeline"

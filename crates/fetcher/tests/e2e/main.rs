@@ -16,6 +16,8 @@
 mod common;
 
 mod container;
+#[cfg(feature = "db-hana")]
+mod hana;
 mod kafka;
 mod kafka_cursor;
 mod runzero;

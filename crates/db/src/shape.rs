@@ -41,6 +41,9 @@ pub enum StoreKind {
     /// The official MongoDB driver.
     #[cfg(feature = "mongodb")]
     Mongodb(Box<crate::mongo::MongoStore>),
+    /// SAP HANA over its own wire protocol.
+    #[cfg(feature = "hana")]
+    Hana(Box<crate::hana::HanaStore>),
 }
 
 impl Store for StoreKind {
@@ -52,7 +55,14 @@ impl Store for StoreKind {
             StoreKind::Clickhouse(s) => s.dump(),
             #[cfg(feature = "mongodb")]
             StoreKind::Mongodb(s) => s.dump(),
-            #[cfg(not(any(feature = "odbc", feature = "clickhouse", feature = "mongodb")))]
+            #[cfg(feature = "hana")]
+            StoreKind::Hana(s) => s.dump(),
+            #[cfg(not(any(
+                feature = "odbc",
+                feature = "clickhouse",
+                feature = "mongodb",
+                feature = "hana"
+            )))]
             _ => match *self {},
         }
     }
@@ -65,7 +75,14 @@ impl Store for StoreKind {
             StoreKind::Clickhouse(s) => s.tail(after, limit),
             #[cfg(feature = "mongodb")]
             StoreKind::Mongodb(s) => s.tail(after, limit),
-            #[cfg(not(any(feature = "odbc", feature = "clickhouse", feature = "mongodb")))]
+            #[cfg(feature = "hana")]
+            StoreKind::Hana(s) => s.tail(after, limit),
+            #[cfg(not(any(
+                feature = "odbc",
+                feature = "clickhouse",
+                feature = "mongodb",
+                feature = "hana"
+            )))]
             _ => {
                 let _ = (after, limit);
                 match *self {}
@@ -81,7 +98,14 @@ impl Store for StoreKind {
             StoreKind::Clickhouse(s) => s.probe(),
             #[cfg(feature = "mongodb")]
             StoreKind::Mongodb(s) => s.probe(),
-            #[cfg(not(any(feature = "odbc", feature = "clickhouse", feature = "mongodb")))]
+            #[cfg(feature = "hana")]
+            StoreKind::Hana(s) => s.probe(),
+            #[cfg(not(any(
+                feature = "odbc",
+                feature = "clickhouse",
+                feature = "mongodb",
+                feature = "hana"
+            )))]
             _ => match *self {},
         }
     }
@@ -178,7 +202,12 @@ fn build_store(
     secret: &Arc<crate::secret::Secret>,
     lease: &Arc<dyn Lease>,
 ) -> Result<StoreKind> {
-    #[cfg(not(any(feature = "odbc", feature = "clickhouse", feature = "mongodb")))]
+    #[cfg(not(any(
+        feature = "odbc",
+        feature = "clickhouse",
+        feature = "mongodb",
+        feature = "hana"
+    )))]
     let _ = (spec, secret, lease);
     match instance.engine {
         #[cfg(feature = "odbc")]
@@ -219,10 +248,26 @@ fn build_store(
         )?))),
         #[cfg(not(feature = "mongodb"))]
         Engine::Mongodb => Err(not_built(Engine::Mongodb)),
+        #[cfg(feature = "hana")]
+        Engine::Hana => Ok(StoreKind::Hana(Box::new(crate::hana::HanaStore::new(
+            &spec.unit,
+            Arc::clone(secret),
+            spec.query.clone(),
+            spec.key.clone(),
+            instance.batch,
+            Arc::clone(lease),
+        )))),
+        #[cfg(not(feature = "hana"))]
+        Engine::Hana => Err(not_built(Engine::Hana)),
     }
 }
 
-#[cfg(not(all(feature = "odbc", feature = "clickhouse", feature = "mongodb")))]
+#[cfg(not(all(
+    feature = "odbc",
+    feature = "clickhouse",
+    feature = "mongodb",
+    feature = "hana"
+)))]
 fn not_built(engine: Engine) -> Error {
     Error::Config(format!(
         "engine `{}` is not built into this binary; build with `--features {}`",

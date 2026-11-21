@@ -1019,7 +1019,7 @@ scaling:
 # resuming past the last row of the page before, and ends on the first short
 # page or at `max_pages_per_tick`. Every timestamp lands as RFC 3339 UTC, binary as base64,
 # NULL as null with the key present. An engine this binary was built
-# without (`db-odbc`, `db-clickhouse`, `db-mongodb`) is refused at load.
+# without (`db-odbc`, `db-clickhouse`, `db-mongodb`, `db-hana`) is refused at load.
 # The driver each engine needs, its licence and whether the image ships it
 # are tabled in docs/reference/db-drivers.md.
 #
@@ -1027,7 +1027,7 @@ scaling:
 #   db:
 #     inventory:
 #       enabled: true
-#       engine: odbc                    # odbc | clickhouse | mongodb
+#       engine: odbc                    # odbc | clickhouse | mongodb | hana
 #       dialect: postgres               # odbc only: postgres | mysql | mssql | oracle | sqlite | snowflake | bigquery | databricks
 #       # An ODBC connection string; the driver name is what `odbcinst -q -d`
 #       # lists. psqlodbc buffers the whole result set unless it carries
@@ -1075,6 +1075,19 @@ scaling:
 #         # documents of a dump or keyset tail, the change EVENTS of a change stream.
 #         - { unit: changes, shape: tail, limit: 5000, mongodb: { database: inventory, collection: hosts } }
 #         - { unit: appended, shape: tail, limit: 5000, mongodb: { database: inventory, collection: audit, tail: keyset } }
+#     sap_audit:
+#       enabled: true
+#       engine: hana                    # SAP HANA over its own wire protocol, pure Rust; no driver to install
+#       # hdbsqls:// is TLS and names how the server's certificate is trusted: use_mozillas_root_certificates
+#       # (HANA Cloud), tls_certificate_dir=<dir> or tls_certificate_env=<variable>. hdbsql:// is plain.
+#       # Percent-encode @ : / ? # % in the user name and the password.
+#       connection_string: "vault:kv/data/<team>/hana:url"   # hdbsqls://user:password@host:443?use_mozillas_root_certificates
+#       topic: "sap_audit"
+#       stores:
+#         # Every column of SYS.AUDIT_LOG is nullable and the view has no unique id. A null key is never
+#         # read again, so coalesce each key in the query. Two events with the same TIMESTAMP,
+#         # CONNECTION_ID and EVENT_ACTION read as one, past a page boundary.
+#         - { unit: audit_log, shape: tail, limit: 5000, key: [TIMESTAMP, CONNECTION_ID, EVENT_ACTION], query: "SELECT COALESCE(TIMESTAMP, '1970-01-01 00:00:00') AS TIMESTAMP, COALESCE(CONNECTION_ID, 0) AS CONNECTION_ID, COALESCE(EVENT_ACTION, '') AS EVENT_ACTION, USER_NAME, EVENT_STATUS, STATEMENT_STRING FROM SYS.AUDIT_LOG" }
 
 # A `mssql` instance uses Microsoft's ODBC Driver 18 for SQL Server and is
 # refused at load until its licence (https://aka.ms/odbc18eula) is accepted

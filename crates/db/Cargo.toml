@@ -55,6 +55,10 @@ mongodb = { version = "3.10.0", default-features = false, features = ["bson-3", 
 # `serde_json-1` lands ObjectIds and dates as JSON, not debug text.
 bson = { version = "3.1.0", default-features = false, features = ["serde", "serde_json-1"], optional = true }
 
+# Pure Rust, rustls only. The driver builds its TLS config from rustls's process default provider, which `hana.rs` installs when the build has none.
+hdbconnect_async = { version = "0.33.0", optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
+
 [dev-dependencies]
 scalo = { workspace = true, features = ["yaml"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
@@ -65,3 +69,4 @@ default = []
 odbc = ["dep:odbc-api", "dep:arrow-odbc", "dep:arrow", "dep:base64"]
 clickhouse = ["dep:clickhouse", "dep:dfe-clickhouse", "dep:url"]
 mongodb = ["dep:mongodb", "dep:bson"]
+hana = ["dep:hdbconnect_async", "dep:rustls", "dep:base64", "dep:url"]
