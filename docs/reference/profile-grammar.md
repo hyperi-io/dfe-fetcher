@@ -573,7 +573,7 @@ counted as an API error.
 | `window.step` | Split the window into steps of at most this length (`<n>s\|m\|h\|d`), one page sequence each. |
 | `window.lookback` | Window of a tick run with none. The scheduler always passes one, from the stored cursor or `cursor.default_window_hours` back, so a scheduled tick never reads this. |
 | `window.delay` | How long after the fact the provider publishes a record (`<n>s\|m\|h\|d`). Every window ends at least this long before now, so the cursor never passes a record not yet visible. Duo's is `2m`. |
-| `window.overlap` | How far back from the scheduler's window start each tick reads again (`<n>s\|m\|h\|d`). A record that became visible up to this long after its window closed is read by the next tick, and the rows read twice are delivered twice, so use it where the consumer takes at-least-once delivery. A tick with no scheduler window reads its `lookback` and no more. s4hana's is `5m`. |
+| `window.overlap` | How far back from the scheduler's window start each tick reads again (`<n>s\|m\|h\|d`). A record that became visible up to this long after its window closed is read by the next tick, and the rows read twice are delivered twice, so use it where the consumer takes at-least-once delivery. The driver widens the window once, before any split under a page ceiling, so the halves tile the widened window. A tick with no scheduler window reads its `lookback` and no more. s4hana's is `5m`. |
 | `endpoints[].window.format` | A unit's rendering when its API differs from the profile's. |
 
 A unit with templates that read no `window` runs once per tick, whatever the

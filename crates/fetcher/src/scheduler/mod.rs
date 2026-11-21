@@ -1133,6 +1133,7 @@ mod tests {
     struct OverCeiling {
         units: Vec<UnitSpec>,
         fits: chrono::Duration,
+        overlap: std::time::Duration,
         seen_by_dense: Arc<Mutex<Vec<FetchWindow>>>,
         seen_by_sibling: Arc<Mutex<Vec<FetchWindow>>>,
     }
@@ -1146,6 +1147,9 @@ mod tests {
         }
         fn units(&self) -> &[UnitSpec] {
             &self.units
+        }
+        fn window_overlap(&self) -> std::time::Duration {
+            self.overlap
         }
         fn rows<'a>(&'a self, tick: TickCtx<'a>) -> RowStream<'a> {
             let Some(window) = tick.window.cloned() else {
@@ -1184,6 +1188,16 @@ mod tests {
         metrics: &Arc<Metrics>,
         fits: chrono::Duration,
     ) -> (Arc<Driver>, DenseSeen) {
+        dense_driver_overlapping(shared, metrics, fits, std::time::Duration::ZERO)
+    }
+
+    /// `dense_driver` over a shape that reads `overlap` before every window.
+    fn dense_driver_overlapping(
+        shared: &SharedConfig,
+        metrics: &Arc<Metrics>,
+        fits: chrono::Duration,
+        overlap: std::time::Duration,
+    ) -> (Arc<Driver>, DenseSeen) {
         let dense_seen = Arc::new(Mutex::new(Vec::new()));
         let sibling_seen = Arc::new(Mutex::new(Vec::new()));
         let driver = driver_over(
@@ -1196,6 +1210,7 @@ mod tests {
                     UnitSpec::new("sibling", UnitShape::Incremental, "t"),
                 ],
                 fits,
+                overlap,
                 seen_by_dense: Arc::clone(&dense_seen),
                 seen_by_sibling: Arc::clone(&sibling_seen),
             }),
@@ -2795,6 +2810,55 @@ mod tests {
             ),
             Some(7),
             "one hour down to 7.5-minute halves is seven splits"
+        );
+    }
+
+    /// The overlap widens the scheduler's window once. The halves tile the
+    /// widened window and none of them adds the overlap again, so an overlap
+    /// wider than a window that fits cannot keep a busy window from splitting.
+    #[tokio::test]
+    async fn an_overlap_is_added_once_before_the_window_is_split() {
+        let shared = SharedConfig::new(test_config_no_jitter());
+        let metrics = Arc::new(Metrics::new());
+        let fits = chrono::Duration::minutes(10);
+        let overlap = chrono::Duration::minutes(30);
+        let (driver, (dense_seen, sibling_seen)) = dense_driver_overlapping(
+            &shared,
+            &metrics,
+            fits,
+            overlap.to_std().expect("a positive overlap"),
+        );
+        let start = Utc::now() - chrono::Duration::hours(6);
+        let window = FetchWindow {
+            start,
+            end: start + chrono::Duration::hours(1),
+        };
+
+        driver
+            .run_tick(Some(&window))
+            .await
+            .expect("an overlap wider than a window that fits still splits");
+
+        let mut fetched: Vec<FetchWindow> = dense_seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|w| w.end - w.start <= fits)
+            .cloned()
+            .collect();
+        fetched.sort_by_key(|w| w.start);
+        assert_eq!(
+            fetched.first().map(|w| w.start),
+            Some(window.start - overlap)
+        );
+        assert_eq!(fetched.last().map(|w| w.end), Some(window.end));
+        for pair in fetched.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "no gap and no second overlap");
+        }
+        assert_eq!(
+            sibling_seen.lock().unwrap()[0].start,
+            window.start - overlap,
+            "every unit reads from the widened start"
         );
     }
 

@@ -1597,6 +1597,14 @@ impl RowSource for RestShape {
             .map_or(std::time::Duration::ZERO, |delay| delay.0)
     }
 
+    fn window_overlap(&self) -> std::time::Duration {
+        self.bound
+            .window
+            .overlap
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |overlap| overlap.0)
+    }
+
     // SHORTCUT: pages are requested one at a time per unit and a connection's
     // units run sequentially; fan pages out with `buffer_unordered(n)` for the
     // offset and page-number pagers only when a store's page count x page

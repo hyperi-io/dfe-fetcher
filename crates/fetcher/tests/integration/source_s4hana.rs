@@ -185,8 +185,14 @@ async fn tick_with_vars(
          service: API_SYNTHETIC_SRV, entity_set: ChangeLogEntries, time_field: ChangedAt, \
          {key_field}sap_client: \"100\" }}\n{instance_yaml}"
     );
+    let shape = bind_shape(&yaml)?;
+    run_unit(&shape).await
+}
+
+/// The shipped profile bound to the instance `yaml` describes.
+fn bind_shape(yaml: &str) -> Result<RestShape, Error> {
     let instance: RestInstance =
-        scalo::yaml::from_str(&yaml, "s4hana.yaml", scalo::yaml::Profile::Config)
+        scalo::yaml::from_str(yaml, "s4hana.yaml", scalo::yaml::Profile::Config)
             .unwrap_or_else(|e| panic!("instance does not load: {e}\n{yaml}"));
     let profile = dfe_fetcher_rest::profile::bound::resolve_profile(
         &instance,
@@ -200,6 +206,11 @@ async fn tick_with_vars(
         dfe_fetcher_rest::http_client().expect("http client"),
         &dfe_fetcher_rest::exchange_client().expect("exchange client"),
     )?;
+    Ok(shape)
+}
+
+/// One tick of the `entity_set` unit over a fixed window that starts mid-second.
+async fn run_unit(shape: &RestShape) -> Result<Vec<Value>, Error> {
     let spec = shape
         .units()
         .iter()
@@ -260,12 +271,12 @@ async fn both_pages_are_read_once_each_in_order_and_the_next_link_is_followed_ve
         2,
         "one request per page, none after the last"
     );
-    let filter = "ChangedAt ge datetimeoffset'2026-11-20T00:55:00Z' and ChangedAt lt datetimeoffset'2026-11-20T02:00:00Z'";
+    let filter = "ChangedAt ge datetimeoffset'2026-11-20T01:00:00Z' and ChangedAt lt datetimeoffset'2026-11-20T02:00:00Z'";
     let first = &requests[0];
     assert_eq!(
         first.query_value("$filter"),
         Some(filter),
-        "start is the window start less the 5 minute overlap, both bounds cut to the second"
+        "bounds cut to the second"
     );
     assert_eq!(
         first.query_value("$orderby"),
@@ -316,7 +327,7 @@ async fn a_datetime_property_is_filtered_with_a_zoneless_literal() {
     assert_eq!(
         entity_requests(&seen)[0].query_value("$filter"),
         Some(
-            "ChangedAt ge datetime'2026-11-20T00:55:00' and ChangedAt lt datetime'2026-11-20T02:00:00'"
+            "ChangedAt ge datetime'2026-11-20T01:00:00' and ChangedAt lt datetime'2026-11-20T02:00:00'"
         )
     );
 }
@@ -423,4 +434,22 @@ async fn a_logon_failure_surfaces_the_odata_error_text_and_is_not_retried() {
 
     assert!(err.to_string().contains("Logon failed"), "{err}");
     assert_eq!(entity_requests(&seen).len(), 1, "a 401 is never retried");
+}
+
+#[tokio::test]
+async fn the_shape_reports_the_profile_overlap_and_an_instances_own() {
+    let vars = "vars: { base_url: \"http://127.0.0.1:1\", service: S, entity_set: E, \
+                time_field: T, key_field: K }\n";
+    let base = format!("profile: s4hana\ntopic: s4\n{BASIC}\n{vars}");
+
+    let shipped = bind_shape(&base).unwrap();
+    assert_eq!(
+        shipped.window_overlap(),
+        std::time::Duration::from_secs(300)
+    );
+    assert_eq!(shipped.window_delay(), std::time::Duration::from_secs(300));
+
+    let own = bind_shape(&format!("{base}window: {{ delay: 20m, overlap: 1h }}\n")).unwrap();
+    assert_eq!(own.window_overlap(), std::time::Duration::from_secs(3600));
+    assert_eq!(own.window_delay(), std::time::Duration::from_secs(1200));
 }
