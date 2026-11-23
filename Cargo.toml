@@ -35,7 +35,7 @@ dfe-fetcher-db = { path = "crates/db" }
 dfe-fetcher-file = { path = "crates/file" }
 
 # Moves with `release.helm.library` in .hyperi-ci.yaml.
-scalo = { version = ">=2.14.32, <3", default-features = false }
+scalo = { version = ">=2.14.33, <3", default-features = false }
 # scalo's range, so the framework holds scalo's compiled `Program` type.
 cel = { version = ">=0.14.5, <0.15", features = ["json"] }
 # scalo's range, so its `SensitiveString` impl and our derives share one `JsonSchema` trait.
@@ -80,7 +80,7 @@ reqsign = { version = "0.20.7", default-features = false, features = ["aws", "de
 http = "1.5.0"
 # scalo's opentelemetry minor: a newer one puts a second otel stack in the graph.
 opentelemetry-proto = { version = "0.33", features = ["gen-tonic-messages", "metrics"] }
-prost = "0.14.4"
+prost = "0.14.6"
 quick-xml = "0.42.0"
 csv-core = "0.1.13"
 glob = "0.3.4"

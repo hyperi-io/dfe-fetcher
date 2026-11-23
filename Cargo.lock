@@ -390,9 +390,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-odbc"
-version = "27.0.0"
+version = "27.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be68ae50a158a38802940577f574196fcb740170d9d050aaa802f67fe8b57218"
+checksum = "039710198db8bc64de32b4781d7a6437dde288b34db07cae5bd29a5a673cbee3"
 dependencies = [
  "arrow",
  "atoi",
@@ -4650,9 +4650,9 @@ dependencies = [
 
 [[package]]
 name = "odbc-api"
-version = "30.0.0"
+version = "30.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8d667cd254f7e711f3faf9374bd4cb4f44959b538d930ed3b92cd65a03ca418"
+checksum = "07df20ae00dc7fc31c9ae32451bb0d83fb9d18ddb970e066b26e43d6a76cd9a0"
 dependencies = [
  "atoi",
  "log",
@@ -5350,9 +5350,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+checksum = "3ef0b569d1d907ab3a28596aee62cf1f61dacb0529a4bedcd8e7460e2d5228b4"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -5381,9 +5381,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
