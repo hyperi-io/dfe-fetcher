@@ -113,7 +113,8 @@ CONFIG_DIR=""
 
 # A fetcher killed before it exits writes no .profraw, so it gets the
 # shutdown grace its deployment contract asks for.
-FETCHER_GRACE="$("${FETCHER_BIN}" emit-contract | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["termination_grace_seconds"])')"
+# The binary is instrumented, so this call sends its profile to /dev/null.
+FETCHER_GRACE="$(env LLVM_PROFILE_FILE=/dev/null "${FETCHER_BIN}" emit-contract | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["termination_grace_seconds"])')"
 if [[ ! "${FETCHER_GRACE}" =~ ^[0-9]+$ ]]; then
     echo "error: no termination_grace_seconds from ${FETCHER_BIN} emit-contract (got '${FETCHER_GRACE}')" >&2
     exit 1
@@ -145,10 +146,11 @@ cleanup() {
         else
             echo "pgo-workload: fetcher exited ${waited}s after SIGTERM" >&2
         fi
-        if [[ -n "${LLVM_PROFILE_FILE:-}" ]] && ! compgen -G "$(dirname "${LLVM_PROFILE_FILE}")/*.profraw" >/dev/null; then
-            echo "pgo-workload: no .profraw under $(dirname "${LLVM_PROFILE_FILE}")" >&2
-            rc=1
-        fi
+    fi
+    if [[ -n "$FETCHER_PID" && -n "${LLVM_PROFILE_FILE:-}" ]] \
+        && ! compgen -G "$(dirname "${LLVM_PROFILE_FILE}")/pgo-${FETCHER_PID}_*.profraw" >/dev/null; then
+        echo "pgo-workload: fetcher ${FETCHER_PID} left no .profraw under $(dirname "${LLVM_PROFILE_FILE}")" >&2
+        rc=1
     fi
     if [[ -n "$DRIVER_PID" ]] && kill -0 "$DRIVER_PID" 2>/dev/null; then
         kill -TERM "$DRIVER_PID" 2>/dev/null || true
