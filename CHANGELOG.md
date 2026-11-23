@@ -3,6 +3,11 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.60](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.59...v1.4.60) (2026-11-23)
+
+### What's Changed
+* fix(pgo): skip the profraw check for a BOLT binary by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/334
+
 ## [1.4.57](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.56...v1.4.57) (2026-11-19)
 
 ### Bug Fixes
