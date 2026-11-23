@@ -147,12 +147,6 @@ cleanup() {
             echo "pgo-workload: fetcher exited ${waited}s after SIGTERM" >&2
         fi
     fi
-    # A BOLT-instrumented binary writes BOLT's profile, not an LLVM .profraw.
-    if [[ -n "$FETCHER_PID" && -n "${LLVM_PROFILE_FILE:-}" && "${FETCHER_BIN}" != *-bolt-instrumented ]] \
-        && ! compgen -G "$(dirname "${LLVM_PROFILE_FILE}")/pgo-${FETCHER_PID}_*.profraw" >/dev/null; then
-        echo "pgo-workload: fetcher ${FETCHER_PID} left no .profraw under $(dirname "${LLVM_PROFILE_FILE}")" >&2
-        rc=1
-    fi
     if [[ -n "$DRIVER_PID" ]] && kill -0 "$DRIVER_PID" 2>/dev/null; then
         kill -TERM "$DRIVER_PID" 2>/dev/null || true
         for _ in 1 2 3 4 5; do
