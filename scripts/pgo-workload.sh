@@ -59,8 +59,8 @@ DURATION="${PGO_WORKLOAD_DURATION_SECS:-300}"
 # digest so a rebuilt tag cannot change it. Tag and digest sit on their own
 # lines so the org Renovate regex can read them.
 # renovate: datasource=docker depName=redpandadata/redpanda
-KAFKA_TAG="v26.2.6"
-KAFKA_DIGEST="sha256:8b1076e0d61bfceb66594dc01536427ce0b529f8ead35fdab9763ab6085891ce"
+KAFKA_TAG="v26.2.7"
+KAFKA_DIGEST="sha256:43545ee03966431f5451e0b3c1e651b39fbe3eb383360220311021f50133b649"
 KAFKA_IMAGE="${PGO_WORKLOAD_KAFKA_IMAGE:-docker.redpanda.com/redpandadata/redpanda:${KAFKA_TAG}@${KAFKA_DIGEST}}"
 KEEP="${PGO_WORKLOAD_KEEP:-0}"
 
