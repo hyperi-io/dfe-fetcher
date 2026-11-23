@@ -111,6 +111,15 @@ DRIVER_PID=""
 KAFKA_CID=""
 CONFIG_DIR=""
 
+# A fetcher killed before it exits writes no .profraw, so it gets the
+# shutdown grace its deployment contract asks for.
+# The binary is instrumented, so this call sends its profile to /dev/null.
+FETCHER_GRACE="$(env LLVM_PROFILE_FILE=/dev/null "${FETCHER_BIN}" emit-contract | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["termination_grace_seconds"])')"
+if [[ ! "${FETCHER_GRACE}" =~ ^[0-9]+$ ]]; then
+    echo "error: no termination_grace_seconds from ${FETCHER_BIN} emit-contract (got '${FETCHER_GRACE}')" >&2
+    exit 1
+fi
+
 cleanup() {
     local rc=$?
     if [[ "$KEEP" == "1" ]]; then
@@ -124,13 +133,24 @@ cleanup() {
     echo "pgo-workload: cleanup" >&2
     if [[ -n "$FETCHER_PID" ]] && kill -0 "$FETCHER_PID" 2>/dev/null; then
         kill -TERM "$FETCHER_PID" 2>/dev/null || true
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            if ! kill -0 "$FETCHER_PID" 2>/dev/null; then
-                break
-            fi
+        local waited=0
+        while kill -0 "$FETCHER_PID" 2>/dev/null && [[ "${waited}" -lt "${FETCHER_GRACE}" ]]; do
             sleep 1
+            waited=$((waited + 1))
         done
-        kill -KILL "$FETCHER_PID" 2>/dev/null || true
+        if kill -0 "$FETCHER_PID" 2>/dev/null; then
+            echo "pgo-workload: fetcher still running ${FETCHER_GRACE}s after SIGTERM, killing it; it writes no profile" >&2
+            tail -100 "$CONFIG_DIR/fetcher.log" >&2 || true
+            kill -KILL "$FETCHER_PID" 2>/dev/null || true
+            rc=1
+        else
+            echo "pgo-workload: fetcher exited ${waited}s after SIGTERM" >&2
+        fi
+    fi
+    if [[ -n "$FETCHER_PID" && -n "${LLVM_PROFILE_FILE:-}" ]] \
+        && ! compgen -G "$(dirname "${LLVM_PROFILE_FILE}")/pgo-${FETCHER_PID}_*.profraw" >/dev/null; then
+        echo "pgo-workload: fetcher ${FETCHER_PID} left no .profraw under $(dirname "${LLVM_PROFILE_FILE}")" >&2
+        rc=1
     fi
     if [[ -n "$DRIVER_PID" ]] && kill -0 "$DRIVER_PID" 2>/dev/null; then
         kill -TERM "$DRIVER_PID" 2>/dev/null || true
