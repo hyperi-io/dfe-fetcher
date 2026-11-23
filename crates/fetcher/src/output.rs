@@ -162,6 +162,15 @@ impl OutputTransport {
                     self.name()
                 )))
             }
+            SendResult::RetryAfter(wait) => Err(Error::Backpressured(format!(
+                "{} transport asked for a {} ms wait",
+                self.name(),
+                wait.as_millis()
+            ))),
+            SendResult::Reject(e) => Err(Error::TransportRecord(format!(
+                "{} transport rejected the record: {e}",
+                self.name()
+            ))),
             SendResult::Fatal(e) => Err(classify_fatal("transport fatal", &e)),
             SendResult::FilteredDlq => {
                 debug!(
@@ -372,10 +381,15 @@ impl OutputManager {
                 SendResult::FilteredDlq => {
                     refused.push(format!("destination {destination}: filtered to DLQ"));
                 }
-                SendResult::Backpressured => {
+                SendResult::Backpressured | SendResult::RetryAfter(_) => {
                     return Err(Error::Backpressured(format!(
                         "destination {destination} backpressured"
                     )));
+                }
+                SendResult::Reject(e) => {
+                    refused.push(format!(
+                        "destination {destination} rejected the record: {e}"
+                    ));
                 }
                 SendResult::Fatal(e) => {
                     match classify_fatal(&format!("destination {destination} send failed"), &e) {

@@ -248,7 +248,12 @@
           "path": "/var/spool/dfe/dlq",
           "rotation": "hourly",
           "max_age_days": 30,
-          "compress_rotated": true
+          "compress_rotated": true,
+          "max_bytes": null,
+          "max_files": null,
+          "durable": false,
+          "file_mode": null,
+          "dir_mode": null
         },
         "kafka": {
           "enabled": true,
@@ -7480,7 +7485,12 @@
             "path": "/var/spool/scalo/dlq",
             "rotation": "hourly",
             "max_age_days": 30,
-            "compress_rotated": true
+            "compress_rotated": true,
+            "max_bytes": null,
+            "max_files": null,
+            "durable": false,
+            "file_mode": null,
+            "dir_mode": null
           }
         },
         "kafka": {
@@ -7548,26 +7558,85 @@
           "default": 30
         },
         "compress_rotated": {
-          "description": "Compress rotated files with flate2/gzip.",
+          "description": "Gzip rotated files, keeping the six newest uncompressed.",
           "type": "boolean",
           "default": true
+        },
+        "max_bytes": {
+          "description": "Rotate before a write that would take the file past this many bytes.\nA write into an empty file always lands, however large. Unset: no size\nrotation. Works beside the time rotation: either rotates.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "max_files": {
+          "description": "Rotated files kept, newest first. Older ones are deleted at each\nrotation. Unset: no count limit, only the age limit.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "durable": {
+          "description": "Sync the file's data to disk after each write, and its directory after\nthe file is created or rotated, so a write that returned `Ok` survives\npower loss. Costs a disk flush per batch. Off by default.",
+          "type": "boolean",
+          "default": false
+        },
+        "file_mode": {
+          "description": "Mode for files the writer creates, before the umask. Unset: `0666`\nbefore the umask, except in the file transport, where it is `0600`.\nUnix only: a Windows file takes its folder's ACL. Existing files keep\ntheirs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dir_mode": {
+          "description": "Mode for directories the writer creates, before the umask. Unset:\n`0777` before the umask, except in the file transport, where it is\n`0700`. Unix only.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       }
     },
     "RotationPeriod": {
-      "description": "File rotation period.",
+      "description": "File rotation period, by local time.",
       "oneOf": [
         {
-          "description": "Rotate files every hour.",
+          "description": "Rotate before the first write in a new hour.",
           "type": "string",
           "const": "hourly"
         },
         {
-          "description": "Rotate files every day.",
+          "description": "Rotate before the first write on a new day.",
           "type": "string",
           "const": "daily"
+        },
+        {
+          "description": "No time rotation. `max_bytes` can still rotate the file.",
+          "type": "string",
+          "const": "never"
         }
       ]
+    },
+    "FileMode": {
+      "description": "Unix permission mode in octal, such as \"0600\". Ignored on Windows.",
+      "type": "string",
+      "pattern": "^(0o)?[0-7]{1,4}$"
     },
     "KafkaDlqConfig": {
       "description": "Kafka-based DLQ configuration.",
@@ -8333,7 +8402,7 @@
           "default": false
         },
         "tls_ca_path": {
-          "description": "Private-CA PEM (maps to `TlsTrust.extra_roots`). When unset with\n`tls_enabled`, falls back to OS native roots.",
+          "description": "CA PEM file, trusted alone when set. Unset with `tls_enabled`, the OS\nnative roots are trusted.",
           "type": [
             "string",
             "null"
@@ -8364,6 +8433,13 @@
           ],
           "default": null
         },
+        "proxy": {
+          "description": "Proxy the `endpoint` connection goes through: `none` (default),\n`system` (the machine's proxy) or a proxy URL. The connection is an\nHTTP CONNECT tunnel, and TLS runs inside it. See\n[`ProxyConfig`](crate::transport::ProxyConfig).",
+          "type": "string",
+          "x-scalo-secret": true,
+          "writeOnly": true,
+          "default": "none"
+        },
         "vector_compat": {
           "description": "Enable Vector wire protocol compatibility on the same server.\nWhen true, the server also accepts `/vector.Vector/PushEvents` RPCs\nfrom legacy Vector sinks.\nRequires the `transport-grpc-vector-compat` feature.",
           "type": "boolean",
@@ -8384,6 +8460,40 @@
             "$ref": "#/$defs/FilterRule"
           },
           "default": []
+        },
+        "coalesce": {
+          "description": "Joining small `send_batch` blocks for `endpoint` into one `RouteBatch`\ncall.",
+          "$ref": "#/$defs/CoalesceConfig",
+          "default": {
+            "enabled": true,
+            "max_batch_bytes": 65536,
+            "in_flight": 4
+          }
+        }
+      }
+    },
+    "CoalesceConfig": {
+      "description": "How `send_batch` joins small blocks for one endpoint into one `RouteBatch`\ncall.\n\nWhen a call slot is free, the next queued block goes out with every block\nqueued behind it, up to `max_batch_bytes` and `max_message_size` encoded,\nwith no timer. A block at that cap or over it is sent at once on its own.\n`send_timeout_ms` bounds the wait for a slot too.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Join blocks. `false` sends every `send_batch` as its own call.",
+          "type": "boolean",
+          "default": true
+        },
+        "max_batch_bytes": {
+          "description": "Most bytes one joined call carries, encoded.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 65536
+        },
+        "in_flight": {
+          "description": "Calls in flight to the endpoint at once, joined calls only.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 4
         }
       }
     },
