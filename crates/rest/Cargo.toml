@@ -26,7 +26,6 @@ workspace = true
 dfe-fetcher-core = { workspace = true }
 
 async-compression = { workspace = true }
-backon = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 cel = { workspace = true }

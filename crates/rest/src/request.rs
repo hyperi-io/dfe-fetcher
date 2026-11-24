@@ -27,13 +27,12 @@
 //! over a scalo credential source and a mode applying its own credential reach
 //! the request the same way. The loop itself stays here because scalo's has no
 //! per-source metrics, no throttle classified from the body text, no
-//! ignore-statuses, no quota headers, and no `Retry-After` capped at the
-//! profile's own ceiling.
+//! ignore-statuses and no quota headers.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use backon::BackoffBuilder;
+use scalo::backoff::{Backoff, hinted_delay, parse_retry_after};
 use scalo::http_client::{HttpClientConfig, RequestSigner};
 
 use dfe_fetcher_core::error::{Error, Result};
@@ -318,12 +317,12 @@ impl RequestExecutor {
             rate,
         } = sending;
         let may_retry = idempotent || self.retry.retry_non_idempotent;
-        let mut backoff = backon::ExponentialBuilder::default()
-            .with_min_delay(Duration::from_millis(self.retry.min_backoff_ms))
-            .with_max_delay(Duration::from_millis(self.retry.max_backoff_ms))
-            .with_max_times(self.retry.max_retries as usize)
-            .with_jitter()
-            .build();
+        let mut waits = Backoff::new(
+            Duration::from_millis(self.retry.min_backoff_ms),
+            Duration::from_millis(self.retry.max_backoff_ms),
+        )
+        .delays()
+        .take(self.retry.max_retries as usize);
         loop {
             if let Some(gate) = rate {
                 gate.wait().await;
@@ -384,12 +383,10 @@ impl RequestExecutor {
                     (error, None)
                 }
             };
-            let Some(delay) = backoff.next() else {
+            let ceiling = Duration::from_millis(self.retry.max_backoff_ms);
+            let Some(delay) = hinted_delay(retry_after, waits.next(), ceiling) else {
                 return Err(error);
             };
-            let delay = retry_after.map_or(delay, |ra| {
-                ra.min(Duration::from_millis(self.retry.max_backoff_ms))
-            });
             tracing::debug!(source, error = %error, delay_ms = delay.as_millis(), "retrying request");
             tokio::time::sleep(delay).await;
         }
@@ -403,11 +400,8 @@ impl RequestExecutor {
             .headers()
             .get(reqwest::header::RETRY_AFTER)?
             .to_str()
-            .ok()?
-            .trim()
-            .parse::<u64>()
             .ok()
-            .map(Duration::from_secs)
+            .and_then(parse_retry_after)
     }
 
     /// The provider's error text: the value at `error.at` when the body is JSON
