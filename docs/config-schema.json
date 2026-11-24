@@ -248,7 +248,9 @@
           "path": "/var/spool/dfe/dlq",
           "rotation": "hourly",
           "max_age_days": 30,
-          "compress_rotated": true,
+          "compress_rotated": {
+            "codec": "gzip"
+          },
           "max_bytes": null,
           "max_files": null,
           "durable": false,
@@ -7485,7 +7487,9 @@
             "path": "/var/spool/scalo/dlq",
             "rotation": "hourly",
             "max_age_days": 30,
-            "compress_rotated": true,
+            "compress_rotated": {
+              "codec": "gzip"
+            },
             "max_bytes": null,
             "max_files": null,
             "durable": false,
@@ -7558,9 +7562,35 @@
           "default": 30
         },
         "compress_rotated": {
-          "description": "Gzip rotated files, keeping the six newest uncompressed.",
-          "type": "boolean",
-          "default": true
+          "description": "Codec for rotated files past the six newest: `none`, `gzip` or `zstd`.\nDefault gzip.",
+          "type": "object",
+          "properties": {
+            "codec": {
+              "description": "Codec for compress_rotated.",
+              "type": "string",
+              "enum": [
+                "none",
+                "gzip",
+                "zstd"
+              ]
+            },
+            "level": {
+              "description": "Level, by codec: gzip 1-9, zstd 1-22. Unset, the codec's default.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 22
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codec"
+          ],
+          "default": {
+            "codec": "gzip"
+          }
         },
         "max_bytes": {
           "description": "Rotate before a write that would take the file past this many bytes.\nA write into an empty file always lands, however large. Unset: no size\nrotation. Works beside the time rotation: either rotates.",
@@ -8009,7 +8039,7 @@
           "default": false
         },
         "sizing": {
-          "description": "Kafka sizing surface: profile + named knobs + raw librdkafka escape hatch.\n\nControls the byte-budget and latency envelope for GET (consumer) and\nSEND (producer) paths. See [`KafkaSizingConfig`] for full documentation.\n\nExample YAML:\n```yaml\nkafka:\n  sizing:\n    profile: throughput\n    consumer:\n      fetch_min_bytes: 2097152  # 2 MiB, overrides profile default\n    producer:\n      compression_type: lz4     # the default is zstd at level 3\n    consumer_librdkafka:\n      fetch.wait.max.ms: \"75\"   # raw override wins over the knobs\n    producer_librdkafka:\n      linger.ms: \"50\"\n```",
+          "description": "Kafka sizing surface: profile + named knobs + raw librdkafka escape hatch.\n\nControls the byte-budget and latency envelope for GET (consumer) and\nSEND (producer) paths. See [`KafkaSizingConfig`] for full documentation.\n\nExample YAML:\n```yaml\nkafka:\n  sizing:\n    profile: throughput\n    consumer:\n      fetch_min_bytes: 2097152  # 2 MiB, overrides profile default\n    producer:\n      compression: {codec: lz4} # the default is zstd at level 3\n    consumer_librdkafka:\n      fetch.wait.max.ms: \"75\"   # raw override wins over the knobs\n    producer_librdkafka:\n      linger.ms: \"50\"\n```",
           "$ref": "#/$defs/KafkaSizingConfig",
           "default": {
             "profile": "throughput",
@@ -8023,7 +8053,7 @@
             "producer": {
               "batch_size_bytes": null,
               "linger_ms": null,
-              "compression_type": null,
+              "compression": null,
               "buffer_memory_bytes": null,
               "max_in_flight": null,
               "idempotence": null,
@@ -8142,7 +8172,7 @@
           "default": {
             "batch_size_bytes": null,
             "linger_ms": null,
-            "compression_type": null,
+            "compression": null,
             "buffer_memory_bytes": null,
             "max_in_flight": null,
             "idempotence": null,
@@ -8263,11 +8293,34 @@
           "minimum": 0,
           "default": null
         },
-        "compression_type": {
-          "description": "Compression codec for MessageSets.\n\nlibrdkafka: `compression.type` (alias for `compression.codec`).\nValid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.\nDefault (all profiles): `zstd` at `compression.level` 3.\n\nThe level is set only while the resolved codec is `zstd`, so another\ncodec named here runs at librdkafka's own default level for it. To run\nzstd at another level, set `compression.level` in `producer_librdkafka`.",
-          "type": [
-            "string",
-            "null"
+        "compression": {
+          "description": "Codec and level for MessageSets: librdkafka's `compression.type` and\n`compression.level`. Codec `none`, `gzip`, `snappy`, `lz4` or `zstd`.\nDefault (all profiles): zstd at level 3.\n\nAn unset level is the codec's default (zstd 3, gzip 6), and lz4, snappy\nand none set no level, so lz4 never drops into its slow high-compression\nmode. A raw map that names a codec takes that codec's default level, or\nkeeps this level when it names this codec.",
+          "type": "object",
+          "properties": {
+            "codec": {
+              "description": "Codec for kafka.sizing.producer.compression.",
+              "type": "string",
+              "enum": [
+                "none",
+                "zstd",
+                "lz4",
+                "gzip",
+                "snappy"
+              ]
+            },
+            "level": {
+              "description": "Level, by codec: zstd 1-22, gzip 1-9. Unset, the codec's default.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 22
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codec"
           ],
           "default": null
         },
@@ -8392,9 +8445,26 @@
           "default": 16777216
         },
         "compression": {
-          "description": "Enable gzip compression for gRPC messages.",
-          "type": "boolean",
-          "default": false
+          "description": "Codec the client sends requests with: `none` (default), `gzip` or\n`zstd`, with no level. The server reads either on every connection.",
+          "type": "object",
+          "properties": {
+            "codec": {
+              "description": "Codec for transport.grpc.compression.",
+              "type": "string",
+              "enum": [
+                "none",
+                "gzip",
+                "zstd"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codec"
+          ],
+          "default": {
+            "codec": "none"
+          }
         },
         "tls_enabled": {
           "description": "Enable client TLS for the `endpoint` connection.",
@@ -8402,7 +8472,7 @@
           "default": false
         },
         "tls_ca_path": {
-          "description": "CA PEM file, trusted alone when set. Unset with `tls_enabled`, the OS\nnative roots are trusted.",
+          "description": "CA PEM file, trusted alone when set. Unset with `tls_enabled`, the OS\nnative roots are trusted. The HTTP transport's `tls_ca_path` differs:\nby default it adds the CA beside the OS store.",
           "type": [
             "string",
             "null"

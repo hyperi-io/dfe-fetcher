@@ -243,7 +243,8 @@ properties:
         path: /var/spool/dfe/dlq
         rotation: hourly
         max_age_days: 30
-        compress_rotated: true
+        compress_rotated:
+          codec: gzip
         max_bytes: null
         max_files: null
         durable: false
@@ -6556,7 +6557,8 @@ $defs:
           path: /var/spool/scalo/dlq
           rotation: hourly
           max_age_days: 30
-          compress_rotated: true
+          compress_rotated:
+            codec: gzip
           max_bytes: null
           max_files: null
           durable: false
@@ -6618,9 +6620,30 @@ $defs:
         minimum: 0
         default: 30
       compress_rotated:
-        description: Gzip rotated files, keeping the six newest uncompressed.
-        type: boolean
-        default: true
+        description: |-
+          Codec for rotated files past the six newest: `none`, `gzip` or `zstd`.
+          Default gzip.
+        type: object
+        properties:
+          codec:
+            description: Codec for compress_rotated.
+            type: string
+            enum:
+            - none
+            - gzip
+            - zstd
+          level:
+            description: "Level, by codec: gzip 1-9, zstd 1-22. Unset, the codec's default."
+            type:
+            - integer
+            - "null"
+            minimum: 1
+            maximum: 22
+        additionalProperties: false
+        required:
+        - codec
+        default:
+          codec: gzip
       max_bytes:
         description: |-
           Rotate before a write that would take the file past this many bytes.
@@ -7100,7 +7123,7 @@ $defs:
               consumer:
                 fetch_min_bytes: 2097152  # 2 MiB, overrides profile default
               producer:
-                compression_type: lz4     # the default is zstd at level 3
+                compression: {codec: lz4} # the default is zstd at level 3
               consumer_librdkafka:
                 fetch.wait.max.ms: "75"   # raw override wins over the knobs
               producer_librdkafka:
@@ -7118,7 +7141,7 @@ $defs:
           producer:
             batch_size_bytes: null
             linger_ms: null
-            compression_type: null
+            compression: null
             buffer_memory_bytes: null
             max_in_flight: null
             idempotence: null
@@ -7262,7 +7285,7 @@ $defs:
         default:
           batch_size_bytes: null
           linger_ms: null
-          compression_type: null
+          compression: null
           buffer_memory_bytes: null
           max_in_flight: null
           idempotence: null
@@ -7452,20 +7475,37 @@ $defs:
         format: uint32
         minimum: 0
         default: null
-      compression_type:
+      compression:
         description: |-
-          Compression codec for MessageSets.
+          Codec and level for MessageSets: librdkafka's `compression.type` and
+          `compression.level`. Codec `none`, `gzip`, `snappy`, `lz4` or `zstd`.
+          Default (all profiles): zstd at level 3.
 
-          librdkafka: `compression.type` (alias for `compression.codec`).
-          Valid values: `none`, `gzip`, `snappy`, `lz4`, `zstd`.
-          Default (all profiles): `zstd` at `compression.level` 3.
-
-          The level is set only while the resolved codec is `zstd`, so another
-          codec named here runs at librdkafka's own default level for it. To run
-          zstd at another level, set `compression.level` in `producer_librdkafka`.
-        type:
-        - string
-        - "null"
+          An unset level is the codec's default (zstd 3, gzip 6), and lz4, snappy
+          and none set no level, so lz4 never drops into its slow high-compression
+          mode. A raw map that names a codec takes that codec's default level, or
+          keeps this level when it names this codec.
+        type: object
+        properties:
+          codec:
+            description: Codec for kafka.sizing.producer.compression.
+            type: string
+            enum:
+            - none
+            - zstd
+            - lz4
+            - gzip
+            - snappy
+          level:
+            description: "Level, by codec: zstd 1-22, gzip 1-9. Unset, the codec's default."
+            type:
+            - integer
+            - "null"
+            minimum: 1
+            maximum: 22
+        additionalProperties: false
+        required:
+        - codec
         default: null
       buffer_memory_bytes:
         description: |-
@@ -7639,9 +7679,23 @@ $defs:
         minimum: 0
         default: 16777216
       compression:
-        description: Enable gzip compression for gRPC messages.
-        type: boolean
-        default: false
+        description: |-
+          Codec the client sends requests with: `none` (default), `gzip` or
+          `zstd`, with no level. The server reads either on every connection.
+        type: object
+        properties:
+          codec:
+            description: Codec for transport.grpc.compression.
+            type: string
+            enum:
+            - none
+            - gzip
+            - zstd
+        additionalProperties: false
+        required:
+        - codec
+        default:
+          codec: none
       tls_enabled:
         description: Enable client TLS for the `endpoint` connection.
         type: boolean
@@ -7649,7 +7703,8 @@ $defs:
       tls_ca_path:
         description: |-
           CA PEM file, trusted alone when set. Unset with `tls_enabled`, the OS
-          native roots are trusted.
+          native roots are trusted. The HTTP transport's `tls_ca_path` differs:
+          by default it adds the CA beside the OS store.
         type:
         - string
         - "null"
