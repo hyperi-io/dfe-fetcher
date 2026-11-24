@@ -7085,21 +7085,6 @@ $defs:
         format: uint32
         minimum: 0
         default: 300000
-      fetch_min_bytes:
-        description: Fetch minimum bytes.
-        type: integer
-        format: int32
-        default: 1
-      fetch_max_bytes:
-        description: Fetch maximum bytes.
-        type: integer
-        format: int32
-        default: 52428800
-      max_partition_fetch_bytes:
-        description: Maximum messages per partition per poll.
-        type: integer
-        format: int32
-        default: 1048576
       auto_offset_reset:
         description: Auto offset reset (earliest, latest, none).
         type: string
@@ -7681,7 +7666,8 @@ $defs:
       compression:
         description: |-
           Codec the client sends requests with: `none` (default), `gzip` or
-          `zstd`, with no level. The server reads either on every connection.
+          `zstd` with the `compression` feature, with no level. The server reads
+          what the build compiles on every connection.
         type: object
         properties:
           codec:
