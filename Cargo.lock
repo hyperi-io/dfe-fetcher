@@ -1996,7 +1996,6 @@ dependencies = [
  "async-compression",
  "aws-lc-rs",
  "axum",
- "backon",
  "base64 0.23.1",
  "bytes",
  "cel",
@@ -6461,9 +6460,9 @@ dependencies = [
 
 [[package]]
 name = "scalo"
-version = "2.14.37"
+version = "2.14.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed5e60d0ac38c27ce9700ce8126a0772291c94e9ed5c103677405518f2cb103"
+checksum = "541ee7dd482aabf0d4f2bde0f578a04c13122bc35ecc522f943cc4b027ce8e85"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
