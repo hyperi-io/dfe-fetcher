@@ -127,7 +127,7 @@ Field reference (identical fields across all three):
   `https://proxy.golang.org`.
 - `interval_secs` - optional, the scheduler default when unset.
 - `topic` - output topic.
-- `filter` - optional CEL filter, hot-reloaded.
+- `filter` - optional [CEL](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md) filter, hot-reloaded.
 
 ### Environment Variables
 

@@ -145,7 +145,7 @@ Every record leaves with five reserved fields:
 | `_source_fetcher` | `<connection>.<unit>` |
 | `_org_id` | `org_id`, else `default_org_id` |
 
-The per-source CEL filter runs before these are added, so it can't reference them. A payload that has one keeps its value under `<key>_original`, and the fetcher's value takes the name. The loader routes on `_source` and a record's org is its `_org_id`, so the fetcher's values must be the ones that survive. `<key>_original` is never overwritten: a second collision goes to `<key>_original_<n>`, counting from 2.
+The per-source [CEL](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md) filter runs before these are added, so it can't reference them. A payload that has one keeps its value under `<key>_original`, and the fetcher's value takes the name. The loader routes on `_source` and a record's org is its `_org_id`, so the fetcher's values must be the ones that survive. `<key>_original` is never overwritten: a second collision goes to `<key>_original_<n>`, counting from 2.
 
 A JSON array of objects goes out as one record per element, each stamped, because the loader splits arrays and an unstamped element would land in the default org. A body of several whitespace-separated objects is split the same way. `[]` goes out as nothing.
 

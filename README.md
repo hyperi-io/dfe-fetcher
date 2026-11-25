@@ -9,7 +9,7 @@ Pulls data from cloud and SaaS APIs, databases and files into a DFE deployment.
 - Database sources over ODBC, the ClickHouse HTTP interface, MongoDB and SAP HANA, dumped whole or tailed, by key tuple on SQL and by change stream or `_id` on MongoDB.
 - Any tool run in a Docker or podman container as a source, its stdout JSON lines or HTTP posts collected, and Vector's native gRPC protocol received.
 - A cursor or checkpoint written once the transport has taken the batch, never before, so a failed tick fetches again rather than losing records. A dump travels as one snapshot, framed `begin`, rows and `end`.
-- A per-source CEL filter, re-read every tick, and a memory brake that pauses polling a provider when the service is under memory pressure, for at most `self_regulation.max_hold_secs` at a time.
+- A per-source [CEL](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md) filter, re-read every tick, and a memory brake that pauses polling a provider when the service is under memory pressure, for at most `self_regulation.max_hold_secs` at a time.
 - Secrets from a secrets manager, an env var or a literal, config reload on SIGHUP or file watch, and a deployment contract that generates its Dockerfile, its Compose file and the released chart.
 
 Every record goes to the DFE pipeline over Kafka or gRPC, the same way dfe-receiver's do.

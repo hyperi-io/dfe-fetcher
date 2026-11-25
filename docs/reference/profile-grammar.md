@@ -577,7 +577,7 @@ counted as an API error.
 | `endpoints[].window.format` | A unit's rendering when its API differs from the profile's. |
 
 A unit with templates that read no `window` runs once per tick, whatever the
-step. A typed epoch number comes from the CEL cast: `"{{ int(window.start) }}"`
+step. A typed epoch number comes from the [CEL](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md) cast: `"{{ int(window.start) }}"`
 renders a JSON number.
 
 ## Endpoints
