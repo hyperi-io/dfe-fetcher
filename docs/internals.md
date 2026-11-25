@@ -155,7 +155,7 @@ sequenceDiagram
 
 A unit is one endpoint, store, subscription or prefix. Its rows are the events inside the scheduler's window, or the whole store as a dump. The driver pulls them lazily.
 
-Between pulling a row and batching it, the driver unwraps nested JSON, wraps a dump row in the snapshot envelope and stubs an oversize row. It then applies the per-source rules (CEL filter, routes, added fields). A batch goes to the emitter at `accumulate.max_rows`, `max_bytes` or `window_ms`, and the last one when the unit's rows end.
+Between pulling a row and batching it, the driver unwraps nested JSON, wraps a dump row in the snapshot envelope and stubs an oversize row. It then applies the per-source rules ([CEL](https://github.com/cel-expr/cel-spec/blob/master/doc/langdef.md) filter, routes, added fields). A batch goes to the emitter at `accumulate.max_rows`, `max_bytes` or `window_ms`, and the last one when the unit's rows end.
 
 A row's mark is whatever lets the unit resume: a queue ack id, a manifest item, a key tuple or a file offset. The driver folds a batch's marks and commits them once the emitter reports the batch acknowledged. A queue message is acked to its broker once it is on the wire, never before.
 
