@@ -258,6 +258,7 @@
           },
           "max_bytes": null,
           "max_files": null,
+          "naming": "stamped",
           "durable": false,
           "file_mode": null,
           "dir_mode": null
@@ -7600,6 +7601,7 @@
             },
             "max_bytes": null,
             "max_files": null,
+            "naming": "stamped",
             "durable": false,
             "file_mode": null,
             "dir_mode": null
@@ -7711,7 +7713,7 @@
           "default": null
         },
         "max_files": {
-          "description": "Rotated files kept, newest first. Older ones are deleted at each\nrotation. Unset: no count limit, only the age limit.",
+          "description": "Rotated files kept, newest first. Older ones are deleted at each\nrotation. Unset: no count limit, only the age limit. Under `numbered`,\nthe highest number kept, and `0` deletes the file at each rotation.",
           "type": [
             "integer",
             "null"
@@ -7719,6 +7721,11 @@
           "format": "uint32",
           "minimum": 0,
           "default": null
+        },
+        "naming": {
+          "description": "How rotated files are named: `stamped` (default) or `numbered`.",
+          "$ref": "#/$defs/RotatedNaming",
+          "default": "stamped"
         },
         "durable": {
           "description": "Sync the file's data to disk after each write, and its directory after\nthe file is created or rotated, so a write that returned `Ok` survives\npower loss. Costs a disk flush per batch. Off by default.",
@@ -7768,6 +7775,21 @@
           "description": "No time rotation. `max_bytes` can still rotate the file.",
           "type": "string",
           "const": "never"
+        }
+      ]
+    },
+    "RotatedNaming": {
+      "description": "How rotated files are named.",
+      "oneOf": [
+        {
+          "description": "`<file>.<local YYYYMMDDTHHMMSS>`, adding `.1`, `.2` within one second.",
+          "type": "string",
+          "const": "stamped"
+        },
+        {
+          "description": "`<file>.1` newest to `<file>.<max_files>` oldest. Each rotation moves\nevery number up one. No compression and no age limit: their keys are\nrefused beside it.",
+          "type": "string",
+          "const": "numbered"
         }
       ]
     },

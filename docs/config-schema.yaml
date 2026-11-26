@@ -252,6 +252,7 @@ properties:
           codec: gzip
         max_bytes: null
         max_files: null
+        naming: stamped
         durable: false
         file_mode: null
         dir_mode: null
@@ -6668,6 +6669,7 @@ $defs:
             codec: gzip
           max_bytes: null
           max_files: null
+          naming: stamped
           durable: false
           file_mode: null
           dir_mode: null
@@ -6765,13 +6767,18 @@ $defs:
       max_files:
         description: |-
           Rotated files kept, newest first. Older ones are deleted at each
-          rotation. Unset: no count limit, only the age limit.
+          rotation. Unset: no count limit, only the age limit. Under `numbered`,
+          the highest number kept, and `0` deletes the file at each rotation.
         type:
         - integer
         - "null"
         format: uint32
         minimum: 0
         default: null
+      naming:
+        description: "How rotated files are named: `stamped` (default) or `numbered`."
+        $ref: "#/$defs/RotatedNaming"
+        default: stamped
       durable:
         description: |-
           Sync the file's data to disk after each write, and its directory after
@@ -6810,6 +6817,18 @@ $defs:
     - description: No time rotation. `max_bytes` can still rotate the file.
       type: string
       const: never
+  RotatedNaming:
+    description: How rotated files are named.
+    oneOf:
+    - description: "`<file>.<local YYYYMMDDTHHMMSS>`, adding `.1`, `.2` within one second."
+      type: string
+      const: stamped
+    - description: |-
+        `<file>.1` newest to `<file>.<max_files>` oldest. Each rotation moves
+        every number up one. No compression and no age limit: their keys are
+        refused beside it.
+      type: string
+      const: numbered
   FileMode:
     description: Unix permission mode in octal, such as "0600". Ignored on Windows.
     type: string
