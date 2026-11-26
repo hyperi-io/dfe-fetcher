@@ -144,6 +144,7 @@ fn test_output_legacy_kafka_config_mapping() {
                 ca_paths: vec!["/etc/ssl/ca.pem".into()],
                 ..Default::default()
             },
+            ..KafkaTlsConfig::default()
         },
         producer: ProducerConfig {
             batch_size: Some(1_000_000),

@@ -81,6 +81,7 @@ async fn the_kafka_output_trusts_a_named_ca_and_one_from_ssl_cert_file() {
             tls: KafkaTlsConfig {
                 enabled: true,
                 client,
+                ..KafkaTlsConfig::default()
             },
             ..KafkaConfig::default()
         };

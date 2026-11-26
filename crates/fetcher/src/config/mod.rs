@@ -4959,6 +4959,49 @@ pub struct KafkaTlsConfig {
     /// The client TLS section. A private CA is `trust: bundle` with `ca_paths`.
     #[serde(flatten)]
     pub client: scalo::tls_config::ClientTlsConfig,
+
+    /// Removed: `ca_paths` with `trust: bundle`.
+    #[doc(hidden)]
+    #[serde(skip_serializing, deserialize_with = "removed_kafka_ca_file")]
+    #[schemars(skip)]
+    pub ca_file: scalo::tls_config::Removed,
+
+    /// Removed: `client_cert_path`.
+    #[doc(hidden)]
+    #[serde(skip_serializing, deserialize_with = "removed_kafka_cert_file")]
+    #[schemars(skip)]
+    pub cert_file: scalo::tls_config::Removed,
+
+    /// Removed: `client_key_path`.
+    #[doc(hidden)]
+    #[serde(skip_serializing, deserialize_with = "removed_kafka_key_file")]
+    #[schemars(skip)]
+    pub key_file: scalo::tls_config::Removed,
+}
+
+/// The error for a TLS key the `tls` section replaced. Any value for it fails
+/// the load, so a config written for the old shape can't run with its CA or
+/// client certificate dropped.
+fn removed<E: serde::de::Error>(old: &str, new: &str) -> E {
+    E::custom(format!("`{old}` is removed: set {new}"))
+}
+
+fn removed_kafka_ca_file<'de, D: serde::Deserializer<'de>>(
+    _: D,
+) -> std::result::Result<scalo::tls_config::Removed, D::Error> {
+    Err(removed("ca_file", "ca_paths with trust: bundle"))
+}
+
+fn removed_kafka_cert_file<'de, D: serde::Deserializer<'de>>(
+    _: D,
+) -> std::result::Result<scalo::tls_config::Removed, D::Error> {
+    Err(removed("cert_file", "client_cert_path"))
+}
+
+fn removed_kafka_key_file<'de, D: serde::Deserializer<'de>>(
+    _: D,
+) -> std::result::Result<scalo::tls_config::Removed, D::Error> {
+    Err(removed("key_file", "client_key_path"))
 }
 
 /// Kafka producer settings.

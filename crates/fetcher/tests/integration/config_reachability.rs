@@ -513,6 +513,44 @@ fn tls_without_sasl_selects_the_ssl_protocol() {
     );
 }
 
+/// Every TLS key the `tls` sections replaced fails the load, naming the key to
+/// set: the fetcher's own `kafka.tls` keys and scalo's under `output`, so an old
+/// config never runs with its CA or client certificate dropped.
+#[test]
+fn a_removed_tls_key_fails_the_load_naming_its_replacement() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    for (body, replacement) in [
+        (
+            "kafka:\n  tls:\n    ca_file: /ca.pem\n",
+            "ca_paths with trust: bundle",
+        ),
+        (
+            "kafka:\n  tls:\n    cert_file: /c.pem\n",
+            "client_cert_path",
+        ),
+        ("kafka:\n  tls:\n    key_file: /k.pem\n", "client_key_path"),
+        (
+            "kafka:\n  tls:\n    ca_file: null\n",
+            "ca_paths with trust: bundle",
+        ),
+        ("kafka:\n  tls:\n    ca_path: /ca.pem\n", "ca_paths"),
+        (
+            "output:\n  kafka:\n    ssl_ca_location: /ca.pem\n",
+            "tls.ca_paths with tls.trust: bundle",
+        ),
+        (
+            "output:\n  grpc:\n    tls_ca_path: /ca.pem\n",
+            "tls.ca_paths with tls.trust: bundle",
+        ),
+    ] {
+        let error = Config::load_from_file(&write_config(&dir, body))
+            .err()
+            .unwrap_or_else(|| panic!("loaded without error: {body}"))
+            .to_string();
+        assert!(error.contains(replacement), "{body}: {error}");
+    }
+}
+
 // ============================================================================
 // Kafka producer size
 // ============================================================================
