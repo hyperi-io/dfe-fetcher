@@ -161,6 +161,7 @@ pub fn exchange_client() -> Result<Arc<ExchangeClient>> {
         max_retry_interval_ms: 0,
         retry_non_idempotent: false,
         user_agent: Some(concat!("dfe-fetcher/", env!("CARGO_PKG_VERSION")).to_owned()),
+        tls: scalo::tls::ClientTlsConfig::default(),
     };
     ExchangeClient::with_redirect_policy(config, reqwest::redirect::Policy::none())
         .map(Arc::new)

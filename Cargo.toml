@@ -35,7 +35,8 @@ dfe-fetcher-db = { path = "crates/db" }
 dfe-fetcher-file = { path = "crates/file" }
 
 # Moves with `release.helm.library` in .hyperi-ci.yaml.
-scalo = { version = ">=2.14.38, <3", default-features = false }
+# 2.14.40: the git tree carries version 0.0.0 until the release stamps it.
+scalo = { version = "0.0.0", git = "https://github.com/hyperi-io/scalo-rs", rev = "e8a3c79aeacf", default-features = false }
 # scalo's range, so the framework holds scalo's compiled `Program` type.
 cel = { version = ">=0.14.5, <0.15", features = ["json"] }
 # scalo's range, so its `SensitiveString` impl and our derives share one `JsonSchema` trait.

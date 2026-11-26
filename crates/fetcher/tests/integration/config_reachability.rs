@@ -491,12 +491,12 @@ fn no_sasl_block_means_no_sasl() {
 ///
 /// The protocol used to be chosen on `sasl.is_some()`, so a `sasl:` block with
 /// `enabled: false` next to `tls.enabled: true` left the connection on
-/// plaintext while the ssl_* paths were handed to a client that ignores them.
+/// plaintext while the tls section was handed to a client that ignores it.
 #[test]
 fn tls_without_sasl_selects_the_ssl_protocol() {
     let mut kafka = KafkaConfig::default();
     kafka.tls.enabled = true;
-    kafka.tls.ca_file = Some("/certs/ca.pem".to_string());
+    kafka.tls.client.ca_paths = vec!["/certs/ca.pem".into()];
     kafka.sasl = Some(SaslConfig {
         enabled: false,
         ..SaslConfig::default()
@@ -507,7 +507,10 @@ fn tls_without_sasl_selects_the_ssl_protocol() {
         scalo.security_protocol, "ssl",
         "tls.enabled: true must not leave the connection unencrypted"
     );
-    assert_eq!(scalo.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
+    assert_eq!(
+        scalo.tls.ca_paths,
+        [std::path::PathBuf::from("/certs/ca.pem")]
+    );
 }
 
 // ============================================================================

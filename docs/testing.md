@@ -44,4 +44,4 @@ scalo's `test_support::shared_service` starts them:
 
 Tests on a shared service keep to their names: topics and consumer groups per test, OpenBao paths per test, a ClickHouse table per test and a MongoDB database per test.
 
-The Kafka TLS test starts a dedicated broker with scalo's `TlsBroker`, which generates a private CA. It produces through the `kafka:` block with `tls.ca_file` naming that CA, then again with no CA set and `SSL_CERT_FILE` holding it.
+The Kafka TLS test starts a dedicated broker with scalo's `TlsBroker`, which generates a private CA. It produces through the `kafka:` block with `tls.ca_paths` naming that CA, then again with no CA set and `SSL_CERT_FILE` holding it.

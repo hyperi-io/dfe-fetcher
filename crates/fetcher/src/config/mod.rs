@@ -4948,32 +4948,17 @@ impl Default for SaslConfig {
     }
 }
 
-/// Kafka TLS configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// Kafka TLS configuration: `enabled` beside scalo's client `tls` section
+/// (`profile`, `trust`, `ca_paths`, `client_cert_path`, `client_key_path`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct KafkaTlsConfig {
     /// Enable TLS for Kafka.
     pub enabled: bool,
 
-    /// CA certificate file.
-    pub ca_file: Option<String>,
-
-    /// Client certificate file.
-    pub cert_file: Option<String>,
-
-    /// Client key file.
-    pub key_file: Option<String>,
-}
-
-impl Default for KafkaTlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ca_file: None,
-            cert_file: None,
-            key_file: None,
-        }
-    }
+    /// The client TLS section. A private CA is `trust: bundle` with `ca_paths`.
+    #[serde(flatten)]
+    pub client: scalo::tls_config::ClientTlsConfig,
 }
 
 /// Kafka producer settings.

@@ -139,9 +139,11 @@ fn test_output_legacy_kafka_config_mapping() {
         }),
         tls: KafkaTlsConfig {
             enabled: true,
-            ca_file: Some("/etc/ssl/ca.pem".into()),
-            cert_file: None,
-            key_file: None,
+            client: scalo::tls_config::ClientTlsConfig {
+                trust: scalo::tls_config::TrustChoice::Bundle,
+                ca_paths: vec!["/etc/ssl/ca.pem".into()],
+                ..Default::default()
+            },
         },
         producer: ProducerConfig {
             batch_size: Some(1_000_000),
@@ -173,7 +175,11 @@ fn test_output_legacy_kafka_config_mapping() {
     assert_eq!(scalo.security_protocol, "sasl_ssl");
 
     // TLS
-    assert_eq!(scalo.ssl_ca_location.as_deref(), Some("/etc/ssl/ca.pem"));
+    assert_eq!(scalo.tls.trust, scalo::tls_config::TrustChoice::Bundle);
+    assert_eq!(
+        scalo.tls.ca_paths,
+        [std::path::PathBuf::from("/etc/ssl/ca.pem")]
+    );
 
     // Producer overrides
     assert_eq!(

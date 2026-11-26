@@ -583,7 +583,7 @@ pub fn build_scalo_kafka_config(legacy: &LegacyKafkaConfig) -> ScaloKafkaConfig 
     // Map SASL settings. The security protocol is decided by the PAIR
     // (SASL active, TLS on) -- keying it off `sasl.is_some()` left a
     // `sasl: {enabled: false}` block plus `tls.enabled: true` on plaintext,
-    // with the ssl_* paths below set and ignored by librdkafka.
+    // with the tls section below set and ignored by librdkafka.
     let sasl_active = legacy.sasl.as_ref().is_some_and(|s| s.enabled);
     if let Some(ref sasl) = legacy.sasl
         && sasl.enabled
@@ -601,11 +601,7 @@ pub fn build_scalo_kafka_config(legacy: &LegacyKafkaConfig) -> ScaloKafkaConfig 
 
     // Map TLS settings
     if legacy.tls.enabled {
-        config.ssl_ca_location.clone_from(&legacy.tls.ca_file);
-        config
-            .ssl_certificate_location
-            .clone_from(&legacy.tls.cert_file);
-        config.ssl_key_location.clone_from(&legacy.tls.key_file);
+        config.tls.clone_from(&legacy.tls.client);
     }
 
     // Map producer settings the operator set as librdkafka overrides. A field
@@ -1032,20 +1028,16 @@ mod tests {
     fn test_build_scalo_kafka_config_tls_cert_files() {
         let mut legacy = KafkaConfig::default();
         legacy.tls.enabled = true;
-        legacy.tls.ca_file = Some("/certs/ca.pem".to_string());
-        legacy.tls.cert_file = Some("/certs/client.pem".to_string());
-        legacy.tls.key_file = Some("/certs/client-key.pem".to_string());
+        legacy.tls.client = scalo::tls_config::ClientTlsConfig {
+            trust: scalo::tls_config::TrustChoice::Bundle,
+            ca_paths: vec!["/certs/ca.pem".into()],
+            client_cert_path: Some("/certs/client.pem".into()),
+            client_key_path: Some("/certs/client-key.pem".into()),
+            ..Default::default()
+        };
 
         let result = build_scalo_kafka_config(&legacy);
-        assert_eq!(result.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
-        assert_eq!(
-            result.ssl_certificate_location.as_deref(),
-            Some("/certs/client.pem")
-        );
-        assert_eq!(
-            result.ssl_key_location.as_deref(),
-            Some("/certs/client-key.pem")
-        );
+        assert_eq!(result.tls, legacy.tls.client);
     }
 
     #[test]
@@ -1231,14 +1223,17 @@ mod tests {
             password: "p".into(),
         });
         legacy.tls.enabled = true;
-        legacy.tls.ca_file = Some("/certs/ca.pem".to_string());
+        legacy.tls.client.ca_paths = vec!["/certs/ca.pem".into()];
 
         let result = build_scalo_kafka_config(&legacy);
 
         assert_eq!(result.security_protocol, "ssl");
         assert!(result.sasl_mechanism.is_none());
         assert!(result.sasl_username.is_none());
-        assert_eq!(result.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
+        assert_eq!(
+            result.tls.ca_paths,
+            [std::path::PathBuf::from("/certs/ca.pem")]
+        );
     }
 
     /// Verify `OutputTransport::name()` returns the expected static strings
