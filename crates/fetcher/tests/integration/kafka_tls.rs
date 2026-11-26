@@ -7,7 +7,7 @@
 // Copyright: (c) 2026 HYPERI PTY LIMITED
 
 //! The Kafka output over TLS against a real broker with a private CA: one
-//! record through the `kafka:` block with `tls.ca_file` naming the CA, and one
+//! record through the `kafka:` block with `tls.ca_paths` naming the CA, and one
 //! with no CA named and `SSL_CERT_FILE` holding it, the way the chart
 //! delivers a private CA. Each is read back through its own TLS consumer.
 
@@ -52,8 +52,19 @@ async fn the_kafka_output_trusts_a_named_ca_and_one_from_ssl_cert_file() {
     };
     let admin = KafkaAdmin::new(&reader("", "")).expect("admin client over TLS");
 
-    for (case, ca_file) in [("named", Some(ca.clone())), ("ssl-cert-file", None)] {
-        if ca_file.is_none() {
+    let bundle = scalo::tls_config::ClientTlsConfig {
+        trust: scalo::tls_config::TrustChoice::Bundle,
+        ca_paths: vec![ca.clone().into()],
+        ..Default::default()
+    };
+    for (case, client) in [
+        ("named", bundle),
+        (
+            "ssl-cert-file",
+            scalo::tls_config::ClientTlsConfig::default(),
+        ),
+    ] {
+        if client.ca_paths.is_empty() {
             // nextest runs one process per test, so the variable leaks nowhere.
             unsafe {
                 std::env::set_var("SSL_CERT_FILE", &ca);
@@ -69,7 +80,7 @@ async fn the_kafka_output_trusts_a_named_ca_and_one_from_ssl_cert_file() {
             brokers: vec![broker.tls.clone()],
             tls: KafkaTlsConfig {
                 enabled: true,
-                ca_file,
+                client,
                 ..KafkaTlsConfig::default()
             },
             ..KafkaConfig::default()

@@ -23,7 +23,7 @@ members = [
 [workspace.package]
 version = "1.3.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100"
 license = "BUSL-1.1"
 repository = "https://github.com/hyperi-io/dfe-fetcher"
 description = "Pulls data from cloud and SaaS APIs, databases and files into a DFE deployment."
@@ -35,7 +35,7 @@ dfe-fetcher-db = { path = "crates/db" }
 dfe-fetcher-file = { path = "crates/file" }
 
 # Moves with `release.helm.library` in .hyperi-ci.yaml.
-scalo = { version = ">=2.14.38, <3", default-features = false }
+scalo = { version = ">=2.14.40, <3", default-features = false }
 # scalo's range, so the framework holds scalo's compiled `Program` type.
 cel = { version = ">=0.14.5, <0.15", features = ["json"] }
 # scalo's range, so its `SensitiveString` impl and our derives share one `JsonSchema` trait.

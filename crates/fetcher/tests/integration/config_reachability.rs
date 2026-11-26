@@ -491,12 +491,12 @@ fn no_sasl_block_means_no_sasl() {
 ///
 /// The protocol used to be chosen on `sasl.is_some()`, so a `sasl:` block with
 /// `enabled: false` next to `tls.enabled: true` left the connection on
-/// plaintext while the ssl_* paths were handed to a client that ignores them.
+/// plaintext while the tls section was handed to a client that ignores it.
 #[test]
 fn tls_without_sasl_selects_the_ssl_protocol() {
     let mut kafka = KafkaConfig::default();
     kafka.tls.enabled = true;
-    kafka.tls.ca_file = Some("/certs/ca.pem".to_string());
+    kafka.tls.client.ca_paths = vec!["/certs/ca.pem".into()];
     kafka.sasl = Some(SaslConfig {
         enabled: false,
         ..SaslConfig::default()
@@ -507,7 +507,48 @@ fn tls_without_sasl_selects_the_ssl_protocol() {
         scalo.security_protocol, "ssl",
         "tls.enabled: true must not leave the connection unencrypted"
     );
-    assert_eq!(scalo.ssl_ca_location.as_deref(), Some("/certs/ca.pem"));
+    assert_eq!(
+        scalo.tls.ca_paths,
+        [std::path::PathBuf::from("/certs/ca.pem")]
+    );
+}
+
+/// Every TLS key the `tls` sections replaced fails the load, naming the key to
+/// set: the fetcher's own `kafka.tls` keys and scalo's under `output`, so an old
+/// config never runs with its CA or client certificate dropped.
+#[test]
+fn a_removed_tls_key_fails_the_load_naming_its_replacement() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    for (body, replacement) in [
+        (
+            "kafka:\n  tls:\n    ca_file: /ca.pem\n",
+            "ca_paths with trust: bundle",
+        ),
+        (
+            "kafka:\n  tls:\n    cert_file: /c.pem\n",
+            "client_cert_path",
+        ),
+        ("kafka:\n  tls:\n    key_file: /k.pem\n", "client_key_path"),
+        (
+            "kafka:\n  tls:\n    ca_file: null\n",
+            "ca_paths with trust: bundle",
+        ),
+        ("kafka:\n  tls:\n    ca_path: /ca.pem\n", "ca_paths"),
+        (
+            "output:\n  kafka:\n    ssl_ca_location: /ca.pem\n",
+            "tls.ca_paths with tls.trust: bundle",
+        ),
+        (
+            "output:\n  grpc:\n    tls_ca_path: /ca.pem\n",
+            "tls.ca_paths with tls.trust: bundle",
+        ),
+    ] {
+        let error = Config::load_from_file(&write_config(&dir, body))
+            .err()
+            .unwrap_or_else(|| panic!("loaded without error: {body}"))
+            .to_string();
+        assert!(error.contains(replacement), "{body}: {error}");
+    }
 }
 
 // ============================================================================

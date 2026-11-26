@@ -22,7 +22,6 @@ libc = "0.2"
 winapi = { version = "0.3", features = ["winioctl"] }
 
 [dependencies]
-glob = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 crc = "3.3.0"

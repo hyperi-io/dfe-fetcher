@@ -926,7 +926,10 @@ kafka:
     password: ""
   tls:
     enabled: false
-    ca_file: "/etc/ssl/kafka-ca.crt"
+    trust: bundle                       # native adds ca_paths to the OS store, bundle trusts them alone
+    ca_paths: ["/etc/ssl/kafka-ca.crt"]
+    # client_cert_path: "/etc/ssl/kafka-client.crt"  # mutual TLS, with client_key_path
+    # client_key_path: "/etc/ssl/kafka-client.key"
   # Every producer field is unset by default, so the producer runs on scalo's
   # settings. Set one only to override scalo for that property.
   # producer:
