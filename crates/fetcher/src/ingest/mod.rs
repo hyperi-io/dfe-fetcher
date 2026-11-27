@@ -193,8 +193,8 @@ impl IngestState {
     }
 }
 
-/// Whether `a` equals `b`, compared as SHA-256 digests in constant time, so
-/// the time taken gives away neither value's length nor contents.
+/// Whether `a` equals `b`, compared as fixed-length SHA-256 digests with no
+/// early return, so the time taken says nothing of how close a guess is.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let (a, b) = (Sha256::digest(a), Sha256::digest(b));
     a.iter()

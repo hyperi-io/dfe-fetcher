@@ -641,8 +641,8 @@ impl VectorManager {
     ///
     /// # Errors
     ///
-    /// None today: an instance that cannot be stopped or an inline config that
-    /// cannot be removed is logged, and shutdown carries on.
+    /// Never: a runtime that cannot be run, or an inline config that cannot
+    /// be removed, is logged, and shutdown carries on.
     pub async fn stop(&self) -> Result<()> {
         if !self.config.enabled {
             return Ok(());

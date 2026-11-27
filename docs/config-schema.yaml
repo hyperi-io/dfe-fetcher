@@ -3940,8 +3940,8 @@ $defs:
 
       The same digest hashes the body and the signed headers where the canonical
       string carries those, because every supported scheme uses one hash
-      throughout. `sha1` is here for Duo's legacy v2 scheme alone and is never a
-      default.
+      throughout. `sha1` is for Duo's legacy v2 scheme, which a signature block
+      that names no scheme falls back to.
     oneOf:
     - description: SHA-1; Duo v2 only.
       type: string
@@ -4356,7 +4356,7 @@ $defs:
         - type: "null"
         default: null
       max_pages:
-        description: Page ceiling per key per window step.
+        description: Page ceiling per key per window step, and pulls per tick on a queue unit.
         type:
         - integer
         - "null"
@@ -4888,11 +4888,11 @@ $defs:
         default: null
       max_items:
         description: |-
-          Items fetched per key per tick. On a lister with `key` and `position`
-          the rest wait for the next tick, which lists from the last item taken.
+          Items fetched per key per tick. A lister with `key` and `position`
+          lists the rest on the next tick, from its committed item checkpoint.
           A unit that reads the window, or a dump, fails the tick past the cap
-          rather than skip items, and any other unit skips the rest and counts
-          them.
+          rather than skip items. Any other unit stops paging at the cap and
+          counts the items left on that page.
         type:
         - integer
         - "null"
@@ -5042,7 +5042,7 @@ $defs:
         - "null"
         default: null
       max_pages:
-        description: Page ceiling per key per window step.
+        description: Page ceiling per key per window step, and pulls per tick on a queue unit.
         type:
         - integer
         - "null"
@@ -5451,8 +5451,8 @@ $defs:
           Defaults to 1000, the default `max_rows`, and does not follow a
           `max_rows` set higher: scalo's Kafka transport awaits each produce's
           delivery report, so a bound below `max_rows` serialises the flush
-          against the broker's round trip. Memory does not grow with it -- the
-          batch is already in memory and already leased.
+          against the broker's round trip. The batch does not grow with it, as
+          it is already in memory and already leased.
         type: integer
         format: uint
         minimum: 0
@@ -5593,10 +5593,10 @@ $defs:
       Per-fetch bounds on the block cursor.
 
       A block is what one round trip to the engine fetches. The `odbc` and `hana`
-      engines read every key, and the ODBC pump holds at most two blocks plus
-      the one being read, so `3 x max_bytes` is its memory ceiling before the
-      batcher's own bound. `mongodb` reads `max_rows` alone, and `clickhouse`
-      reads none of them.
+      engines read every key. The ODBC pump queues at most two encoded blocks
+      beside the one being read, each from a transit buffer of at most
+      `max_bytes`, and the NDJSON it encodes them to can be larger. `mongodb`
+      reads `max_rows` alone, and `clickhouse` reads none of them.
     type: object
     properties:
       max_rows:

@@ -697,8 +697,8 @@ accumulate:
   max_rows: 1000
   max_bytes: 8388608
   window_ms: 1000
-  in_flight: 1000                  # concurrent sends per flush, each awaiting its
-                                   # own delivery report. Raise it with max_rows
+  in_flight: 1000                  # concurrent record sends per flush. Raise it
+                                   # with max_rows
 
 # A framework row longer than `max_record_bytes` is replaced by an oversize
 # stub (so a dump's row count still reconciles) and a copy cut at
@@ -1068,7 +1068,7 @@ scaling:
 #       filter: 'record.alive == true'  # optional CEL over the enveloped row, hot-reloaded
 #       batch:
 #         max_rows: 5000                # rows per block the cursor fetches
-#         max_bytes: 4194304            # transit-buffer bytes per block; 3 x this is the ODBC store's memory ceiling
+#         max_bytes: 4194304            # transit-buffer bytes per block, for odbc and hana
 #         max_text_bytes: 65536         # a longer text value fails the tick rather than being truncated
 #         max_binary_bytes: 1048576     # likewise for bytea / BLOB
 #       stores:

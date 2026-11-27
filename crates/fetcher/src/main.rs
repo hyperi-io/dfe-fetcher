@@ -754,7 +754,8 @@ async fn run_fetcher_service(
         shutdown_token.cancel();
     }
 
-    // The outputs close only after the fetch tasks and drivers stop, so an in-flight flush lands.
+    // The outputs close only after the fetch tasks and drivers stop, so a flush in
+    // flight can finish.
     let run = orchestrator.run(sources.shutdown()).await;
 
     // Before any exit: process::exit skips drops, leaving the managed Vector

@@ -528,8 +528,8 @@ pub struct SigV4Spec {
 ///
 /// The same digest hashes the body and the signed headers where the canonical
 /// string carries those, because every supported scheme uses one hash
-/// throughout. `sha1` is here for Duo's legacy v2 scheme alone and is never a
-/// default.
+/// throughout. `sha1` is for Duo's legacy v2 scheme, which a signature block
+/// that names no scheme falls back to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SignatureDigest {
@@ -1588,11 +1588,11 @@ pub struct ManifestSpec {
     /// Template of the item's RFC 3339 position in the listing order for
     /// its checkpoint mark; set together with `key`.
     pub position: Option<String>,
-    /// Items fetched per key per tick. On a lister with `key` and `position`
-    /// the rest wait for the next tick, which lists from the last item taken.
+    /// Items fetched per key per tick. A lister with `key` and `position`
+    /// lists the rest on the next tick, from its committed item checkpoint.
     /// A unit that reads the window, or a dump, fails the tick past the cap
-    /// rather than skip items, and any other unit skips the rest and counts
-    /// them.
+    /// rather than skip items. Any other unit stops paging at the cap and
+    /// counts the items left on that page.
     pub max_items: Option<u32>,
     /// Fields added to every row of an item, rendered per item: a value is
     /// a template, or a JSON object or array whose string leaves are
@@ -1721,7 +1721,7 @@ pub struct EndpointDefaults {
     pub rows: Option<RowsSpec>,
     /// Pagination.
     pub paginate: Option<PaginateSpec>,
-    /// Page ceiling per key per window step.
+    /// Page ceiling per key per window step, and pulls per tick on a queue unit.
     pub max_pages: Option<u32>,
     /// Rate limit of every endpoint that sets none.
     pub rate: Option<RateSpec>,
@@ -1796,7 +1796,7 @@ pub struct EndpointSpec {
     pub paginate: Option<PaginateSpec>,
     /// CEL over a 2xx body; true fails the tick with the text at `error.at`.
     pub fail_when: Option<String>,
-    /// Page ceiling per key per window step.
+    /// Page ceiling per key per window step, and pulls per tick on a queue unit.
     pub max_pages: Option<u32>,
     /// The provider's rate limit for this unit's requests, held to across
     /// its pages, window steps and ticks; the defaults' when unset, and

@@ -140,10 +140,10 @@ impl StoreShape {
 /// Per-fetch bounds on the block cursor.
 ///
 /// A block is what one round trip to the engine fetches. The `odbc` and `hana`
-/// engines read every key, and the ODBC pump holds at most two blocks plus
-/// the one being read, so `3 x max_bytes` is its memory ceiling before the
-/// batcher's own bound. `mongodb` reads `max_rows` alone, and `clickhouse`
-/// reads none of them.
+/// engines read every key. The ODBC pump queues at most two encoded blocks
+/// beside the one being read, each from a transit buffer of at most
+/// `max_bytes`, and the NDJSON it encodes them to can be larger. `mongodb`
+/// reads `max_rows` alone, and `clickhouse` reads none of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatchSpec {

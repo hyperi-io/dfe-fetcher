@@ -4427,7 +4427,7 @@
       ]
     },
     "SignatureDigest": {
-      "description": "The digest a signature is made with.\n\nThe same digest hashes the body and the signed headers where the canonical\nstring carries those, because every supported scheme uses one hash\nthroughout. `sha1` is here for Duo's legacy v2 scheme alone and is never a\ndefault.",
+      "description": "The digest a signature is made with.\n\nThe same digest hashes the body and the signed headers where the canonical\nstring carries those, because every supported scheme uses one hash\nthroughout. `sha1` is for Duo's legacy v2 scheme, which a signature block\nthat names no scheme falls back to.",
       "oneOf": [
         {
           "description": "SHA-1; Duo v2 only.",
@@ -4946,7 +4946,7 @@
           "default": null
         },
         "max_pages": {
-          "description": "Page ceiling per key per window step.",
+          "description": "Page ceiling per key per window step, and pulls per tick on a queue unit.",
           "type": [
             "integer",
             "null"
@@ -5572,7 +5572,7 @@
           "default": null
         },
         "max_items": {
-          "description": "Items fetched per key per tick. On a lister with `key` and `position`\nthe rest wait for the next tick, which lists from the last item taken.\nA unit that reads the window, or a dump, fails the tick past the cap\nrather than skip items, and any other unit skips the rest and counts\nthem.",
+          "description": "Items fetched per key per tick. A lister with `key` and `position`\nlists the rest on the next tick, from its committed item checkpoint.\nA unit that reads the window, or a dump, fails the tick past the cap\nrather than skip items. Any other unit stops paging at the cap and\ncounts the items left on that page.",
           "type": [
             "integer",
             "null"
@@ -5767,7 +5767,7 @@
           "default": null
         },
         "max_pages": {
-          "description": "Page ceiling per key per window step.",
+          "description": "Page ceiling per key per window step, and pulls per tick on a queue unit.",
           "type": [
             "integer",
             "null"
@@ -6218,7 +6218,7 @@
           "default": 1000
         },
         "in_flight": {
-          "description": "Concurrent sends per flush on a transport without a native batch call.\n\nDefaults to 1000, the default `max_rows`, and does not follow a\n`max_rows` set higher: scalo's Kafka transport awaits each produce's\ndelivery report, so a bound below `max_rows` serialises the flush\nagainst the broker's round trip. Memory does not grow with it -- the\nbatch is already in memory and already leased.",
+          "description": "Concurrent sends per flush on a transport without a native batch call.\n\nDefaults to 1000, the default `max_rows`, and does not follow a\n`max_rows` set higher: scalo's Kafka transport awaits each produce's\ndelivery report, so a bound below `max_rows` serialises the flush\nagainst the broker's round trip. The batch does not grow with it, as\nit is already in memory and already leased.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
@@ -6402,7 +6402,7 @@
       ]
     },
     "BatchSpec": {
-      "description": "Per-fetch bounds on the block cursor.\n\nA block is what one round trip to the engine fetches. The `odbc` and `hana`\nengines read every key, and the ODBC pump holds at most two blocks plus\nthe one being read, so `3 x max_bytes` is its memory ceiling before the\nbatcher's own bound. `mongodb` reads `max_rows` alone, and `clickhouse`\nreads none of them.",
+      "description": "Per-fetch bounds on the block cursor.\n\nA block is what one round trip to the engine fetches. The `odbc` and `hana`\nengines read every key. The ODBC pump queues at most two encoded blocks\nbeside the one being read, each from a transit buffer of at most\n`max_bytes`, and the NDJSON it encodes them to can be larger. `mongodb`\nreads `max_rows` alone, and `clickhouse` reads none of them.",
       "type": "object",
       "properties": {
         "max_rows": {

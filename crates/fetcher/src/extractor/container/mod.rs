@@ -650,7 +650,7 @@ impl ContainerExtractor {
                         break;
                     }
 
-                    // Exponential backoff: 2s, 4s, 8s, ... capped at max_restart_backoff_secs
+                    // Exponential backoff: 2s, 4s, 8s, ... up to 64s or max_restart_backoff_secs
                     let backoff_secs =
                         (1u64 << attempt.min(6)).min(self.config.max_restart_backoff_secs);
                     let backoff = std::time::Duration::from_secs(backoff_secs);

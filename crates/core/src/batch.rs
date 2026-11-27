@@ -62,8 +62,8 @@ pub struct AccumulateConfig {
     /// Defaults to 1000, the default `max_rows`, and does not follow a
     /// `max_rows` set higher: scalo's Kafka transport awaits each produce's
     /// delivery report, so a bound below `max_rows` serialises the flush
-    /// against the broker's round trip. Memory does not grow with it -- the
-    /// batch is already in memory and already leased.
+    /// against the broker's round trip. The batch does not grow with it, as
+    /// it is already in memory and already leased.
     pub in_flight: usize,
 }
 
