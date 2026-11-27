@@ -37,10 +37,10 @@ use crate::error::{Error, Result};
 /// producer refused this message for its size or its format and would refuse
 /// it again.
 ///
-/// scalo answers `Fatal` for every produce error except "queue full", so a
-/// timed-out delivery, a lost broker or an unknown topic reads the same as an
-/// oversize message until scalo-rs #91 types the class; the text match lives
-/// here and only here.
+/// scalo answers `Backpressured` for a full queue, a timed-out delivery, a lost
+/// broker or an unknown topic, and `FilteredDlq` for an oversize message. Any
+/// other produce error is `Fatal` with its code in the text, so the record
+/// class is told apart by that text, here and only here.
 const RECORD_FAULT_CODES: [&str; 5] = [
     "MessageSizeTooLarge",
     "InvalidMessageSize",
@@ -66,6 +66,31 @@ fn classify_fatal(what: &str, e: &TransportError) -> Error {
         Error::TransportRecord(format!("{what}: {e}"))
     } else {
         Error::Transport(format!("{what}: {e}"))
+    }
+}
+
+/// The outputs that have taken one record, by their position in the send, so a
+/// re-send of a held record goes only to the rest. A route names at most
+/// [`crate::config::MAX_ROUTE_DESTINATIONS`] destinations, so every position fits.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Taken(u64);
+
+const _: () = assert!(crate::config::MAX_ROUTE_DESTINATIONS <= 64);
+
+impl Taken {
+    fn bit(position: usize) -> u64 {
+        u32::try_from(position)
+            .ok()
+            .and_then(|shift| 1u64.checked_shl(shift))
+            .unwrap_or(0)
+    }
+
+    fn has(self, position: usize) -> bool {
+        self.0 & Self::bit(position) != 0
+    }
+
+    fn mark(&mut self, position: usize) {
+        self.0 |= Self::bit(position);
     }
 }
 
@@ -335,8 +360,18 @@ impl OutputManager {
     /// deployment takes.
     #[must_use]
     pub fn memory(transport: Arc<MemoryTransport>) -> Self {
+        Self::memories([transport])
+    }
+
+    /// An output over in-process transports, each a default output as Kafka
+    /// and gRPC are under `output.type: both`, with no named destinations.
+    #[must_use]
+    pub fn memories(transports: impl IntoIterator<Item = Arc<MemoryTransport>>) -> Self {
         Self {
-            transports: vec![OutputTransport::Memory(transport)],
+            transports: transports
+                .into_iter()
+                .map(OutputTransport::Memory)
+                .collect(),
             destinations: None,
         }
     }
@@ -347,12 +382,15 @@ impl OutputManager {
     /// topic plus `suffix`, the way a source's own topic is suffixed; one that
     /// names none receives it on `record_topic`, the record's own suffixed
     /// topic. A gRPC listener ignores the key. Delivered only when every named
-    /// destination has accepted. A backpressured or transport-wide failure
-    /// stops the fan-out and is returned, so the caller re-sends it whole
-    /// (at-least-once). A destination that refuses the record itself -- an
-    /// outbound `dlq` filter, an over-size or malformed record -- does not stop
-    /// the others: the fan-out finishes and ONE [`Error::TransportRecord`]
-    /// naming every refusal comes back, so the record is dead-lettered once.
+    /// destination has accepted, and each that accepts is marked in `taken`,
+    /// so a re-send of a held record skips it. A transport-wide failure stops
+    /// the fan-out and is returned, and the tick re-fetches (at-least-once).
+    /// A backpressured destination does not stop the others: once they are
+    /// tried the backpressure is returned and the caller re-sends to the rest.
+    /// A destination that refuses the record itself -- an outbound `dlq`
+    /// filter, an over-size or malformed record -- does not stop the others
+    /// either, and ONE [`Error::TransportRecord`] naming every refusal comes
+    /// back, so the record is dead-lettered once.
     ///
     /// # Errors
     ///
@@ -363,6 +401,7 @@ impl OutputManager {
         record_topic: &str,
         suffix: &str,
         payload: Bytes,
+        taken: &mut Taken,
     ) -> Result<()> {
         let Some(ref set) = self.destinations else {
             return Err(Error::Config(
@@ -372,19 +411,23 @@ impl OutputManager {
         // Walked here, not through `RoutedSender::send_fanout`, which answers
         // `Ok` for a destination's `FilteredDlq` and so loses the record.
         let mut refused: Vec<String> = Vec::new();
-        for destination in destinations {
+        let mut backpressured: Option<Error> = None;
+        for (position, destination) in destinations.iter().enumerate() {
+            if taken.has(position) {
+                continue;
+            }
             let own_topic = set.topics.get(*destination).map(AsRef::as_ref);
             let key = destination_key(own_topic, record_topic, suffix);
             // Cheap ref-counted clone per destination (no buffer copy).
             match set.sender.send_to(destination, &key, payload.clone()).await {
-                SendResult::Ok => {}
+                SendResult::Ok => taken.mark(position),
                 SendResult::FilteredDlq => {
                     refused.push(format!("destination {destination}: filtered to DLQ"));
                 }
                 SendResult::Backpressured | SendResult::RetryAfter(_) => {
-                    return Err(Error::Backpressured(format!(
-                        "destination {destination} backpressured"
-                    )));
+                    backpressured.get_or_insert_with(|| {
+                        Error::Backpressured(format!("destination {destination} backpressured"))
+                    });
                 }
                 SendResult::Reject(e) => {
                     refused.push(format!(
@@ -398,6 +441,9 @@ impl OutputManager {
                     }
                 }
             }
+        }
+        if let Some(backpressured) = backpressured {
+            return Err(backpressured);
         }
         if refused.is_empty() {
             Ok(())
@@ -413,7 +459,18 @@ impl OutputManager {
             .is_some_and(|set| set.sender.has_route(name))
     }
 
-    /// Send a message to all configured transports.
+    /// Send a message to all configured transports, as [`Self::send_all_but`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send_all_but`].
+    pub async fn send_all(&self, key: &str, payload: Bytes) -> Result<()> {
+        self.send_all_but(key, payload, &mut Taken::default()).await
+    }
+
+    /// Send a message to every configured transport not yet marked in
+    /// `taken`, and mark each that accepts, so a re-send of a held record
+    /// goes only to the transports that have not taken it.
     ///
     /// Attempts delivery to every transport even if one fails, so that a
     /// Kafka failure does not prevent gRPC from receiving the message (and
@@ -426,12 +483,19 @@ impl OutputManager {
     /// backpressure (the record is re-sent) over a refusal of the record
     /// itself (it is dead-lettered). A refusal reported over either of the
     /// others would dead-letter a record an output never received.
-    pub async fn send_all(&self, key: &str, payload: Bytes) -> Result<()> {
+    pub async fn send_all_but(&self, key: &str, payload: Bytes, taken: &mut Taken) -> Result<()> {
         let mut first_error: Option<Error> = None;
 
-        for transport in &self.transports {
+        for (position, transport) in self.transports.iter().enumerate() {
+            if taken.has(position) {
+                continue;
+            }
             // Cheap ref-counted clone per transport (no buffer copy).
-            if let Err(e) = transport.send(key, payload.clone()).await {
+            let sent = transport.send(key, payload.clone()).await;
+            if sent.is_ok() {
+                taken.mark(position);
+            }
+            if let Err(e) = sent {
                 {
                     use std::sync::atomic::{AtomicU64, Ordering};
                     static SEND_ERROR_SAMPLES: AtomicU64 = AtomicU64::new(0);
@@ -471,8 +535,9 @@ impl OutputManager {
     /// Whether every default transport is healthy, which is what
     /// [`Self::send_all`] needs to deliver a record.
     ///
-    /// The scheduler stalls on this, so named destinations are left out: one
-    /// sick named destination must not stop every source fetching.
+    /// The scheduler stalls on this, so named destinations are left out: a
+    /// sick named destination holds the ticks that route to it, each with its
+    /// fetch permit, rather than the readiness of every source.
     pub fn defaults_healthy(&self) -> bool {
         self.transports.iter().all(OutputTransport::is_healthy)
     }
@@ -1207,12 +1272,9 @@ mod tests {
     }
 
     /// `sasl.enabled = false` plus `tls.enabled = true` is the TLS-only
-    /// (mTLS / server-cert) shape and must produce `ssl`.
-    ///
-    /// It used to leave `security_protocol` at plaintext, because the TLS
-    /// branch was an `else if` on `sasl.is_none()`. The ssl_* paths were still
-    /// handed to librdkafka, which ignores them under plaintext -- so a config
-    /// that said TLS produced an unencrypted connection with no warning.
+    /// (mTLS / server-cert) shape and must produce `ssl`: librdkafka ignores
+    /// the ssl_* paths under plaintext, so a wrong protocol is an unencrypted
+    /// connection with no warning.
     #[test]
     fn test_build_scalo_kafka_config_sasl_disabled_with_tls() {
         let mut legacy = KafkaConfig::default();
@@ -1236,15 +1298,8 @@ mod tests {
         );
     }
 
-    /// Verify `OutputTransport::name()` returns the expected static strings
-    /// via the public `OutputManager` path. We cannot easily construct a
-    /// real `KafkaTransport`/`GrpcTransport` in-test without a network, but
-    /// we can verify the enum-to-string mapping by calling name() directly
-    /// is not possible (it's private). Instead, we verify the strings the
-    /// histogram emits by reading the Kafka/Grpc TransportBase::name()
-    /// indirectly through OutputManager construction: if kafka-only
-    /// constructs successfully, its single transport's Kafka variant
-    /// carries the "kafka" name.
+    /// The transport names the send histogram is labelled with, read through
+    /// the manager a kafka-only config builds.
     #[tokio::test]
     async fn test_output_transport_name_via_manager() {
         let output = OutputConfig {
@@ -1755,13 +1810,22 @@ mod tests {
         assert!(state.is_ready(), "destinations only");
         assert!(matches!(
             state
-                .send_all("t", Bytes::from_static(br#"{"id":"r"}"#))
+                .send_all(
+                    "t",
+                    Bytes::from_static(br#"{"id":"r"}"#),
+                    &mut Taken::default()
+                )
                 .await,
             Err(Error::Config(_))
         ));
         assert!(matches!(
             state
-                .send_to(&["loader"], "t", Bytes::from_static(br#"{"id":"r"}"#))
+                .send_to(
+                    &["loader"],
+                    "t",
+                    Bytes::from_static(br#"{"id":"r"}"#),
+                    &mut Taken::default()
+                )
                 .await,
             Err(Error::Config(_))
         ));

@@ -56,6 +56,7 @@ use dfe_fetcher_core::RowStream;
 use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::error::{Error, Result};
 
+use crate::config::url_part_decoded;
 use crate::keyset;
 use crate::lines::{LeasedBlock, rows_of_blocks};
 use crate::secret::Secret;
@@ -83,11 +84,13 @@ fn ch_error(e: clickhouse::error::Error) -> Error {
     }
 }
 
-/// A client from a URL of the form `http[s]://[user[:password]@]host[:port][/database]`.
+/// A client from a URL of the form `http[s]://[user[:password]@]host[:port][/database]`,
+/// with the user, password and database percent-decoded.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Config`] when the URL does not parse or is not HTTP.
+/// Returns [`Error::Config`] when the URL does not parse, is not HTTP, or
+/// spells a user, password or database that is not UTF-8 once decoded.
 pub fn client_from_url(url: &str) -> Result<Client> {
     let parsed = url::Url::parse(url)
         .map_err(|e| Error::Config(format!("clickhouse connection_string: {e}")))?;
@@ -110,13 +113,14 @@ pub fn client_from_url(url: &str) -> Result<Client> {
         .with_setting("output_format_json_quote_64bit_integers", "0")
         .with_setting("date_time_output_format", "iso")
         .with_setting("session_timezone", "UTC");
-    if !parsed.username().is_empty() {
-        client = client.with_user(parsed.username());
+    let user = url_part_decoded("clickhouse", "user name", parsed.username())?;
+    if !user.is_empty() {
+        client = client.with_user(user);
     }
     if let Some(password) = parsed.password() {
-        client = client.with_password(password);
+        client = client.with_password(url_part_decoded("clickhouse", "password", password)?);
     }
-    let database = parsed.path().trim_matches('/');
+    let database = url_part_decoded("clickhouse", "database", parsed.path().trim_matches('/'))?;
     if !database.is_empty() {
         client = client.with_database(database);
     }
@@ -403,6 +407,20 @@ mod tests {
         );
         let bare = client_from_url("http://localhost:8123").unwrap();
         assert_eq!(bare.database(), None);
+        let encoded =
+            client_from_url("https://re%40der:p%40ss%3Aw%23rd@ch.example/my%5Fdb").unwrap();
+        assert_eq!(encoded.database(), Some("my_db"), "decoded as HANA decodes");
+        for (url, what) in [
+            ("https://%FF:p@ch.example/db", "user name"),
+            ("https://u:%FF@ch.example/db", "password"),
+            ("https://u:p@ch.example/%FF", "database"),
+        ] {
+            let err = client_from_url(url).expect_err("not UTF-8");
+            assert!(
+                matches!(&err, Error::Config(text) if text.contains(what)),
+                "{url}: {err}"
+            );
+        }
     }
 
     #[test]

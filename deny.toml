@@ -11,12 +11,10 @@ targets = []
 all-features = true
 
 [advisories]
-# GHSA-w9wp-h8wv-79jx has no RustSec entry, so it is ignored in .hyperi-ci.yaml, not here.
 ignore = [
     { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable, and no patched release exists. The fetcher crates use it directly, and scalo, cel, file-rotate, serde_with and the arrow crates depend on it too. Drop when the lock no longer resolves chrono." },
     { id = "RUSTSEC-2026-0555", reason = "chrono-tz is unmaintained, not vulnerable, and no patched release exists. It arrives only through arrow-array. Drop when the lock no longer resolves chrono-tz." },
-    { id = "GHSA-qwgh-2vcv-g2f7", reason = "Reached only through the lock: digest 0.10 <- sha2 <- termwiz <- ratatui-termwiz <- ratatui <- scalo, and ratatui's termwiz feature is never enabled, so no build compiles it. Drop when the lock stops carrying digest 0.10, which the digest 0.11 move does." },
-    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained, not vulnerable. It arrives only through testcontainers, via the testcontainers-modules dev-dependency the integration tests use, and no release binary links it. testcontainers 0.28.0 still depends on it. Drop when testcontainers moves off it." },
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar is unmaintained, not vulnerable. It arrives only through the testcontainers dev-dependency the integration tests use, and no release binary links it. The locked testcontainers 0.27.3 depends on it, and so does 0.28.0. Drop when testcontainers moves off it." },
 ]
 
 [licenses]

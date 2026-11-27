@@ -155,7 +155,7 @@ pub fn check_routes(routes: &[Route]) -> Vec<RuleDiagnostic> {
 /// The compiled rules of one source: keep-filter, routes.
 #[derive(Debug)]
 pub struct RowRules {
-    filter: Option<(String, Program)>,
+    filter: Option<Program>,
     routes: Option<Routes>,
 }
 
@@ -182,7 +182,7 @@ impl RowRules {
             Some(expr) => {
                 let program = scalo::expression::compile(expr)
                     .map_err(|e| Error::Filter(format!("filter `{expr}` rejected: {e}")))?;
-                Some((expr.to_owned(), program))
+                Some(program)
             }
             None => None,
         };
@@ -214,18 +214,6 @@ impl RowRules {
         Ok(Self { filter, routes })
     }
 
-    /// The filter's source text, for the hot-reload comparison.
-    #[must_use]
-    pub fn filter_expr(&self) -> Option<&str> {
-        self.filter.as_ref().map(|(expr, _)| expr.as_str())
-    }
-
-    /// Whether these rules never parse a row.
-    #[must_use]
-    pub fn is_noop(&self) -> bool {
-        self.filter.is_none() && self.routes.is_none()
-    }
-
     /// Every route, in declared order.
     #[must_use]
     pub fn routes(&self) -> &[Routed] {
@@ -242,7 +230,7 @@ impl RowRules {
     #[must_use]
     pub fn apply(&self, payload: Bytes, add_fields: &[(String, Value)]) -> Verdict {
         let payload = splice_fields(payload, add_fields);
-        let Some((_, program)) = &self.filter else {
+        let Some(program) = &self.filter else {
             // A payload past scalo's depth bound is read by no route.
             let route = self.routes.as_ref().and_then(|routes| {
                 JsonPayload::new(&payload).and_then(|record| routes.pick(&record))
@@ -407,7 +395,6 @@ mod tests {
     #[test]
     fn no_rules_keeps_the_bytes_untouched_without_parsing() {
         let rules = RowRules::empty();
-        assert!(rules.is_noop());
         let raw = Bytes::from_static(b"this is not even json");
         let (payload, route) = keep(rules.apply(raw.clone(), &[]));
         assert_eq!(payload, raw);
@@ -743,13 +730,5 @@ mod tests {
         assert_eq!(value["_dfe_fetcher_object"], json!({"key": "ours"}));
         assert_eq!(value["outer"]["_dfe_fetcher_object"], 1);
         assert!(value.get("_dfe_fetcher_object_original").is_none());
-    }
-
-    #[test]
-    fn compiled_filter_reports_its_source_for_hot_reload_comparison() {
-        let rules = rules("a == 1");
-        assert_eq!(rules.filter_expr(), Some("a == 1"));
-        assert!(!rules.is_noop());
-        assert!(RowRules::compile(None, Vec::new()).unwrap().is_noop());
     }
 }

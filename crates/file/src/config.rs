@@ -91,7 +91,9 @@ pub struct FileInstance {
     pub filter: Option<String>,
     /// The units, in tick order.
     pub units: Vec<FileUnit>,
-    /// Batch bounds for this instance; the deployment's when unset.
+    /// Batch bounds for this instance in place of the deployment's, which
+    /// apply when unset. A key left out takes the built-in default, not the
+    /// deployment's value.
     pub accumulate: Option<AccumulateConfig>,
 }
 

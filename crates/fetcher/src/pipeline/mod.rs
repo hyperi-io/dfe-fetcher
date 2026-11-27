@@ -37,7 +37,7 @@ use tracing::{error, info, warn};
 use crate::config::{Config, SharedConfig};
 use crate::error::{Error, Result};
 use crate::metrics::Metrics;
-use crate::output::OutputManager;
+use crate::output::{OutputManager, Taken};
 use scalo::memory::MemoryGuard;
 
 /// Metadata keys `enrich_record` stamps on every record.
@@ -779,34 +779,43 @@ impl PipelineState {
         Enriched::One(payload, Tenancy::Unstamped)
     }
 
-    /// Send one record to every default transport, with no dead-lettering and
-    /// no memory lease: the emitter accounts for both itself.
+    /// Send one record to every default transport not yet marked in `taken`,
+    /// with no dead-lettering and no memory lease: the emitter accounts for
+    /// both itself.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] when no output is configured, otherwise the
     /// transport's own error.
-    pub async fn send_all(&self, topic: &str, payload: Bytes) -> Result<()> {
+    pub async fn send_all(&self, topic: &str, payload: Bytes, taken: &mut Taken) -> Result<()> {
         let Some(ref output) = self.output else {
             return Err(Error::Config("Output transport not configured".into()));
         };
-        output.send_all(topic, payload).await
+        output.send_all_but(topic, payload, taken).await
     }
 
-    /// Send one record to named destinations; see [`Self::send_all`]. A bus
-    /// destination naming its own topic gets the suffix in force appended, as
-    /// a source's topic does.
+    /// Send one record to named destinations, as [`Self::send_all`] does. A
+    /// bus destination naming its own topic gets the suffix in force
+    /// appended, as a source's topic does.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Config`] when no output is configured, otherwise the
     /// destination's own error.
-    pub async fn send_to(&self, destinations: &[&str], topic: &str, payload: Bytes) -> Result<()> {
+    pub async fn send_to(
+        &self,
+        destinations: &[&str],
+        topic: &str,
+        payload: Bytes,
+        taken: &mut Taken,
+    ) -> Result<()> {
         let Some(ref output) = self.output else {
             return Err(Error::Config("Output transport not configured".into()));
         };
         let suffix = self.topic_suffix();
-        output.send_to(destinations, topic, &suffix, payload).await
+        output
+            .send_to(destinations, topic, &suffix, payload, taken)
+            .await
     }
 
     /// Write `letters` to the dead-letter queue and wait until a backend holds
@@ -998,12 +1007,14 @@ impl Orchestrator {
         self.shared_config.clone()
     }
 
-    /// Run the orchestrator (background tasks).
+    /// Run the orchestrator (background tasks) until shutdown, then close the
+    /// outputs once the intake has drained and `sources_stopped` has resolved,
+    /// so a fetch still flushing at shutdown sends into open outputs.
     ///
     /// # Errors
     ///
     /// Returns an error when a background task fails.
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&self, sources_stopped: impl Future<Output = ()>) -> Result<()> {
         info!("Pipeline orchestrator running");
 
         // Periodic metrics update (1s interval)
@@ -1030,7 +1041,7 @@ impl Orchestrator {
         self.shutdown.cancelled().await;
 
         info!("Pipeline orchestrator shutting down");
-        self.drain_intake().await;
+        tokio::join!(self.drain_intake(), sources_stopped);
 
         // Close all output transports
         if let Some(ref output) = self.state.output {
@@ -1552,7 +1563,11 @@ mod tests {
         // Cancel first so run() exits immediately
         shutdown.cancel();
 
-        let result = tokio::time::timeout(Duration::from_secs(5), orchestrator.run()).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            orchestrator.run(std::future::ready(())),
+        )
+        .await;
         let run_result = result.expect("run() should complete within timeout");
         run_result.expect("run() should exit cleanly on shutdown");
     }
@@ -1579,12 +1594,52 @@ mod tests {
         });
 
         shutdown.cancel();
-        orchestrator.run().await.expect("run");
+        orchestrator.run(std::future::ready(())).await.expect("run");
 
         assert!(
             drained.load(Ordering::Acquire),
             "run closed the outputs before the intake drained"
         );
+    }
+
+    /// Shutdown closes the outputs only once the sources have stopped, so a
+    /// fetch still flushing at shutdown sends into an open output.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_closes_the_outputs_after_the_sources_stop() {
+        use scalo::transport::{MemoryConfig, MemoryTransport, TransportBase};
+
+        let transport = Arc::new(MemoryTransport::new(&MemoryConfig::default()).unwrap());
+        let metrics = Arc::new(Metrics::new());
+        let shared_config = SharedConfig::new(config_without_dlq());
+        let shutdown = CancellationToken::new();
+        let orchestrator = Orchestrator {
+            state: Arc::new(PipelineState::for_tests(
+                shared_config.clone(),
+                Arc::clone(&metrics),
+                Some(OutputManager::memory(Arc::clone(&transport))),
+            )),
+            shared_config,
+            metrics,
+            shutdown: shutdown.clone(),
+        };
+        let open_while_stopping = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&open_while_stopping);
+        let output = Arc::clone(&transport);
+
+        shutdown.cancel();
+        orchestrator
+            .run(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                flag.store(output.is_healthy(), Ordering::Release);
+            })
+            .await
+            .expect("run");
+
+        assert!(
+            open_while_stopping.load(Ordering::Acquire),
+            "the outputs closed while a source was still stopping"
+        );
+        assert!(!transport.is_healthy(), "closed once the sources stopped");
     }
 
     /// An intake task that never finishes holds the outputs open for the drain
@@ -1606,7 +1661,7 @@ mod tests {
 
         shutdown.cancel();
         let started = tokio::time::Instant::now();
-        orchestrator.run().await.expect("run");
+        orchestrator.run(std::future::ready(())).await.expect("run");
 
         assert!(
             started.elapsed() >= INTAKE_DRAIN_DEADLINE,

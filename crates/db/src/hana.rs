@@ -71,7 +71,7 @@ use dfe_fetcher_core::RowStream;
 use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::error::{Error, Result};
 
-use crate::config::BatchSpec;
+use crate::config::{BatchSpec, url_part_decoded};
 use crate::keyset;
 use crate::lines::{LeasedBlock, rows_of_blocks};
 use crate::secret::Secret;
@@ -125,14 +125,8 @@ fn hana_error(e: &HdbError) -> Error {
 pub fn connect_params(url: &str) -> Result<ConnectParams> {
     let mut parsed =
         url::Url::parse(url).map_err(|e| Error::Config(format!("hana connection_string: {e}")))?;
-    let decode = |what: &str, text: &str| -> Result<String> {
-        percent_encoding::percent_decode_str(text)
-            .decode_utf8()
-            .map(std::borrow::Cow::into_owned)
-            .map_err(|_| Error::Config(format!("hana connection_string: the {what} is not UTF-8")))
-    };
-    let user = decode("user name", parsed.username())?;
-    let password = decode("password", parsed.password().unwrap_or_default())?;
+    let user = url_part_decoded("hana", "user name", parsed.username())?;
+    let password = url_part_decoded("hana", "password", parsed.password().unwrap_or_default())?;
     // The credentials come out of the URL the driver parses and go in by hand.
     let _ = parsed.set_username("");
     let _ = parsed.set_password(None);
@@ -478,6 +472,10 @@ impl HanaStore {
     /// Returns the credential, configuration or network error of the attempt.
     pub async fn connect(&self) -> Result<Connection> {
         let url = self.url.value().await?;
+        // A referenced spec could not be inspected at load, so the check runs on the resolved text.
+        if let Some(issue) = crate::config::hana_url_issue(url) {
+            return Err(Error::Config(format!("connection_string: {issue}")));
+        }
         if url.starts_with("hdbsqls://") {
             ensure_crypto_provider();
         }

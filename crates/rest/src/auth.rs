@@ -929,21 +929,17 @@ fn metadata_url_issue(url: &str) -> Option<String> {
     })
 }
 
-/// Why a session-login endpoint is not usable, or `None` when it is.
+/// Why a URL a credential is sent to is not usable, or `None` when it is.
 ///
-/// A login POSTs the appliance's user name and password, which is the same
-/// secret a token endpoint's form carries, so it is held to the same rule scalo
-/// holds those to: https, or http on a loopback address so a fixture needs no
-/// certificate. Plain http anywhere else is refused however private the network
-/// is said to be, and so is any other scheme. An appliance sitting on a
-/// management LAN is exactly where a captured administrator password is worth
-/// the most, and every appliance this mode exists for serves https -- with its
-/// own certificate, which is a trust-store question and not a reason to send the
-/// password in the clear.
+/// It is held to the rule scalo holds a token endpoint to: https, or http on a
+/// loopback address so a fixture needs no certificate. Plain http anywhere else
+/// is refused however private the network is said to be, and so is any other
+/// scheme. A provider on its own certificate is a trust-store question, not a
+/// reason to send the credential in the clear.
 ///
 /// The refusal is at BIND, because the URL is rendered there: an operator reads
 /// a config error at load rather than a credential error on the first tick.
-fn login_url_issue(url: &str) -> Option<String> {
+pub(crate) fn credential_url_issue(url: &str) -> Option<String> {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return Some("is not a URL".to_owned());
     };
@@ -958,11 +954,11 @@ fn login_url_issue(url: &str) -> Option<String> {
             .parse::<std::net::IpAddr>()
             .is_ok_and(|a| a.is_loopback());
     // The exemption is for plain http on this machine and nothing else: a
-    // scheme the login cannot be posted over at all -- `ftp:`, `file:` -- would
-    // otherwise pass here and fail inside the HTTP client on the first tick.
+    // scheme no request can be sent over -- `ftp:`, `file:` -- would otherwise
+    // pass here and fail inside the HTTP client on the first tick.
     (!(loopback && parsed.scheme() == "http")).then(|| {
-        "must be https, or http on a loopback address: a login posts the appliance's password, \
-         which a plaintext hop hands to anyone on the path"
+        "must be https, or http on a loopback address: a plaintext hop hands the credential \
+         sent there to anyone on the path"
             .to_owned()
     })
 }
@@ -1925,7 +1921,7 @@ fn build_session_login(
         return Err(Error::Config(issue.to_string()));
     }
     let url = render_at_bind("auth.session_login.url", &login.url, ctx)?;
-    if let Some(issue) = login_url_issue(&url) {
+    if let Some(issue) = credential_url_issue(&url) {
         return Err(Error::Config(format!("auth.session_login.url: {issue}")));
     }
     let username = identity
@@ -4566,7 +4562,7 @@ mod tests {
             "http://localhost:8080/api/session",
             "http://[::1]:8080/api/session",
         ] {
-            assert!(login_url_issue(url).is_none(), "{url}");
+            assert!(credential_url_issue(url).is_none(), "{url}");
         }
         for url in [
             "http://vcenter.example/api/session",
@@ -4578,7 +4574,7 @@ mod tests {
             "file:///api/session",
             "not a url",
         ] {
-            assert!(login_url_issue(url).is_some(), "{url}");
+            assert!(credential_url_issue(url).is_some(), "{url}");
         }
 
         // Refused when the instance binds, naming the field, because the URL is

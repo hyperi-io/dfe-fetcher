@@ -125,10 +125,10 @@ flowchart TB
 
 1. A flush's records go out as concurrent sends, `accumulate.in_flight` at a time.
 2. Every record ends sent, dead-lettered or backpressured.
-3. The backpressured ones are held and sent again, the wait doubling from 200 ms to 5 s, until the output takes them or the fetcher shuts down. The batch keeps its memory lease meanwhile, so the memory brake stops new fetches. After the shutdown signal a held batch is still sent for up to 6 s, because an intake record has no upstream copy. Then the tick ends with no checkpoint and the rows are fetched again on restart.
+3. The backpressured ones are held and sent again to the outputs that haven't taken them, until they do or the fetcher shuts down. The wait doubles from 200 ms to 5 s, and drops back to 200 ms when a pass delivers any. A timed-out delivery, a lost broker or a missing topic is backpressure too. The batch keeps its memory lease meanwhile, so it counts toward the memory brake. After the shutdown signal a held batch is still sent for up to 6 s, because an intake record has no upstream copy. Then the tick ends with no checkpoint and the rows are fetched again on restart.
 4. A record the transport refuses, and would refuse again, goes to the DLQ with its payload cut at `dlq.max_payload_bytes`.
 
-A failure every record shares (the transport closed or timed out, the broker gone) is not a dead letter. The tick aborts and the rows are fetched again. That is the at-least-once side of the contract.
+A transport failure that waiting won't clear (the transport closed, authorisation refused) is not a dead letter. The tick aborts and the rows are fetched again.
 
 A flush that settles adds each sent record's fetched length to `usage_ingested_bytes_total{org_id}`. A dead-lettered or dropped record isn't counted, and neither is any record of a flush that aborts, because the fetch sends it again.
 
@@ -168,8 +168,8 @@ Each intake reports its guarantee in `pipeline_delivery_guarantee{listener,guara
 | `pipeline_dead_letters_dropped_total{reason}` | Flat. Any rise is records lost with no DLQ |
 | `pipeline_delivery_guarantee{listener,guarantee}` | `at_least_once` on every scheduled source |
 | `dfe_fetcher_transport_send_duration_seconds` | Steady. A climb is the transport pushing back |
-| `dfe_transport_healthy` | 1. It reads 0 while any default output is down, and the scheduler fetches nothing until it is back |
-| `dfe_transport_backpressured_total` | Flat. A steady climb is a batch held for an output that keeps refusing it |
+| `transport_healthy{transport="output"}` | 1. It reads 0 while any default output is down, and new ticks wait until it is back |
+| `transport_backpressured_total{transport="output"}` | Flat. It counts held passes and the scheduler's waits for readiness, so a steady climb is a batch held or an output down |
 | `usage_ingested_bytes_total{org_id}` | Tracks what the providers hand over |
 
 ## Related

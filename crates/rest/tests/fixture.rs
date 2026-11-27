@@ -316,14 +316,15 @@ async fn the_page_ceiling_fails_a_windowed_unit_and_a_dump() {
 
 /// A manifest's item cap fails a unit that reads the window, or a dump, when
 /// an item past the cap is listed: the scheduler would advance the window
-/// past it, or the snapshot would close without it. A cap the listing does
-/// not exceed reads every item.
+/// past it, or the snapshot would close without it. Item marks do not change
+/// that, because only a lister lists from them. A cap the listing does not
+/// exceed reads every item.
 #[tokio::test]
 async fn a_manifest_item_cap_fails_a_windowed_unit_and_a_dump_rather_than_skip_items() {
     let fx = common::start().await;
     let manifest = |max_items: u32| {
         format!(
-            "{PLAIN}window: {{ format: epoch_secs }}\nendpoints:\n  - unit: logs\n    path: /manifest/list\n    query: {{ since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n  - unit: inventory\n    shape: dump\n    path: /manifest/list\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n"
+            "{PLAIN}window: {{ format: epoch_secs }}\nendpoints:\n  - unit: logs\n    path: /manifest/list\n    query: {{ since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n  - unit: inventory\n    shape: dump\n    path: /manifest/list\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        max_items: {max_items}\n  - unit: marked\n    path: /manifest/list\n    query: {{ since: \"{{{{ window.start }}}}\" }}\n    rows: {{ decoder: json_array }}\n    paginate: {{ strategy: request_path, from: \"header:NextPageUri\" }}\n    construct:\n      manifest:\n        item_request: {{ path: \"/manifest/blob/{{{{ item.id }}}}\", ignore_status: [404] }}\n        rows: {{ decoder: json_array }}\n        key: \"{{{{ item.id }}}}\"\n        position: \"{{{{ item.created }}}}\"\n        max_items: {max_items}\n"
         )
     };
     let window = FetchWindow {
@@ -331,7 +332,11 @@ async fn a_manifest_item_cap_fails_a_windowed_unit_and_a_dump_rather_than_skip_i
         end: Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
     };
     let capped = shape(&fx, &manifest(2), BEARER_INSTANCE);
-    for (unit, window) in [("logs", Some(&window)), ("inventory", None)] {
+    for (unit, window) in [
+        ("logs", Some(&window)),
+        ("inventory", None),
+        ("marked", Some(&window)),
+    ] {
         let err = fetch(&capped, unit, window)
             .await
             .expect_err("four items listed under a cap of two");
@@ -353,6 +358,28 @@ async fn a_manifest_item_cap_fails_a_windowed_unit_and_a_dump_rather_than_skip_i
         rows.len(),
         6,
         "three blobs of two, the expired one answering 404"
+    );
+
+    // The listing is read whole under the page bound, never streamed, so its
+    // body is not left unpolled past the read timeout while items are fetched.
+    // Each listed item fits the 120 bytes, and the page of two does not.
+    let blobs_read = fx.requests_to("/manifest/blob/a").len();
+    let bounded = shape(
+        &fx,
+        &manifest(4).replace(
+            "  - unit: inventory",
+            "    max_page_bytes: 120\n  - unit: inventory",
+        ),
+        BEARER_INSTANCE,
+    );
+    let err = fetch(&bounded, "logs", Some(&window))
+        .await
+        .expect_err("a listing page over its bound");
+    assert!(matches!(err, Error::OversizePage { max: 120 }), "{err}");
+    assert_eq!(
+        fx.requests_to("/manifest/blob/a").len(),
+        blobs_read,
+        "no item is fetched from a listing not read whole"
     );
 }
 
@@ -723,7 +750,7 @@ async fn a_credential_template_that_would_differ_by_unit_is_refused_when_the_ins
     );
     inst.vars.insert(
         "other_url".into(),
-        Value::String("http://other.example".into()),
+        Value::String("https://other.example".into()),
     );
     let err = RestShape::from_instance(
         &profile(p),
@@ -2063,6 +2090,44 @@ async fn a_lookup_batch_follows_its_own_pages_and_the_builder_joins_them() {
         "the second page's datapoints"
     );
     assert_eq!(rows[7]["stat"], "Maximum");
+
+    // Under a window step each step's ids are looked up with that step's
+    // window, never a later one's.
+    let stepped = shape(
+        &fx,
+        &p.replace(
+            "window: { format: epoch_secs }",
+            "window: { format: epoch_secs, step: 30m }",
+        ),
+        "profile: x\ntopic: t\nauth: { mode: none }\nvars: { namespaces: [{Namespace: AWS/EC2}, {Namespace: AWS/RDS}] }\n",
+    );
+    let before = fx.requests_to("/metrics/data").len();
+    fetch(&stepped, "metrics", Some(&window)).await.unwrap();
+    let batches: Vec<(i64, String)> = fx.requests_to("/metrics/data")[before..]
+        .iter()
+        .filter_map(|r| r.body.clone())
+        .filter(|body| body.get("NextToken").is_none())
+        .map(|body| {
+            (
+                body["StartTime"].as_i64().unwrap_or_default(),
+                body["MetricDataQueries"][0]["MetricStat"]["Metric"]["Namespace"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    let (first, second) = (1_709_424_000, 1_709_425_800);
+    assert_eq!(
+        batches,
+        [
+            (first, "AWS/EC2".to_owned()),
+            (second, "AWS/EC2".to_owned()),
+            (first, "AWS/RDS".to_owned()),
+            (second, "AWS/RDS".to_owned()),
+        ],
+        "one batch per key per step, each under that step's window"
+    );
 }
 
 /// The profile's base URL is rendered per unit, so a unit var may pick
@@ -2673,6 +2738,46 @@ async fn an_allow_hosts_entry_widens_the_unit_to_the_host_it_names() {
     .expect_err("a bare host names no origin");
     assert!(matches!(err, Error::Config(_)), "{err:?}");
     assert!(err.to_string().contains("allow_hosts[0]"), "{err}");
+
+    // A unit that sends a credential calls no plaintext origin off this
+    // machine, through `allow_hosts` or `base_url`. A unit that sends none may.
+    let open = "profile: x\ntopic: t\nauth: { mode: none }\n";
+    for (var, field, auth) in [
+        ("blob_url", "allow_hosts[0]", None),
+        ("base_url", "base_url", None),
+        ("blob_url", "", Some(open)),
+    ] {
+        let mut inst = instance(
+            &fx,
+            auth.unwrap_or("profile: x\ntopic: t\nauth: { mode: api_key, key: the-key }\n"),
+        );
+        inst.vars.insert(
+            "blob_url".into(),
+            Value::String(format!("http://localhost:{}", fx.addr.port())),
+        );
+        inst.vars
+            .insert(var.into(), Value::String("http://api.example".into()));
+        let accepts_none = p.replace("accepts: [api_key]", "accepts: [api_key, none]");
+        let bound = RestShape::from_instance(
+            &profile(&accepts_none),
+            &inst,
+            "conn",
+            reqwest::Client::new(),
+            &exchange(),
+        );
+        match auth {
+            None => {
+                let err = bound.expect_err("a credential would go out in the clear");
+                assert!(matches!(err, Error::Config(_)), "{var}: {err:?}");
+                let text = err.to_string();
+                assert!(
+                    text.contains(field) && text.contains("must be https"),
+                    "{var}: {text}"
+                );
+            }
+            Some(_) => assert!(bound.is_ok(), "{var}: no credential is sent"),
+        }
+    }
 }
 
 /// The lister's listing path is rendered the same way, and the gate sits in
