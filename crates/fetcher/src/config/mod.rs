@@ -5187,6 +5187,10 @@ impl DestinationRef {
     }
 }
 
+/// Most destinations one route may name: the emitter tracks which have taken
+/// a held record in one 64-bit set, so a re-send skips them.
+pub const MAX_ROUTE_DESTINATIONS: usize = 64;
+
 impl From<&str> for DestinationRef {
     fn from(name: &str) -> Self {
         Self::One(name.to_string())
@@ -5249,7 +5253,8 @@ impl OutputConfig {
     /// # Errors
     /// A destination without exactly one transport block, a bus destination
     /// whose topic is empty, a route naming a destination that was never
-    /// declared, or a route whose `match_field` is not a dotted path.
+    /// declared or more than [`MAX_ROUTE_DESTINATIONS`] of them, or a route
+    /// whose `match_field` is not a dotted path.
     pub fn validate_routes(&self) -> Result<()> {
         for (name, spec) in &self.destinations {
             match (&spec.grpc, &spec.kafka) {
@@ -5268,7 +5273,13 @@ impl OutputConfig {
                 }
             }
         }
-        for route in &self.routes {
+        for (i, route) in self.routes.iter().enumerate() {
+            if route.destination.names().len() > MAX_ROUTE_DESTINATIONS {
+                return Err(Error::Config(format!(
+                    "output.routes[{i}] names {} destinations, more than the {MAX_ROUTE_DESTINATIONS} a record is tracked across",
+                    route.destination.names().len()
+                )));
+            }
             for name in route.destination.names() {
                 if !self.destinations.contains_key(name) {
                     return Err(Error::Config(format!(
@@ -5615,6 +5626,36 @@ mod tests {
 
         config.output.routes.pop();
         config.validate().expect("the remaining route is valid");
+    }
+
+    /// A route naming more destinations than a held record is tracked across
+    /// is refused at load, and one at the limit is valid.
+    #[test]
+    fn a_route_past_the_tracked_destination_count_is_refused() {
+        let route_to = |count: usize| {
+            let names: Vec<String> = (0..count).map(|i| format!("d{i}")).collect();
+            let mut destinations = String::new();
+            for name in &names {
+                destinations.push_str(&format!(
+                    "    {name}:\n      grpc:\n        endpoint: http://127.0.0.1:1\n"
+                ));
+            }
+            let (config, _) = Config::parse_yaml(
+                &format!(
+                    "output:\n  destinations:\n{destinations}  routes:\n    - match_field: kind\n      match_value: asset\n      destination: [{}]\n",
+                    names.join(", ")
+                ),
+                "fetcher.yaml",
+            )
+            .expect("config");
+            config.output.validate_routes()
+        };
+        let err = route_to(MAX_ROUTE_DESTINATIONS + 1).expect_err("one too many");
+        assert!(
+            err.to_string().contains("output.routes[0] names 65"),
+            "{err}"
+        );
+        route_to(MAX_ROUTE_DESTINATIONS).expect("at the limit");
     }
 
     /// An org binding names the org every record carries. Unset, null or

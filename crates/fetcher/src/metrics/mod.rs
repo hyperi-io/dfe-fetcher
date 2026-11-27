@@ -13,10 +13,10 @@
 //!
 //! ## Dual-emit architecture
 //!
-//! Each metric exists as both a local [`AtomicU64`] field (for fast hot-path
-//! reads like `pipeline.is_ready()`) **and** as a `metrics` crate emission
-//! (so [`MetricsManager`] can render
-//! the full Prometheus text format).
+//! Each metric exists as both a local [`AtomicU64`] field, which the derived
+//! gauges (`dfe_fetcher_fetch_pressure_ratio` and the rest) and the tests
+//! read, **and** as a `metrics` crate emission (so [`MetricsManager`] can
+//! render the full Prometheus text format).
 //!
 //! When [`Metrics::with_dfe()`] is used, fetcher-specific metrics are
 //! described and emitted through the `metrics` crate global recorder,

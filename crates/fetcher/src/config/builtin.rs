@@ -136,6 +136,8 @@ fn instance(common: Common<'_>, auth: InstanceAuth, vars: BTreeMap<String, Value
 
 /// The credential spec a block's connection uses: the secret reference when
 /// set, else the literal `field` (`token`, `client_secret`, `secret_key`).
+// A credential reference resolves with the pod's privileges, so source:write reaches any
+// credential the fetcher can. Accepted risk: dfe-infra docs/threat-model.md.
 fn credential(
     block: &str,
     field: &str,

@@ -26,7 +26,7 @@ use dfe_fetcher_core::error::{Error, Result};
 /// that error after the blocks already sent.
 ///
 /// `capacity` is the number of blocks the async side may hold before the
-/// producer parks; the survey's pick is 2.
+/// producer parks.
 ///
 /// SHORTCUT: one blocking-pool thread per active DB store; odbc-api's async
 /// statement polling lifts that once active stores number in the hundreds.

@@ -13,7 +13,7 @@
 //! row has been acknowledged by the transport. An aborted tick therefore
 //! re-fetches from the previous checkpoint (at-least-once, never loss).
 //!
-//! The persisted form is the pre-framework [`CursorValue`]: the scheduler's
+//! The persisted form is [`CursorValue`]: the scheduler's
 //! window cursor stays `version: 1` with `api_cursor: None`, and a unit
 //! checkpoint is `version: 2` with the [`CheckpointValue`] encoded as JSON in
 //! `api_cursor`, so one store and one file format carry both.
@@ -40,8 +40,8 @@ pub struct CursorValue {
     /// When this cursor was last written.
     pub updated_at: DateTime<Utc>,
 
-    /// The unit checkpoint, JSON-encoded, when `version >= 2`; the opaque API
-    /// cursor slot of version 1, which nothing wrote.
+    /// The unit checkpoint, JSON-encoded, when `version >= 2`. Unused at
+    /// version 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_cursor: Option<String>,
 

@@ -45,6 +45,7 @@ use scalo::config::sensitive::SensitiveString;
 use scalo::http_server::{HttpServer, HttpServerConfig};
 use scalo::logger::security;
 use scalo::transport::{AckKind, AcknowledgementsConfig};
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -192,19 +193,14 @@ impl IngestState {
     }
 }
 
-/// Constant-time byte comparison. Note: returns false immediately on
-/// different lengths, which leaks length information. Acceptable for
-/// this internal bearer token use case. For internet-facing auth,
-/// use the `subtle` crate or hash both values before comparison.
+/// Whether `a` equals `b`, compared as SHA-256 digests in constant time, so
+/// the time taken gives away neither value's length nor contents.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
+    let (a, b) = (Sha256::digest(a), Sha256::digest(b));
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Bearer token authentication middleware.
@@ -606,7 +602,7 @@ mod tests {
         assert_eq!(row["_source"], "second");
     }
 
-    /// Backward-compatible helper: no auth configured.
+    /// The test app with no auth configured.
     fn test_app() -> (Router, Arc<PipelineState>) {
         test_app_with_auth(None)
     }
@@ -782,23 +778,17 @@ mod tests {
     }
 
     #[test]
-    fn test_constant_time_eq_equal() {
-        assert!(constant_time_eq(b"secret", b"secret"));
-    }
-
-    #[test]
-    fn test_constant_time_eq_different() {
-        assert!(!constant_time_eq(b"secret", b"wrong!"));
-    }
-
-    #[test]
-    fn test_constant_time_eq_different_length() {
-        assert!(!constant_time_eq(b"short", b"longer-string"));
-    }
-
-    #[test]
-    fn test_constant_time_eq_empty() {
-        assert!(constant_time_eq(b"", b""));
+    fn constant_time_eq_matches_only_identical_tokens() {
+        for (a, b, want) in [
+            (&b"secret"[..], &b"secret"[..], true),
+            (b"", b"", true),
+            (b"secret", b"wrong!", false),
+            (b"short", b"longer-string", false),
+            (b"secret", b"secret ", false),
+            (b"", b"secret", false),
+        ] {
+            assert_eq!(constant_time_eq(a, b), want, "{a:?} vs {b:?}");
+        }
     }
 
     // -- Additional handler coverage --

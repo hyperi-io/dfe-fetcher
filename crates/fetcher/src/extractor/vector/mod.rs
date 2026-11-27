@@ -641,7 +641,8 @@ impl VectorManager {
     ///
     /// # Errors
     ///
-    /// Returns an error when an instance cannot be stopped or its inline config removed.
+    /// None today: an instance that cannot be stopped or an inline config that
+    /// cannot be removed is logged, and shutdown carries on.
     pub async fn stop(&self) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
@@ -652,10 +653,13 @@ impl VectorManager {
         for instance in &self.config.instances {
             if instance.mode == "container" {
                 let container_name = format!("dfe-fetcher-vector-{}", instance.name);
-                let _ = tokio::process::Command::new(&self.runtime)
+                if let Err(e) = tokio::process::Command::new(&self.runtime)
                     .args(["stop", "--time", "10", &container_name])
                     .output()
-                    .await;
+                    .await
+                {
+                    warn!(container = %container_name, error = %e, "Could not run the container runtime to stop Vector");
+                }
             }
         }
 

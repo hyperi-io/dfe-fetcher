@@ -59,10 +59,11 @@ pub struct AccumulateConfig {
     pub window_ms: u64,
     /// Concurrent sends per flush on a transport without a native batch call.
     ///
-    /// Defaults to the whole batch: scalo's Kafka transport awaits each
-    /// produce's delivery report, so a bound below `max_rows` serialises the
-    /// flush against the broker's round trip. Memory does not grow with it --
-    /// the batch is already in memory and already leased.
+    /// Defaults to 1000, the default `max_rows`, and does not follow a
+    /// `max_rows` set higher: scalo's Kafka transport awaits each produce's
+    /// delivery report, so a bound below `max_rows` serialises the flush
+    /// against the broker's round trip. Memory does not grow with it -- the
+    /// batch is already in memory and already leased.
     pub in_flight: usize,
 }
 
@@ -473,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_the_agreed_values() {
+    fn the_defaults_are_1000_rows_8_mib_and_1_s() {
         let d = AccumulateConfig::default();
         assert_eq!(d.max_rows, 1000);
         assert_eq!(d.max_bytes, 8 * 1024 * 1024);

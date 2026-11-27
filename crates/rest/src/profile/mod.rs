@@ -527,7 +527,7 @@ pub struct SigV4Spec {
 /// The digest a signature is made with.
 ///
 /// The same digest hashes the body and the signed headers where the canonical
-/// string carries those, because every scheme in the survey uses one hash
+/// string carries those, because every supported scheme uses one hash
 /// throughout. `sha1` is here for Duo's legacy v2 scheme alone and is never a
 /// default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1588,8 +1588,11 @@ pub struct ManifestSpec {
     /// Template of the item's RFC 3339 position in the listing order for
     /// its checkpoint mark; set together with `key`.
     pub position: Option<String>,
-    /// Items fetched per key per tick; the rest wait for the next tick
-    /// (their checkpoint has not moved past them).
+    /// Items fetched per key per tick. On a lister with `key` and `position`
+    /// the rest wait for the next tick, which lists from the last item taken.
+    /// A unit that reads the window, or a dump, fails the tick past the cap
+    /// rather than skip items, and any other unit skips the rest and counts
+    /// them.
     pub max_items: Option<u32>,
     /// Fields added to every row of an item, rendered per item: a value is
     /// a template, or a JSON object or array whose string leaves are
@@ -1718,7 +1721,7 @@ pub struct EndpointDefaults {
     pub rows: Option<RowsSpec>,
     /// Pagination.
     pub paginate: Option<PaginateSpec>,
-    /// Page ceiling per tick.
+    /// Page ceiling per key per window step.
     pub max_pages: Option<u32>,
     /// Rate limit of every endpoint that sets none.
     pub rate: Option<RateSpec>,
@@ -1793,7 +1796,7 @@ pub struct EndpointSpec {
     pub paginate: Option<PaginateSpec>,
     /// CEL over a 2xx body; true fails the tick with the text at `error.at`.
     pub fail_when: Option<String>,
-    /// Page ceiling per tick.
+    /// Page ceiling per key per window step.
     pub max_pages: Option<u32>,
     /// The provider's rate limit for this unit's requests, held to across
     /// its pages, window steps and ticks; the defaults' when unset, and
@@ -3709,7 +3712,9 @@ pub struct RestInstance {
     pub units: BTreeMap<String, UnitOverride>,
     /// This instance's `delay` and `overlap` over the profile's.
     pub window: InstanceWindow,
-    /// Batch bounds for this instance; the deployment's when unset.
+    /// Batch bounds for this instance in place of the deployment's, which
+    /// apply when unset. A key left out takes the built-in default, not the
+    /// deployment's value.
     pub accumulate: Option<AccumulateConfig>,
 }
 

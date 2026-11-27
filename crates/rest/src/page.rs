@@ -364,8 +364,10 @@ impl Pager {
     /// # Errors
     ///
     /// Returns [`Error::Config`] when a body-reading strategy is given no body,
-    /// a predicate fails, or the provider hands back the token it was just
-    /// given (a loop that would otherwise spin to `max_pages`).
+    /// a predicate fails, or a relative next URL has no `base` set, and
+    /// [`Error::Source`] when the provider hands back the token or next URL it
+    /// was just given (a loop that would otherwise spin to `max_pages`) or a
+    /// next URL that does not resolve.
     pub fn advance(
         &self,
         page: &PageState,
@@ -430,7 +432,7 @@ impl Pager {
                             .and_then(Value::as_u64);
                         // Pages are numbered from `start`, so the last page is
                         // start + total - 1; a missing total ends the sequence.
-                        total.is_none_or(|t| next >= start + t)
+                        total.is_none_or(|t| next >= start.saturating_add(t))
                     }
                     None => meta.rows == Some(0),
                 };
@@ -470,7 +472,7 @@ impl Pager {
                                 })?
                                 .pointer(pointer)
                                 .and_then(Value::as_u64);
-                            total.is_none_or(|t| next >= start + t)
+                            total.is_none_or(|t| next >= start.saturating_add(t))
                         }
                         None => false,
                     };
@@ -786,6 +788,14 @@ mod tests {
                 .advance(&second, &meta, Some(&body))
                 .unwrap()
                 .is_none()
+        );
+        let hostile = json!({"result": [], "result_info": {"total_pages": u64::MAX}});
+        assert!(
+            pager
+                .advance(&first, &meta, Some(&hostile))
+                .unwrap()
+                .is_some(),
+            "a total past u64 saturates instead of wrapping to the last page"
         );
     }
 

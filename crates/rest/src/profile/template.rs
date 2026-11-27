@@ -12,8 +12,8 @@
 //! is a CEL expression compiled once at load under scalo's expression profile
 //! and evaluated per REQUEST (never per row) over a context of `vars`,
 //! `window`, `page`, `key`, `item`, `auth`, `unit` and `base_url`. CEL has no
-//! time formatting, so the window strings arrive pre-formatted; every profile
-//! in the survey needs only string concatenation.
+//! time formatting, so the window strings arrive pre-formatted, and every
+//! shipped profile needs only string concatenation.
 
 use std::fmt::Write as _;
 
@@ -289,12 +289,6 @@ impl TemplateMap {
         self.entries
             .push((name.to_owned(), Template::compile(value)?));
         Ok(())
-    }
-
-    /// Whether any entry has a hole.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 
     /// Whether any entry reads `var`.

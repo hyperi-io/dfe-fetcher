@@ -18,18 +18,20 @@
 //! way with no DLQ configured, counted in
 //! `pipeline_dead_letters_dropped_total{reason="transport_refused"}`, so a
 //! record the transport always refuses cannot hold its source back for good),
-//! or backpressured -- the backpressured subset is held and re-sent, the
-//! wait doubling up to a few seconds, until the output takes it, so a slow
-//! output never makes the tick fetch its window again. Once shutdown is
-//! signalled it is re-sent for 6 s more, since an intake
-//! record has no upstream copy, and then given up. The batch keeps its memory lease while held, so the memory brake
-//! stops new fetches, and each pass that leaves records held counts one in
-//! `dfe_transport_backpressured_total`. An intake that answers a waiting
-//! client sends once instead ([`Emitter::emit_once`]). A row enrichment refused (it
-//! opens as a JSON object the stamp cannot reach) is never sent: it is
-//! dead-lettered the same way, or dropped and counted under
-//! `{reason="unstampable"}`. A failure the transport reports
-//! for every record alike (closed, timed out, the topic or broker gone) is
+//! or backpressured -- the backpressured subset is held and re-sent to the
+//! outputs that have not taken it, the wait doubling up to a few seconds,
+//! until they take it, so a slow output never makes the tick fetch its window
+//! again. A timed-out delivery, a lost broker or a missing topic is
+//! backpressure too. Once shutdown is signalled it is re-sent for 6 s more,
+//! since an intake record has no upstream copy, and then given up. The batch
+//! keeps its memory lease while held, so the memory brake stops new fetches,
+//! and each pass that leaves records held counts one in
+//! `transport_backpressured_total{transport="output"}`. An intake that
+//! answers a waiting client sends once instead ([`Emitter::emit_once`]). A row
+//! enrichment refused (it opens as a JSON object the stamp cannot reach) is
+//! never sent: it is dead-lettered the same way, or dropped and counted under
+//! `{reason="unstampable"}`. A failure the transport reports for every record
+//! alike and that waiting does not clear (closed, authorisation refused) is
 //! not a dead-letter case: the tick aborts with no checkpoint and the rows
 //! are re-fetched, which is the at-least-once side of the contract. The
 //! batch's memory lease is released when the batch drops, after every
@@ -56,6 +58,7 @@ use dfe_fetcher_core::batch::{Batch, Outbound, Tenancy};
 
 use crate::error::{Error, Result};
 use crate::metrics::{DroppedDeadLetter, Metrics};
+use crate::output::Taken;
 use crate::pipeline::{DeadLetter, DeadLettered, PipelineState};
 
 /// First wait before a held subset is re-sent; doubles up to [`BACKPRESSURE_BACKOFF_MAX`].
@@ -202,12 +205,15 @@ impl Emitter {
         let mut usage = Usage::default();
         // The rows move out; the batch stays alive to the end so its memory
         // lease is released only once every outcome is known.
-        let mut pending: Vec<Outbound> = std::mem::take(&mut batch.rows);
+        let mut pending: Vec<(Outbound, Taken)> = std::mem::take(&mut batch.rows)
+            .into_iter()
+            .map(|row| (row, Taken::default()))
+            .collect();
         let total = pending.len();
         // A refused row failed enrichment, so only the rest were processed.
         let processed = pending
             .iter()
-            .filter(|row| row.tenancy != Tenancy::Refused)
+            .filter(|(row, _)| row.tenancy != Tenancy::Refused)
             .count();
         let shutdown = self.state.shutdown();
         let held_since = tokio::time::Instant::now();
@@ -279,15 +285,16 @@ impl Emitter {
         Ok(report)
     }
 
-    /// One concurrent pass over `rows`: returns the backpressured ones and
-    /// adds the ingested bytes of the rows sent to `usage`. A row enrichment
-    /// refused is dead-lettered without being sent.
+    /// One concurrent pass over `rows`: returns the backpressured ones, each
+    /// with the outputs that took it marked, and adds the ingested bytes of
+    /// the rows sent to `usage`. A row enrichment refused is dead-lettered
+    /// without being sent.
     async fn send_round(
         &self,
-        rows: Vec<Outbound>,
+        rows: Vec<(Outbound, Taken)>,
         report: &mut EmitReport,
         usage: &mut Usage,
-    ) -> Result<Vec<Outbound>> {
+    ) -> Result<Vec<(Outbound, Taken)>> {
         let mut held = Vec::new();
         let mut refused = Vec::new();
         let mut unstampable = Vec::new();
@@ -295,10 +302,12 @@ impl Emitter {
         let mut rows = rows.into_iter();
         loop {
             while in_flight.len() < self.in_flight
-                && let Some(row) = rows.next()
+                && let Some((row, taken)) = rows.next()
             {
                 match row.tenancy {
-                    Tenancy::Stamped | Tenancy::Unstamped => in_flight.push(self.send_one(row)),
+                    Tenancy::Stamped | Tenancy::Unstamped => {
+                        in_flight.push(self.send_one(row, taken));
+                    }
                     Tenancy::Refused => unstampable.push(DeadLetter {
                         topic: row.topic,
                         payload: row.payload,
@@ -306,7 +315,7 @@ impl Emitter {
                     }),
                 }
             }
-            let Some((row, outcome)) = in_flight.next().await else {
+            let Some((row, taken, outcome)) = in_flight.next().await else {
                 break;
             };
             match outcome {
@@ -315,7 +324,7 @@ impl Emitter {
                     usage.add(&row);
                     self.metrics.inc_records_delivered();
                 }
-                Err(Error::Backpressured(_)) => held.push(row),
+                Err(Error::Backpressured(_)) => held.push((row, taken)),
                 // The record itself is refused: it goes to the DLQ whole
                 // (truncation is the oversize policy, not this path) and the
                 // batch goes on.
@@ -385,17 +394,22 @@ impl Emitter {
         }
     }
 
-    async fn send_one(&self, row: Outbound) -> (Outbound, Result<()>) {
+    /// Send `row` to the outputs `taken` does not mark, marking each that takes it.
+    async fn send_one(&self, row: Outbound, mut taken: Taken) -> (Outbound, Taken, Result<()>) {
         let outcome = match &row.route {
             Some(names) => {
                 let names: Vec<&str> = names.iter().map(|n| &**n).collect();
                 self.state
-                    .send_to(&names, &row.topic, row.payload.clone())
+                    .send_to(&names, &row.topic, row.payload.clone(), &mut taken)
                     .await
             }
-            None => self.state.send_all(&row.topic, row.payload.clone()).await,
+            None => {
+                self.state
+                    .send_all(&row.topic, row.payload.clone(), &mut taken)
+                    .await
+            }
         };
-        (row, outcome)
+        (row, taken, outcome)
     }
 }
 
@@ -724,6 +738,47 @@ mod tests {
                 "{hold:?}: {output}"
             );
         }
+    }
+
+    /// A record held for one default output is re-sent to that output alone:
+    /// the output that took it on the first pass gets it once, however long
+    /// the other stays full.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_record_is_re_sent_only_to_the_outputs_that_have_not_taken_it() {
+        use scalo::transport::TransportReceiver;
+
+        let open = Arc::new(MemoryTransport::new(&MemoryConfig::default()).expect("memory"));
+        let full = full_transport().await;
+        let metrics = Arc::new(Metrics::new());
+        let state = Arc::new(PipelineState::for_tests(
+            SharedConfig::new(Config::default()),
+            Arc::clone(&metrics),
+            Some(OutputManager::memories([
+                Arc::clone(&open),
+                Arc::clone(&full),
+            ])),
+        ));
+        let emitter = Emitter::new(state, metrics, 4);
+        let held = tokio::spawn({
+            let emitter = emitter.clone();
+            async move { emitter.emit(batch(&[r#"{"a":1}"#, r#"{"a":2}"#])).await }
+        });
+
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(!held.is_finished(), "held while one output stays full");
+        let mut drained = 0;
+        while drained < 3 {
+            drained += full.recv(10).await.expect("recv").records.len();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let report = held.await.expect("joined").expect("delivered");
+
+        assert_eq!(report.sent, 2);
+        assert_eq!(
+            open.recv(100).await.expect("recv").records.len(),
+            2,
+            "one copy of each record, not one per held pass"
+        );
     }
 
     /// A backpressured batch is held past any fixed retry budget, keeps its

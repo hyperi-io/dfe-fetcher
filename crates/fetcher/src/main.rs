@@ -754,13 +754,8 @@ async fn run_fetcher_service(
         shutdown_token.cancel();
     }
 
-    // Run pipeline orchestrator (blocks until shutdown)
-    let run = orchestrator.run().await;
-
-    // The fetch tasks end on the same shutdown. Waiting for them, and for
-    // every driver still stopping, writes each file tailer's final checkpoint
-    // before the runtime goes.
-    sources.shutdown().await;
+    // The outputs close only after the fetch tasks and drivers stop, so an in-flight flush lands.
+    let run = orchestrator.run(sources.shutdown()).await;
 
     // Before any exit: process::exit skips drops, leaving the managed Vector
     // containers running and their inline configs on disk.

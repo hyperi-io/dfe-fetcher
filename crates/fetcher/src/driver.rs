@@ -43,7 +43,9 @@ use tracing::{debug, info, warn};
 
 use chrono::Utc;
 use dfe_fetcher_core::batch::{AccumulateConfig, Batcher, Lease, Tenancy, Trigger};
-use dfe_fetcher_core::checkpoint::{Checkpoint, CheckpointValue, CursorStore};
+use dfe_fetcher_core::checkpoint::{
+    CHECKPOINT_CURSOR_VERSION, Checkpoint, CheckpointValue, CursorStore,
+};
 use dfe_fetcher_core::envelope::{OversizePolicy, Snapshot};
 use dfe_fetcher_core::metric_names;
 use dfe_fetcher_core::rules::{Routed, RowRules, Verdict};
@@ -499,7 +501,17 @@ impl Driver {
     async fn load_checkpoint(&self, unit: &UnitSpec) -> Option<CheckpointValue> {
         let store = self.checkpoints.as_ref()?;
         match store.get(&self.unit_key(unit)).await {
-            Ok(cursor) => cursor.and_then(|c| c.checkpoint()),
+            Ok(Some(cursor)) => {
+                let checkpoint = cursor.checkpoint();
+                if checkpoint.is_none()
+                    && cursor.version >= CHECKPOINT_CURSOR_VERSION
+                    && cursor.api_cursor.is_some()
+                {
+                    warn!(source = self.name, unit = %unit.name, "checkpoint unreadable; starting the unit over");
+                }
+                checkpoint
+            }
+            Ok(None) => None,
             Err(e) => {
                 warn!(source = self.name, unit = %unit.name, error = %e, "checkpoint read failed; starting the unit over");
                 None

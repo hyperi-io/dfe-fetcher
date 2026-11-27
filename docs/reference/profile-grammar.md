@@ -607,10 +607,10 @@ opts out of the defaults'.
 | `row_key` | JSON pointer to the row's identity, for the oversize stub and logs. |
 | `paginate` | Pagination ([Pagination](#pagination)). |
 | `fail_when` | CEL over a 2xx body. True fails the tick with the text at `error.at`. |
-| `max_pages` | Page ceiling per tick. A unit that reads the window, a dump and a lister fail when pages remain past it, so nothing is committed past rows never read (a windowed unit is read again in narrower halves). A unit that reads no window is cut short. |
+| `max_pages` | Page ceiling per key per window step. A unit that reads the window, a dump and a lister fail when pages remain past it, so nothing is committed past rows never read (a windowed unit is read again in narrower halves). A unit that reads no window is cut short. |
 | `rate` | The provider's rate limit for this unit's requests (`requests_per_sec`, a fraction for a limit slower than one a second), held to across its pages, window steps and ticks. The defaults' when unset, and unpaced when neither sets one. |
 | `timeout_secs` | Total bound on one request of this endpoint, its body included. Refused on a unit with a streaming decoder: a streamed store takes as long as it takes and the client's idle read timeout bounds each read instead. |
-| `max_page_bytes` | Bytes a page-bounded decoder may buffer. |
+| `max_page_bytes` | Bytes a page-bounded decoder may buffer. A lookup or manifest unit's listing page is read whole under it whatever its decoder, because its body would sit unread while the items are fetched. |
 | `add_fields` | Fields added to every row: a template, or a JSON object or array with templates as its string leaves. One that reads `key` renders per key of the unit's keyset. |
 | `fold` | A folding row builder: the rows of one key become the one row it builds. |
 | `lister` | A listing protocol standing in for the page fetch. |
@@ -622,7 +622,7 @@ opts out of the defaults'.
 
 | Field | Meaning |
 |-------|---------|
-| `rows.decoder` | The framing: `json_array`, `ndjson`, `json_at`, `document`, `json`, `lines`, `csv`. `json_at`, `document`, `json` and `csv` read the whole page into memory, bounded by `max_page_bytes`. The others stream. |
+| `rows.decoder` | The framing: `json_array`, `ndjson`, `json_at`, `document`, `json`, `lines`, `csv`. `json_at`, `document`, `json` and `csv` read the whole page into memory, bounded by `max_page_bytes`. The others stream, except on a lookup or manifest unit's listing. |
 | `rows.at` | JSON pointer to the row array (for `json_at`). A pointer that leads nowhere fails the unit with a decode error and the checkpoint does not move, so a 2xx error body or a changed response format cannot read as an empty page. `null` there is an empty page. |
 | `rows.when_absent` | What an `at` pointer that leads nowhere means (for `json_at`): `fail` (default) or `empty`, an empty page. Set `empty` where the provider documents omitting the key, nowhere else, when there is nothing to list: shipped for `google_workspace`, `gcp` (`entries`, `scc`) and `gcp_pubsub`. |
 | `rows.gzip` | The body is a gzip member sequence to inflate before framing (a `Content-Encoding: gzip` response is inflated by the client regardless). |
@@ -664,7 +664,7 @@ when it renders one, with its host held to the rule under
 |-----------|--------|---------|
 | `construct.keyset` | `from` (a template rendering the list of keys) or `request` plus `keys_at` (the keys come from one request the unit sends first). Exactly one. One page sequence per key. | `{{ key }}` in the unit's templates and `add_fields`. |
 | `construct.lookup` | `id_at` (pointer into each first-stage row to its id. Unset when the row is the id), `batch`, `request`, `rows`, `paginate`, `max_pages`. A second request per batch of ids. A lookup with a request that reads `key` flushes its ids before the next key. | `{{ ids }}` in the batch request. |
-| `construct.manifest` | `item_request`, `rows`, `key` and `position` (templates of the item's identity and RFC 3339 position, set together, giving every row an item checkpoint mark), `max_items` (items per key per tick: with `key` and `position` the rest wait for the next tick, otherwise a unit that reads the window or is a dump fails like a page ceiling, and one that reads no window is cut short, with a warning that has the skipped count and the first 20 ids, and a count in `dfe_fetcher_manifest_items_skipped_total`), `add_fields` (rendered per item). The pages' rows are pointers. The unit's rows are what each item answers. | `{{ item }}` in the item request and fields. |
+| `construct.manifest` | `item_request`, `rows`, `key` and `position` (templates of the item's identity and RFC 3339 position, set together, giving every row an item checkpoint mark), `max_items` (items per key per tick: on a lister with `key` and `position` the rest wait for the next tick, which lists from the last item taken, otherwise a unit that reads the window or is a dump fails like a page ceiling, and one that reads no window is cut short, with a warning that has the skipped count and the first 20 ids, and a count in `dfe_fetcher_manifest_items_skipped_total`), `add_fields` (rendered per item). The pages' rows are pointers. The unit's rows are what each item answers. | `{{ item }}` in the item request and fields. |
 | `construct.queue` | `ack_at` (pointer into each framed row to its ack id), `ack_request` (POST by default), `ack_batch` (ids per acknowledgement). The ack request is sent for each batch of ids the driver hands back after the batch is delivered. | `{{ ids }}` in the ack request. |
 | `prelude` | A list of `LookupRequest`s sent once per tick before the unit's first page, rendered from the unit's vars alone (never the window, a key or an item). | -- |
 

@@ -656,8 +656,9 @@ impl RestShape {
     }
 
     /// Frame a response into a page: the body is read whole when the
-    /// decoder, the pager or `fail_when` needs it, else streamed; the
-    /// builder, when there is one, expands each framed row against `ctx`.
+    /// decoder, the pager, `fail_when` or a lookup's listing needs it, else
+    /// streamed. The builder, when there is one, expands each framed row
+    /// against `ctx`.
     async fn frame_response<'a>(
         &'a self,
         endpoint: &'a BoundEndpoint,
@@ -671,29 +672,29 @@ impl RestShape {
         let stream = body_stream(response, bytes);
 
         let needs_tree = stage.pager.reads_body() || stage.fail_when.is_some();
-        let (rows, tree): (RowBytes<'a>, Option<Value>) = if stage.decoder.is_page_bounded()
-            || needs_tree
-        {
-            let body = collect_page(stage.decoder.inflate(stream), endpoint.max_page_bytes).await?;
-            let tree = if needs_tree {
-                Some(
-                    serde_json::from_slice::<Value>(&body)
-                        .map_err(|e| Error::Decode(format!("page body is not JSON: {e}")))?,
+        let (rows, tree): (RowBytes<'a>, Option<Value>) =
+            if stage.decoder.is_page_bounded() || needs_tree || stage.whole {
+                let body =
+                    collect_page(stage.decoder.inflate(stream), endpoint.max_page_bytes).await?;
+                let tree = if needs_tree {
+                    Some(
+                        serde_json::from_slice::<Value>(&body)
+                            .map_err(|e| Error::Decode(format!("page body is not JSON: {e}")))?,
+                    )
+                } else {
+                    None
+                };
+                if let (Some(predicate), Some(value)) = (stage.fail_when, &tree) {
+                    self.check_failure(predicate, value, &response_headers)?;
+                }
+                let framed = stage.decoder.frame_page(&body)?;
+                (
+                    futures::stream::iter(framed.into_iter().map(Ok)).boxed(),
+                    tree,
                 )
             } else {
-                None
+                (stage.decoder.frame(stream, endpoint.max_page_bytes), None)
             };
-            if let (Some(predicate), Some(value)) = (stage.fail_when, &tree) {
-                self.check_failure(predicate, value, &response_headers)?;
-            }
-            let framed = stage.decoder.frame_page(&body)?;
-            (
-                futures::stream::iter(framed.into_iter().map(Ok)).boxed(),
-                tree,
-            )
-        } else {
-            (stage.decoder.frame(stream, endpoint.max_page_bytes), None)
-        };
         let rows = match stage.builder {
             Some(builder) => builder.expand_stream(rows, ctx.clone()),
             None => rows,
@@ -865,9 +866,14 @@ struct Stage<'a> {
     pager: &'a Pager,
     fail_when: Option<&'a crate::profile::Predicate>,
     max_pages: u32,
+    /// Read the page whole even under a streaming decoder.
+    whole: bool,
 }
 
 impl<'a> Stage<'a> {
+    /// A lookup or manifest unit's listing is read whole: its body sits
+    /// unpolled while each id's lookup runs, and the idle read timeout
+    /// ([`crate::request::READ_TIMEOUT`]) fails a body left that long.
     fn pages(endpoint: &'a BoundEndpoint) -> Self {
         Self {
             request: &endpoint.request,
@@ -876,6 +882,7 @@ impl<'a> Stage<'a> {
             pager: &endpoint.pager,
             fail_when: endpoint.fail_when.as_ref(),
             max_pages: endpoint.max_pages,
+            whole: endpoint.lookup.is_some(),
         }
     }
 
@@ -887,6 +894,7 @@ impl<'a> Stage<'a> {
             pager: &lookup.pager,
             fail_when: None,
             max_pages: lookup.max_pages,
+            whole: false,
         }
     }
 }
@@ -1194,17 +1202,17 @@ impl<'a> Tick<'a> {
     /// batch. `true` when a lookup is now in flight.
     ///
     /// A manifest past its item cap for the key takes no more and asks for
-    /// no more pages. Where the items carry a checkpoint mark the rest wait
-    /// for the next tick, and a unit that reads no window is cut short and
-    /// the cut is reported when its page ends ([`Tick::report_skipped_items`]). A
-    /// unit that reads the window or is a dump fails instead, through the
-    /// same path as a page ceiling, because nothing records the items it did
-    /// not read.
+    /// no more pages. On a lister whose items carry a checkpoint mark the
+    /// rest wait for the next tick, which lists from that mark. A unit that
+    /// reads the window or is a dump fails instead, through the same path as
+    /// a page ceiling, because its next tick starts past the items it did not
+    /// read. Any other unit is cut short and the cut is reported when its
+    /// page ends ([`Tick::report_skipped_items`]).
     ///
     /// # Errors
     ///
     /// [`Error::PageCeiling`] for an item past the cap on a windowed or dump
-    /// unit with no item mark, or the lookup's own error.
+    /// unit that is not a marked lister, or the lookup's own error.
     async fn take_id(&mut self, payload: &[u8]) -> Result<bool> {
         let Some(lookup) = &self.endpoint.lookup else {
             return Ok(false);
@@ -1213,7 +1221,12 @@ impl<'a> Tick<'a> {
             .max_items
             .filter(|max| self.items_taken >= *max as usize)
         {
-            if lookup.item_mark.is_none() && self.must_read_every_page() {
+            if lookup.item_mark.is_some() && self.endpoint.lister.is_some() {
+                self.current = None;
+                self.pending = None;
+                return Ok(false);
+            }
+            if self.must_read_every_page() {
                 let unit = &self.endpoint.unit.name;
                 metrics::counter!(metric_names::PAGES_TRUNCATED_TOTAL, "source" => self.shape.bound.connection_id.clone(), "unit" => unit.to_string()).increment(1);
                 tracing::warn!(
@@ -1228,13 +1241,8 @@ impl<'a> Tick<'a> {
                     limit: max,
                 });
             }
-            if lookup.item_mark.is_some() {
-                self.current = None;
-                self.pending = None;
-                return Ok(false);
-            }
-            // A unit that reads no window and marks no items is the provider's
-            // current state, and the rest of this page is cut from the tick.
+            // A unit that reads no window and is no marked lister lists the
+            // provider's current state, and the rest of this page is cut from the tick.
             // The page is read on, so the cut is counted and named when it ends.
             self.items_skipped += 1;
             if self.skipped_named.len() < SKIPPED_ITEMS_NAMED {
@@ -1513,17 +1521,32 @@ impl<'a> Tick<'a> {
                     }
                 }
             }
+            let per_step = self.endpoint.lookup.as_ref().is_some_and(|l| l.per_step);
             let state = if let Some(state) = self.pending.take() {
                 state
+            } else if per_step
+                && !self.ids.is_empty()
+                && self
+                    .steps
+                    .as_slice()
+                    .first()
+                    .is_some_and(|next| Some(next) != self.step.as_ref())
+            {
+                // A lookup that reads the window sends the ids a step yielded
+                // under that step's window, before a different one is set.
+                if let Err(e) = self.flush_lookup().await {
+                    return Some(self.fail(e));
+                }
+                continue;
             } else if let Some(step) = self.steps.next() {
                 self.step = Some(step);
                 self.endpoint.pager.first()
             } else {
-                // The steps of this key are done: a lookup that reads the
-                // key sends the ids it yielded before the next key is set,
-                // and the last ids of the tick go out once every key is done.
+                // A key's ids go out before the next key when the lookup
+                // reads the key or a stepped window, else after the last key.
                 let per_key = self.endpoint.lookup.as_ref().is_some_and(|l| l.per_key);
-                if !self.ids.is_empty() && (per_key || self.keys_done()) {
+                let stepped = per_step && self.window_steps.len() > 1;
+                if !self.ids.is_empty() && (per_key || stepped || self.keys_done()) {
                     if let Err(e) = self.flush_lookup().await {
                         return Some(self.fail(e));
                     }

@@ -20,12 +20,13 @@
 //!   token; the driver commits the last emitted one after the acks and the
 //!   next tick reopens the stream with `start_after` that token, so a
 //!   restart resumes from exactly the last acknowledged event. A tick drains
-//!   what the oplog holds, `limit` events at most, and ends once a `getMore`
-//!   has waited its short await time and found nothing. Needs a replica set:
+//!   what the oplog holds, `limit` events a page and `max_pages_per_tick`
+//!   pages at most, and ends once a `getMore` has waited its short await time
+//!   and found nothing. Needs a replica set:
 //!   a standalone server has no oplog and answers code 40573, which the
 //!   store reports naming the keyset fallback.
 //! - `keyset`: documents whose `_id` sorts after the last committed one, in
-//!   `_id` order, `limit` per tick. Works on a standalone server and sees
+//!   `_id` order, `limit` a page and `max_pages_per_tick` pages a tick. Works on a standalone server and sees
 //!   inserts only (an updated document keeps its `_id`), which is the same
 //!   contract as a SQL keyset over an insert-ordered key.
 //!
@@ -62,7 +63,7 @@ use dfe_fetcher_core::batch::Lease;
 use dfe_fetcher_core::error::{Error, Result};
 use dfe_fetcher_core::{Mark, Row, RowStream};
 
-use crate::config::{BatchSpec, StoreSpec, TailMode, mongodb_auth_issue};
+use crate::config::{BatchSpec, StoreSpec, TailMode, mongodb_uri_issue};
 use crate::lines::{LeasedBlock, rows_of_blocks};
 use crate::secret::Secret;
 use crate::store::Store;
@@ -254,7 +255,7 @@ impl MongoStore {
                 // A referenced spec could not be inspected at load; the same
                 // check runs here so the message names the reason rather
                 // than a driver feature flag.
-                if let Some(issue) = mongodb_auth_issue(uri) {
+                if let Some(issue) = mongodb_uri_issue(uri) {
                     return Err(Error::Config(format!("connection_string: {issue}")));
                 }
                 Client::with_uri_str(uri).await.map_err(|e| mongo_error(&e))

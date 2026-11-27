@@ -24,8 +24,7 @@ use serde_json::Value;
 /// Maximum recursion depth when unwrapping nested JSON strings.
 ///
 /// Bounds runaway parsing on pathological inputs (e.g. a string that
-/// serialises a string that serialises a string...). Three levels covers
-/// every real-world case we've seen.
+/// serialises a string that serialises a string...).
 const MAX_DEPTH: usize = 3;
 
 /// Unwrap double-serialised JSON string fields in the payload.

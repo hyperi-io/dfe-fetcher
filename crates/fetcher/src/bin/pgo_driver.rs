@@ -28,11 +28,13 @@
 //!   responses stop including `@odata.nextLink`
 //!
 //! Endpoints:
-//! - `POST /oauth/token` -- OAuth2 client_credentials response (Azure/M365/GCP)
+//! - `POST /token` -- OAuth2 client_credentials response (Azure/M365/GCP)
 //! - `GET  /azure/activity/...` -- Azure Activity Log (`value` + `@odata.nextLink`)
 //! - `GET  /azure/graph/...` -- Microsoft Graph response shape
-//! - `POST /` -- AWS JSON dispatch (uses X-Amz-Target header to vary shape)
+//! - `GET  /m365/management/...` and `/m365/graph/...` -- the M365 feeds
+//! - `POST /aws` -- AWS JSON dispatch (uses X-Amz-Target header to vary shape)
 //! - `POST /gcp/v2/entries:list` -- GCP Cloud Logging entries
+//! - anything else -- a generic Graph-shaped page
 //!
 //! Exits cleanly on SIGINT / SIGTERM (process-group cleanup in workload.sh).
 

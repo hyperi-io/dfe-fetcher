@@ -14,8 +14,9 @@
 //! [`OriginSet`], apply the [`AuthMode`], send, and
 //! retry the statuses the profile's [`RetrySpec`] names with exponential
 //! backoff and jitter, honouring `Retry-After` up to the backoff ceiling.
-//! 401 and 403 are never retried: a refused call ticks the provider's own
-//! throttle and a second refusal only lengthens the penalty. The metrics label
+//! 401 and 403 are not retried by default (`retry.never_retry`): a refused
+//! call ticks the provider's own throttle and a second refusal only lengthens
+//! the penalty. The metrics label
 //! comes from the TYPED status or from the profile's declared
 //! `retry.throttle_when`; nothing here matches on message text of its own.
 //!
@@ -63,12 +64,12 @@ pub type ExchangeClient = scalo::http_client::HttpClient;
 /// How long a connection may take to open.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long one body read may wait for the next bytes before the request
-/// fails; the clock resets on every chunk, so a body that keeps arriving
-/// has no total bound. The driver's memory-gate hold
-/// (`self_regulation.max_hold_secs`) plus one flush must stay under it: the
-/// clock is armed when a read finds nothing ready and is not read again
-/// until the driver polls the body next.
+/// How long a streamed body may go between two chunks handed to the reader
+/// before the request fails. A body that keeps arriving has no total bound.
+/// The clock restarts at each chunk delivered and is checked before the next
+/// read, so a body the reader stops polling fails once it is idle this long,
+/// however much is buffered. The driver's memory-gate hold
+/// (`self_regulation.max_hold_secs`) plus one flush must stay under it.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Build the shared client every REST shape sends through: a connect
@@ -131,10 +132,10 @@ pub const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// It grants no retries. A credential exchange runs on scalo's own request
 /// loop, which takes its schedule from here, and the scheduler already retries
-/// a failed tick over the same window; a second schedule would only lengthen
-/// how long one mint can hold a mode's renewal gate, and it would post to a
-/// token endpoint more often than the fetcher does today. What a failed
-/// credential means is still the executor's call.
+/// a failed tick over the same window. A second schedule would only lengthen
+/// how long one mint can hold a mode's renewal gate, and post to a token
+/// endpoint more often. What a failed credential means is still the
+/// executor's call.
 ///
 /// The zero is also what keeps a client assertion from being replayed, which is
 /// not visible from either end and is why raising it is not a free change: see
@@ -147,15 +148,9 @@ pub fn exchange_client() -> Result<Arc<ExchangeClient>> {
     let config = HttpClientConfig {
         timeout_secs: EXCHANGE_TIMEOUT.as_secs(),
         connect_timeout_secs: CONNECT_TIMEOUT.as_secs(),
-        // Raising this breaks the client-assertion path against a live tenant,
-        // and nothing at either end says so. scalo builds every exchange its
-        // own client with `retry_non_idempotent: true`, deliberately, so a
-        // token POST IS retried once the count allows it -- and a retried POST
-        // carries the SAME `client_assertion`, because the assertion is minted
-        // before the loop rather than inside it. Okta refuses an assertion
-        // whose `jti` it has already seen, so the second attempt at every 429
-        // or 5xx would come back as an auth failure. Anything wanting retries
-        // here has to mint per attempt first.
+        // Raising this fails the client assertion: scalo retries a token POST
+        // with the assertion minted once before its loop, and Okta refuses a
+        // `jti` it has seen. Retries here need a mint per attempt first.
         max_retries: 0,
         min_retry_interval_ms: 0,
         max_retry_interval_ms: 0,

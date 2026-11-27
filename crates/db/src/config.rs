@@ -139,9 +139,11 @@ impl StoreShape {
 
 /// Per-fetch bounds on the block cursor.
 ///
-/// A block is what one round trip to the engine fetches; the pump holds at
-/// most two blocks plus the one being read, so `3 x max_bytes` is the
-/// store's memory ceiling before the batcher's own bound.
+/// A block is what one round trip to the engine fetches. The `odbc` and `hana`
+/// engines read every key, and the ODBC pump holds at most two blocks plus
+/// the one being read, so `3 x max_bytes` is its memory ceiling before the
+/// batcher's own bound. `mongodb` reads `max_rows` alone, and `clickhouse`
+/// reads none of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatchSpec {
@@ -265,7 +267,9 @@ pub struct DbInstance {
     pub batch: BatchSpec,
     /// The stores, in tick order.
     pub stores: Vec<StoreSpec>,
-    /// Batch bounds for this instance; the deployment's when unset.
+    /// Batch bounds for this instance in place of the deployment's, which
+    /// apply when unset. A key left out takes the built-in default, not the
+    /// deployment's value.
     pub accumulate: Option<AccumulateConfig>,
 }
 
@@ -287,6 +291,29 @@ impl Default for DbInstance {
     }
 }
 
+/// A user name, password or database taken from a connection URL,
+/// percent-decoded: `url` hands them back as the URL spells them, and a URL
+/// has to encode `@`, `:`, `/`, `?`, `#` and `%` in them.
+///
+/// # Errors
+///
+/// [`dfe_fetcher_core::error::Error::Config`] when the decoded text is not UTF-8.
+#[cfg(any(feature = "clickhouse", feature = "hana"))]
+pub(crate) fn url_part_decoded(
+    engine: &str,
+    what: &str,
+    text: &str,
+) -> dfe_fetcher_core::error::Result<String> {
+    percent_encoding::percent_decode_str(text)
+        .decode_utf8()
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|_| {
+            dfe_fetcher_core::error::Error::Config(format!(
+                "{engine} connection_string: the {what} is not UTF-8"
+            ))
+        })
+}
+
 /// The value of one option in a MongoDB URI's query string: the name is
 /// matched without regard to case and the value percent-decoded, both as the
 /// driver does before it reads them.
@@ -303,8 +330,9 @@ fn uri_option(uri: &str, name: &str) -> Option<String> {
         })
 }
 
-/// A MongoDB auth mechanism this binary cannot perform, named with the
-/// reason, or `None` when the driver can be left to it.
+/// What is wrong with a MongoDB URI, named with the reason, or `None` when the
+/// driver can be left to it: an option that turns off server certificate or
+/// host name checks, or an auth mechanism this binary cannot perform.
 ///
 /// `MONGODB-AWS` and `GSSAPI` sit behind driver build features this crate
 /// does not enable, and the driver refuses `MONGODB-CR` outright as
@@ -317,7 +345,19 @@ fn uri_option(uri: &str, name: &str) -> Option<String> {
 /// so a mis-cased spelling is refused here rather than at connect; the
 /// property key and value are the driver's to match exactly.
 #[must_use]
-pub fn mongodb_auth_issue(uri: &str) -> Option<String> {
+pub fn mongodb_uri_issue(uri: &str) -> Option<String> {
+    if let Some(option) = [
+        "tlsInsecure",
+        "tlsAllowInvalidCertificates",
+        "tlsAllowInvalidHostnames",
+    ]
+    .into_iter()
+    .find(|option| uri_option(uri, option).is_some_and(|v| v.eq_ignore_ascii_case("true")))
+    {
+        return Some(format!(
+            "`{option}` turns off the server's TLS checks; trust its CA with `tlsCAFile` instead"
+        ));
+    }
     let mechanism = uri_option(uri, "authMechanism")?.to_ascii_uppercase();
     match mechanism.as_str() {
         "MONGODB-AWS" | "GSSAPI" => Some(format!("`{mechanism}` is not built into this binary")),
@@ -342,9 +382,9 @@ pub fn mongodb_auth_issue(uri: &str) -> Option<String> {
     }
 }
 
-/// What is wrong with a literal HANA connection string, if anything: the
-/// driver takes `hdbsql://` and `hdbsqls://` only, and a secure URL names how
-/// the server's certificate is trusted.
+/// What is wrong with a HANA connection string, if anything: the driver takes
+/// `hdbsql://` and `hdbsqls://` only, and a secure URL names how the server's
+/// certificate is trusted and never skips the check.
 #[must_use]
 pub fn hana_url_issue(url: &str) -> Option<String> {
     let secure = url.starts_with("hdbsqls://");
@@ -354,11 +394,16 @@ pub fn hana_url_issue(url: &str) -> Option<String> {
                 .to_owned(),
         );
     }
+    if url.contains("insecure_omit_server_certificate_check") {
+        return Some(
+            "`insecure_omit_server_certificate_check` turns off the server's certificate check; trust its CA with `tls_certificate_dir=<dir>` or `tls_certificate_env=<variable>`"
+                .to_owned(),
+        );
+    }
     let trust = [
         "use_mozillas_root_certificates",
         "tls_certificate_dir=",
         "tls_certificate_env=",
-        "insecure_omit_server_certificate_check",
     ];
     (secure && !trust.iter().any(|option| url.contains(option))).then(|| {
         "`hdbsqls://` needs one of `use_mozillas_root_certificates`, `tls_certificate_dir=<dir>` or `tls_certificate_env=<variable>`"
@@ -440,7 +485,7 @@ impl DbInstance {
         }
         if self.engine == Engine::Mongodb
             && let Some(literal) = self.literal_connection_string()
-            && let Some(issue) = mongodb_auth_issue(literal)
+            && let Some(issue) = mongodb_uri_issue(literal)
         {
             issues.push(format!("connection_string: {issue}"));
         }
@@ -473,9 +518,9 @@ impl DbInstance {
             let at = |f: &str| format!("stores[{i}].{f}");
             if store.unit.trim().is_empty() {
                 issues.push(format!("{}: is required", at("unit")));
-            } else if !seen.insert(store.unit.as_str()) {
+            } else if !seen.insert(store.unit.to_lowercase()) {
                 issues.push(format!(
-                    "{}: `{}` is declared twice",
+                    "{}: `{}` is declared twice (unit names compare without case, like cursor keys)",
                     at("unit"),
                     store.unit
                 ));
@@ -783,12 +828,14 @@ stores:
   - { unit: a, shape: tail, query: "SELECT 1" }
   - { unit: "x.y", query: "" , row_key: "id" }
   - { unit: z, shape: tail, query: "SELECT 1", key: [id], limit: 0 }
+  - { unit: A, query: "SELECT 1" }
 "#,
         );
         let issues = without_build_gate(inst.validate());
         for expected in [
             "stores[0].key: only a tail has a key",
             "stores[1].unit: `a` is declared twice",
+            "stores[4].unit: `A` is declared twice",
             "stores[1].key: a tail needs at least one ordering key column",
             "stores[2].unit: `x.y` cannot contain `.`",
             "stores[2].query: is required",
@@ -849,7 +896,13 @@ stores:
             hana_url_issue("hdbsqls://u:p@h:443?tls_certificate_dir=/etc/ca"),
             None
         );
-        for bad in ["jdbc:sap://h:443", "postgres://h", "hdbsqls://u:p@h:443"] {
+        for bad in [
+            "jdbc:sap://h:443",
+            "postgres://h",
+            "hdbsqls://u:p@h:443",
+            "hdbsqls://u:p@h:443?insecure_omit_server_certificate_check",
+            "hdbsqls://u:p@h:443?use_mozillas_root_certificates&insecure_omit_server_certificate_check",
+        ] {
             assert!(hana_url_issue(bad).is_some(), "{bad}");
         }
         let inst = instance(
@@ -1013,14 +1066,22 @@ stores:
             "mongodb://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT%3Aazure%2CTOKEN_RESOURCE%3Aapi%3A%2F%2Fx",
             "mongodb+srv://h/?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
             "mongodb://h/admin?authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:k8s",
+            "mongodb://h/?tls=true&tlsInsecure=false&tlsAllowInvalidCertificates=false",
         ] {
             assert!(mongo_uri_issues(uri).is_empty(), "{uri}");
         }
 
-        // Mechanisms behind driver features this crate leaves off, the one
-        // the driver refuses as deprecated, and the callback-only OIDC form
-        // are refused naming the reason, an encoded spelling included.
+        // Each is refused naming the reason, an encoded or mis-cased spelling included.
         for (uri, names) in [
+            ("mongodb://h/?tls=true&tlsInsecure=true", "`tlsInsecure`"),
+            (
+                "mongodb://h/?tls=true&tlsallowinvalidcertificates=TRUE",
+                "`tlsAllowInvalidCertificates`",
+            ),
+            (
+                "mongodb://h/?tls=true&tlsAllowInvalidHostnames=true&authMechanism=SCRAM-SHA-256",
+                "`tlsAllowInvalidHostnames`",
+            ),
             (
                 "mongodb://h/?authMechanism=MONGODB-AWS",
                 "`MONGODB-AWS` is not built",
@@ -1067,7 +1128,7 @@ stores:
             "{:?}",
             referenced.validate()
         );
-        assert!(mongodb_auth_issue("mongodb://h/?authMechanism=GSSAPI").is_some());
+        assert!(mongodb_uri_issue("mongodb://h/?authMechanism=GSSAPI").is_some());
     }
 
     #[test]
@@ -1116,10 +1177,10 @@ stores:
         );
     }
 
-    /// The old flat spelling is refused outright, so a config written for the
-    /// previous grammar fails at load rather than silently fetching nothing.
+    /// The flat spelling of the mongodb keys is refused outright, so such a
+    /// config fails at load rather than silently fetching nothing.
     #[test]
-    fn the_flat_mongodb_keys_are_no_longer_accepted() {
+    fn the_flat_mongodb_keys_are_refused() {
         assert!(
             scalo::yaml::from_str::<DbInstance>(
                 "engine: mongodb\nstores: [{ unit: a, database: d, collection: c }]\n",

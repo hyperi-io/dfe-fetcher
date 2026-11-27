@@ -697,9 +697,8 @@ accumulate:
   max_rows: 1000
   max_bytes: 8388608
   window_ms: 1000
-  in_flight: 1000                  # concurrent sends per flush; the whole batch
-                                   # by default, because each send awaits its own
-                                   # delivery report
+  in_flight: 1000                  # concurrent sends per flush, each awaiting its
+                                   # own delivery report. Raise it with max_rows
 
 # A framework row longer than `max_record_bytes` is replaced by an oversize
 # stub (so a dump's row count still reconciles) and a copy cut at
@@ -1069,7 +1068,7 @@ scaling:
 #       filter: 'record.alive == true'  # optional CEL over the enveloped row, hot-reloaded
 #       batch:
 #         max_rows: 5000                # rows per block the cursor fetches
-#         max_bytes: 4194304            # transit-buffer bytes per block; 3 x this is the store's memory ceiling
+#         max_bytes: 4194304            # transit-buffer bytes per block; 3 x this is the ODBC store's memory ceiling
 #         max_text_bytes: 65536         # a longer text value fails the tick rather than being truncated
 #         max_binary_bytes: 1048576     # likewise for bytea / BLOB
 #       stores:
@@ -1173,4 +1172,4 @@ scaling:
 #             max_tick_secs: 30         # a tick ends by then so its lines can be committed while the files grow
 #             fingerprint: { strategy: checksum, bytes: 256, lines: 1, ignored_header_bytes: 0 }   # checksum | device_and_inode
 #             data_dir: "/var/lib/dfe-fetcher/tail/logs"   # the checkpoint file; durable storage. Unset: <cursor.directory>/<instance_id>.<id>.<unit>.tail
-#       accumulate: { max_rows: 1000, max_bytes: 8388608, window_ms: 1000, in_flight: 1000 }   # optional; the deployment's when unset
+#       accumulate: { max_rows: 1000, max_bytes: 8388608, window_ms: 1000, in_flight: 1000 }   # optional; replaces the deployment's whole, a key left out takes the default

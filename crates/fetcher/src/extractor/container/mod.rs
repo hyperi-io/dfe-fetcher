@@ -190,10 +190,13 @@ impl ContainerExtractor {
             "Container timed out, killing it"
         );
         let container_name = self.container_name();
-        let _ = Command::new(self.runtime_cmd())
+        if let Err(e) = Command::new(self.runtime_cmd())
             .args(["kill", &container_name])
             .output()
-            .await;
+            .await
+        {
+            warn!(name = %self.config.name, error = %e, "Could not run the container runtime to kill the container");
+        }
         let _ = child.start_kill();
     }
 
@@ -283,10 +286,13 @@ impl ContainerExtractor {
     /// Stop the container, giving it 10 s to exit.
     async fn stop_container(&self) {
         let container_name = self.container_name();
-        let _ = Command::new(self.runtime_cmd())
+        if let Err(e) = Command::new(self.runtime_cmd())
             .args(["stop", "--time", "10", &container_name])
             .output()
-            .await;
+            .await
+        {
+            warn!(name = %self.config.name, error = %e, "Could not run the container runtime to stop the container");
+        }
     }
 
     /// Deliver one stdout line as a record on the extractor's topic.
@@ -486,19 +492,33 @@ impl ContainerExtractor {
         }
 
         if !timed_out {
-            let exited = match deadline {
-                Some(deadline) => tokio::time::timeout_at(deadline, child.wait()).await.ok(),
-                None => Some(child.wait().await),
+            let exited = tokio::select! {
+                biased;
+                () = self.shutdown.cancelled() => None,
+                exited = async {
+                    match deadline {
+                        Some(deadline) => tokio::time::timeout_at(deadline, child.wait()).await.ok(),
+                        None => Some(child.wait().await),
+                    }
+                } => Some(exited),
             };
-            if let Some(exited) = exited {
-                let status =
-                    exited.map_err(|e| Error::Source(format!("container wait failed: {e}")))?;
-                if !status.success() {
-                    warn!(name = %self.config.name, exit_code = status.code().unwrap_or(-1), "Container exited with non-zero status");
+            match exited {
+                None => {
+                    info!(name = %self.config.name, "Shutdown signal, stopping container");
+                    self.stop_container().await;
+                    let _ = child.wait().await;
+                    return Ok(());
                 }
-                return Ok(());
+                Some(Some(exited)) => {
+                    let status =
+                        exited.map_err(|e| Error::Source(format!("container wait failed: {e}")))?;
+                    if !status.success() {
+                        warn!(name = %self.config.name, exit_code = status.code().unwrap_or(-1), "Container exited with non-zero status");
+                    }
+                    return Ok(());
+                }
+                Some(None) => self.kill_container(&mut child).await,
             }
-            self.kill_container(&mut child).await;
         }
 
         let _ = child.wait().await;
@@ -630,7 +650,7 @@ impl ContainerExtractor {
                         break;
                     }
 
-                    // Exponential backoff: 1s, 2s, 4s, 8s, ... capped at max_restart_backoff_secs
+                    // Exponential backoff: 2s, 4s, 8s, ... capped at max_restart_backoff_secs
                     let backoff_secs =
                         (1u64 << attempt.min(6)).min(self.config.max_restart_backoff_secs);
                     let backoff = std::time::Duration::from_secs(backoff_secs);
@@ -986,6 +1006,67 @@ mod tests {
         assert!(matches!(err, Error::Credential(_)), "{err:?}");
         assert!(err.to_string().contains("API_TOKEN"), "{err}");
         assert!(!started.exists(), "no container was started");
+    }
+
+    /// Shutdown stops a scheduled HTTP-mode container that is still running,
+    /// rather than waiting out its run with the container left behind.
+    #[tokio::test]
+    async fn shutdown_stops_a_running_scheduled_container() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid = dir.path().join("pid");
+        let stopped = dir.path().join("stopped");
+        let runtime = crate::extractor::fake_runtime::write(
+            dir.path(),
+            &format!(
+                "case \"$1\" in\n  run) echo $$ > '{pid}'; exec sleep 3600 ;;\n  stop) touch '{stopped}'; kill \"$(cat '{pid}')\" ;;\nesac\n",
+                pid = pid.display(),
+                stopped = stopped.display()
+            ),
+        );
+        let shutdown = CancellationToken::new();
+        let (_, metrics) = extractor_over(None, CancellationToken::new());
+        let state = Arc::new(PipelineState::for_tests(
+            crate::config::SharedConfig::new(crate::config::Config::default()),
+            Arc::clone(&metrics),
+            None,
+        ));
+        let config = ContainerExtractorConfig {
+            name: "long".to_string(),
+            image: "unused".to_string(),
+            runtime: Some(runtime),
+            pull_policy: "never".to_string(),
+            communication: "http".to_string(),
+            ..default_container_config()
+        };
+        let ext = Arc::new(ContainerExtractor::new(
+            config,
+            state,
+            metrics,
+            shutdown.clone(),
+        ));
+        let run = tokio::spawn({
+            let ext = Arc::clone(&ext);
+            async move { ext.run_scheduled().await }
+        });
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !pid.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the container starts");
+        shutdown.cancel();
+        let ended = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .expect("the run ends on shutdown, not after an hour")
+            .expect("joined");
+
+        assert!(ended.is_ok(), "{ended:?}");
+        assert!(
+            stopped.exists(),
+            "the runtime was told to stop the container"
+        );
     }
 
     /// A stdout line within the bound.

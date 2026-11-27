@@ -266,6 +266,9 @@ pub struct BoundLookup {
     /// The request reads `key`, so a batch never spans two keys: the ids a
     /// key yielded are looked up before the next key is set.
     pub per_key: bool,
+    /// The request reads `window`, so a batch never spans two window steps:
+    /// the ids a step yielded are looked up under that step's window.
+    pub per_step: bool,
     /// One request per item, exposed to the templates as `item`.
     pub manifest: bool,
     /// The checkpoint mark every row of an item carries, when the manifest
@@ -371,6 +374,21 @@ pub fn render_body(body: &Value, ctx: &TemplateCtx) -> Result<Value> {
     BodyTemplate::compile(body)?.render(ctx)
 }
 
+/// Refuse a plaintext `url` at `field` when the unit signs its requests: under
+/// any auth mode but `none` the credential goes to every origin it may call.
+fn refuse_plaintext(mode: AuthKind, field: &str, url: &str) -> Result<()> {
+    if mode == AuthKind::None {
+        return Ok(());
+    }
+    match crate::auth::credential_url_issue(url) {
+        Some(issue) => Err(Error::Config(format!(
+            "{field} {issue}, under auth mode `{}`",
+            mode.as_str()
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Permit the origin of each `allow_hosts` entry at `field`.
 ///
 /// An entry is a template rendered like a base URL, so the host comes from the
@@ -382,6 +400,7 @@ fn permit_allow_hosts(
     field: &str,
     entries: &[String],
     ctx: &TemplateCtx,
+    mode: AuthKind,
 ) -> Result<()> {
     for (i, entry) in entries.iter().enumerate() {
         let at = format!("{field}[{i}]");
@@ -399,6 +418,7 @@ fn permit_allow_hosts(
                 "{at}: `{rendered}` is a wildcard; allow_hosts names exact hosts"
             )));
         }
+        refuse_plaintext(mode, &format!("{at}:"), rendered)?;
         if !origins.permit(rendered) {
             return Err(Error::Config(format!(
                 "{at}: `{rendered}` is not an absolute URL naming a host, \
@@ -467,19 +487,28 @@ fn bind_endpoint(
             )));
         }
         let rendered = rendered.trim_end_matches('/').to_owned();
+        refuse_plaintext(instance.auth.mode, &format!("{field}:"), &rendered)?;
         ctx.set("base_url", Value::String(rendered.clone()));
         rendered
     };
     let ctx = ctx;
+    let mode = instance.auth.mode;
     let mut origins = OriginSet::new();
     origins.permit(&base_url);
     origins.permit(&instance_base_url);
-    permit_allow_hosts(&mut origins, "allow_hosts", &profile.allow_hosts, &ctx)?;
+    permit_allow_hosts(
+        &mut origins,
+        "allow_hosts",
+        &profile.allow_hosts,
+        &ctx,
+        mode,
+    )?;
     permit_allow_hosts(
         &mut origins,
         &at("allow_hosts"),
         &endpoint.allow_hosts,
         &ctx,
+        mode,
     )?;
     let mut unit = UnitSpec::new(name, shape, &topic);
     unit.row_key.clone_from(&endpoint.row_key);
@@ -579,6 +608,7 @@ fn bind_endpoint(
                 id_at: spec.id_at.clone(),
                 batch: spec.batch.max(1),
                 per_key: request.references("key"),
+                per_step: request.references("window"),
                 manifest: false,
                 item_mark: None,
                 max_items: None,
@@ -607,6 +637,7 @@ fn bind_endpoint(
                 id_at: None,
                 batch: 1,
                 per_key: request.references("key"),
+                per_step: request.references("window"),
                 manifest: true,
                 item_mark,
                 max_items: spec.max_items,
@@ -866,10 +897,17 @@ pub fn bind(
         ));
     }
     let base_url = base_url.trim_end_matches('/').to_owned();
+    refuse_plaintext(instance.auth.mode, "base_url:", &base_url)?;
     ctx.set("base_url", Value::String(base_url.clone()));
     let mut origins = OriginSet::new();
     origins.permit(&base_url);
-    permit_allow_hosts(&mut origins, "allow_hosts", &profile.allow_hosts, &ctx)?;
+    permit_allow_hosts(
+        &mut origins,
+        "allow_hosts",
+        &profile.allow_hosts,
+        &ctx,
+        instance.auth.mode,
+    )?;
 
     let mut headers = TemplateMap::new();
     compile_map("headers", &profile.headers, &mut headers)?;
