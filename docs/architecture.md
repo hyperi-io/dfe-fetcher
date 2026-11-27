@@ -21,6 +21,7 @@ config:
     fontSize: 15px
     lineColor: "#64748B"
     primaryTextColor: "#0F172A"
+    nodeBorder: "#334155"
     clusterBorder: "#0072B2"
     edgeLabelBackground: "#FFFFFF"
   themeCSS: >-
@@ -40,6 +41,8 @@ config:
     span.edgeLabel{display:inline-block;background:#FFFFFF!important;color:#1E293B;border:1px solid #94A3B8;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500}
     span.edgeLabel p{background:transparent!important}
     .label-icon{width:20px;height:20px;vertical-align:-4px;margin-right:6px}
+    .icon-shape path[stroke-width="0"][fill="none"]{fill:#FFFFFF;stroke:#FFFFFF;stroke-width:12px;stroke-linejoin:round}
+    .icon-shape p{background:transparent!important;color:#0F172A}
     .ingest .label-icon{color:#0E8A7D}
     .xform .label-icon{color:#7B4FB0}
     .load .label-icon{color:#0072B2}
@@ -110,7 +113,7 @@ flowchart TB
   style DL fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
 ```
 
-*Figure 1. L3 Components -- dfe-fetcher. Dashed boxes are outside DFE, and dotted arrows are config and dead letters.* Up: [L2 Services -- DFE deployment](https://github.com/hyperi-io/dfe-infra/blob/main/docs/architecture.md). Down: [L4 Detail -- Source framework](internals.md), [L4 Detail -- Extractors](extractors.md), [L4 Detail -- Emitter](delivery.md).
+*Figure 1. L3 Components -- dfe-fetcher. APIs, databases, files and External tools are outside DFE.* Up: [L2 Services -- DFE deployment](https://github.com/hyperi-io/dfe-infra/blob/main/docs/architecture.md). Down: [L4 Detail -- Source framework](internals.md), [L4 Detail -- Extractors](extractors.md), [L4 Detail -- Emitter](delivery.md).
 
 ## How data flows
 
@@ -173,6 +176,7 @@ config:
     fontSize: 15px
     lineColor: "#64748B"
     primaryTextColor: "#0F172A"
+    nodeBorder: "#334155"
     clusterBorder: "#0072B2"
     edgeLabelBackground: "#FFFFFF"
   themeCSS: >-
@@ -192,6 +196,8 @@ config:
     span.edgeLabel{display:inline-block;background:#FFFFFF!important;color:#1E293B;border:1px solid #94A3B8;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500}
     span.edgeLabel p{background:transparent!important}
     .label-icon{width:20px;height:20px;vertical-align:-4px;margin-right:6px}
+    .icon-shape path[stroke-width="0"][fill="none"]{fill:#FFFFFF;stroke:#FFFFFF;stroke-width:12px;stroke-linejoin:round}
+    .icon-shape p{background:transparent!important;color:#0F172A}
     .ingest .label-icon{color:#0E8A7D}
     .xform .label-icon{color:#7B4FB0}
     .load .label-icon{color:#0072B2}

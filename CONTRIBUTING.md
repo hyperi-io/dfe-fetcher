@@ -180,6 +180,7 @@ config:
     fontSize: 15px
     lineColor: "#64748B"
     primaryTextColor: "#0F172A"
+    nodeBorder: "#334155"
     clusterBorder: "#0072B2"
     edgeLabelBackground: "#FFFFFF"
   themeCSS: >-
@@ -199,6 +200,8 @@ config:
     span.edgeLabel{display:inline-block;background:#FFFFFF!important;color:#1E293B;border:1px solid #94A3B8;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:500}
     span.edgeLabel p{background:transparent!important}
     .label-icon{width:20px;height:20px;vertical-align:-4px;margin-right:6px}
+    .icon-shape path[stroke-width="0"][fill="none"]{fill:#FFFFFF;stroke:#FFFFFF;stroke-width:12px;stroke-linejoin:round}
+    .icon-shape p{background:transparent!important;color:#0F172A}
     .ingest .label-icon{color:#0E8A7D}
     .xform .label-icon{color:#7B4FB0}
     .load .label-icon{color:#0072B2}
@@ -244,7 +247,7 @@ flowchart LR
   style sources fill:none,stroke:#0072B2,stroke-width:1.5px,stroke-dasharray:6 4
 ```
 
-*Figure 1. L4 Detail -- Workspace crates. Dashed boxes are not ours, and dotted arrows are behind a cargo feature.* Up: [L3 Components -- dfe-fetcher](docs/architecture.md).
+*Figure 1. L4 Detail -- Workspace crates. Engine drivers and vector-file-source are not ours, and the arrows to them are behind a cargo feature.* Up: [L3 Components -- dfe-fetcher](docs/architecture.md).
 
 The app depends on `dfe-fetcher-core` directly as well, and links all four crates unconditionally, so a `sources.db` or `sources.file` block is always parsed and validated. The features decide whether the engine behind it is present: `db-odbc`, `db-clickhouse`, `db-mongodb`, `db-hana` and `file-tail`, named `<capability>-<backend>` as in scalo. Beside them are `file` (the dump is always built), `jemalloc`, `full` and `pgo-driver`. The shipped profiles are `include_str!`'d into the app, so editing one rebuilds the app alone.
 
