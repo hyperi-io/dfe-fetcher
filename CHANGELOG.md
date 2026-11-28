@@ -3,6 +3,21 @@
 Rendered by CI and committed back at the end of a release -- do not edit by
 hand. Release notes also appear on the GitHub Releases page, one per tag.
 
+## [1.4.61](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.60...v1.4.61) (2026-11-28)
+
+### What's Changed
+* fix(deps): update redpandadata/redpanda Docker tag to v26.2.7 by @renovate[bot] in https://github.com/hyperi-io/dfe-fetcher/pull/330
+* fix(deps): update Rust crate jsonwebtoken to v12 by @renovate[bot] in https://github.com/hyperi-io/dfe-fetcher/pull/332
+* fix(deps): update rust-dependencies by @renovate[bot] in https://github.com/hyperi-io/dfe-fetcher/pull/331
+* fix: rebuild on scalo 2.14.34 by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/335
+* fix: rebuild on scalo 2.14.36 by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/336
+* fix: rebuild on scalo 2.14.37 by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/337
+* fix: rebuild on scalo 2.14.38 by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/338
+* fix: rebuild on scalo 2.14.39 by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/339
+* docs: link CEL to its language definition by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/340
+* fix(tls): move Kafka TLS keys to scalo's tls section by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/341
+* fix: re-send held records only to outputs that lack them by @catinspace-au in https://github.com/hyperi-io/dfe-fetcher/pull/345
+
 ## [1.4.60](https://github.com/hyperi-io/dfe-fetcher/compare/v1.4.59...v1.4.60) (2026-11-23)
 
 ### What's Changed
